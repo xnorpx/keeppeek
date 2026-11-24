@@ -7,6 +7,7 @@ import {
 	CameraControlCommandSchema,
 	DeliveryTransport,
 	MediaKind,
+	LiveQualitySelectionReason,
 	MessageSchema,
 	RequestSchema,
 	SubscribeMediaSchema,
@@ -25,6 +26,9 @@ import {
 	type Response as ControlResponse,
 	type ServerCapabilities,
 	type LiveQualityDiagnostics,
+	type LiveAudioTiming,
+	type MediaVariantCapability,
+	type SubscriptionResult,
 	type SubscriptionStreamState,
 	type TalkbackTarget
 } from './proto/webrtc_pb';
@@ -45,11 +49,14 @@ const defaultSessionTransport: LiveSessionTransport = {
 };
 
 type NegotiatedTrack = LivePeerPlan & {
+	plan: LivePeerPlan;
 	trackId: string;
 	audioTrackId: string;
 	transceiver: RTCRtpTransceiver;
 	audioTransceiver: RTCRtpTransceiver;
 };
+
+type AudioDelivery = 'rtp' | 'mediaData';
 
 type PendingRequest = {
 	resolve: (response: ControlResponse) => void;
@@ -57,10 +64,17 @@ type PendingRequest = {
 	timeout: ReturnType<typeof setTimeout>;
 };
 
+class SupersededPreview extends Error {
+	constructor() {
+		super('The live timing preview was superseded.');
+	}
+}
+
 export type LivePeerPlan = {
 	cameraId: string;
 	quality: LiveQuality;
 	variantId?: 'main' | 'sub';
+	liveAudioPreviewOffsetMs?: number;
 	active?: boolean;
 };
 
@@ -76,9 +90,17 @@ export type LivePeerTrack = {
 	requestedQuality: LiveQuality;
 	requestedVariantId: 'main' | 'sub' | null;
 	activeStream: 'main' | 'sub';
+	confirmedVideoVariant?: 'main' | 'sub';
 	pendingStream: 'main' | 'sub' | null;
 	estimatedBitrateBps: number | null;
 	liveQuality?: LiveQualityDiagnostics;
+	liveAudio?: LiveAudioTiming;
+	audioVariantId?: string;
+	audioDelivery?: SubscriptionResult['delivery']['case'];
+	audioTiming?: LiveAudioTiming;
+	timingReconciliationNeeded?: boolean;
+	restoredSavedTiming?: boolean;
+	liveAudioPreviewOffsetMs?: number;
 	subscribed: boolean;
 	audioAdmission?: 'retry' | 'admitted';
 	admissionError?: string | null;
@@ -115,6 +137,7 @@ export class LivePeer {
 	#talkbackTrack: MediaStreamTrack | null = null;
 	#cameraByMid: Record<string, string> = {};
 	#audioCameraByMid: Record<string, string> = {};
+	#audioContext: AudioContext | null = null;
 	#audioPlaybackByBinding = new Map<string, AacAudioPlayback>();
 	#audioBindingByCamera: Record<string, string> = {};
 	#sourceSessionByCamera: Record<string, string> = {};
@@ -137,6 +160,17 @@ export class LivePeer {
 	#operation: Promise<void> = Promise.resolve();
 	#closeScheduled = false;
 	#holds = 0;
+	#previewWaiters = new Map<string, (failure?: Error) => void>();
+	#audioSync = new Map<
+		string,
+		{
+			variant: string;
+			delivery: AudioDelivery;
+			attempts: number;
+			busy: boolean;
+			retry?: ReturnType<typeof setTimeout>;
+		}
+	>();
 	#sessionTransport: LiveSessionTransport;
 
 	constructor(sessionTransport: LiveSessionTransport = defaultSessionTransport) {
@@ -180,7 +214,7 @@ export class LivePeer {
 			cameraIds[plan.cameraId] = true;
 		}
 		const wasActive = this.#desiredPlans.some((plan) => plan.active);
-		this.#desiredPlans = nextPlans;
+		this.setDesiredPlans(nextPlans);
 		return this.enqueue(async () => {
 			if (this.#desiredPlans !== nextPlans) return;
 			const recovering = this.#recoveryAttempts > 0 || this.#recoveryStopped;
@@ -203,9 +237,14 @@ export class LivePeer {
 		});
 	}
 
+	private setDesiredPlans(plans: LivePeerPlan[]): void {
+		this.#desiredPlans = plans;
+		for (const observe of this.#previewWaiters.values()) observe();
+	}
+
 	close(): Promise<void> {
 		this.talkbackError = null;
-		this.#desiredPlans = [];
+		this.setDesiredPlans([]);
 		this.cancelRecovery();
 		return this.enqueue(async () => this.closeNow());
 	}
@@ -295,14 +334,14 @@ export class LivePeer {
 	}
 
 	resumeAudioPlayback(): Promise<void> {
-		return Promise.all(
-			[...this.#audioPlaybackByBinding.values()].map((playback) => playback.resume())
-		).then(() => undefined);
+		return this.#audioContext?.state === 'suspended'
+			? this.#audioContext.resume()
+			: Promise.resolve();
 	}
 
 	closeOnPageHide(): void {
 		this.talkbackError = null;
-		this.#desiredPlans = [];
+		this.setDesiredPlans([]);
 		this.cancelRecovery();
 		const sessionToken = this.releaseLocalResources();
 		if (sessionToken === null) return;
@@ -410,7 +449,7 @@ export class LivePeer {
 			this.#recoveryTimer = undefined;
 			void this.enqueue(async () => {
 				if (this.#peer || !this.#desiredPlans.some((plan) => plan.active)) return;
-				await this.configureNow(this.#desiredPlans);
+				await this.configureNow(this.#desiredPlans, true);
 				this.markTransportHealthy();
 			}).catch((error) => {
 				if (this.isAccessDenied(error)) {
@@ -427,13 +466,13 @@ export class LivePeer {
 		return this.#operation;
 	}
 
-	private async configureNow(plans: LivePeerPlan[]): Promise<void> {
+	private async configureNow(plans: LivePeerPlan[], recovering = false): Promise<void> {
 		const topologyKey = plans.map((plan) => plan.cameraId).join('\u0000');
 		if (plans.length === 0 && this.#peer === null) return;
 		if (this.#peer === null || this.#topologyKey !== topologyKey) {
 			await this.closeNow();
 			if (plans.length === 0) return;
-			await this.connect(plans, topologyKey);
+			await this.connect(plans, topologyKey, recovering);
 			return;
 		}
 		await this.releaseInactiveTracks(plans);
@@ -441,26 +480,79 @@ export class LivePeer {
 			plans.map(async (plan) => {
 				const track = this.track(plan.cameraId);
 				if (!track) return;
-				if (plan.active && !track.subscribed) {
-					await this.subscribeTrack(
-						plan.cameraId,
-						track.trackId,
-						plan.quality,
-						plan.variantId ?? null
-					);
+				if (!plan.active) return;
+				const variant = plan.variantId ?? null;
+				const timingChanged =
+					track.timingReconciliationNeeded ||
+					track.liveAudioPreviewOffsetMs !== plan.liveAudioPreviewOffsetMs ||
+					(plan.liveAudioPreviewOffsetMs !== undefined && track.requestedVariantId !== variant);
+				if (
+					track.subscribed &&
+					!timingChanged &&
+					track.requestedQuality === plan.quality &&
+					track.requestedVariantId === variant
+				) {
+					if (track.audioAdmission === 'retry' && plan.liveAudioPreviewOffsetMs === undefined)
+						this.followActiveAudio(plan.cameraId, true);
 					return;
 				}
-				if (
-					plan.active &&
-					(track.requestedQuality !== plan.quality ||
-						track.requestedVariantId !== (plan.variantId ?? null))
-				) {
-					await this.setQuality(plan.cameraId, plan.quality, plan.variantId ?? null);
-				} else if (plan.active && track.audioAdmission === 'retry') {
-					await this.subscribeAudio(plan.cameraId, track.audioTrackId);
+				try {
+					await this.subscribeTrack(
+						plan,
+						track.trackId,
+						plan.quality,
+						variant,
+						track.subscribed,
+						plan.liveAudioPreviewOffsetMs,
+						timingChanged
+					);
+				} catch (error) {
+					if (error instanceof SupersededPreview) {
+						this.replaceTrack(plan.cameraId, { timingReconciliationNeeded: true });
+					} else if (track.subscribed && timingChanged) {
+						await this.restoreTimingPair(plan, track);
+					} else if (timingChanged && this.#peer) {
+						await this.unsubscribeTrack(plan.cameraId, track.trackId).catch((cleanupError) =>
+							console.warn('Unable to release an unconfirmed preview', cleanupError)
+						);
+					}
+					throw error;
 				}
 			})
 		);
+	}
+
+	private async restoreTimingPair(plan: LivePeerPlan, track: LivePeerTrack) {
+		await this.subscribeTrack(
+			plan,
+			track.trackId,
+			track.requestedQuality,
+			track.requestedVariantId,
+			true,
+			track.liveAudioPreviewOffsetMs,
+			true
+		)
+			.then(() => {
+				if (!this.#desiredPlans.includes(plan)) return;
+				this.#desiredPlans = this.#desiredPlans.map((item) =>
+					item === plan
+						? {
+								...plan,
+								quality: track.requestedQuality,
+								variantId: track.requestedVariantId ?? undefined,
+								liveAudioPreviewOffsetMs: track.liveAudioPreviewOffsetMs
+							}
+						: item
+				);
+				this.followActiveAudio(plan.cameraId);
+			})
+			.catch((restoreError) => {
+				this.replaceTrack(plan.cameraId, {
+					timingReconciliationNeeded: true,
+					admissionError: 'Unable to restore the previous live timing.'
+				});
+				console.warn('Unable to restore the previous live timing', restoreError);
+			});
 	}
 
 	private async releaseInactiveTracks(plans: LivePeerPlan[]): Promise<void> {
@@ -485,12 +577,16 @@ export class LivePeer {
 		}
 	}
 
-	private async connect(plans: LivePeerPlan[], topologyKey: string): Promise<void> {
+	private async connect(
+		plans: LivePeerPlan[],
+		topologyKey: string,
+		recovering: boolean
+	): Promise<void> {
 		const { peer, controlChannel } = this.preparePeer(topologyKey);
 		try {
 			const localTracks = this.prepareTracks(peer, plans);
 			this.observePeer(peer);
-			await this.negotiateTracks(peer, controlChannel, localTracks);
+			await this.negotiateTracks(peer, controlChannel, localTracks, recovering);
 		} catch (error) {
 			if (peer === this.#peer) {
 				const sessionToken = this.releaseLocalResources();
@@ -557,7 +653,14 @@ export class LivePeer {
 			const transceiver = peer.addTransceiver('video', { direction: 'recvonly' });
 			const audioTransceiver = peer.addTransceiver('audio', { direction: 'recvonly' });
 			preferH265(transceiver);
-			return { ...plan, trackId, audioTrackId: `audio-${index}`, transceiver, audioTransceiver };
+			return {
+				...plan,
+				plan,
+				trackId,
+				audioTrackId: `audio-${index}`,
+				transceiver,
+				audioTransceiver
+			};
 		});
 
 		this.tracks = Object.fromEntries(
@@ -614,7 +717,8 @@ export class LivePeer {
 	private async negotiateTracks(
 		peer: RTCPeerConnection,
 		controlChannel: RTCDataChannel,
-		localTracks: NegotiatedTrack[]
+		localTracks: NegotiatedTrack[],
+		recovering: boolean
 	): Promise<void> {
 		const offer = await peer.createOffer();
 		await peer.setLocalDescription(offer);
@@ -663,32 +767,76 @@ export class LivePeer {
 		await Promise.all(
 			localTracks
 				.filter((track) => track.active)
-				.map((track) =>
-					this.subscribeTrack(track.cameraId, track.trackId, track.quality, track.variantId ?? null)
-				)
+				.map((track) => this.admitConnectedTrack(track.plan, track.trackId, recovering))
 		);
 	}
 
-	private async setQuality(
-		cameraId: string,
-		quality: LiveQuality,
-		variantId: 'main' | 'sub' | null
-	): Promise<void> {
-		const track = this.tracks[cameraId];
-		if (!track?.subscribed) return;
-		await this.subscribeTrack(cameraId, track.trackId, quality, variantId, true);
+	private async admitConnectedTrack(plan: LivePeerPlan, id: string, recovering: boolean) {
+		const owner = this.#peer;
+		try {
+			await this.subscribeTrack(
+				plan,
+				id,
+				plan.quality,
+				plan.variantId ?? null,
+				false,
+				plan.liveAudioPreviewOffsetMs
+			);
+		} catch (error) {
+			if (error instanceof SupersededPreview) {
+				this.replaceTrack(plan.cameraId, { timingReconciliationNeeded: true });
+				return;
+			}
+			if (
+				!recovering ||
+				plan.liveAudioPreviewOffsetMs === undefined ||
+				owner !== this.#peer ||
+				!this.#desiredPlans.includes(plan)
+			)
+				throw error;
+			const saved = { ...plan, variantId: undefined, liveAudioPreviewOffsetMs: undefined };
+			// The preview may have admitted video before audio failed. Replace the same
+			// subscription in place so its MID retains the existing sender clock.
+			await this.subscribeTrack(plan, id, saved.quality, null, true, undefined, true);
+			if (owner === this.#peer && this.#desiredPlans.includes(plan)) {
+				this.#desiredPlans = this.#desiredPlans.map((item) => (item === plan ? saved : item));
+				this.replaceTrack(plan.cameraId, { restoredSavedTiming: true });
+				this.followActiveAudio(plan.cameraId);
+			}
+		}
+	}
+
+	cancelDisconnectedPreview(cameraId: string): void {
+		this.setDesiredPlans(
+			this.#desiredPlans.map((plan) =>
+				plan.cameraId === cameraId
+					? { ...plan, variantId: undefined, liveAudioPreviewOffsetMs: undefined }
+					: plan
+			)
+		);
+		if (this.#peer) {
+			void this.enqueue(() => this.configureNow(this.#desiredPlans, true)).catch(() =>
+				this.scheduleRecovery()
+			);
+		} else {
+			this.scheduleRecovery();
+		}
 	}
 
 	private async subscribeTrack(
-		cameraId: string,
+		plan: LivePeerPlan,
 		subscriptionId: string,
 		quality: LiveQuality,
 		variantId: 'main' | 'sub' | null = null,
-		replacement = false
+		replacement = false,
+		liveAudioPreviewOffsetMs?: number,
+		confirmTiming = liveAudioPreviewOffsetMs !== undefined
 	): Promise<void> {
+		const { cameraId } = plan;
 		const owner = this.#peer;
 		const sourceSessionId = this.#sourceSessionByCamera[cameraId];
 		if (!sourceSessionId) {
+			if (confirmTiming) throw new Error('The live camera is unavailable for timing calibration.');
 			if (this.#capabilities?.cameras.some((camera) => camera.sourceId === cameraId)) {
 				throw new Error(`Camera ${cameraId} has no live source session.`);
 			}
@@ -708,16 +856,70 @@ export class LivePeer {
 			kind: MediaKind.VIDEO,
 			requestedDeliveryTransport: DeliveryTransport.RTP,
 			videoQuality: protoQuality(variantId === null ? quality : 'auto'),
+			liveAudioPreviewOffsetMs,
 			variantId: variantId ?? ''
 		});
 		const result = await this.requestMedia(cameraId, subscribe);
-		if (owner !== this.#peer) return;
-		if (result === null) return;
+		if (owner !== this.#peer) {
+			if (confirmTiming) throw new Error('The live timing session changed.');
+			return;
+		}
+		if (result === null) {
+			if (confirmTiming) throw new Error('Video timing preview was not admitted.');
+			return;
+		}
 		if (result.case !== 'subscriptionResult' || result.value.delivery.case !== 'rtp') {
 			throw new Error('Server returned an unexpected media subscription response.');
 		}
-		const mid = result.value.delivery.value.mid;
-		const selectedStream = liveVariant(result.value.selectedVariantId);
+		if (confirmTiming && !timingConfirmed(result.value.liveAudio, liveAudioPreviewOffsetMs)) {
+			throw new Error('The server did not apply the video timing preview.');
+		}
+		this.applyVideoAdmission(
+			cameraId,
+			quality,
+			variantId,
+			replacement,
+			result.value.delivery.value.mid,
+			result.value
+		);
+		await this.completeTimingAdmission(plan, variantId, liveAudioPreviewOffsetMs, confirmTiming);
+	}
+
+	private async completeTimingAdmission(
+		plan: LivePeerPlan,
+		variantId: 'main' | 'sub' | null,
+		liveAudioPreviewOffsetMs: number | undefined,
+		confirmTiming: boolean
+	) {
+		const { cameraId } = plan;
+		if (liveAudioPreviewOffsetMs !== undefined) {
+			if (variantId === null) throw new Error('Choose a video profile for timing preview.');
+			await this.waitForPreviewProfile(plan, variantId);
+		}
+		await this.subscribeAudio(
+			cameraId,
+			this.track(cameraId)?.audioTrackId ?? `audio-${cameraId}`,
+			liveAudioPreviewOffsetMs === undefined ? null : variantId,
+			liveAudioPreviewOffsetMs,
+			confirmTiming
+		);
+		this.replaceTrack(cameraId, {
+			liveAudioPreviewOffsetMs,
+			timingReconciliationNeeded: false,
+			restoredSavedTiming: false
+		});
+		this.followActiveAudio(cameraId);
+	}
+
+	private applyVideoAdmission(
+		cameraId: string,
+		quality: LiveQuality,
+		variantId: 'main' | 'sub' | null,
+		replacement: boolean,
+		mid: string,
+		admission: SubscriptionResult
+	) {
+		const selectedStream = liveVariant(admission.selectedVariantId);
 		if (selectedStream === null) throw new Error('Server selected an unsupported live variant.');
 		const current = this.track(cameraId);
 		const pendingStream =
@@ -729,62 +931,168 @@ export class LivePeer {
 		this.#cameraByMid[mid] = cameraId;
 		this.replaceTrack(cameraId, {
 			admissionError: null,
+			liveAudio: admission.liveAudio,
 			requestedQuality: quality,
 			requestedVariantId: variantId,
 			activeStream: pendingStream === null ? selectedStream : current!.activeStream,
 			pendingStream,
 			subscribed: true
 		});
-		this.applyLiveQuality(cameraId, result.value.liveQuality);
+		this.applyLiveQuality(cameraId, admission.liveQuality);
 		const event = this.#trackEventByMid[mid];
 		if (event) this.attachTrackEvent(cameraId, event);
-		await this.subscribeAudio(cameraId, this.track(cameraId)?.audioTrackId ?? `audio-${cameraId}`);
 	}
 
-	private async subscribeAudio(cameraId: string, subscriptionId: string): Promise<void> {
+	private waitForPreviewProfile(plan: LivePeerPlan, desired: 'main' | 'sub'): Promise<void> {
+		const { cameraId } = plan;
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(
+				() => observe(new Error('The selected video profile did not become active in time.')),
+				controlTimeoutMs
+			);
+			const observe = (failure?: Error) => {
+				const requested = this.#desiredPlans.find((item) => item.cameraId === cameraId);
+				if (
+					!failure &&
+					(!requested?.active ||
+						requested.variantId !== plan.variantId ||
+						requested.liveAudioPreviewOffsetMs !== plan.liveAudioPreviewOffsetMs)
+				)
+					failure = new SupersededPreview();
+				const track = this.track(cameraId);
+				if (
+					!failure &&
+					track?.liveQuality?.selectionReason === LiveQualitySelectionReason.VARIANT_UNAVAILABLE
+				)
+					failure = new Error('The selected video profile is unavailable for this viewer.');
+				if (
+					!failure &&
+					(track?.confirmedVideoVariant !== desired ||
+						(track.pendingStream !== null && track.pendingStream !== desired))
+				)
+					return;
+				clearTimeout(timer);
+				this.#previewWaiters.delete(cameraId);
+				if (failure) reject(failure);
+				else resolve();
+			};
+			this.#previewWaiters.set(cameraId, observe);
+			observe();
+		});
+	}
+
+	private async subscribeAudio(
+		cameraId: string,
+		subscriptionId: string,
+		videoVariant: 'main' | 'sub' | null,
+		previewOffset?: number,
+		confirmTiming = previewOffset !== undefined
+	): Promise<void> {
+		const lifetime = this.#peerLifetime.signal;
 		const sourceSessionId = this.#sourceSessionByCamera[cameraId];
 		const source = this.#capabilities?.sourceSessions.find(
 			(item) => item.sourceSessionId === sourceSessionId
 		);
 		const variant =
-			source?.audio?.variants.find((item) => item.variantId === 'main') ??
-			source?.audio?.variants[0];
+			source?.audio?.variants.find(
+				(item) => item.variantId === (videoVariant ?? this.track(cameraId)?.activeStream)
+			) ?? (previewOffset === undefined ? source?.audio?.variants[0] : undefined);
 		if (!variant) {
 			this.replaceTrack(cameraId, { audioAdmission: undefined });
+			if (previewOffset !== undefined)
+				throw new Error('This stream has no matching live audio profile.');
+			if (confirmTiming) {
+				await this.unsubscribeAudio(cameraId, subscriptionId);
+			}
 			return;
 		}
-		const owner = this.#peer;
-		const requestedDeliveryTransport = variant.deliveryTransports.includes(
-			DeliveryTransport.RELIABLE_DATA
-		)
-			? DeliveryTransport.RELIABLE_DATA
-			: DeliveryTransport.RTP;
+		const current = this.track(cameraId);
+		const delivery = requestedAudioDelivery(variant);
+		if (
+			current?.audioVariantId &&
+			(current.audioVariantId !== variant.variantId || current.audioDelivery !== delivery)
+		) {
+			await this.unsubscribeAudio(cameraId, subscriptionId);
+		}
+		lifetime.throwIfAborted();
+		const requestedDeliveryTransport =
+			delivery === 'mediaData' ? DeliveryTransport.RELIABLE_DATA : DeliveryTransport.RTP;
 		const result = await this.requestMedia(
 			cameraId,
 			create(SubscribeMediaSchema, {
 				subscriptionId,
 				sourceSessionId,
 				kind: MediaKind.AUDIO,
+				liveAudioPreviewOffsetMs: previewOffset,
 				requestedDeliveryTransport,
 				videoQuality: VideoQuality.AUTO,
 				variantId: variant.variantId
 			})
 		);
-		if (owner !== this.#peer || result?.case !== 'subscriptionResult') return;
-		this.replaceTrack(cameraId, { audioAdmission: 'admitted', admissionError: null });
-		if (result.value.delivery.case === 'rtp') {
-			const mid = result.value.delivery.value.mid;
+		lifetime.throwIfAborted();
+		if (result?.case !== 'subscriptionResult') {
+			if (confirmTiming) throw new Error('Audio timing preview was not admitted.');
+			return;
+		}
+		this.replaceTrack(cameraId, {
+			audioAdmission: 'admitted',
+			audioVariantId: variant.variantId,
+			audioDelivery: result.value.delivery.case,
+			admissionError: null
+		});
+		if (confirmTiming && !timingConfirmed(result.value.liveAudio, previewOffset)) {
+			throw new Error('The server did not apply the audio timing preview.');
+		}
+		await this.attachAudioDelivery(
+			cameraId,
+			variant,
+			result.value.delivery,
+			previewOffset !== undefined
+		);
+		lifetime.throwIfAborted();
+		this.replaceTrack(cameraId, { audioTiming: result.value.liveAudio });
+	}
+
+	private async unsubscribeAudio(cameraId: string, subscriptionId: string): Promise<void> {
+		const lifetime = this.#peerLifetime.signal;
+		await this.request({
+			case: 'unsubscribe',
+			value: create(UnsubscribeSchema, { subscriptionIds: [subscriptionId] })
+		});
+		lifetime.throwIfAborted();
+		this.releaseAudio(cameraId);
+	}
+
+	private async attachAudioDelivery(
+		cameraId: string,
+		variant: MediaVariantCapability,
+		delivery: SubscriptionResult['delivery'],
+		requirePlayback: boolean
+	): Promise<void> {
+		const owner = this.#peer;
+		if (delivery.case === 'rtp') {
+			const mid = delivery.value.mid;
 			this.#audioCameraByMid[mid] = cameraId;
 			const event = this.#trackEventByMid[mid];
 			if (event) this.attachAudioTrackEvent(cameraId, event);
 			return;
 		}
-		if (result.value.delivery.case !== 'mediaData' || variant.codec?.name.toLowerCase() !== 'aac')
-			return;
 		const format = variant.format?.format;
-		if (format?.case !== 'audio') return;
-		const playback = new AacAudioPlayback();
+		if (
+			delivery.case !== 'mediaData' ||
+			variant.codec?.name.toLowerCase() !== 'aac' ||
+			format?.case !== 'audio'
+		) {
+			if (requirePlayback)
+				throw new Error('This audio delivery cannot be previewed in this viewer.');
+			return;
+		}
+		if (this.#audioPlaybackByBinding.has(delivery.value.streamBindingId)) return;
+		this.releaseAudioDecoder(cameraId);
+		let playback: AacAudioPlayback | undefined;
 		try {
+			this.#audioContext ??= new AudioContext();
+			playback = new AacAudioPlayback(this.#audioContext);
 			await playback.configure(
 				variant.codec?.name ?? 'aac',
 				format.value.decoderConfig,
@@ -795,10 +1103,12 @@ export class LivePeer {
 				playback.close();
 				return;
 			}
-			this.#audioPlaybackByBinding.set(result.value.delivery.value.streamBindingId, playback);
-			this.#audioBindingByCamera[cameraId] = result.value.delivery.value.streamBindingId;
+			this.#audioPlaybackByBinding.set(delivery.value.streamBindingId, playback);
+			this.#audioBindingByCamera[cameraId] = delivery.value.streamBindingId;
 		} catch (error) {
-			playback.close();
+			playback?.close();
+			if (requirePlayback)
+				throw new Error('This browser cannot decode the audio timing preview.', { cause: error });
 			console.warn(`AAC playback is unavailable for ${cameraId}`, error);
 		}
 	}
@@ -831,24 +1141,42 @@ export class LivePeer {
 				subscriptionIds: audioTrackId ? [subscriptionId, audioTrackId] : [subscriptionId]
 			})
 		});
+		this.releaseAudio(cameraId);
+		this.clearAudioSync(cameraId);
+		this.#previewWaiters.get(cameraId)?.(new Error('The video subscription closed.'));
+		this.replaceTrack(cameraId, {
+			confirmedVideoVariant: undefined,
+			status: 'queued',
+			subscribed: false,
+			pendingStream: null,
+			estimatedBitrateBps: null,
+			liveQuality: undefined,
+			liveAudio: undefined,
+			liveAudioPreviewOffsetMs: undefined
+		});
+	}
+
+	private releaseAudioDecoder(cameraId: string): void {
 		const binding = this.#audioBindingByCamera[cameraId];
 		if (binding) {
 			this.#audioPlaybackByBinding.get(binding)?.close();
 			this.#audioPlaybackByBinding.delete(binding);
 			delete this.#audioBindingByCamera[cameraId];
 		}
+	}
+
+	private releaseAudio(cameraId: string): void {
+		this.releaseAudioDecoder(cameraId);
 		for (const [mid, sourceId] of Object.entries(this.#audioCameraByMid)) {
 			if (sourceId === cameraId) delete this.#audioCameraByMid[mid];
 		}
 		this.replaceTrack(cameraId, {
-			status: 'queued',
-			subscribed: false,
+			audioVariantId: undefined,
+			audioDelivery: undefined,
+			audioTiming: undefined,
 			audioReceiver: null,
 			audioStream: null,
-			audioAdmission: undefined,
-			pendingStream: null,
-			estimatedBitrateBps: null,
-			liveQuality: undefined
+			audioAdmission: undefined
 		});
 	}
 
@@ -966,30 +1294,118 @@ export class LivePeer {
 			...(liveQuality === undefined
 				? {}
 				: {
+						confirmedVideoVariant: liveVariant(liveQuality.activeVariantId) ?? undefined,
 						activeStream: liveVariant(liveQuality.activeVariantId) ?? current.activeStream,
 						pendingStream: liveVariant(liveQuality.pendingVariantId)
 					})
 		});
+		this.#previewWaiters.get(cameraId)?.();
 		if (liveQuality !== undefined) this.receiveNetworkEstimate(liveQuality.sessionBandwidthBps);
 	}
 
 	private receiveStreamState(update: SubscriptionStreamState): void {
 		if (!this.acceptsTelemetry()) return;
+		const audio = Object.values(this.tracks).find(
+			(track) =>
+				track.subscribed && track.audioVariantId && track.audioTrackId === update.subscriptionId
+		);
+		if (audio && update.liveAudio && update.activeVariantId === audio.audioVariantId) {
+			this.replaceTrack(audio.cameraId, { audioTiming: update.liveAudio });
+			return;
+		}
 		const current = Object.values(this.tracks).find(
 			(track) => track.trackId === update.subscriptionId && track.subscribed
 		);
 		if (!current || !this.#sourceSessionByCamera[current.cameraId]) return;
+		if (update.liveAudio) this.replaceTrack(current.cameraId, { liveAudio: update.liveAudio });
 		if (update.liveQuality !== undefined) {
 			this.applyLiveQuality(current.cameraId, update.liveQuality);
+			this.followActiveAudio(current.cameraId);
 			return;
 		}
 		const activeStream = liveVariant(update.activeVariantId);
 		if (activeStream === null) return;
 		this.replaceTrack(current.cameraId, {
 			activeStream,
+			confirmedVideoVariant: activeStream,
 			pendingStream: current.pendingStream === activeStream ? null : current.pendingStream,
 			liveQuality: undefined
 		});
+		this.#previewWaiters.get(current.cameraId)?.();
+		this.followActiveAudio(current.cameraId);
+	}
+
+	private clearAudioSync(cameraId: string): void {
+		const previous = this.#audioSync.get(cameraId);
+		if (previous?.retry) clearTimeout(previous.retry);
+		this.#audioSync.delete(cameraId);
+	}
+
+	private calibratingAudio(cameraId: string): boolean {
+		return (
+			this.#previewWaiters.has(cameraId) ||
+			this.track(cameraId)?.liveAudioPreviewOffsetMs !== undefined ||
+			this.#desiredPlans.some(
+				(plan) => plan.cameraId === cameraId && plan.liveAudioPreviewOffsetMs !== undefined
+			)
+		);
+	}
+
+	private followActiveAudio(cameraId: string, refresh = false): void {
+		const track = this.track(cameraId);
+		const source = this.#capabilities?.sourceSessions.find(
+			(item) => item.sourceSessionId === this.#sourceSessionByCamera[cameraId]
+		);
+		const variants = source?.audio?.variants;
+		const variant = variants?.find((v) => v.variantId === track?.activeStream) ?? variants?.[0];
+		if (
+			!track?.subscribed ||
+			this.calibratingAudio(cameraId) ||
+			!variant ||
+			(track.audioVariantId === variant.variantId &&
+				track.audioDelivery === requestedAudioDelivery(variant))
+		) {
+			this.clearAudioSync(cameraId);
+			return;
+		}
+		const delivery = requestedAudioDelivery(variant);
+		let state = this.#audioSync.get(cameraId);
+		if (state?.variant !== variant.variantId || state.delivery !== delivery) {
+			this.clearAudioSync(cameraId);
+			state = { variant: variant.variantId, delivery, attempts: 0, busy: false };
+			this.#audioSync.set(cameraId, state);
+		}
+		if (refresh && !state.busy && !state.retry && state.attempts >= 3) state.attempts = 0;
+		if (state.busy || state.retry || state.attempts >= 3) return;
+		const pending = state;
+		pending.busy = true;
+		void this.enqueue(async () => {
+			if (this.#audioSync.get(cameraId) !== pending) return;
+			const latest = this.track(cameraId);
+			if (!latest?.subscribed || this.calibratingAudio(cameraId)) return;
+			pending.attempts++;
+			await this.subscribeAudio(cameraId, latest.audioTrackId, latest.activeStream);
+		})
+			.catch((error) => console.warn('Unable to follow live audio profile', error))
+			.finally(() => {
+				if (this.#audioSync.get(cameraId) !== pending) {
+					this.followActiveAudio(cameraId);
+					return;
+				}
+				pending.busy = false;
+				const admitted = this.track(cameraId);
+				if (
+					admitted?.audioVariantId === pending.variant &&
+					admitted.audioDelivery === pending.delivery
+				) {
+					this.clearAudioSync(cameraId);
+				} else if (pending.attempts < 3) {
+					pending.retry = setTimeout(() => {
+						pending.retry = undefined;
+						this.followActiveAudio(cameraId);
+					}, 250 * pending.attempts);
+				}
+			});
 	}
 
 	private removeSourceDiagnostics(sourceSessionId: string): void {
@@ -1040,6 +1456,9 @@ export class LivePeer {
 			waiter.resolve(capabilities);
 		}
 		this.#capabilitiesWaiters = [];
+		for (const track of Object.values(this.tracks)) {
+			if (track.subscribed) this.followActiveAudio(track.cameraId);
+		}
 	}
 
 	private receiveMediaData(event: MessageEvent): void {
@@ -1069,6 +1488,7 @@ export class LivePeer {
 	}
 
 	private failPending(message: string): void {
+		for (const waiter of this.#previewWaiters.values()) waiter(new Error(message));
 		for (const pending of this.#pending.values()) {
 			clearTimeout(pending.timeout);
 			pending.reject(new Error(message));
@@ -1116,6 +1536,7 @@ export class LivePeer {
 			new Error('The live connection changed. Send the command again if needed.')
 		);
 		this.#peerLifetime = new AbortController();
+		for (const id of this.#audioSync.keys()) this.clearAudioSync(id);
 		const peer = this.#peer;
 		const sessionToken = this.#sessionToken;
 		this.#peer = null;
@@ -1126,6 +1547,8 @@ export class LivePeer {
 		this.#audioCameraByMid = {};
 		for (const playback of this.#audioPlaybackByBinding.values()) playback.close();
 		this.#audioPlaybackByBinding.clear();
+		void this.#audioContext?.close();
+		this.#audioContext = null;
 		this.#audioBindingByCamera = {};
 		this.#sourceSessionByCamera = {};
 		this.#trackEventByMid = {};
@@ -1177,6 +1600,20 @@ export class LivePeer {
 			if (this.#viewers.length === 0 && this.#holds === 0) void this.close();
 		});
 	}
+}
+
+function requestedAudioDelivery(variant: MediaVariantCapability): AudioDelivery {
+	return variant.deliveryTransports.includes(DeliveryTransport.RELIABLE_DATA) ? 'mediaData' : 'rtp';
+}
+
+function timingConfirmed(
+	timing: LiveAudioTiming | undefined,
+	preview: number | undefined
+): boolean {
+	if (!timing) return false;
+	return preview === undefined
+		? !timing.preview && timing.appliedOffsetMs === timing.configuredOffsetMs
+		: timing.preview && timing.appliedOffsetMs === preview;
 }
 
 function preferH265(transceiver: RTCRtpTransceiver): void {

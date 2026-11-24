@@ -948,6 +948,39 @@
 								</dd>
 								<dt class="text-white/45">Jitter</dt>
 								<dd class="font-mono">{formatMilliseconds(diagnostics.jitterMs)}</dd>
+								{#if track?.liveAudio}
+									<dt class="text-white/45"
+										>Live timing{track.liveAudio.preview ? ' preview' : ''}</dt
+									>
+									<dd class="font-mono"
+										>{track.liveAudio.appliedOffsetMs === 0
+											? '0 ms'
+											: track.liveAudio.appliedOffsetMs > 0
+												? `Audio +${track.liveAudio.appliedOffsetMs} ms`
+												: `Video +${-track.liveAudio.appliedOffsetMs} ms`}</dd
+									>
+									{#if track.liveAudio.preview}
+										<dt class="text-white/45">Saved audio offset</dt>
+										<dd class="font-mono">{track.liveAudio.configuredOffsetMs} ms</dd>
+									{/if}
+									<dt class="text-white/45">Profile timing queue</dt>
+									<dd class="font-mono"
+										>Audio {track.liveAudio.heldAudioBytes} B · Video {track.liveAudio
+											.heldVideoBytes} B ({track.liveAudio.heldVideoFrames} frames)</dd
+									>
+									<dt class="text-white/45">Profile timing drops</dt>
+									<dd class="font-mono"
+										>{track.liveAudio.capacityDrops.toString()} capacity · {track.liveAudio.expiredDrops.toString()}
+										expired</dd
+									>
+
+									{#if track.audioTiming && track.audioVariantId !== track.activeStream}
+										<dt class="text-white/45">Audio profile</dt>
+										<dd class="font-mono"
+											>{track.audioVariantId} · {track.audioTiming.appliedOffsetMs} ms</dd
+										>
+									{/if}
+								{/if}
 								<dt class="text-white/45">Jitter buffer</dt>
 								<dd class="font-mono">{formatMilliseconds(diagnostics.jitterBufferMs)}</dd>
 								<dt class="text-white/45">Round trip</dt>

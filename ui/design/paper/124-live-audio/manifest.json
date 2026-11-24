@@ -1,0 +1,25 @@
+{
+	"fileId": "01M0B0VBH78TMTX40GCYYQ37SG",
+	"pageId": "1-0",
+	"boardNodeId": "DOW-0",
+	"tokenHash": "b35ec365",
+	"exportedAt": "2026-11-22T16:08:55.450741+00:00",
+	"dimensions": [1530, 784],
+	"viewports": {
+		"desktop": "DP0-0",
+		"390px": "DPS-0",
+		"320px": "DQK-0"
+	},
+	"artifacts": [
+		{
+			"path": "live-timing.jsx.txt",
+			"size": 23353,
+			"sha256": "c75e7976b42bc125fb57ef2096c0f4e4db3640919b762790104f85bdc04758cc"
+		},
+		{
+			"path": "live-timing.png",
+			"size": 101529,
+			"sha256": "d3fc86c5f55d94ad3e92bf8061da6fa48e9e465a2d440513643520f41378c23a"
+		}
+	]
+}

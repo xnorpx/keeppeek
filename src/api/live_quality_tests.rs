@@ -33,6 +33,7 @@ fn live_quality_state_preserves_presence_and_legacy_variant_identity() {
         subscription_id: "camera-1".to_owned(),
         active_variant_id: "sub".to_owned(),
         live_quality: Some(diagnostics()),
+        live_audio: None,
     };
     let wire = current.encode_to_vec();
     assert_eq!(

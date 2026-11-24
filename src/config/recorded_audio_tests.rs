@@ -79,6 +79,40 @@ fn loader_resolves_only_camera_and_stream_inheritance_and_keeps_explicit_zero() 
 }
 
 #[test]
+fn out_of_range_timing_identifies_the_camera_table_in_load_and_save_errors() {
+    for (table, limit) in [
+        ("live_audio", crate::cameras::MAX_LIVE_AUDIO_OFFSET_MS),
+        (
+            "recorded_audio",
+            crate::cameras::MAX_RECORDED_AUDIO_OFFSET_MS,
+        ),
+    ] {
+        let section = format!("cameras.front.{table}");
+        let invalid = limit + 1;
+        let fixture = Fixture::new(&format!("[{section}]\nsub_offset_ms={invalid}"));
+        let error = load_cameras(&fixture.path).unwrap_err().to_string();
+        assert!(
+            error.contains(&section) && error.contains(&limit.to_string()),
+            "{error}"
+        );
+        let fixture = Fixture::new("");
+        let mut camera = fixture.camera();
+        if table == "live_audio" {
+            camera.live_audio.sub_offset_ms = Some(invalid);
+        } else {
+            camera.recorded_audio.sub_offset_ms = Some(invalid);
+        }
+        let error = upsert_camera(&fixture.path, &camera)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(&section) && error.contains(&limit.to_string()),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn loader_rejects_invalid_offsets_and_unknown_nested_keys() {
     for invalid in [
         "default_offset_ms=-5001",

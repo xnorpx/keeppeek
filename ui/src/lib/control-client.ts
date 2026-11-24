@@ -76,7 +76,11 @@ import { BackupHttpClient } from './backup-http-client';
 import { emitTimelinePerformanceEvent } from './timeline-observability';
 import { decodeStateStoreRequestError } from './state-store-error';
 import { decodeConfigurationRequestError } from './configuration-error';
-import { recordedAudioSettings, protoRecordedAudioSettings } from './recorded-audio';
+import {
+	recordedAudioSettings,
+	protoRecordedAudioSettings,
+	protoLiveAudioSettings
+} from './recorded-audio';
 import {
 	AccessRole as ProtoAccessRole,
 	CameraBackend as ProtoCameraBackend,
@@ -2128,6 +2132,7 @@ export class ControlClient {
 					: protoCameraRecordingMode(update.recording_mode),
 			eventRecordingDurationSecs: update.event_recording_duration_secs,
 			recordedAudio: protoRecordedAudioSettings(update.recorded_audio),
+			liveAudio: protoLiveAudioSettings(update.live_audio),
 			eventPreRecordingDurationSecs: update.event_pre_recording_duration_secs,
 			eventRecordingStream:
 				update.event_recording_stream === undefined
@@ -4866,6 +4871,7 @@ function cameraSettings(camera: import('./proto/webrtc_pb').CameraSettings): Cam
 								: 'event-boost',
 		event_recording_duration_secs: camera.eventRecordingDurationSecs || 60,
 		recorded_audio: recordedAudioSettings(camera.recordedAudio),
+		live_audio: recordedAudioSettings(camera.liveAudio),
 		event_pre_recording_duration_secs: camera.eventPreRecordingDurationSecs,
 		event_recording_stream:
 			camera.eventRecordingStream === ProtoEventRecordingStream.SUB ? 'sub' : 'main',

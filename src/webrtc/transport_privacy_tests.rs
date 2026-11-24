@@ -85,10 +85,12 @@ impl NegotiatedPeers {
     fn admit_audio(&mut self, permit: Option<MediaPermit>, media: &mut ApiMediaRuntime) {
         let (tx, rx) = bounded(1);
         tx.send(GuardedMedia {
+            timing: None,
             value: WebRtcAudioFrame {
                 codec: WebRtcAudioCodec::G711Alaw,
                 sample_rate_hz: 8000,
                 channel_count: 1,
+                duration: Some(Duration::from_millis(20)),
                 timestamp: Some(Duration::from_secs(1)),
                 received_at: self.now,
                 data: Bytes::copy_from_slice(&[0xd5; 160]),
@@ -99,12 +101,24 @@ impl NegotiatedPeers {
         let mut track = AudioTrackRuntime {
             track_id: TrackId::parse("audio".into()).unwrap(),
             rx,
+            source: Source {
+                camera_ip: std::net::Ipv4Addr::LOCALHOST.into(),
+                stream: StreamKind::Main,
+            },
+            timing: live_timing::Queue::new(Arc::default()),
+            clock: live_timing::AudioClock::default(),
             delivery: TrackDelivery::Rtp(self.audio_mid),
         };
         assert!(
-            drive_audio_track_runtime(&mut self.server, &mut track, true, &mut media.permits)
-                .unwrap()
-                .wrote_media
+            drive_audio_track_runtime(
+                &mut self.server,
+                &mut track,
+                true,
+                self.now,
+                &mut media.permits
+            )
+            .unwrap()
+            .wrote_media
         );
     }
 
@@ -125,6 +139,7 @@ impl NegotiatedPeers {
                 Some(self.video_mid),
                 &frame,
                 &mut MediaClock::default(),
+                None,
                 &mut media.permits
             )
             .unwrap()
@@ -172,6 +187,7 @@ impl NegotiatedPeers {
                 lifetime: None,
                 payload: GuardedMedia {
                     value: b"authorized fixture audio".to_vec(),
+                    timing: None,
                     permit,
                 },
             }));

@@ -337,3 +337,85 @@ video keyframe. The recovery fixtures reopen 110 minutes of two-track data, a
 every frame.
 
 The format and lookup contract are documented in the [MP4 crate guide](../crates/mp4/README.md#keeppeek-recording-source-clocks).
+
+## Live listener correction
+
+The owner approved a signed live offset of −200 through +200 ms per camera profile.
+A positive value holds encoded audio, and a negative value holds encoded video. The
+camera settings show the added video latency before preview or save. Each stream
+inherits the camera default or overrides it, including explicit zero. The viewer can
+apply or reset a preview on paired audio and video subscriptions independently of
+saved timing, stored playback, exports and other sessions.
+
+The listener queue enforces 250 ms maximum age, 256 KiB shared audio and 2 MiB or
+128 encoded frames shared video per camera/profile. Source health exposes occupancy
+and expiry/capacity counters. A generation check preserves the age and lifecycle
+limits when serialized media waits for its local reliable-data channel. Original
+camera timestamps and recording writers remain upstream of presentation adjustment.
+
+The synthetic tests exercise both signs and zero, independent profiles, aggregate
+budgets across viewers, stream switching, source resets, bounded holding and the
+settings revision contract. Physical lip-sync, external transcoder delay, camera
+firmware coverage and stable production-load latency remain open under #124.
+
+### Server listener queue measurements on 2026-11-22
+
+The Windows 11 Pro x64 host (build 26200, AMD Ryzen 5 5600G, 16 GiB RAM) ran the
+Rust 1.100.0 unoptimized test profile while other builds were active. The source
+at commit `e16595192fa01c8ffd4be6d2037b16f9cac508f1` was measured by running the compiled test binary from the 144-test suite. The equivalent Cargo command is:
+
+```sh
+cargo +1.100.0 test --locked -p keeppeek --lib measure_live_listener_timing -- --ignored --nocapture
+```
+
+Each in-memory replay advances a simulated 20 ms clock, admits 5,000 512-byte
+audio units and 2,500 32,768-byte video units, then drains both tracks. All
+7,500 units were released in every case. One warmup per offset preceded 30
+measured repetitions with alternating order. Values below are nearest-rank
+p50/p95 elapsed milliseconds for the full replay. Byte peaks are encoded
+payload occupancy during startup at the stable packet rate.
+
+| Offset  | p50 ms | p95 ms | p50 delta vs 0 ms | p95 delta vs 0 ms | Peak held audio bytes | Peak held video bytes |
+| ------- | -----: | -----: | ----------------: | ----------------: | --------------------: | --------------------: |
+| 0 ms    |  2.217 |  2.426 |                 0 |                 0 |                     0 |                     0 |
+| +120 ms | 17.327 | 21.897 |           +15.110 |           +19.471 |                 3,072 |                     0 |
+| −120 ms |  9.693 | 14.158 |            +7.476 |           +11.732 |                     0 |                98,304 |
+
+The separate paired-event fixture introduces 120 ms of synthetic audio lead or
+lag and verifies identical client-handoff deadlines after applying the matching
+offset, including variable packet size and gaps. The approved server bounds are
+250 ms age, 256 KiB audio and 2 MiB/128 frames video per stream. The timing
+numbers compare disabled and enabled queue processing in this build. They do not
+measure capture-to-speaker latency, end-to-end ingest throughput or production CPU.
+
+### Physical output verification procedure
+
+Use a camera and a flash/click source with simultaneous visible and audible events. A
+clapboard closure is suitable if its contact frame and sound onset are identifiable.
+Use synthetic events in the test scene so the verification record needs no footage or
+conversation from an occupied space.
+
+1. Record the camera model, firmware, Main or Sub profile, configured codecs, frame
+   rate, RTSP transport, any transcoder, browser, display, audio output and build.
+   Keep the same equipment, positions and clock throughout a comparison. Record the
+   reference capture's frame rate and audio sample rate to establish measurement resolution.
+2. Set live and recorded corrections to zero. Capture several events using an independent
+   recorder that sees the viewer display and hears its loudspeaker. For each event,
+   measure audio onset minus visible contact time. A negative value indicates early
+   audio. Record the individual values and their spread.
+3. Apply a live preview of the opposite sign to the measured error. Record the displayed
+   video latency before applying a negative offset. Repeat the same series, save the
+   setting, reconnect, and measure again. Record server queue peaks and drops and
+   the browser jitter-buffer observations separately.
+4. Replay the same stored events with recorded correction zero, then apply a recorded
+   offset and repeat. Seek across a fragment boundary, change playback speed and
+   reopen the recording. Test the corrected export in a local player and record its
+   audible and visible event times. Preserve the original MP4 and its checksum for
+   comparison. Record an unsupported codec or export result verbatim.
+5. Repeat independently for every hardware and codec path being qualified. Capture
+   and listener output, source clocks, stored presentation times and receiver queue
+   statistics measure different points in the path. An unmeasured point stays unavailable.
+
+| Build, device, firmware and profile | Codec, transport and transcoder | Playback path and output | Raw skew and spread (ms) | Applied offset (ms) | Added video latency (ms) | Residual and spread (ms) | Queue peak and drops | Result after reconnect or seek |
+| ----------------------------------- | ------------------------------- | ------------------------ | -----------------------: | ------------------: | -----------------------: | -----------------------: | -------------------- | ------------------------------ |
+| Pending physical measurement        |                                 |                          |                          |                     |                          |                          |                      |                                |

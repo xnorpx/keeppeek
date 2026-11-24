@@ -870,6 +870,7 @@ impl RtspLoop {
                                         codec: web_codec,
                                         sample_rate_hz: sample_rate,
                                         channel_count: 1,
+                                        duration: Some(duration),
                                         timestamp,
                                         received_at: Instant::now(),
                                         data: Bytes::from(data.clone()),

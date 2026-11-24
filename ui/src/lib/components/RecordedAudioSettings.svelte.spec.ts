@@ -1,4 +1,4 @@
-import { page } from 'vitest/browser';
+import { page, userEvent } from 'vitest/browser';
 import { describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import type { CameraSettings } from '$lib/types';
@@ -48,6 +48,66 @@ describe('recorded-audio camera settings', () => {
 			.toHaveValue('0');
 		await expect.element(page.getByText('Live audio correction is unavailable.')).toBeVisible();
 		await expect.element(page.getByRole('button', { name: 'Save recorded timing' })).toBeDisabled();
+	});
+
+	it('shows live video latency before preview or save and resets the viewer independently', async () => {
+		const settings = camera({ live_audio: { default_offset_ms: 30 } });
+		const onpreview = vi.fn(async () => undefined);
+		const onsave = vi.fn(async () => settings);
+		const view = await render(RecordedAudioSettings, {
+			props: { camera: settings, kind: 'live', onpreview, onsave }
+		});
+		await expect
+			.element(page.getByRole('region', { name: 'Live audio synchronization' }))
+			.toBeVisible();
+		await page.getByRole('textbox', { name: 'Camera default offset (ms)' }).fill('40');
+		const input = page.getByRole('textbox', { name: 'Preview offset (ms)' });
+		const apply = page.getByRole('button', { name: 'Apply preview' });
+		await input.fill('201');
+		await expect.element(input).toHaveAttribute('aria-invalid', 'true');
+		await expect.element(input).toHaveAccessibleDescription(/Enter a whole number/);
+		await expect.element(apply).toBeDisabled();
+		await page.getByRole('combobox', { name: 'Preview stream' }).selectOptions('sub');
+		await input.fill('-200');
+		await expect.element(input).toHaveAttribute('aria-invalid', 'false');
+		await expect.element(input).toHaveAccessibleDescription(/Video will play 200 ms later/);
+		await expect.element(page.getByText('Video will play 200 ms later.')).toBeVisible();
+		expect(onpreview).not.toHaveBeenCalled();
+		await input.click();
+		await userEvent.keyboard('{Enter}');
+		expect(onsave).not.toHaveBeenCalled();
+		expect(onpreview).toHaveBeenCalledExactlyOnceWith('sub', -200);
+		await view.rerender({ appliedPreview: -200 });
+		await page.getByRole('button', { name: 'Reset preview' }).click();
+		expect(onpreview).toHaveBeenLastCalledWith('sub', null);
+		await page.getByRole('textbox', { name: 'Camera default offset (ms)' }).fill('-100');
+		await expect
+			.element(page.getByText('Sub video will play 100 ms later after saving.'))
+			.toBeVisible();
+		expect(onsave).not.toHaveBeenCalled();
+		await page.getByRole('button', { name: 'Save live timing' }).click();
+		expect(onsave).toHaveBeenCalledExactlyOnceWith({ default_offset_ms: -100 }, 'revision-one');
+	});
+
+	it('describes each saved negative offset in the present tense until that stream changes', async () => {
+		await render(RecordedAudioSettings, {
+			props: {
+				camera: camera({ live_audio: { main_offset_ms: -80, sub_offset_ms: -40 } }),
+				kind: 'live',
+				onsave: vi.fn()
+			}
+		});
+		const main = page.getByText('Main video plays 80 ms later with saved timing.');
+		await expect.element(main).toBeVisible();
+		await expect
+			.element(page.getByText('Sub video plays 40 ms later with saved timing.'))
+			.toBeVisible();
+		await expect.element(page.getByRole('button', { name: 'Save live timing' })).toBeDisabled();
+		await page.getByRole('textbox', { name: 'Sub stream offset (ms)' }).fill('-60');
+		await expect.element(main).toBeVisible();
+		await expect
+			.element(page.getByText('Sub video will play 60 ms later after saving.'))
+			.toBeVisible();
 	});
 
 	it('saves only the full timing object and captured revision, preserving explicit zero', async () => {
@@ -127,6 +187,49 @@ describe('recorded-audio camera settings', () => {
 		expect(onsave).toHaveBeenCalledExactlyOnceWith({}, 'revision-one');
 	});
 
+	it('uses the latest clean revision after a sibling save', async () => {
+		const next = camera({ configuration_revision: 'revision-two' });
+		const onsave = vi.fn(async () => next);
+		const view = await render(RecordedAudioSettings, { props: { camera: camera(), onsave } });
+		await view.rerender({ camera: next });
+		await page.getByRole('textbox', { name: 'Camera default offset (ms)' }).fill('320');
+		await page.getByRole('button', { name: 'Save recorded timing' }).click();
+		expect(onsave).toHaveBeenCalledWith(
+			{ default_offset_ms: 320, main_offset_ms: 0 },
+			'revision-two'
+		);
+	});
+
+	it('keeps Reset available for a pending preview and clears old success feedback on failure', async () => {
+		const onpreview = vi
+			.fn()
+			.mockResolvedValueOnce(undefined)
+			.mockRejectedValueOnce(new Error('Camera busy'));
+		const view = await render(RecordedAudioSettings, {
+			props: {
+				camera: camera({ live_audio: {} }),
+				kind: 'live',
+				previewRequested: true,
+				onpreview,
+				onsave: vi.fn()
+			}
+		});
+		const reset = page.getByRole('button', { name: 'Reset preview' });
+		await expect.element(reset).toBeEnabled();
+		await page.getByRole('button', { name: 'Apply preview' }).click();
+		const applied = page.getByText('Preview applied to this viewer.');
+		await expect.element(applied).not.toBeInTheDocument();
+		await view.rerender({ appliedPreview: 0 });
+		await expect.element(applied).toBeVisible();
+		await view.rerender({ appliedPreview: undefined, previewRequested: false });
+		await expect.element(applied).not.toBeInTheDocument();
+		await expect.element(reset).toBeDisabled();
+		await view.rerender({ previewRequested: true });
+		await reset.click();
+		await expect.element(page.getByText('Camera busy')).toBeVisible();
+		await expect.element(page.getByText('Preview applied to this viewer.')).not.toBeInTheDocument();
+	});
+
 	it('does not offer saves for an older server that omits timing support', async () => {
 		const onsave = vi.fn();
 		const view = await render(RecordedAudioSettings, {
@@ -139,10 +242,15 @@ describe('recorded-audio camera settings', () => {
 		expect(onsave).not.toHaveBeenCalled();
 	});
 
-	it.each([320, 390])('fits controls and actions inside a %ipx viewport', async (width) => {
+	it.each([
+		{ width: 320, kind: 'recorded' },
+		{ width: 390, kind: 'recorded' },
+		{ width: 320, kind: 'live' },
+		{ width: 390, kind: 'live' }
+	] as const)('fits $kind controls at $width px', async ({ width, kind }) => {
 		await page.viewport(width, 850);
 		const view = await render(RecordedAudioSettings, {
-			props: { camera: camera(), onsave: vi.fn() }
+			props: { camera: camera({ live_audio: {} }), kind, onsave: vi.fn(), onpreview: vi.fn() }
 		});
 		const form = view.container.querySelector('form')!;
 		expect(form.scrollWidth).toBeLessThanOrEqual(width);

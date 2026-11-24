@@ -7,6 +7,13 @@ export type ServerCapabilityContract = {
 };
 
 export const serverCapabilityCatalog = {
+	'keeppeek.live-audio-timing.v1': {
+		delivery: 'ships',
+		serverOwns: 'Per-profile signed live offsets, bounded delay queues and listener-local preview',
+		unlocks: 'Live audio timing in Camera settings and Live diagnostics',
+		whenMissing: 'Live calibration controls are hidden',
+		failureGuarantee: 'Rejected previews leave saved settings intact'
+	},
 	'keeppeek.recorded-audio.v1': {
 		delivery: 'ships',
 		serverOwns:

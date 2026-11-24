@@ -92,6 +92,7 @@ message SubscriptionStreamState {
   string subscription_id = 1;
   string active_variant_id = 2;
   LiveQualityDiagnostics live_quality = 3;
+  LiveAudioTiming live_audio = 4;
 }
 
 message LiveQualityDiagnostics {
@@ -417,6 +418,8 @@ message UpdateCameraConfiguration {
   optional EventRecordingStream event_recording_stream = 18;
   // Absence preserves the saved settings. An empty message restores inheritance.
   RecordedAudioSettings recorded_audio = 19;
+  // Absence preserves the saved live settings. An empty message restores inheritance.
+  LiveAudioSettings live_audio = 20;
 }
 
 // Values are -5000..5000 milliseconds. Positive offsets delay recorded audio.
@@ -425,6 +428,25 @@ message RecordedAudioSettings {
   optional sint32 default_offset_ms = 1;
   optional sint32 main_offset_ms = 2;
   optional sint32 sub_offset_ms = 3;
+}
+
+// Values are -200..200 milliseconds. Positive delays live audio, negative delays live video.
+message LiveAudioSettings {
+  optional sint32 default_offset_ms = 1;
+  optional sint32 main_offset_ms = 2;
+  optional sint32 sub_offset_ms = 3;
+}
+
+message LiveAudioTiming {
+  sint32 configured_offset_ms = 1;
+  sint32 applied_offset_ms = 2;
+  bool preview = 3;
+  // Shared per-profile correction queue usage at the observation time.
+  uint32 held_audio_bytes = 4;
+  uint32 held_video_bytes = 5;
+  uint32 held_video_frames = 6;
+  uint64 capacity_drops = 7;
+  uint64 expired_drops = 8;
 }
 
 // A preview affects only its stored-media cursor and never changes saved settings.
@@ -1914,6 +1936,8 @@ message SubscribeMedia {
   DeliveryTransport requested_delivery_transport = 4;
   VideoQuality video_quality = 5;
   string variant_id = 6;
+  // Subscription-local preview. Absence uses saved timing; zero explicitly disables it.
+  optional sint32 live_audio_preview_offset_ms = 7;
 }
 
 message SubscribeData {
@@ -1953,6 +1977,7 @@ message SubscriptionResult {
   string selected_variant_id = 6;
   repeated MediaLineageInput selected_lineage = 7;
   LiveQualityDiagnostics live_quality = 8;
+  LiveAudioTiming live_audio = 9;
 }
 
 message SubscriptionError {
@@ -3161,6 +3186,7 @@ message CameraSettings {
   uint32 event_pre_recording_duration_secs = 19;
   EventRecordingStream event_recording_stream = 20;
   RecordedAudioSettings recorded_audio = 21;
+  LiveAudioSettings live_audio = 22;
 }
 
 message RuntimeConfigurationResult {
@@ -3585,6 +3611,7 @@ message WebRtcSourceHealthSnapshot {
   optional uint64 bitrate_bps = 4;
   bool has_keyframe = 5;
   optional uint64 keyframe_age_ms = 6;
+  LiveAudioTiming live_audio = 7;
 }
 
 message LoggingSettingsResult {

@@ -420,10 +420,32 @@ compatible pre-migration configuration as well. Unknown identity schema versions
 | `event_recording_stream`            | `EventRecordingStream`  | Shared default or `"main"`        | `"main"` or `"sub"`; selects the event-only recording stream. EventBoost always boosts to main.                                                 |
 | `events`                            | `EventConfig`           | Defaults below                    | Camera-native event policy, independent of video backend; configured through the file.                                                          |
 | `recorded_audio`                    | `RecordedAudioSettings` | All offsets inherit               | Recorded-media correction only; fields and bounds below.                                                                                        |
+| `live_audio`                        | `LiveAudioSettings`     | All offsets inherit               | Camera live listener correction. See values and bounds below.                                                                                   |
 
 These are stored configuration types, not promises that every camera supports every backend,
 transport, or recording capability. Discovery results such as `CameraCapabilities`, `CameraPorts`,
 `MediaProfile`, `VideoConfig`, and `AudioConfig` are not additional editable camera tables.
+
+### Live audio timing
+
+The optional `[<namespace>.<camera-key>.live_audio]` table accepts signed whole
+milliseconds from −200 through +200. `default_offset_ms` defaults to zero.
+`main_offset_ms` and `sub_offset_ms` inherit that default when absent. An explicit
+zero disables correction for its stream. Positive values delay audio. Negative
+values delay video and add their absolute value to live video latency, including
+for muted listeners. These numeric fields cannot contain secret references.
+
+For example, this setting delays Main audio by 80 ms and leaves Sub uncorrected:
+
+```toml
+[cameras.front_door.live_audio]
+default_offset_ms = 80
+sub_offset_ms = 0
+```
+
+A timing-only camera settings update applies to current listeners without restarting
+ingest or recording writers. Previewing changes in the camera page only affects the
+selected viewer and stream. Recorded correction uses its own table.
 
 ### Recorded-audio timing
 

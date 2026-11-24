@@ -4,6 +4,8 @@ import { render } from 'vitest-browser-svelte';
 import { create } from '@bufbuild/protobuf';
 import {
 	LiveQualityDiagnosticsSchema,
+	LiveAudioTimingSchema,
+	type LiveAudioTiming,
 	LiveQualitySelectionReason,
 	type LiveQualityDiagnostics
 } from '$lib/proto/webrtc_pb';
@@ -11,6 +13,7 @@ import '../../app.css';
 
 const state = vi.hoisted(() => ({
 	estimate: null as number | null,
+	timing: undefined as LiveAudioTiming | undefined,
 	quality: undefined as LiveQualityDiagnostics | undefined,
 	announceFailure: false,
 	requestedQuality: 'high' as 'auto' | 'high'
@@ -24,7 +27,8 @@ vi.mock('$lib/stream-peer-context', () => ({
 			requestedQuality: state.requestedQuality,
 			activeStream: 'main',
 			estimatedBitrateBps: 123_000,
-			liveQuality: state.quality
+			liveQuality: state.quality,
+			liveAudio: state.timing
 		}),
 		cameraAudioAssets: { 'front-door': { quickReplies: [], chimes: [] } },
 		startTalkback: async () => {
@@ -47,6 +51,40 @@ vi.mock('$lib/stream-peer-context', () => ({
 import LiveVideo from './LiveVideo.svelte';
 
 describe('Live network estimate diagnostics', () => {
+	it('separates saved and applied preview timing from queue pressure and browser jitter', async () => {
+		state.timing = create(LiveAudioTimingSchema, {
+			configuredOffsetMs: 20,
+			appliedOffsetMs: -80,
+			preview: true,
+			heldVideoBytes: 1200,
+			heldVideoFrames: 1,
+			capacityDrops: 4n,
+			expiredDrops: 2n
+		});
+		try {
+			await render(LiveVideo, {
+				cameraId: 'front-door',
+				stream: 'main',
+				quality: 'high',
+				class: 'h-64 w-full'
+			});
+			await page.getByRole('button', { name: 'WebRTC stream diagnostics' }).click();
+			const dialog = page.getByRole('dialog', { name: 'WebRTC stream diagnostics' });
+			for (const text of [
+				'Video +80 ms',
+				'Saved audio offset',
+				'20 ms',
+				'Video 1200 B',
+				'4 capacity',
+				'2 expired',
+				'Jitter buffer'
+			])
+				await expect.element(dialog).toMatchTextContent(text);
+		} finally {
+			state.timing = undefined;
+		}
+	});
+
 	it('announces interrupted focused commands beside the control', async () => {
 		state.announceFailure = true;
 		try {

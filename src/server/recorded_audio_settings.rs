@@ -1,4 +1,4 @@
-//! Validates and saves recorded timing without restarting camera ingestion.
+//! Validates and saves live and recorded timing without restarting camera ingestion.
 
 use super::*;
 use crate::cameras::RecordedAudioSettings;
@@ -32,9 +32,9 @@ pub(super) fn merged(
     )
 }
 
-fn validated(
-    settings: RecordedAudioSettings,
-) -> Result<RecordedAudioSettings, ControlCommandError> {
+pub(super) fn validated<const LIMIT: i32>(
+    settings: crate::cameras::AudioOffsetSettings<LIMIT>,
+) -> Result<crate::cameras::AudioOffsetSettings<LIMIT>, ControlCommandError> {
     settings.validate().map_err(|error| {
         ControlCommandError::new(proto::ErrorCode::InvalidRequest, 400, error.to_string())
     })?;
@@ -42,29 +42,31 @@ fn validated(
 }
 
 pub(super) const fn only(update: &CameraSettingsUpdate) -> bool {
-    matches!(
-        update,
-        CameraSettingsUpdate {
-            recorded_audio: Some(_),
-            expected_configuration_revision: _,
-            display_name: None,
-            manufacturer: None,
-            username: None,
-            password: None,
-            onvif_port: None,
-            http_port: None,
-            main_rtsp_url: None,
-            sub_rtsp_url: None,
-            uid: None,
-            backend: None,
-            transport: None,
-            record_generic_motion_events: None,
-            recording_mode: None,
-            event_recording_duration_secs: None,
-            event_pre_recording_duration_secs: None,
-            event_recording_stream: None,
-        }
-    )
+    (update.recorded_audio.is_some() || update.live_audio.is_some())
+        && matches!(
+            update,
+            CameraSettingsUpdate {
+                recorded_audio: _,
+                live_audio: _,
+                expected_configuration_revision: _,
+                display_name: None,
+                manufacturer: None,
+                username: None,
+                password: None,
+                onvif_port: None,
+                http_port: None,
+                main_rtsp_url: None,
+                sub_rtsp_url: None,
+                uid: None,
+                backend: None,
+                transport: None,
+                record_generic_motion_events: None,
+                recording_mode: None,
+                event_recording_duration_secs: None,
+                event_pre_recording_duration_secs: None,
+                event_recording_stream: None,
+            }
+        )
 }
 
 pub(super) fn save(
@@ -72,7 +74,6 @@ pub(super) fn save(
     state: &ServerState,
     camera_id: &str,
 ) -> Result<CameraSettingsUpdateResponse, ControlCommandError> {
-    let settings = merged(update.recorded_audio, None)?;
     let ip = camera_id.parse::<IpAddr>().map_err(|_| {
         ControlCommandError::new(
             proto::ErrorCode::InvalidRequest,
@@ -93,15 +94,16 @@ pub(super) fn save(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     check_revision(state, &update.expected_configuration_revision)?;
     let mut camera = load_camera(path, ip)?;
-    camera.recorded_audio = settings;
+    camera.recorded_audio = merged(update.recorded_audio, Some(&camera))?;
+    camera.live_audio = validated(update.live_audio.unwrap_or(camera.live_audio))?;
     config::upsert_camera(path, &camera).map_err(|_| {
         ControlCommandError::new(
             proto::ErrorCode::Internal,
             500,
-            "unable to save recorded audio settings",
+            "unable to save audio timing settings",
         )
     })?;
-    apply(state, camera_id, settings);
+    apply(state, camera_id, &camera);
     let entry = state.camera(camera_id);
     Ok(CameraSettingsUpdateResponse {
         camera: camera_settings_entry(&camera, entry.as_ref(), None, Some(path)),
@@ -138,7 +140,7 @@ fn load_camera(path: &Path, ip: IpAddr) -> Result<CameraConfig, ControlCommandEr
         })
 }
 
-fn apply(state: &ServerState, camera_id: &str, settings: RecordedAudioSettings) {
+fn apply(state: &ServerState, camera_id: &str, saved: &CameraConfig) {
     let mut cameras = state
         .cameras
         .write()
@@ -147,9 +149,14 @@ fn apply(state: &ServerState, camera_id: &str, settings: RecordedAudioSettings) 
         .iter_mut()
         .find(|camera| camera.info.id == camera_id)
     {
-        camera.configuration.recorded_audio = settings;
+        camera.configuration.recorded_audio = saved.recorded_audio;
+        camera.configuration.live_audio = saved.live_audio;
+        state
+            .webrtc
+            .configure_live_audio(saved.ip, saved.live_audio);
         if let Some(runtime) = &mut camera.runtime_camera {
-            runtime.config.recorded_audio = settings;
+            runtime.config.recorded_audio = saved.recorded_audio;
+            runtime.config.live_audio = saved.live_audio;
         }
     }
 }

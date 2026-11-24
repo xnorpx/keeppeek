@@ -2364,6 +2364,7 @@ mod tests {
                 event_pre_recording_duration_secs: 0,
                 event_recording_stream: Default::default(),
                 recorded_audio: Default::default(),
+                live_audio: Default::default(),
             },
             device: DeviceInfo::default(),
             reported_manufacturer: None,
@@ -3418,6 +3419,7 @@ mod tests {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
 
         assert_eq!(
@@ -3487,6 +3489,7 @@ mod tests {
                 event_pre_recording_duration_secs: 0,
                 event_recording_stream: Default::default(),
                 recorded_audio: Default::default(),
+                live_audio: Default::default(),
             },
             device: DeviceInfo::default(),
             reported_manufacturer: None,
@@ -3576,6 +3579,7 @@ mod tests {
                     event_pre_recording_duration_secs: 0,
                     event_recording_stream: Default::default(),
                     recorded_audio: Default::default(),
+                    live_audio: Default::default(),
                 },
                 device: DeviceInfo::default(),
                 reported_manufacturer: None,

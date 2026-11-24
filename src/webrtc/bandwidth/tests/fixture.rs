@@ -127,6 +127,7 @@ impl SharedFixture {
                 VideoCodec::H265 => "h265",
             });
         let request = api::SubscribeMedia {
+            live_audio_preview_offset_ms: None,
             subscription_id: format!("camera-{index}"),
             source_session_id: format!("camera:camera-{index}"),
             kind: api::MediaKind::Video as i32,
@@ -385,6 +386,15 @@ impl SharedFixture {
     }
 
     pub(super) fn subscribe_audio(&mut self, transport: api::DeliveryTransport) -> String {
+        self.subscribe_audio_with_preview(transport, None)
+            .subscription_id
+    }
+
+    pub(super) fn subscribe_audio_with_preview(
+        &mut self,
+        transport: api::DeliveryTransport,
+        preview: Option<i32>,
+    ) -> api::SubscriptionResult {
         assert!(matches!(
             transport,
             api::DeliveryTransport::Rtp | api::DeliveryTransport::ReliableData
@@ -395,6 +405,7 @@ impl SharedFixture {
             "audio-reliable"
         };
         let request = api::SubscribeMedia {
+            live_audio_preview_offset_ms: preview,
             subscription_id: id.to_owned(),
             source_session_id: "camera:camera-0".to_owned(),
             kind: api::MediaKind::Audio as i32,
@@ -436,8 +447,7 @@ impl SharedFixture {
                     selected_variant_id: "main".to_owned(),
                 },
             )
-            .unwrap();
-        request.subscription_id
+            .unwrap()
     }
 
     pub(super) fn subscribe_fixed_data(
@@ -446,6 +456,7 @@ impl SharedFixture {
         stream: StreamKind,
     ) -> Result<api::SubscriptionResult, ControlHandlerError> {
         let request = api::SubscribeMedia {
+            live_audio_preview_offset_ms: None,
             subscription_id: format!("data-{index}"),
             source_session_id: format!("camera:camera-{index}"),
             kind: api::MediaKind::Video as i32,

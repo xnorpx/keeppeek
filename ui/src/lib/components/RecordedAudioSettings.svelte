@@ -1,22 +1,38 @@
 <script lang="ts">
 	import { tick, untrack } from 'svelte';
+	import LiveAudioPreviewControls from './LiveAudioPreviewControls.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import {
 		effectiveRecordedAudioOffset,
 		formatRecordedAudioOffset,
-		parseRecordedAudioOffset
+		parseRecordedAudioOffset,
+		timingEditorKinds
 	} from '$lib/recorded-audio';
 	import type { CameraSettings, RecordedAudioSettings } from '$lib/types';
 
 	type Props = {
 		camera: CameraSettings;
+		kind?: 'recorded' | 'live';
+		onpreview?: (stream: 'main' | 'sub', offset: number | null) => Promise<void>;
+		appliedPreview?: number;
+		previewRequested?: boolean;
 		disabled?: boolean;
 		onsave: (settings: RecordedAudioSettings, revision: string) => Promise<CameraSettings>;
 	};
 	type Key = keyof RecordedAudioSettings;
 	type Draft = Record<Key, { mode: 'inherit' | 'custom'; text: string }>;
-	let { camera, disabled = false, onsave }: Props = $props();
+	let {
+		camera,
+		disabled = false,
+		onsave,
+		kind = 'recorded',
+		onpreview,
+		appliedPreview,
+		previewRequested = false
+	}: Props = $props();
+	const editor = $derived(timingEditorKinds[kind]);
+	const live = $derived(kind === 'live');
 	const fields = [
 		{ key: 'default_offset_ms', label: 'Camera default' },
 		{ key: 'main_offset_ms', label: 'Main stream' },
@@ -30,11 +46,22 @@
 	let status = $state<string | null>(null);
 	let errorSummary = $state<HTMLParagraphElement>();
 	let dirty = $derived(JSON.stringify(draft) !== JSON.stringify(draftFrom(saved.settings)));
+	$effect(() => {
+		const current = camera;
+		const revision = current.configuration_revision ?? '';
+		untrack(() => {
+			if (!saving && !dirty && revision !== saved.revision) {
+				saved = snapshot(current);
+				draft = draftFrom(saved.settings);
+			}
+		});
+	});
 	let parsed = $derived.by(() => {
 		try {
 			const settings: RecordedAudioSettings = {};
 			for (const { key } of fields) {
-				if (draft[key].mode === 'custom') settings[key] = parseRecordedAudioOffset(draft[key].text);
+				if (draft[key].mode === 'custom')
+					settings[key] = parseRecordedAudioOffset(draft[key].text, editor.limit);
 			}
 			return { settings, error: null };
 		} catch (cause) {
@@ -51,7 +78,10 @@
 	let changedElsewhere = $derived(camera.configuration_revision !== saved.revision);
 
 	function snapshot(value: CameraSettings) {
-		return { settings: { ...value.recorded_audio }, revision: value.configuration_revision ?? '' };
+		return {
+			settings: { ...value[editor.setting] },
+			revision: value.configuration_revision ?? ''
+		};
 	}
 
 	function draftFrom(settings: RecordedAudioSettings): Draft {
@@ -80,22 +110,21 @@
 
 	async function submit(event: SubmitEvent): Promise<void> {
 		event.preventDefault();
-		if (saving || disabled || !dirty || camera.recorded_audio === undefined) return;
+		if (saving || disabled || !dirty || camera[editor.setting] === undefined) return;
 		error = null;
 		status = null;
 		try {
 			if (parsed.error || !parsed.settings)
 				throw new Error(parsed.error ?? 'Invalid audio offset.');
-			if (!saved.revision) throw new Error('Reload camera settings before saving recorded timing.');
+			if (!saved.revision) throw new Error('Reload camera settings before saving timing.');
 			saving = true;
 			const result = await onsave(parsed.settings, saved.revision);
-			if (result.id !== camera.id)
-				throw new Error('The camera changed while saving recorded timing.');
+			if (result.id !== camera.id) throw new Error('The camera changed while saving timing.');
 			saved = snapshot(result);
 			draft = draftFrom(saved.settings);
-			status = 'Recorded timing saved. Camera recording continues.';
+			status = editor.saved;
 		} catch (cause) {
-			error = cause instanceof Error ? cause.message : 'Recorded timing was not saved.';
+			error = cause instanceof Error ? cause.message : 'Timing was not saved.';
 			await tick();
 			errorSummary?.focus();
 		} finally {
@@ -107,19 +136,23 @@
 <section
 	class="min-w-0 rounded-md border border-hairline bg-surface"
 	aria-labelledby={`${helpId}-heading`}
-	data-recorded-audio-settings
+	data-recorded-audio-settings={live ? undefined : true}
+	data-live-audio-settings={live ? true : undefined}
 >
 	<header class="border-b border-hairline p-4">
-		<p class="font-mono text-2xs tracking-caps text-primary-soft">RECORDED AUDIO</p>
-		<h2 id={`${helpId}-heading`} class="mt-1 text-base font-semibold">Audio synchronization</h2>
+		<p class="font-mono text-2xs tracking-caps text-primary-soft"
+			>{editor.label.toUpperCase()} AUDIO</p
+		>
+		<h2 id={`${helpId}-heading`} class="mt-1 text-base font-semibold"
+			>{editor.label} audio synchronization</h2
+		>
 		<p id={helpId} class="mt-1 text-xs leading-5 text-text-muted">
-			Positive offsets delay audio. Negative offsets advance it. Source recordings stay unchanged.
-			Use whole milliseconds from −5000 to +5000. Explicit 0 disables correction at that level.
+			{editor.description}
 		</p>
 	</header>
-	{#if camera.recorded_audio === undefined}
+	{#if camera[editor.setting] === undefined}
 		<p class="p-4 text-sm text-text-muted">
-			Recorded-audio settings are unavailable on this server.
+			{editor.label}-audio settings are unavailable on this server.
 		</p>
 	{:else}
 		<form class="min-w-0" onsubmit={submit}>
@@ -154,9 +187,9 @@
 								<Input
 									aria-label={`${field.label} offset (ms)`}
 									class="h-11 w-full min-w-0 font-mono"
-									inputmode="numeric"
+									inputmode="text"
 									autocomplete="off"
-									aria-describedby={helpId}
+									aria-describedby={live ? `${helpId} ${helpId}-saved-latency` : helpId}
 									disabled={draft[field.key].mode === 'inherit'}
 									bind:value={draft[field.key].text}
 								/>
@@ -169,6 +202,33 @@
 						</p>
 					</div>
 				{/each}
+				{#if live}<div id={`${helpId}-saved-latency`} role="status">
+						{#if parsed.settings}
+							{#each ['main', 'sub'] as stream}
+								{@const offset = effectiveRecordedAudioOffset(
+									parsed.settings,
+									stream === 'main' ? 'main' : 'sub'
+								)}
+								{#if offset < 0}
+									{@const name = stream === 'main' ? 'Main' : 'Sub'}
+									{@const savedOffset = effectiveRecordedAudioOffset(
+										saved.settings,
+										stream === 'main' ? 'main' : 'sub'
+									)}
+									<p class="text-warning text-xs leading-5">
+										{#if offset === savedOffset}
+											{name} video plays {Math.abs(offset)} ms later with saved timing.
+										{:else}
+											{name} video will play {Math.abs(offset)} ms later after saving.
+										{/if}
+									</p>
+								{/if}
+							{/each}
+						{/if}</div
+					>{/if}
+				{#if live && onpreview}
+					<LiveAudioPreviewControls {helpId} {onpreview} {appliedPreview} {previewRequested} />
+				{/if}
 				{#if largeOffset}
 					<p class="text-warning text-xs leading-5" role="status">
 						Large offset: confirm synchronization against a visible sound before saving.
@@ -193,7 +253,7 @@
 				{#if status}<p class="text-xs text-healthy" role="status">{status}</p>{/if}
 				<div class="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
 					<Button type="submit" class="h-11 w-full sm:w-auto" disabled={!dirty}
-						>{saving ? 'Saving recorded timing…' : 'Save recorded timing'}</Button
+						>{saving ? 'Saving…' : editor.save}</Button
 					>
 					<Button type="button" variant="outline" class="h-11 w-full sm:w-auto" onclick={reload}
 						>Reload saved values</Button
@@ -202,11 +262,13 @@
 			</fieldset>
 		</form>
 	{/if}
-	<footer class="border-t border-hairline p-4 text-xs leading-5 text-text-muted">
-		<p>
-			Applies to recorded playback and new exports. Existing export retries retain their original
-			timing.
-		</p>
-		<p>Live audio correction is unavailable.</p>
-	</footer>
+	{#if !live}
+		<footer class="border-t border-hairline p-4 text-xs leading-5 text-text-muted">
+			<p>
+				Applies to recorded playback and new exports. Existing export retries retain their original
+				timing.
+			</p>
+			{#if camera.live_audio === undefined}<p>Live audio correction is unavailable.</p>{/if}
+		</footer>
+	{/if}
 </section>

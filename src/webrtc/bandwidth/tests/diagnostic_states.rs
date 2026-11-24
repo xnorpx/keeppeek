@@ -1,7 +1,129 @@
 use super::*;
 use crate::api::proto::{
-    LiveQualityDiagnostics, LiveQualitySelectionReason as Reason, Notification,
+    DeliveryTransport, LiveQualityDiagnostics, LiveQualitySelectionReason as Reason, Notification,
 };
+
+#[test]
+fn replacing_audio_timing_discards_only_its_unflushed_telemetry() {
+    let mut fixture = SharedFixture::new(&[StreamQuality::Auto]);
+    fixture.prime();
+    fixture.take_stream_states();
+    let transport = DeliveryTransport::ReliableData;
+    let initial = fixture.subscribe_audio_with_preview(transport, Some(-80));
+    // Simulate a backed-up control channel with both the old audio report and a
+    // genuine video report waiting. Admission responses are flushed first.
+    fixture.media.audio_tracks[0].reported_timing = None;
+    fixture.media.tracks[0].runtime.reported_quality = None;
+    fixture
+        .media
+        .report_live_quality(fixture.start + Duration::from_secs(2));
+    assert_eq!(fixture.media.control_notifications.len(), 2);
+    let ack = fixture.subscribe_audio_with_preview(transport, Some(80));
+    assert_eq!(ack.subscription_id, initial.subscription_id);
+    assert_eq!(ack.live_audio.unwrap().applied_offset_ms, 80);
+    let states = fixture.take_stream_states();
+    assert_eq!(states.len(), 1);
+    assert_ne!(states[0].subscription_id, ack.subscription_id);
+    assert_eq!(fixture.media.control_notification_bytes, 0);
+    assert_eq!(
+        fixture.media.audio_tracks[0].reported_timing,
+        ack.live_audio
+    );
+    fixture
+        .media
+        .report_live_quality(fixture.start + Duration::from_secs(4));
+    assert!(fixture.take_stream_states().is_empty());
+}
+
+#[test]
+fn live_preview_changes_emit_timing_even_when_network_quality_is_stable() {
+    let mut fixture = SharedFixture::new(&[StreamQuality::Auto]);
+    fixture.prime();
+    fixture.take_stream_states();
+    fixture.media.tracks[0]
+        .runtime
+        .timing
+        .set_preview(Some(-80));
+    fixture
+        .media
+        .report_live_quality(fixture.start + Duration::from_secs(2));
+    let events = fixture.take_stream_states();
+    let timing = events.last().unwrap().live_audio.unwrap();
+    assert!(timing.preview);
+    assert_eq!(
+        (timing.configured_offset_ms, timing.applied_offset_ms),
+        (0, -80)
+    );
+    fixture
+        .media
+        .report_live_quality(fixture.start + Duration::from_secs(4));
+    assert!(fixture.take_stream_states().is_empty());
+    fixture.close();
+}
+
+#[test]
+fn shared_queue_occupancy_is_sampled_while_drops_and_preview_are_reported_promptly() {
+    let mut fixture = SharedFixture::new(&[StreamQuality::Auto]);
+    fixture.prime();
+    fixture
+        .media
+        .report_live_quality(fixture.start + Duration::from_secs(1));
+    fixture.take_stream_states();
+
+    let source = fixture.media.tracks[0].runtime.subscription.active_source;
+    let mut other_viewer =
+        live_timing::Queue::new(fixture.session.inner.camera_timing(source.camera_ip));
+    other_viewer.set_preview(Some(-80));
+    let packet = |received, bytes| live_timing::Packet {
+        stream: source.stream,
+        format: live_timing::Format::Video(VideoCodec::H264),
+        received,
+        timestamp: None,
+        bytes,
+        payload_address: 1,
+    };
+    let mut notified_at = Vec::new();
+    for second in 2..=21 {
+        let now = fixture.start + Duration::from_secs(second);
+        let bytes = usize::try_from(second).unwrap();
+        other_viewer.clear();
+        assert!(other_viewer.admit((), packet(now, bytes), now).is_none());
+        match second {
+            4 => {
+                assert!(
+                    other_viewer
+                        .admit((), packet(now - Duration::from_secs(1), bytes), now)
+                        .is_none()
+                );
+            }
+            6 => {
+                assert!(
+                    other_viewer
+                        .admit((), packet(now, usize::MAX), now)
+                        .is_none()
+                );
+            }
+            8 => {
+                fixture.media.tracks[0].runtime.timing.set_preview(Some(40));
+            }
+            _ => {}
+        }
+        fixture.media.report_live_quality(now);
+        let states = fixture.take_stream_states();
+        if !states.is_empty() {
+            assert_eq!(states.len(), 1);
+            let timing = states[0].live_audio.unwrap();
+            assert_eq!(u64::from(timing.held_video_bytes), second);
+            assert_eq!(timing.held_video_frames, 1);
+            assert_eq!(timing.expired_drops, u64::from(second >= 4));
+            assert_eq!(timing.capacity_drops, u64::from(second >= 6));
+            assert_eq!(timing.preview, second >= 8);
+            notified_at.push(second);
+        }
+    }
+    assert_eq!(notified_at, [4, 6, 8, 10, 20]);
+    fixture.close();
+}
 
 #[test]
 fn live_quality_follows_holds_and_the_actual_keyframe_handoff() {

@@ -264,6 +264,7 @@ struct CameraSettingsUpdate {
     event_pre_recording_duration_secs: Option<u64>,
     event_recording_stream: Option<crate::cameras::EventRecordingStream>,
     recorded_audio: Option<crate::cameras::RecordedAudioSettings>,
+    live_audio: Option<crate::cameras::LiveAudioSettings>,
 }
 
 #[derive(Deserialize)]
@@ -322,6 +323,7 @@ struct CameraSettings {
     event_pre_recording_duration_secs: u64,
     event_recording_stream: crate::cameras::EventRecordingStream,
     recorded_audio: crate::cameras::RecordedAudioSettings,
+    live_audio: crate::cameras::LiveAudioSettings,
     health: Option<String>,
     model: Option<String>,
 }
@@ -1377,6 +1379,7 @@ fn server_capabilities(
 fn server_capability_ids(state: &ServerState) -> Vec<String> {
     let mut capability_ids = vec![
         "keeppeek.media-export.v1".to_owned(),
+        "keeppeek.live-audio-timing.v1".to_owned(),
         "keeppeek.event-search".to_owned(),
         "keeppeek.event-publication.v1".to_owned(),
         "stored-media-keyframe-preview.v1".to_owned(),
@@ -2892,6 +2895,7 @@ impl ServerControlHandler {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
         let (camera, onvif_error) = if request.query_onvif.unwrap_or(true) {
             match probe_onvif_camera(&config) {
@@ -7674,6 +7678,11 @@ fn proto_camera_settings(camera: CameraSettings) -> proto::CameraSettings {
         health: camera.health,
         model: camera.model,
         recorded_audio: Some(recorded_audio_settings::to_proto(camera.recorded_audio)),
+        live_audio: Some(proto::LiveAudioSettings {
+            default_offset_ms: camera.live_audio.default_offset_ms,
+            main_offset_ms: camera.live_audio.main_offset_ms,
+            sub_offset_ms: camera.live_audio.sub_offset_ms,
+        }),
     }
 }
 
@@ -7698,6 +7707,15 @@ fn camera_settings_update_from_proto(
         event_recording_duration_secs: update.event_recording_duration_secs.map(u64::from),
         event_pre_recording_duration_secs: update.event_pre_recording_duration_secs.map(u64::from),
         event_recording_stream: optional_event_recording_stream(update.event_recording_stream)?,
+        live_audio: update
+            .live_audio
+            .map(|settings| crate::cameras::LiveAudioSettings {
+                default_offset_ms: settings.default_offset_ms,
+                main_offset_ms: settings.main_offset_ms,
+                sub_offset_ms: settings.sub_offset_ms,
+            })
+            .map(recorded_audio_settings::validated)
+            .transpose()?,
         recorded_audio: update
             .recorded_audio
             .map(recorded_audio_settings::from_proto)
@@ -8696,6 +8714,7 @@ impl ServerState {
             .map(|camera_id| (camera_id.clone(), PrivacySource::Camera))
             .collect::<BTreeMap<_, _>>();
         for camera in &entries {
+            webrtc.configure_live_audio(camera.configuration.ip, camera.configuration.live_audio);
             if let Some(schedule) = config
                 .privacy
                 .schedule_for(&camera.info.id, &camera.info.ip)
@@ -9095,6 +9114,8 @@ impl ServerState {
             .cameras
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.webrtc
+            .configure_live_audio(source_ip, entry.configuration.live_audio);
         let changed_groups;
         let volume_groups;
         if let Some(existing) = cameras
@@ -12178,6 +12199,7 @@ fn camera_settings_entry(
         event_pre_recording_duration_secs: configuration.event_pre_recording_duration_secs,
         event_recording_stream: configuration.event_recording_stream,
         recorded_audio: configuration.recorded_audio,
+        live_audio: configuration.live_audio,
         health,
         model: camera.and_then(|camera| camera.info.model.clone()),
     }
@@ -12934,6 +12956,12 @@ fn save_camera_connection_settings(
                     .map(|camera| camera.event_recording_duration_secs)
             })
             .unwrap_or(60),
+        live_audio: recorded_audio_settings::validated(
+            update
+                .live_audio
+                .or_else(|| existing_config.as_ref().map(|c| c.live_audio))
+                .unwrap_or_default(),
+        )?,
         recorded_audio: recorded_audio_settings::merged(
             update.recorded_audio,
             existing_config.as_ref(),
@@ -13289,6 +13317,7 @@ fn reconcile_removed_camera(
                 "camera was removed but profile reconciliation could not be confirmed; retry removal",
             )
         })?;
+    state.webrtc.remove_live_audio(ip);
     state.update_volume_groups(ip, None).map_err(|_| {
         ControlCommandError::new(
             proto::ErrorCode::Unavailable,
@@ -14383,6 +14412,7 @@ mod tests {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
         let mut state = ServerState::empty();
         state.cameras = Arc::new(RwLock::new(vec![camera_entry(&config, None)]));
@@ -14501,6 +14531,7 @@ mod tests {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
         let config = Config::default();
         let storage = StorageConfig::default();
@@ -14594,6 +14625,7 @@ mod tests {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
         let config = Config::default();
         let storage = StorageConfig::default();
@@ -14820,6 +14852,7 @@ mod tests {
         variant_id: &str,
     ) -> proto::SubscribeMedia {
         proto::SubscribeMedia {
+            live_audio_preview_offset_ms: None,
             subscription_id: "front-door-live".to_owned(),
             source_session_id: camera_source_session_id("127.0.0.1", 0),
             kind: kind as i32,
@@ -15880,6 +15913,7 @@ mod tests {
             capabilities.capability_ids,
             [
                 "keeppeek.media-export.v1",
+                "keeppeek.live-audio-timing.v1",
                 "keeppeek.event-search",
                 "keeppeek.event-publication.v1",
                 "stored-media-keyframe-preview.v1",
@@ -21920,6 +21954,7 @@ mod tests {
                                 ),
                                 expected_configuration_revision: String::new(),
                                 recorded_audio: None,
+                                live_audio: None,
                             },
                         )),
                     },
@@ -22060,6 +22095,7 @@ mod tests {
                                 event_recording_stream: None,
                                 expected_configuration_revision: String::new(),
                                 recorded_audio: None,
+                                live_audio: None,
                             },
                         )),
                     },
@@ -23350,6 +23386,7 @@ mod tests {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
         let camera_configs = HashMap::from([
             (
@@ -23535,6 +23572,7 @@ mod tests {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
         let camera_configs = HashMap::from([("cameras".to_owned(), vec![camera])]);
 
@@ -23631,6 +23669,7 @@ mod tests {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
         let configs = HashMap::from([("cameras".to_owned(), vec![config.clone()])]);
         let state = ServerState::new(
@@ -23796,6 +23835,7 @@ mod tests {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
         let camera_configs = HashMap::from([("cameras".to_owned(), vec![camera])]);
         let state = ServerState::new(
@@ -23935,6 +23975,7 @@ mod tests {
                 event_pre_recording_duration_secs: 0,
                 event_recording_stream: Default::default(),
                 recorded_audio: Default::default(),
+                live_audio: Default::default(),
             },
             groups: vec!["cameras".to_owned()],
             battery_uid: None,
@@ -23990,6 +24031,7 @@ mod tests {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
         let camera_configs = HashMap::from([
             ("Exterior".to_owned(), vec![front.clone()]),
