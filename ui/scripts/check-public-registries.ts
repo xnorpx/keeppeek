@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 
 const uiRoot = process.cwd();
 const repositoryRoot = resolve(uiRoot, '..');
-const requiredBunVersion = '1.4.4';
+const requiredBunVersion = '1.4.5';
 
 type PackageManifest = {
 	packageManager?: string;

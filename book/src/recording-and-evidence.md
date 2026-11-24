@@ -412,8 +412,16 @@ single configured track and the recorder has accepted at least one RTP packet. E
 The readings precede transcoding, recording timeline normalization and configured
 presentation correction. Use the recorded flash/tone preview or a known physical
 event to measure audible sync. These periodic observations live in the recorder
-log and expire with its retention policy. Existing recordings contain their
-stored media timestamps.
+log and expire with its retention policy. Newly recorded RTSP files also retain
+measured per-sample source timing for the lifetime of the recording. Older files
+provide their stored presentation timestamps only.
+
+Recordings rotate at a video keyframe as they approach their recovery limits.
+An exceptionally long interval between keyframes or repeated source clock
+discontinuities can exhaust a file’s metadata budget. The recorder logs
+`recording recovery budget exhausted`, keeps the valid prefix and starts a new
+recording at the next video keyframe. The interval between the last retained
+sample and that keyframe is a gap in coverage.
 
 For the availability and safety limits of manual deletion and catalog drift checks,
 see [Recording maintenance](./recording-maintenance.md). The Administrator workflow

@@ -19016,6 +19016,7 @@ mod tests {
         for offset_ms in [0, 1_000] {
             writer
                 .append_one(crate::storage::RecordingFrame {
+                    source_rtp: None,
                     received_at: started_at + Duration::from_millis(offset_ms),
                     timestamp: Some(Duration::from_millis(offset_ms)),
                     frame: crate::storage::MediaFrame::Video(crate::storage::VideoFrame {
@@ -19569,7 +19570,8 @@ mod tests {
             },
             &cancelled,
             |message| {
-                assert_eq!(
+                // Both legacy and named recording paths stay pinned during delivery.
+                assert!(
                     handler
                         .state
                         .catalog
@@ -19577,8 +19579,7 @@ mod tests {
                         .unwrap()
                         .reader_leases()
                         .conflicts(&fragments[0].recording_id, &fragments[0].path)
-                        .unwrap(),
-                    named
+                        .unwrap()
                 );
                 cancelled_messages.push(message);
                 cancelled.store(true, Ordering::Release);
@@ -19789,6 +19790,7 @@ mod tests {
         for offset_ms in [0, 1_000] {
             writer
                 .append_one(crate::storage::RecordingFrame {
+                    source_rtp: None,
                     received_at: started_at + Duration::from_millis(offset_ms),
                     timestamp: Some(Duration::from_millis(offset_ms)),
                     frame: crate::storage::MediaFrame::Video(crate::storage::VideoFrame {
@@ -20370,6 +20372,7 @@ mod tests {
             payload.extend_from_slice(&sample.bytes);
             writer
                 .append_one(crate::storage::RecordingFrame {
+                    source_rtp: None,
                     received_at: started_at + elapsed,
                     timestamp: Some(elapsed),
                     frame: crate::storage::MediaFrame::Video(crate::storage::VideoFrame {

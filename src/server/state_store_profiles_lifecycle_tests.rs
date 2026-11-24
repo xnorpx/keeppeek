@@ -332,6 +332,7 @@ fn keyframe(received_at: Instant, marker: &[u8]) -> RecordingFrame {
     data.push(0x65);
     data.extend_from_slice(marker);
     RecordingFrame {
+        source_rtp: None,
         received_at,
         timestamp: None,
         frame: MediaFrame::Video(VideoFrame {

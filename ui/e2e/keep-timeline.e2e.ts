@@ -73,6 +73,7 @@ async function mockKeepTimeline(
 				configurable: true,
 				value() {
 					this.dataset.playRequested = 'true';
+					this.dataset.playRequestedSource = this.getAttribute('src') ?? '';
 					if (emitLoadedData) {
 						queueMicrotask(() => this.dispatchEvent(new Event('loadeddata')));
 					}
@@ -158,6 +159,30 @@ test('defaults to the compatible H.264 main stream and autoplays when no stream 
 
 	await expect(page).toHaveURL(new RegExp(`stream=main`));
 	await expect(page.locator('video')).toHaveAttribute('data-play-requested', 'true');
+});
+
+test('queues autoplay until metadata from the previous recording is gone', async ({ page }) => {
+	const controls = await mockKeepTimeline(page);
+	await page.addInitScript(() => {
+		Object.defineProperties(HTMLMediaElement.prototype, {
+			readyState: { configurable: true, get: () => HTMLMediaElement.HAVE_METADATA },
+			currentSrc: { configurable: true, get: () => location.origin + '/previous-recording' }
+		});
+	});
+	await page.goto(`/keep?camera=front-door&date=${date}`);
+	await expect.poll(() => controls.storedOpens.map((open) => open.streamId)).toEqual(['main']);
+	const video = page.locator('video');
+	await expect(video).toHaveAttribute('src', /^blob:/);
+	await video.evaluate((element) => element.dispatchEvent(new Event('loadedmetadata')));
+	await expect(video).not.toHaveAttribute('data-play-requested', 'true');
+	await video.evaluate((element) => {
+		Object.defineProperties(element, {
+			readyState: { configurable: true, value: HTMLMediaElement.HAVE_NOTHING },
+			currentSrc: { configurable: true, value: '' }
+		});
+		element.dispatchEvent(new Event('durationchange'));
+	});
+	await expect(video).toHaveAttribute('data-play-requested', 'true');
 });
 
 test('selects the newest indexed day before querying an implicit empty current day', async ({
@@ -441,10 +466,20 @@ test('clears the cold-seek overlay when an exact stored seek is rejected', async
 	await mockKeepTimeline(page, { storedSeekError: 'stored media timestamp is unavailable' });
 	await page.goto(`/keep?camera=front-door&stream=main&date=${date}`);
 
+	const video = page.locator('video');
+	await expect(video).toHaveAttribute('data-play-requested', 'true');
+	const original = await video.getAttribute('src');
+	await video.evaluate((element) => {
+		element.removeAttribute('data-play-requested');
+	});
 	const newestRange = page.locator(`[data-timeline-availability][data-end-ms="${newestMs}"]`);
 	await newestRange.click();
 	await expect(page.getByText('No indexed footage is available at that exact time.')).toBeVisible();
 	await expect(page.locator('[data-cold-seek]')).toHaveCount(0);
+	await video.dispatchEvent('loadedmetadata');
+	await expect(video).toHaveAttribute('src', original!);
+	await expect(video).not.toHaveAttribute('data-play-requested', 'true');
+	await expect(page.getByRole('button', { name: 'Play recording', exact: true })).toBeVisible();
 });
 
 test('coalesces rapid timeline drag samples onto one stored-media cursor', async ({ page }) => {
@@ -664,6 +699,43 @@ test('contains the Paper timeline lanes at the authored mobile viewport', async 
 		expect(bounds!.height, String(name)).toBeGreaterThanOrEqual(44);
 	}
 });
+
+for (const playAfterSeek of [true, false]) {
+	test(`preserves a ${playAfterSeek ? 'Play' : 'Pause'} pressed before the cold seek is ready`, async ({
+		page
+	}) => {
+		let releaseSeek!: () => void;
+		const response = new Promise<void>((resolve) => {
+			releaseSeek = resolve;
+		});
+		await mockKeepTimeline(page, { storedOpenGates: [Promise.resolve(), response] });
+		await page.goto(`/keep?camera=front-door&stream=main&date=${date}`);
+		const video = page.locator('video');
+		await expect(video).toHaveAttribute('data-play-requested', 'true');
+		const oldSource = await video.getAttribute('src');
+		const playButton = page.getByRole('button', { name: 'Play recording', exact: true });
+		const pauseButton = page.getByRole('button', { name: 'Pause recording', exact: true });
+		if (playAfterSeek) await pauseButton.click();
+		await page.getByRole('slider', { name: 'Recording position', exact: true }).press('ArrowRight');
+		await expect(page.locator('[data-cold-seek]')).toBeVisible();
+		try {
+			await (playAfterSeek ? playButton : pauseButton).click();
+			await expect(video).toHaveAttribute('src', oldSource!);
+		} finally {
+			releaseSeek();
+		}
+		await expect.poll(() => video.getAttribute('src')).not.toBe(oldSource);
+		const replacement = await video.getAttribute('src');
+		await video.dispatchEvent('loadedmetadata');
+		if (playAfterSeek) {
+			await expect(video).toHaveAttribute('data-play-requested-source', replacement!);
+			await expect(pauseButton).toBeVisible();
+		} else {
+			await expect(playButton).toBeVisible();
+			await expect(video).not.toHaveAttribute('data-play-requested-source', replacement!);
+		}
+	});
+}
 
 test('names a cold seek after 400ms while preserving the current frame', async ({ page }) => {
 	let releaseColdSeek!: () => void;

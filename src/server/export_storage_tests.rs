@@ -150,9 +150,11 @@ fn write_source(
     root: &Path,
     catalog: RecordingCatalogHandle,
     codec: crate::storage::VideoCodec,
+    frames: u32,
+    spacing_ms: u64,
 ) -> (i64, i64) {
-    // Both one-second samples must be retained before the browser selects this segment.
-    let started = Instant::now() - Duration::from_secs(2);
+    // All retained fixture samples must already exist when an export is requested.
+    let started = Instant::now() - Duration::from_millis(u64::from(frames) * spacing_ms);
     let mut writer = crate::storage::medium_term::MediumTermWriter::create_with_catalog(
         root,
         "front-door/sub",
@@ -166,10 +168,11 @@ fn write_source(
         crate::storage::VideoCodec::H265 => ("cc-4k-640x360-h265.mp4", mp4::MediaType::H265),
     };
     let payload = super::tests::fixture_video_keyframe(source, variant);
-    for offset in [0, 1000] {
-        let elapsed = Duration::from_millis(offset);
+    for frame in 0..frames {
+        let elapsed = Duration::from_millis(u64::from(frame) * spacing_ms);
         writer
             .append_one(crate::storage::RecordingFrame {
+                source_rtp: None,
                 received_at: started + elapsed,
                 timestamp: Some(elapsed),
                 frame: crate::storage::MediaFrame::Video(crate::storage::VideoFrame {
@@ -193,30 +196,40 @@ fn write_source(
     )
 }
 
-pub(super) fn setup(
-    limit: u64,
-) -> (
+pub(super) type ExportFixture = (
     PathBuf,
     RecordingCatalog,
     Manager,
     ServerState,
     proto::CreateExportJob,
-) {
+);
+
+pub(super) fn setup(limit: u64) -> ExportFixture {
     setup_for_codec(limit, crate::storage::VideoCodec::H264)
 }
 
-pub(super) fn setup_for_codec(
+pub(super) fn setup_for_codec(limit: u64, codec: crate::storage::VideoCodec) -> ExportFixture {
+    setup_for_source(limit, codec, 2, 1000)
+}
+
+pub(super) fn setup_with_frames(limit: u64, frames: u32, spacing_ms: u64) -> ExportFixture {
+    setup_for_source(limit, crate::storage::VideoCodec::H264, frames, spacing_ms)
+}
+
+fn setup_for_source(
     limit: u64,
     codec: crate::storage::VideoCodec,
-) -> (
-    PathBuf,
-    RecordingCatalog,
-    Manager,
-    ServerState,
-    proto::CreateExportJob,
-) {
+    frames: u32,
+    spacing_ms: u64,
+) -> ExportFixture {
     let (root, catalog, manager) = fixture(limit).unwrap();
-    let (start, end) = write_source(&root.join("recordings"), catalog.handle(), codec);
+    let (start, end) = write_source(
+        &root.join("recordings"),
+        catalog.handle(),
+        codec,
+        frames,
+        spacing_ms,
+    );
     let mut state = super::tests::media_test_state();
     state.catalog = Some(catalog.handle());
     state.storage_config.long_term_path = root.join("legacy");
@@ -675,6 +688,10 @@ fn assert_archived_export_replay(
 
 #[test]
 fn archived_export_download_survives_expiry_history_prune_and_source_retirement() {
+    archived_export_after_primary_retirement();
+}
+
+fn archived_export_after_primary_retirement() -> (Vec<u8>, String) {
     let (root, catalog, manager, state) = completed_named_export();
     let record = export_record(&state);
     let original = std::fs::read(record.path.as_ref().unwrap()).unwrap();
@@ -714,8 +731,11 @@ fn archived_export_download_survives_expiry_history_prune_and_source_retirement(
     );
     assert!(!record.path.as_ref().unwrap().exists());
     let (result, messages) = download_export(&state, "owner", request.clone()).unwrap();
-    assert_eq!(result.job.unwrap().job_id, "named-export");
-    assert_eq!(downloaded_bytes(messages), original);
+    let job = result.job.unwrap();
+    assert_eq!(job.job_id, "named-export");
+    let bytes = downloaded_bytes(messages);
+    assert_eq!(bytes, original);
+    let expected_sha256 = job.sha256.unwrap();
     assert_eq!(
         download_export(&state, "other", request.clone())
             .unwrap_err()
@@ -743,6 +763,67 @@ fn archived_export_download_survives_expiry_history_prune_and_source_retirement(
     drop(state);
     drop(manager);
     catalog.shutdown();
+    std::fs::remove_dir_all(root).unwrap();
+    (bytes, expected_sha256)
+}
+
+#[test]
+#[ignore = "requires FFmpeg on PATH and KEEPPEEK_ARCHIVE_REHEARSAL_ROOT on the destination volume"]
+fn archived_export_owner_download_decodes_on_a_clean_destination_volume() -> anyhow::Result<()> {
+    use anyhow::{Context as _, ensure};
+    use sha2::{Digest as _, Sha256};
+    use std::io::Write as _;
+
+    let destination = std::env::var_os("KEEPPEEK_ARCHIVE_REHEARSAL_ROOT").context(
+        "set KEEPPEEK_ARCHIVE_REHEARSAL_ROOT to an existing directory on the destination volume",
+    )?;
+    let directory =
+        PathBuf::from(destination).join(format!("keeppeek-archive-export-{}", Uuid::new_v4()));
+    let (bytes, expected_sha256) = archived_export_after_primary_retirement();
+    std::fs::create_dir(&directory)?;
+    let path = directory.join("recovered.mp4");
+    let mut file = std::fs::File::create_new(&path)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    drop(file);
+
+    let recovered = std::fs::read(&path)?;
+    let sha256 = encode_lower_hex(Sha256::digest(&recovered));
+    ensure!(
+        sha256 == expected_sha256 && recovered == bytes,
+        "restored export bytes changed"
+    );
+    let decoded = std::process::Command::new("ffmpeg")
+        .args(["-nostdin", "-hide_banner", "-v", "error", "-xerror", "-i"])
+        .arg(&path)
+        .args([
+            "-map",
+            "0:v:0",
+            "-f",
+            "framehash",
+            "-hash",
+            "SHA256",
+            "pipe:1",
+        ])
+        .output()
+        .context("run FFmpeg for the recovered export")?;
+    ensure!(
+        decoded.status.success(),
+        "FFmpeg rejected recovered export: {}",
+        String::from_utf8_lossy(&decoded.stderr)
+    );
+    let frames = std::str::from_utf8(&decoded.stdout)?
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .count();
+    ensure!(frames > 0, "recovered export yielded no decoded pictures");
+    println!(
+        "recovered export bytes={} sha256={sha256} decoded_frames={frames}",
+        recovered.len()
+    );
+    std::fs::remove_file(path)?;
+    std::fs::remove_dir(directory)?;
+    Ok(())
 }
 
 #[test]
@@ -1134,4 +1215,93 @@ fn archived_export_preserves_sharing_metadata_and_fences_typed_create_and_retry(
     drop(state);
     drop(manager);
     catalog.shutdown();
+}
+
+#[test]
+fn export_publication_replays_identical_evidence_after_an_unconfirmed_ack() -> anyhow::Result<()> {
+    use crate::storage::catalog::locations::UnconfirmedOutcome;
+    use std::io::Write as _;
+
+    let (_, catalog, manager) = fixture(128)?;
+    for committed in [false, true] {
+        let object = Object {
+            kind: Kind::Export,
+            id: Uuid::new_v4().simple().to_string(),
+        };
+        let mut file = manager
+            .reserve(VolumeRole::Export, "camera", &[], object.clone(), 8)?
+            .unwrap()
+            .open()?;
+        file.write_all(b"export")?;
+        let evidence = file.evidence()?;
+        let mut calls = 0;
+        super::export_storage::confirm_publication(
+            || {
+                calls += 1;
+                if calls == 1 {
+                    if committed {
+                        file.publish(evidence.clone())?;
+                    }
+                    return Err(UnconfirmedOutcome.into());
+                }
+                file.publish(evidence.clone())
+            },
+            || false,
+        )?;
+        assert_eq!(calls, 2);
+        let Reply::Location(Some(found)) =
+            catalog.handle().volume_location(Request::Lookup(object))?
+        else {
+            panic!("expected one published export");
+        };
+        assert_eq!(found.bytes, 6);
+        assert_eq!(found.digest, evidence.digest);
+    }
+    catalog.shutdown();
+    Ok(())
+}
+
+#[test]
+fn export_publication_skips_the_catalog_when_already_cancelled() {
+    let mut calls = 0;
+    let error = super::export_storage::confirm_publication(
+        || {
+            calls += 1;
+            Ok(())
+        },
+        || true,
+    )
+    .unwrap_err();
+    assert_eq!(calls, 0);
+    assert_eq!(error.to_string(), "export cancelled");
+}
+
+#[test]
+fn export_publication_stops_on_cancellation_hard_errors_or_a_second_lost_ack() {
+    use crate::storage::catalog::locations::UnconfirmedOutcome;
+    use std::cell::Cell;
+
+    for (cancel_after_first, unconfirmed, expected_calls) in
+        [(true, true, 1), (false, false, 1), (false, true, 2)]
+    {
+        let calls = Cell::new(0);
+        let error = super::export_storage::confirm_publication(
+            || {
+                calls.set(calls.get() + 1);
+                if unconfirmed {
+                    Err(UnconfirmedOutcome.into())
+                } else {
+                    anyhow::bail!("publication refused")
+                }
+            },
+            || cancel_after_first && calls.get() > 0,
+        )
+        .unwrap_err();
+        assert_eq!(calls.get(), expected_calls);
+        if cancel_after_first {
+            assert_eq!(error.to_string(), "export cancelled");
+        } else {
+            assert_eq!(error.is::<UnconfirmedOutcome>(), unconfirmed);
+        }
+    }
 }
