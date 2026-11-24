@@ -27,17 +27,30 @@ const HIDDEN: u8 = 4;
 static ACQUIRED: AtomicU8 = AtomicU8::new(0);
 static PANIC_HOOK: Once = Once::new();
 
+struct ConsoleLease(std::sync::Mutex<Option<ConsolePause>>);
+
+impl ConsoleLease {
+    fn acquire() -> io::Result<Self> {
+        Ok(Self(std::sync::Mutex::new(Some(ConsolePause::acquire()?))))
+    }
+
+    fn release(&self) {
+        drop(
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take(),
+        );
+    }
+}
+
 struct Screen {
-    _console: ConsolePause,
     modes: u8,
 }
 
 impl Screen {
     fn prepare() -> io::Result<Self> {
-        let mut guard = Self {
-            _console: ConsolePause::acquire()?,
-            modes: 0,
-        };
+        let mut guard = Self { modes: 0 };
         PANIC_HOOK.call_once(|| {
             let prior = panic::take_hook();
             panic::set_hook(Box::new(move |info| {
@@ -162,6 +175,20 @@ fn read_input(
     Ok(())
 }
 
+fn detach_when_output_stalled(
+    wait: impl FnOnce() -> bool,
+    restore: impl FnOnce(),
+    release_console: impl FnOnce(),
+) -> bool {
+    if wait() {
+        return false;
+    }
+    restore();
+    // Resume plain logs even when render_until_closed is still blocked inside terminal.draw.
+    release_console();
+    true
+}
+
 pub(super) fn present(
     latest: &Latest,
     stop: &Shutdown,
@@ -169,19 +196,23 @@ pub(super) fn present(
     start_collector: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<()> {
     let restored = Shutdown::new();
+    let console = ConsoleLease::acquire()?;
     std::thread::scope(|scope| {
         let _restoration = super::CancelOnDrop(restored.clone());
         let mut screen = Screen::prepare()?;
         let (sender, receiver) = std::sync::mpsc::sync_channel(32);
         let restoration = &restored;
+        let console_lease = &console;
         let input = std::thread::Builder::new()
             .name("terminal-input".into())
             .spawn_scoped(scope, move || {
                 let result = read_input(&sender, stop, server);
                 stop.cancel();
-                if !restoration.wait_timeout(Duration::from_millis(150)) {
-                    restore_before_exit();
-                }
+                detach_when_output_stalled(
+                    || restoration.wait_timeout(Duration::from_millis(150)),
+                    restore_before_exit,
+                    || console_lease.release(),
+                );
                 result
             })?;
         let _input_lifetime = super::CancelOnDrop(stop.clone());
@@ -191,6 +222,7 @@ pub(super) fn present(
         });
         stop.cancel();
         drop(screen);
+        console.release();
         restored.cancel();
         result.and(
             input
@@ -274,5 +306,24 @@ mod tests {
     fn oversized_terminal_allocation_is_clipped_before_creation() {
         assert_eq!(viewport(u16::MAX, u16::MAX), Rect::new(0, 0, 500, 200));
         assert_eq!(viewport(80, 24), Rect::new(0, 0, 80, 24));
+    }
+
+    #[test]
+    fn detaching_during_blocked_output_releases_console_pause_independently() {
+        let console = ConsoleLease::acquire().unwrap();
+        assert!(ConsolePause::acquire().is_err());
+
+        let events = std::cell::RefCell::new(Vec::new());
+        let detached = detach_when_output_stalled(
+            || false,
+            || events.borrow_mut().push("restore"),
+            || {
+                events.borrow_mut().push("release");
+                console.release();
+            },
+        );
+        assert!(detached);
+        assert_eq!(*events.borrow(), vec!["restore", "release"]);
+        assert!(ConsolePause::acquire().is_ok());
     }
 }

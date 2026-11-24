@@ -195,3 +195,16 @@ fn renderer_consumes_one_snapshot_and_a_new_publish_replaces_an_unread_one() {
     assert!(!slot.update(Some(Arc::new(fixture(3))), now));
     assert!(slot.unread_snapshot);
 }
+
+#[test]
+fn zero_row_viewport_renders_without_underflow() {
+    let snapshot = fixture(2);
+    let mut nav = Navigation::default();
+    let empty = screen(0, 0, &snapshot, &mut nav);
+    assert!(empty.is_empty());
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 0)).unwrap();
+    terminal
+        .draw(|frame| draw(frame, None, &mut nav, Duration::ZERO, None))
+        .unwrap();
+}

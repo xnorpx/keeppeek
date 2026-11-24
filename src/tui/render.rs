@@ -271,7 +271,7 @@ fn draw_stream_footer(
     if extra > 0 {
         footer.push_str(&format!("   {extra} more warnings"));
     }
-    line(frame, height - 1, &footer, plain);
+    line(frame, height.saturating_sub(1), &footer, plain);
 }
 
 fn stream_table(frame: &mut Frame<'_>, rows: &[StreamRow], selected: usize, elapsed: Duration) {

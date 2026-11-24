@@ -230,7 +230,7 @@ impl StreamRow {
                 recording_progress: video
                     .then_some(s.dimensions.recording_progressing)
                     .flatten(),
-                recording_age_ms: video
+                recording_age_ms: (video && s.dimensions.recording_requested)
                     .then_some(s.dimensions.recording_progress_age_ms)
                     .flatten(),
             }
@@ -377,5 +377,136 @@ mod tests {
     fn decimal_rate_preserves_zero_and_scales_incoming_kibibits() {
         assert_eq!(decimal_kbit_per_second(0.0), 0.0);
         assert_eq!(decimal_kbit_per_second(1000.0), 1024.0);
+    }
+
+    #[test]
+    fn stale_recording_age_is_hidden_when_recording_is_not_requested() {
+        use crate::health::{
+            CameraHealthDimensions, CameraHealthReason, CameraHealthState, StreamHealthDimensions,
+        };
+        use crate::stats::{StreamHealthReport, StreamReport};
+
+        let make_stream = |recording_requested| StreamHealth {
+            ingress: StreamHealthReport {
+                report: StreamReport {
+                    kind: "video_main".into(),
+                    session_duration_ms: 10_000,
+                    codec: None,
+                    resolution: None,
+                    fps: 15.0,
+                    expected_fps: 15.0,
+                    kf_fps: 1.0,
+                    kbps: 500.0,
+                    max_frame_kb: 30.0,
+                    gap_min_ms: 60.0,
+                    gap_avg_ms: 66.0,
+                    gap_max_ms: 80.0,
+                    jitter_samples: 10,
+                    jitter_p50_ms: 1.0,
+                    jitter_p99_ms: 2.0,
+                    frames: Some(150),
+                    bytes: Some(500_000),
+                    keyframes: Some(10),
+                    reconnects: None,
+                    drops: None,
+                    errors: None,
+                },
+                updated_at_ms: 10_000,
+                report_age_ms: 100,
+                frame_updated_at_ms: Some(10_000),
+                frame_age_ms: Some(100),
+                keyframe_updated_at_ms: Some(10_000),
+                keyframe_age_ms: Some(100),
+                recent_reconnects: 0,
+                recent_drops: 0,
+                recent_errors: 0,
+            },
+            state: CameraHealthState::Healthy,
+            reason: CameraHealthReason::Healthy,
+            reason_codes: vec![CameraHealthReason::Healthy],
+            detail: String::new(),
+            dimensions: StreamHealthDimensions {
+                expected: true,
+                transport_connected: Some(true),
+                report_fresh: true,
+                report_freshness_threshold_ms: 30_000,
+                frames_fresh: true,
+                frame_freshness_threshold_ms: 30_000,
+                decodable: true,
+                keyframe_freshness_threshold_ms: 30_000,
+                recent_reconnects: 0,
+                recent_drops: 0,
+                recent_errors: 0,
+                recording_requested,
+                recording_progressing: Some(true),
+                recording_progress_age_ms: Some(5_000),
+                session_duration_ms: 10_000,
+                recorded_duration_ms: 10_000,
+            },
+        };
+        let camera = CameraHealth {
+            id: "front".into(),
+            ip: "192.0.2.10".into(),
+            name: "Front".into(),
+            manufacturer: None,
+            model: None,
+            firmware_version: None,
+            backend: "retina".into(),
+            transport: "tcp".into(),
+            state: CameraHealthState::Healthy,
+            reason: CameraHealthReason::Healthy,
+            reason_codes: vec![CameraHealthReason::Healthy],
+            detail: String::new(),
+            dimensions: CameraHealthDimensions {
+                configured: true,
+                expected: true,
+                configured_video_streams: 1,
+                connected_video_streams: Some(1),
+                reporting_video_streams: 1,
+                fresh_video_streams: 1,
+                decodable_video_streams: 1,
+                configured_video_stream_ids: vec!["main".into()],
+                connected_video_stream_ids: Some(vec!["main".into()]),
+                reporting_video_stream_ids: vec!["main".into()],
+                fresh_video_stream_ids: vec!["main".into()],
+                decodable_video_stream_ids: vec!["main".into()],
+                transport_connected: Some(true),
+                latest_report_at_ms: Some(10_000),
+                report_age_ms: Some(100),
+                frames_fresh: Some(true),
+                decodable: Some(true),
+                recent_reconnects: 0,
+                recent_drops: 0,
+                recent_errors: 0,
+                recording_requested: false,
+                recording_video_streams: 0,
+                recording_streams_progressing: 0,
+                recording_video_stream_ids: Vec::new(),
+                recording_progressing_stream_ids: Vec::new(),
+                recording_progressing: None,
+                recording_progress_age_ms: None,
+                session_duration_ms: Some(10_000),
+                recorded_main_duration_ms: 0,
+                recorded_sub_duration_ms: 0,
+                recorded_total_duration_ms: 0,
+                battery_configured: false,
+                battery_registered: None,
+                battery_last_seen_age_ms: None,
+                battery_wake_pending_age_ms: None,
+                battery_sleeping: None,
+            },
+            lifecycle: None,
+            last_error: None,
+            configured_profiles: Vec::new(),
+            streams: Vec::new(),
+        };
+        let hub = LogHub::default();
+        let off = make_stream(false);
+        let row_off = StreamRow::new(&camera, "main", "video", &hub, Some(&off), 60);
+        assert_eq!(row_off.measurement.unwrap().recording_age_ms, None);
+
+        let on = make_stream(true);
+        let row_on = StreamRow::new(&camera, "main", "video", &hub, Some(&on), 60);
+        assert_eq!(row_on.measurement.unwrap().recording_age_ms, Some(5_000));
     }
 }
