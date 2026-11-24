@@ -152,11 +152,20 @@ implied by choosing `backend = "reo-proto"` for media.
 
 ## Application and test coverage
 
-The protected WebRTC contract exposes a two-way-audio device flag but has no
-camera talk-session command or camera speaker destination. Browser Talk remains
-disabled for both brands. Microphone permission, browser codec conversion,
-publication-to-camera routing and application talk-session lifecycle are not
-implemented. No protected API schema was changed to hide this dependency.
+On a powered, direct Reolink camera using native TCP, KeepPeek checks the
+configured channel's CGI talk permission and requests its Baichuan speaker
+profile over a separate, read-only connection. A compatible mono ADPCM profile
+at 8 or 16 kHz makes **Talk** available in the focused live view. Firmware that
+requires an open speaker stream to answer the read-only query leaves **Talk**
+unavailable. The camera's reported quick replies and chimes appear independently
+in the sound menu.
+
+An administrator starts **Talk** explicitly and grants browser microphone
+permission. The camera connection then opens the selected talk channel,
+negotiates its profile again, and sends microphone audio to that speaker.
+Stopping talkback releases the microphone. The camera's incoming audio remains
+available to the listener. Physical duplex behavior requires verification on
+the specific camera model, firmware, and topology.
 
 The independent `test-hikvision` fixture verifies Digest, motion read-back,
 capability changes, PTZ ownership, original-target cleanup, audio busy/open/close,
