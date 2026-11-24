@@ -2,9 +2,10 @@
 
 use super::*;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(super) struct Lifecycle {
     pub(super) closed: AtomicBool,
+    pub(super) profile_watch_revision: AtomicU64,
     admission: Mutex<()>,
 }
 
@@ -71,8 +72,7 @@ pub(super) fn close(state: &ServerState, id: SessionId) -> Option<ApiSessionReco
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     lookup(state, id)?;
     // The owner remains visible until cleanup finishes so concurrent revokers wait for it.
-    state.talkback.stop_for_session(id);
-    state.webrtc.disarm_talkback(id);
+    state.talkback.stop_for_session(id, &state.webrtc);
     event_search::close_session(state, id);
     state.state_store_watches.close_session(id);
     state.event_publications.close_session(id);

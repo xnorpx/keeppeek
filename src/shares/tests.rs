@@ -97,6 +97,47 @@ impl Fixture {
 }
 
 #[test]
+fn legacy_store_lookup_preserves_completed_links_and_cannot_redeem_range_links() {
+    let mut fixture = Fixture::new();
+    let (_, completed) = fixture.grant();
+    let mut range = fixture.intent.clone();
+    range.request_id = Uuid::new_v4();
+    let selected = fixture
+        .store
+        .create_with_evidence(range, fixture.now, true)
+        .unwrap()
+        .token
+        .into_string();
+    let path = fixture.directory.0.join("grants.db");
+    drop(fixture.store);
+    let previous = super::database::Database::open(&path, fixture.now.unix_ms).unwrap();
+    assert!(
+        previous
+            .by_hash(&super::secret::digest(&completed))
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        previous
+            .by_hash(&super::secret::digest(&selected))
+            .unwrap()
+            .is_none()
+    );
+    drop(previous);
+    let mut upgraded = Store::open(&path, fixture.now.unix_ms).unwrap();
+    assert!(
+        upgraded
+            .exchange(&completed, &fixture.context, fixture.now)
+            .is_ok()
+    );
+    assert!(
+        upgraded
+            .exchange(&selected, &fixture.context, fixture.now)
+            .is_ok()
+    );
+}
+
+#[test]
 fn issued_secrets_are_redacted_and_only_hashes_are_durable() {
     let mut f = Fixture::new();
     let issued = f.store.create(f.intent.clone(), f.now).unwrap();

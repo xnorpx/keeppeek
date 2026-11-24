@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { capabilityActions } from '$lib/capability-actions';
 	import { afterNavigate, goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { navigating, page } from '$app/state';
@@ -221,6 +222,7 @@
 		if (mobilePanel) history.back();
 	}
 	let capabilitiesSeen = false;
+	let guestRangeSupported = $state(false);
 	let reconnectPending = false;
 	let scrubUsesFragmentFallback = false;
 	let secondaryLoadsReady = $state(false);
@@ -418,6 +420,9 @@
 		updateOrientation();
 		portraitMedia.addEventListener('change', updateOrientation);
 		const unsubscribeCapabilities = controlClient.onCapabilities((capabilityIds) => {
+			guestRangeSupported = capabilityIds.includes(
+				capabilityActions.shareRecordingRange.capability
+			);
 			audioPreviewSupported = capabilityIds.includes('keeppeek.recorded-audio.v1');
 			eventSearchAvailable = capabilityIds.includes('keeppeek.event-search');
 			eventWorkflowAvailable = capabilityIds.includes(EVENT_WORKFLOW_CAPABILITY);
@@ -487,6 +492,7 @@
 	async function initialize(search = window.location.search): Promise<void> {
 		selectedWorkflowEvent = null;
 		const version = ++routeVersion;
+		const switchVersion = cameraSwitchVersion;
 		appliedSearch = search;
 		loadVersion += 1;
 		recordingLoadController?.abort();
@@ -535,7 +541,7 @@
 			}
 			await loadRouteRecordings(route, version);
 			if (version !== routeVersion) return;
-			await loadRouteEvent(route, version);
+			if (cameraSwitchVersion === switchVersion) await loadRouteEvent(route, version);
 			await healthPromise;
 		} catch (cause) {
 			if (version === routeVersion)
@@ -594,8 +600,10 @@
 			(route.cameraId && route.cameraId !== sourceId)
 		)
 			return;
+		const switchVersion = cameraSwitchVersion;
 		const event = await resolveExportSeedEvent(route.eventId, sourceId, route.timestampMs);
-		if (version !== routeVersion || sourceId !== cameraId) return;
+		if (version !== routeVersion || sourceId !== cameraId || switchVersion !== cameraSwitchVersion)
+			return;
 		exportSeedEvent = event;
 		if (event && mode === 'export') {
 			const range = createEventExportRange(event, selectedBitrateKbps);
@@ -1545,12 +1553,15 @@
 		timestampMs = playheadMs ?? undefined
 	): void {
 		if (nextCameraId === cameraId) return;
+		selectedWorkflowEvent = null;
 		const play = mode === 'export' ? false : playbackIntent();
 		exportSeedEvent = null;
 		exportRangeStartMs = null;
 		exportRangeEndMs = null;
-		if (mode === 'export') void selectSegment(null);
-		else beginCameraSwitch(direction);
+		if (mode === 'export') {
+			cameraSwitchVersion += 1;
+			void selectSegment(null);
+		} else beginCameraSwitch(direction);
 		timelineRepository.deactivate();
 		cameraId = nextCameraId;
 		void loadRecordings(selectedDate || undefined, timestampMs, play, null, {
@@ -2887,6 +2898,7 @@
 		onclick={() => (selectedWorkflowEvent = null)}
 	></button>
 	<EventDetailDrawer
+		sharingController={guestRangeSupported ? controlClient : undefined}
 		record={{ camera: selectedCamera, event: withWorkflow(selectedWorkflowEvent) }}
 		{workflow}
 		{workflowIdentity}
