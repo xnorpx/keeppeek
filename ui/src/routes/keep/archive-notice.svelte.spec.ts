@@ -177,6 +177,26 @@ it('revalidates the mounted timeline only after retained access is confirmed aga
 	}
 });
 
+function setVideoPlayhead(video: HTMLMediaElement, currentTimeSeconds: number) {
+	Object.defineProperty(video, 'readyState', {
+		configurable: true,
+		value: HTMLMediaElement.HAVE_METADATA,
+		writable: true
+	});
+	Object.defineProperty(video, 'currentSrc', {
+		configurable: true,
+		value: video.src,
+		writable: true
+	});
+	video.dispatchEvent(new Event('loadedmetadata'));
+	Object.defineProperty(video, 'currentTime', {
+		configurable: true,
+		value: currentTimeSeconds,
+		writable: true
+	});
+	video.dispatchEvent(new Event('timeupdate'));
+}
+
 it.each([true, false])(
 	'restores the cursor at its playhead with play intent %s and its audio preview',
 	async (playing) => {
@@ -190,12 +210,7 @@ it.each([true, false])(
 				create(RecordedAudioTimingSchema, { appliedOffsetMs: 137, preview: true })
 			);
 			const video = document.querySelector('video')!;
-			Object.defineProperty(video, 'currentTime', {
-				configurable: true,
-				value: 6.25,
-				writable: true
-			});
-			video.dispatchEvent(new Event('timeupdate'));
+			setVideoPlayhead(video, 6.25);
 			expect(fixture.open).toHaveBeenCalledWith(expect.objectContaining({ playing }));
 			const session = { principalId: 'viewer' };
 			fixture.emitAccess({ status: 'checking', session });
@@ -230,12 +245,7 @@ it('holds reverse shuttle seeks until privacy recovery installs the new cursor',
 			create(RecordedAudioTimingSchema, { appliedOffsetMs: 137, preview: true })
 		);
 		const video = document.querySelector('video')!;
-		Object.defineProperty(video, 'currentTime', {
-			configurable: true,
-			value: 6.25,
-			writable: true
-		});
-		video.dispatchEvent(new Event('timeupdate'));
+		setVideoPlayhead(video, 6.25);
 		video.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true }));
 		await vi.waitFor(() => expect(intervals.mock.calls.some(([, ms]) => ms === 250)).toBe(true));
 		const reverse = intervals.mock.calls.find(([, ms]) => ms === 250)?.[0];
@@ -268,8 +278,7 @@ it('retains an interrupted playhead while switching to Export during privacy rec
 	try {
 		await fixture.mount();
 		const video = document.querySelector('video')!;
-		Object.defineProperty(video, 'currentTime', { configurable: true, value: 4.5, writable: true });
-		video.dispatchEvent(new Event('timeupdate'));
+		setVideoPlayhead(video, 4.5);
 		fixture.emitAccess({ status: 'checking', session });
 		await vi.waitFor(() => expect(fixture.first.playback.close).toHaveBeenCalledOnce());
 		await page.getByRole('button', { name: 'Export', exact: true }).click();

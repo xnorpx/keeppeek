@@ -14,11 +14,15 @@ vi.mock('$lib/peek-view-context.svelte', async (original) => {
 	return { ...module, setPeekViewState: () => (peekState = module.setPeekViewState()) };
 });
 vi.mock('$app/paths', () => ({ resolve: (path: string) => path }));
-vi.mock('$app/state', () => ({ page: { url: new URL('http://localhost/settings') } }));
+vi.mock('$app/state', () => ({
+	page: { url: new URL('http://localhost/settings') },
+	navigating: {}
+}));
 vi.mock('$app/navigation', () => ({
 	goto: vi.fn(),
 	afterNavigate: vi.fn(),
-	beforeNavigate: vi.fn()
+	beforeNavigate: vi.fn(),
+	onNavigate: vi.fn()
 }));
 vi.mock('$lib/control-context', () => ({
 	setControlClient: () => ({
