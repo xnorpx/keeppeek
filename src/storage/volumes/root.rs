@@ -9,6 +9,7 @@ use std::{
 
 mod file;
 mod retirement;
+pub(crate) use file::MissingOwnedLeaf;
 pub use file::OwnedFile;
 
 #[derive(Debug)]

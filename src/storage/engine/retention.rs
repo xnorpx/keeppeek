@@ -74,7 +74,8 @@ fn run(
     tracing::info!(event="retention_started",%run_id,retention_enabled=config.retention.is_some(),request_accepted=accepted,"retention worker started");
     let mut initial_settled = false;
     let mut quarantined_seen = false;
-    let store = LongTermStore::new(config.long_term_path.clone());
+    let store =
+        LongTermStore::for_recording_roots(&config.long_term_path, &config.medium_term_path);
     // This loop lasts until shutdown. Each iteration evaluates at most eight rows and admits one expiry per owner.
     while !shutdown.load(Ordering::Acquire) {
         if !accepted {
@@ -158,7 +159,7 @@ fn expire_legacy_owned(
     store: &LongTermStore,
     id: &str,
 ) -> Result<bool> {
-    let Some(candidate) = catalog.claim_expired_recording(store.root(), id)? else {
+    let Some(candidate) = catalog.claim_archive_cleanup(store, Some(id))? else {
         return Ok(false);
     };
     let bytes = store.remove_catalog_recording(&candidate.path)?;
@@ -338,7 +339,7 @@ mod tests {
         }
         assert!(
             handle
-                .claim_expired_recording(&root, "expired")
+                .claim_archive_cleanup(&LongTermStore::new(root.clone()), Some("expired"))
                 .unwrap()
                 .is_some()
         );

@@ -47,7 +47,7 @@ Python 3.12 and resolves `requirements.txt` through `pip-audit` without installi
 runtime in the audit job.
 
 The embedded CCTV Camera Database comes from the v2.8.0 release archive. The build verifies its
-SHA-256 digest before opening the ZIP. Container builds use Bun 1.4.4 and immutable base-image
+SHA-256 digest before opening the ZIP. Container builds use Bun 1.4.5 and immutable base-image
 digests, then CI starts the production image and probes its HTTP listener. A version tag can create
 release artifacts only when it points to a commit on `main` and that exact commit has a successful
 push CI run.

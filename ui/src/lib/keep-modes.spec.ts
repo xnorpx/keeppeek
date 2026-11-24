@@ -6,6 +6,7 @@ import {
 	createExportRange,
 	exportSelectionKey,
 	createSwimlaneWindow,
+	segmentForExportRange,
 	parseKeepMode,
 	storyEvents,
 	updateExportRange
@@ -55,6 +56,18 @@ describe('Keep modes', () => {
 		).toEqual(['new', 'old']);
 	});
 
+	it('requires gap-free coverage from the selected stream, including the last marked millisecond', () => {
+		const first = segment('front', 100, 200);
+		const adjacent = segment('front', 200, 300);
+		const gap = segment('front', 201, 300);
+		expect(segmentForExportRange([adjacent, first], 'main', 125, 300)).toEqual(first);
+		expect(segmentForExportRange([first, gap], 'main', 125, 300)).toBeNull();
+		expect(
+			segmentForExportRange([first, { ...adjacent, stream: 'sub' }], 'main', 125, 300)
+		).toBeNull();
+		expect(segmentForExportRange([first, adjacent], 'main', 125, 301)).toBeNull();
+	});
+
 	it('estimates export bytes only when the camera reports bitrate', () => {
 		const source = segment('front-door', 0, 120_000);
 
@@ -90,6 +103,11 @@ describe('Keep modes', () => {
 	it('orders edited export handles without inventing bitrate', () => {
 		const original = createExportRange(segment('front-door', 0, 120_000), null);
 		if (original === null) throw new Error('Expected an export range');
+		expect(updateExportRange(original, 1000.25, 4500.75, null)).toMatchObject({
+			startMs: 1000,
+			endMs: 4500,
+			durationMs: 3500
+		});
 
 		expect(updateExportRange(original, 90_000, 30_000, null)).toEqual({
 			startMs: 30_000,

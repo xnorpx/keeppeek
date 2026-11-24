@@ -37,6 +37,7 @@ pub mod locations;
 pub mod maintenance;
 mod native_close;
 pub(crate) mod readers;
+pub(crate) mod relocation;
 pub mod retention;
 pub mod workflow;
 
@@ -210,6 +211,7 @@ pub struct CatalogMediaObjectLocation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CatalogCleanupCandidate {
     pub recording_id: String,
+    pub stream_id: String,
     pub path: PathBuf,
     pub file_bytes: u64,
     pub pending: bool,
@@ -218,7 +220,7 @@ pub(crate) struct CatalogCleanupCandidate {
 
 #[derive(Default)]
 struct CleanupFilter {
-    expiry_root: Option<PathBuf>,
+    store: Option<super::long_term::LongTermStore>,
     recording_id: Option<String>,
     deadline: Option<std::time::Instant>,
 }
@@ -449,6 +451,15 @@ enum Command {
         fragment: CatalogFragment,
         keyframe: CatalogKeyframe,
         reply: SyncSender<anyhow::Result<()>>,
+    },
+    Relocation {
+        request: relocation::Request,
+        reply: SyncSender<anyhow::Result<Option<relocation::Move>>>,
+    },
+    FinalizedRelocation {
+        source: String,
+        destination: String,
+        reply: SyncSender<anyhow::Result<Option<(String, String)>>>,
     },
     UpdateRecordingPath {
         recording_id: String,
@@ -932,6 +943,31 @@ impl RecordingCatalogHandle {
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
 
+    /// Finds the finalized legacy object before or after publishing its new path.
+    pub(crate) fn finalized_relocation(
+        &self,
+        source: &Path,
+        destination: &Path,
+    ) -> anyhow::Result<Option<(String, String)>> {
+        let path = |value: &Path| {
+            value
+                .to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| anyhow::anyhow!("recording path is not valid UTF-8"))
+        };
+        let (reply, response) = mpsc::sync_channel(1);
+        self.tx
+            .try_send(Command::FinalizedRelocation {
+                source: path(source)?,
+                destination: path(destination)?,
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv_timeout(BUSY_TIMEOUT)
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
     #[tracing::instrument(level = "trace", skip_all)]
     pub fn update_recording_path(
         &self,
@@ -1369,20 +1405,21 @@ impl RecordingCatalogHandle {
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
 
+    #[cfg(test)]
     pub(crate) fn claim_cleanup_candidate(
         &self,
     ) -> anyhow::Result<Option<CatalogCleanupCandidate>> {
         self.claim_automatic_cleanup(CleanupFilter::default())
     }
 
-    pub(crate) fn claim_expired_recording(
+    pub(crate) fn claim_archive_cleanup(
         &self,
-        root: &Path,
-        recording_id: &str,
+        store: &super::long_term::LongTermStore,
+        expired_recording: Option<&str>,
     ) -> anyhow::Result<Option<CatalogCleanupCandidate>> {
         self.claim_automatic_cleanup(CleanupFilter {
-            expiry_root: Some(root.to_path_buf()),
-            recording_id: Some(recording_id.into()),
+            store: Some(store.clone()),
+            recording_id: expired_recording.map(str::to_owned),
             deadline: None,
         })
     }
@@ -1773,6 +1810,41 @@ fn run_catalog(
                     keyframe,
                 )));
             }
+            Command::Relocation { request, reply } => {
+                let _ = reply.send(pollster::block_on(relocation::dispatch(
+                    &connection,
+                    &readers,
+                    request,
+                )));
+            }
+            Command::FinalizedRelocation {
+                source,
+                destination,
+                reply,
+            } => {
+                let _ = reply.send(pollster::block_on(async {
+                    // Both lookups use the UNIQUE recording_files.path index. Two rows mean
+                    // that the destination belongs to another object and must be left alone.
+                    let mut rows = connection
+                        .query(
+                            "SELECT id, stream_id, finalized, cleanup_pending
+                        FROM recording_files WHERE path IN (?1, ?2)",
+                            [source, destination],
+                        )
+                        .await?;
+                    let Some(row) = rows.next().await? else {
+                        return Ok(None);
+                    };
+                    anyhow::ensure!(
+                        rows.next().await?.is_none(),
+                        "relocation paths belong to different recordings"
+                    );
+                    if row.get::<i64>(2)? == 0 || row.get::<i64>(3)? != 0 {
+                        return Ok(None);
+                    }
+                    Ok(Some((row.get(0)?, row.get(1)?)))
+                }));
+            }
             Command::UpdateRecordingPath {
                 recording_id,
                 path,
@@ -2114,6 +2186,7 @@ async fn legacy_recordings_without_keyframes(
                                         r.finalized_at_ms IS NULL OR r.ended_at_ms IS NULL
              FROM recording_files AS r
              WHERE NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = r.id AND active = 1)
+               AND NOT EXISTS (SELECT 1 FROM legacy_recording_relocations m WHERE m.id=r.id)
                AND NOT EXISTS (SELECT 1 FROM archive_replicas a WHERE a.kind='recording' AND a.recording_id=r.id AND (a.state IN('ready','deleting') OR a.local_evicted!=0))
                AND NOT EXISTS (SELECT 1 FROM storage_volume_allocations
                    WHERE kind = 'recording' AND object_id = r.id AND state != 'cancelled')
@@ -2502,9 +2575,12 @@ async fn select_cleanup_candidate(
     readers: &readers::Registry,
     filter: &CleanupFilter,
 ) -> anyhow::Result<Option<CatalogCleanupCandidate>> {
-    let expiry_root = filter.expiry_root.as_deref();
     if let Some(candidate) = pending_cleanup_candidate(connection).await? {
-        if expiry_root.is_some() && !candidate.retention_expiry {
+        if (filter.recording_id.is_some() && !candidate.retention_expiry)
+            || filter.store.as_ref().is_some_and(|store| {
+                !store.contains_cleanup_path(&candidate.path, &candidate.stream_id)
+            })
+        {
             return Ok(None);
         }
         retention::ensure_cleanup_allowed(connection, &candidate.recording_id).await?;
@@ -2538,22 +2614,41 @@ async fn find_cleanup_candidate(
     connection: &turso::Connection,
     filter: &CleanupFilter,
 ) -> anyhow::Result<Option<CatalogCleanupCandidate>> {
-    let expiry_root = filter.expiry_root.as_deref();
-    let prefix = expiry_root.map(|root| {
-        format!(
-            "{}/",
-            root.to_string_lossy()
-                .replace('\\', "/")
-                .trim_end_matches('/')
-        )
-    });
+    let prefix = |root: &Path| {
+        let root = root.to_string_lossy();
+        if cfg!(windows) {
+            format!("{}/", root.replace('\\', "/").trim_end_matches('/'))
+        } else {
+            format!("{}/", root.trim_end_matches('/'))
+        }
+    };
+    let root = filter.store.as_ref().map(|store| prefix(store.root()));
+    let source = filter
+        .store
+        .as_ref()
+        .and_then(|store| store.pending_source())
+        .map(prefix);
+    let (column, collation) = if cfg!(windows) {
+        ("replace(path,char(92),'/')", "NOCASE")
+    } else {
+        ("path", "BINARY")
+    };
+    // Keep this exceptional nested-root match identical to long_term::legacy_stream.
+    let legacy_tail = concat!(
+        "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/",
+        "[0-9][0-9]/[0-9][0-9][0-9][0-9][0-9][0-9][0-9].mp4"
+    );
     let mut rows = connection
             .query(
-                format!("SELECT id, path, file_bytes, cleanup_pending
+                format!("SELECT id, path, file_bytes, cleanup_pending, stream_id
                  FROM recording_files
                  WHERE finalized = 1 AND protected = 0 AND retention_pending=0
-                   AND (?2 IS NULL OR (substr(replace(path,char(92),'/'),1,length(?2))=?2 COLLATE NOCASE
-                       AND EXISTS(SELECT 1 FROM recording_retention_policies p WHERE p.camera_id=recording_files.source_id OR p.camera_id='')
+                   AND NOT EXISTS(SELECT 1 FROM legacy_recording_relocations m WHERE m.id=recording_files.id)
+                   AND (?2 IS NULL OR substr({column},1,length(?2))=?2 COLLATE {collation})
+                   AND (?4 IS NULL OR substr({column},1,length(?4))!=?4 COLLATE {collation}
+                       OR (substr({column},1,length(?2 || stream_id || '/'))=(?2 || stream_id || '/') COLLATE {collation}
+                           AND substr({column},length(?2 || stream_id || '/')+1) GLOB ?5))
+                   AND (?3 IS NULL OR (EXISTS(SELECT 1 FROM recording_retention_policies p WHERE p.camera_id=recording_files.source_id OR p.camera_id='')
                        AND retention_generation=(SELECT generation FROM recording_retention_runtime WHERE singleton=1)
                        AND EXISTS(SELECT 1 FROM recording_retention_decisions d WHERE d.recording_id=recording_files.id)))
                    AND NOT EXISTS (SELECT 1 FROM recording_retention_camera_work w WHERE w.camera_id=recording_files.source_id)
@@ -2567,7 +2662,7 @@ async fn find_cleanup_candidate(
                                    WHERE a.kind='recording' AND a.recording_id=recording_files.id AND (a.state IN('ready','deleting') OR a.local_evicted!=0))
                  {} ORDER BY cleanup_pending DESC, started_at_ms, id
                  LIMIT 1",if filter.recording_id.is_some(){"AND id=?3"} else {"AND ?3 IS NULL"}),
-                turso::params![retention::now_ms()?,prefix.as_deref(),filter.recording_id.as_deref()],
+                turso::params![retention::now_ms()?,root.as_deref(),filter.recording_id.as_deref(),source.as_deref(),legacy_tail],
             )
             .await?;
     let candidate = rows
@@ -2576,10 +2671,11 @@ async fn find_cleanup_candidate(
         .map(|row| {
             anyhow::Ok(CatalogCleanupCandidate {
                 recording_id: row.get(0)?,
+                stream_id: row.get(4)?,
                 path: PathBuf::from(row.get::<String>(1)?),
                 file_bytes: to_u64(row.get(2)?, "cleanup candidate file bytes")?,
                 pending: row.get::<i64>(3)? != 0,
-                retention_expiry: expiry_root.is_some(),
+                retention_expiry: filter.recording_id.is_some(),
             })
         })
         .transpose()?;
@@ -2592,7 +2688,7 @@ async fn pending_cleanup_candidate(
 ) -> anyhow::Result<Option<CatalogCleanupCandidate>> {
     let mut rows = connection
         .query(
-            "SELECT id, path, file_bytes,cleanup_retention_expiry
+            "SELECT id, path, file_bytes, cleanup_retention_expiry, stream_id
              FROM recording_files
              WHERE finalized = 1 AND protected = 0 AND cleanup_pending = 1
                AND NOT EXISTS (SELECT 1 FROM archive_replicas a
@@ -2609,6 +2705,7 @@ async fn pending_cleanup_candidate(
         .map(|row| {
             anyhow::Ok(CatalogCleanupCandidate {
                 recording_id: row.get(0)?,
+                stream_id: row.get(4)?,
                 path: PathBuf::from(row.get::<String>(1)?),
                 file_bytes: to_u64(row.get(2)?, "pending cleanup file bytes")?,
                 pending: true,
@@ -3031,6 +3128,7 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
     backfill_recording_coverage(connection).await?;
     initialize_operational_schema(connection).await?;
     archive::initialize(connection).await?;
+    relocation::initialize(connection).await?;
     Ok(())
 }
 
@@ -3547,6 +3645,17 @@ pub(super) async fn media_fragments_in_range(
     media_fragments_in_range_with_limit(connection, stream_id, start_ms, end_ms, None).await
 }
 
+#[derive(Debug)]
+pub(crate) struct FragmentWindowLimit;
+
+impl std::fmt::Display for FragmentWindowLimit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("recording fragment window exceeds bounded correction limit")
+    }
+}
+
+impl std::error::Error for FragmentWindowLimit {}
+
 pub(super) async fn media_fragments_in_range_with_limit(
     connection: &turso::Connection,
     stream_id: &str,
@@ -3588,10 +3697,9 @@ pub(super) async fn media_fragments_in_range_with_limit(
             byte_len: to_u64(row.get(9)?, "fragment byte length")?,
             archive: None,
         });
-        anyhow::ensure!(
-            maximum.is_none_or(|maximum| fragments.len() <= maximum as usize),
-            "recording fragment window exceeds bounded correction limit"
-        );
+        if maximum.is_some_and(|maximum| fragments.len() > maximum as usize) {
+            return Err(FragmentWindowLimit.into());
+        }
     }
     drop(rows);
     let mut archives: BTreeMap<String, Option<archive_playback::ArchiveRead>> = BTreeMap::new();
@@ -6406,14 +6514,20 @@ fn current_unix_time_ms() -> i64 {
 }
 
 #[cfg(unix)]
-fn recording_file_identity(_path: &Path, metadata: &std::fs::Metadata) -> Option<String> {
+pub(crate) fn recording_file_identity(
+    _path: &Path,
+    metadata: &std::fs::Metadata,
+) -> Option<String> {
     use std::os::unix::fs::MetadataExt;
 
     Some(format!("{}:{}", metadata.dev(), metadata.ino()))
 }
 
 #[cfg(windows)]
-fn recording_file_identity(path: &Path, _metadata: &std::fs::Metadata) -> Option<String> {
+pub(crate) fn recording_file_identity(
+    path: &Path,
+    _metadata: &std::fs::Metadata,
+) -> Option<String> {
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Storage::FileSystem::{
@@ -6432,7 +6546,10 @@ fn recording_file_identity(path: &Path, _metadata: &std::fs::Metadata) -> Option
 }
 
 #[cfg(not(any(unix, windows)))]
-fn recording_file_identity(_path: &Path, _metadata: &std::fs::Metadata) -> Option<String> {
+pub(crate) fn recording_file_identity(
+    _path: &Path,
+    _metadata: &std::fs::Metadata,
+) -> Option<String> {
     None
 }
 

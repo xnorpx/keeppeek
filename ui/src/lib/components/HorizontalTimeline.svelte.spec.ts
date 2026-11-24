@@ -190,6 +190,36 @@ describe('HorizontalTimeline', () => {
 		expect(Number.isFinite(onSeek.mock.calls[0]?.[0])).toBe(true);
 	});
 
+	it('uses the exact stepped time on portrait and returns to the scroll position during drag', async () => {
+		const dayStartMs = Date.UTC(2026, 7, 10);
+		const selected = dayStartMs + 12 * 3_600_000 + 123.456;
+		const onScrub = vi.fn();
+		const view = await render(HorizontalTimeline, {
+			props: {
+				segments: [],
+				selectedUrl: null,
+				playheadMs: selected,
+				exactPicture: true,
+				dayStartMs,
+				nowMs: dayStartMs + 86_400_000,
+				onSeek: vi.fn(),
+				onScrub
+			}
+		});
+		const slider = page.getByRole('slider', { name: /recording timeline scrubber/i });
+		await expect
+			.element(slider)
+			.toHaveAttribute('data-recording-timeline-playhead-ms', String(selected));
+		await view.rerender({ playheadMs: selected + 40 });
+		await expect.element(slider).toHaveAttribute('aria-valuenow', String(selected + 40));
+		const scroller = slider.element();
+		scroller.setPointerCapture = vi.fn();
+		scroller.dispatchEvent(pointer('pointerdown', 17, 200));
+		scroller.dispatchEvent(pointer('pointermove', 17, 100));
+		await expect.element(slider).toHaveAttribute('aria-valuenow', String(onScrub.mock.calls[0][0]));
+		expect(onScrub.mock.calls[0][0]).not.toBe(selected + 40);
+	});
+
 	it('reports horizontal drag samples without invoking the fallback seek', async () => {
 		const onSeek = vi.fn();
 		const onScrubStart = vi.fn();

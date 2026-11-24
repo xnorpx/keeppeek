@@ -1745,7 +1745,7 @@ creation retry fence. Repeating it returns a conflict and never returns the old
 secret or silently creates another link. An indeterminate result requires listing
 and revoking the grant before starting a new creation intent.
 
-The first export path grants the complete immutable MP4. Its preview reports the
+Without `recording_range`, the export path grants the complete immutable MP4. Its preview reports the
 measured media envelope, rounded outward to milliseconds across all emitted
 tracks. It can begin before the original requested start because of codec
 preroll, or end after the requested end because whole samples are retained. It must not be described as exact recording-range sharing. A
@@ -1754,6 +1754,25 @@ still match the Ready generation. Guest admission also requires a persisted
 media-envelope proof bound to that artifact, digest and byte length. Legacy
 exports without captured source/owner identity or measured bounds cannot be
 shared; ordinary authenticated download remains available.
+
+`keeppeek.guest-range.v1` advertises recording-range enforcement on `preview_export` and `create`.
+Range clients require this capability and send the same `ShareRecordingRange` with both commands.
+Fresh range jobs set `CreateExportJob.guest_range_preparation` to true only after negotiating
+this capability. The recorder checks encoded sample sizes before reading payloads and limits output writes to 512 MiB. It discards any incomplete file
+and excludes unrestricted running jobs from deduplication with bounded jobs. Omitting or
+clearing the field retains ordinary export behavior.
+The completed-export duration uses the output presentation envelope. Range proof separately
+records the outward-rounded original source extents of the emitted, unshifted samples. A completed export with an older output-only proof remains
+available to completed-export clients and requires fresh preparation for an exact range.
+The guard names the selected source and exact half-open Unix millisecond interval, up to two minutes.
+The recorder verifies that the export request named this source and interval, that the current camera
+has the captured identity, and that both the source and output extents fit wholly inside the selection.
+Range previews and grant creation also verify the retained MP4 uses the guest viewer's supported
+H.264 video and optional AAC audio. Codec preroll or a final sample extending past an edge makes
+the range unavailable. A nonzero applied recorded-audio offset also prevents guarded sharing:
+the output envelope cannot establish the original source times of corrected audio. Missing footage
+can shorten the file; the preview returns its measured bounds and reports catalog gaps. A successful
+grant binds the verified immutable file digest and these bounds for every guest access.
 
 A grant lasts at most 24 hours and never later than export expiry. Evidence remains
 subject to deletion, privacy and retention; sharing creates no retention hold.
@@ -1776,3 +1795,43 @@ The guest handoff, status and bounded media contracts are defined separately in
 WebRTC, logs, search, controls, health or settings. The public session UUID binds
 each tab to its cookie; it is not a bearer credential. Opening another link in a
 second tab cannot silently switch the first tab to different evidence.
+
+## Recorded frame stepping
+
+A recorder advertises `keeppeek.stored-frame-step.v1` when its lookup and delivery paths are
+available. Send `StoredMediaCommand.step_frame` on a paused, authorized recorded-media cursor
+with its current generation and a fresh step ID. The first request identifies the displayed
+picture by its presentation callback's time on the stored timeline. An ambiguous timestamp
+returns `AMBIGUOUS_ANCHOR`. Subsequent requests use the opaque token from the last successfully
+displayed step. The token is scoped to the session, cursor, source, stream, recording and
+catalog revision. A superseded token returns `STALE`.
+
+A ready response gives the target's absolute presentation time, signed source ticks and clock
+rate, stored playback time, target presentation rank, codec configuration, sample count and
+total encoded bytes. The reliable data channel delivers `StoredFrameStepChunk` messages for
+that step ID and cursor generation in decode order. Each access unit declares its full byte
+length. All chunks before its last contain 32 KiB. The first sample is a random
+access point. Presentation rank follows the evidenced picture order of the decode window.
+Source timestamps can coincide even when two access units have distinct identities. For a
+closed progressive H.264 GOP with single-slice pictures and type-0 picture-order counts,
+the recorder can establish the order from encoded slice headers. If the
+recorder cannot establish their display order, it returns `AMBIGUOUS_ANCHOR`. Give each
+encoded chunk its sample's unique rank as the WebCodecs timestamp, then match the returned
+VideoFrame timestamp to the target rank. Keep the source time with the sample token.
+
+Chunk zero of each sample can carry `stored_time` and `stored_end_time` in
+absolute recording time. The start comes from its MP4 presentation timestamp.
+The exclusive end comes from that timestamp plus the sample’s stored duration,
+converted with the track timescale. When the measured endpoints map to the same
+nanosecond, the end is absent.
+Later chunks omit both coordinates. Older servers can omit both on every chunk.
+A client can use these bounds to probe a paused seek and confirm the selected
+picture with a presentation callback before resuming playback.
+
+One player may have one active operation and up to 32 coalesced repeats. The decoder window
+is limited to 4,096 samples, 10 seconds and 32 MiB encoded, including any reorder lookahead.
+The client retains at most one decoder and two output VideoFrames. The first-response deadline
+is two seconds and the decode deadline is five seconds. Drops, timeouts, unsupported decoder
+configurations, missing source evidence and gaps leave the displayed frame unchanged. Closing
+or changing the cursor invalidates its token and pending output. At a configuration change,
+the client must close the previous decoder and configure the new one before showing a frame.

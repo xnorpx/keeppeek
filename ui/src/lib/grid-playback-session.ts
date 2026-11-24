@@ -1,3 +1,7 @@
+import { isPlaybackRate } from './playback-preferences';
+
+export const maximumReviewCameras = 4;
+
 export type GridPlaybackMode = 'live' | 'scrub' | 'playback' | 'paused';
 
 export type GridReplayDemand = {
@@ -18,17 +22,57 @@ export class GridPlaybackSession {
 	playbackRate = 1;
 	focusedSourceId: string | null = null;
 	activeReplaySources: readonly string[] = [];
+	#anchorMonotonicMs = 0;
 
 	update(options: {
 		mode: GridPlaybackMode;
 		selectedEpochMs: number;
 		playbackRate: number;
 		focusedSourceId?: string | null;
+		monotonicMs?: number;
 	}): void {
+		const monotonicMs = options.monotonicMs ?? performance.now();
+		validTime(options.selectedEpochMs);
+		validTime(monotonicMs);
+		if (!isPlaybackRate(options.playbackRate)) throw new RangeError('Invalid playback rate');
 		this.mode = options.mode;
 		this.selectedEpochMs = options.selectedEpochMs;
 		this.playbackRate = options.playbackRate;
 		this.focusedSourceId = options.focusedSourceId ?? null;
+		this.#anchorMonotonicMs = monotonicMs;
+	}
+
+	positionAt(monotonicMs: number): number {
+		validTime(monotonicMs);
+		return this.mode === 'playback'
+			? expectedGridEpochMs(
+					this.selectedEpochMs,
+					this.#anchorMonotonicMs,
+					monotonicMs,
+					this.playbackRate
+				)
+			: this.selectedEpochMs;
+	}
+
+	seek(epochMs: number, monotonicMs: number): void {
+		validTime(epochMs);
+		validTime(monotonicMs);
+		this.selectedEpochMs = epochMs;
+		this.#anchorMonotonicMs = monotonicMs;
+	}
+
+	setPlaying(playing: boolean, monotonicMs: number): void {
+		if (this.mode !== 'playback' && this.mode !== 'paused') return;
+		const mode = playing ? 'playback' : 'paused';
+		if (mode === this.mode) return;
+		this.seek(this.positionAt(monotonicMs), monotonicMs);
+		this.mode = mode;
+	}
+
+	setRate(rate: number, monotonicMs: number): void {
+		if (!isPlaybackRate(rate)) throw new RangeError('Invalid playback rate');
+		this.seek(this.positionAt(monotonicMs), monotonicMs);
+		this.playbackRate = rate;
 	}
 
 	reconcile(demands: readonly GridReplayDemand[], decoderBudget: number): GridReplaySchedule {
@@ -36,9 +80,11 @@ export class GridPlaybackSession {
 			this.activeReplaySources = [];
 			return {
 				activeCameraIds: [],
-				queuedCameraIds: demands
-					.filter((demand) => demand.hasRecording)
-					.map((demand) => demand.cameraId)
+				queuedCameraIds: [
+					...new Set(
+						demands.filter((demand) => demand.hasRecording).map((demand) => demand.cameraId)
+					)
+				]
 			};
 		}
 		const candidates = demands
@@ -48,18 +94,21 @@ export class GridPlaybackSession {
 					replayDemandScore(right) - replayDemandScore(left) ||
 					left.cameraId.localeCompare(right.cameraId)
 			);
-		const activeCameraIds = candidates
-			.slice(0, Math.max(0, Math.floor(decoderBudget)))
-			.map((demand) => demand.cameraId);
-		const active = new Set(activeCameraIds);
+		const budget = Number.isFinite(decoderBudget)
+			? Math.min(maximumReviewCameras, Math.max(0, Math.floor(decoderBudget)))
+			: 0;
+		const selected = [...new Set(candidates.map((demand) => demand.cameraId))];
+		const activeCameraIds = selected.slice(0, budget);
 		this.activeReplaySources = activeCameraIds;
 		return {
 			activeCameraIds,
-			queuedCameraIds: candidates
-				.filter((demand) => !active.has(demand.cameraId))
-				.map((demand) => demand.cameraId)
+			queuedCameraIds: selected.slice(budget)
 		};
 	}
+}
+
+function validTime(time: number): void {
+	if (!Number.isFinite(time) || time < 0) throw new RangeError('Invalid playback time');
 }
 
 export function expectedGridEpochMs(

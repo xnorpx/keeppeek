@@ -1,3 +1,16 @@
+import { StoredFrameClock } from './stored-frame-clock';
+import {
+	awaitFrameOperation,
+	StoredFrameWindow,
+	type PresentedStoredFrame
+} from './stored-frame-step';
+import {
+	StepStoredFrameSchema,
+	StoredFrameStepDirection,
+	type StepStoredFrame,
+	type StoredFrameStepResult,
+	type StoredFrameStepChunk
+} from './proto/webrtc_pb';
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
 import { durationFromMs, timestampDate, timestampFromDate } from '@bufbuild/protobuf/wkt';
 import {
@@ -86,6 +99,7 @@ import {
 	EventAttachmentDescriptorSchema,
 	EventExportSeedSchema,
 	EventImageAvailability as ProtoEventImageAvailability,
+	ErrorCode,
 	EventImageFilter as ProtoEventImageFilter,
 	EventMetadataSearchSchema,
 	EventOrigin,
@@ -151,6 +165,7 @@ import {
 	type MotionDetectionResult,
 	type QueryEvents,
 	type Request,
+	type Error as ControlError,
 	type Response as ControlResponse,
 	type ServerCapabilities,
 	type StoredMediaFragment,
@@ -225,6 +240,10 @@ type AccessStateListener = (state: AccessConnectionState) => void;
 
 export type PtzPreset = { id: number; name: string };
 
+class EventSearchCapacityError extends Error {
+	override name = 'EventSearchCapacityError';
+}
+
 export class NotificationConflictError extends Error {
 	constructor(
 		message: string,
@@ -262,6 +281,7 @@ export type MediaExportJob = {
 };
 
 type StoredMediaOpenOptions = {
+	schedule?: <T>(operation: (beforeSend?: () => void) => Promise<T>) => Promise<T>;
 	sourceId: string;
 	streamId: 'main' | 'sub';
 	timestampMs: number;
@@ -415,8 +435,7 @@ type EventSearchPending = {
 	hits: ProtoEventSearchHit[];
 	sequences: Set<number>;
 	resolve: (page: EventPreviewPage) => void;
-	reject: (error: Error) => void;
-	timeout: ReturnType<typeof setTimeout>;
+	reject: (reason: unknown) => void;
 };
 
 type EventMediaAccumulator = {
@@ -523,7 +542,7 @@ export class ControlClient {
 					'Restore verification requires the same live remote Administrator session.'
 				);
 		};
-		return this.request(command, controlTimeoutMs, undefined, admit);
+		return this.request(command, controlTimeoutMs, { admit });
 	}
 
 	beginConfigurationRestoreVerification(archiveBytes: bigint, archiveSha256: string) {
@@ -610,7 +629,7 @@ export class ControlClient {
 	};
 	#accessStateListeners = new Set<AccessStateListener>();
 	#notifications = new NotificationControlClient((command) => this.request(command));
-	readonly sharing = new SharingControlClient((command) => this.request(command));
+	readonly sharing = new SharingControlClient((command, timeout) => this.request(command, timeout));
 	readonly recordingMaintenance = new RecordingMaintenanceClient((command) =>
 		this.request(command)
 	);
@@ -626,7 +645,7 @@ export class ControlClient {
 		typeof this.#accessKey === 'string' ? this.#accessKey : null
 	);
 	#system = new SystemControlClient(
-		(command) => this.request(command),
+		(command, signal) => this.request(command, controlTimeoutMs, { signal }),
 		(event) => recordingEvent(event, new Map<string, ChunkAccumulator>(), () => {})
 	);
 	#stateStore = new ControlClientStateStore((command) => this.request(command));
@@ -762,12 +781,34 @@ export class ControlClient {
 		return deleteSession(sessionId, this.#accessKey, options);
 	}
 
-	async getLogSnapshot() {
-		return this.authenticatedHttp(() => fetchAuthenticatedLogSnapshot(this.#accessKey));
+	async getLogSnapshot(signal?: AbortSignal) {
+		return this.diagnosticsSnapshot(fetchAuthenticatedLogSnapshot, signal);
 	}
 
-	async getMetricsSnapshot(): Promise<string> {
-		return this.authenticatedHttp(() => fetchAuthenticatedMetricsSnapshot(this.#accessKey));
+	async getMetricsSnapshot(signal?: AbortSignal): Promise<string> {
+		return this.diagnosticsSnapshot(fetchAuthenticatedMetricsSnapshot, signal);
+	}
+
+	private async diagnosticsSnapshot<T>(
+		read: (credential: HttpCredential, signal?: AbortSignal) => Promise<T>,
+		signal?: AbortSignal
+	): Promise<T> {
+		const generation = this.#accessState.generation;
+		const credential = this.#accessKey;
+		try {
+			return await read(credential, signal);
+		} catch (error) {
+			if (
+				!signal?.aborted &&
+				generation === this.#accessState.generation &&
+				credential === this.#accessKey &&
+				error instanceof ApiRequestError &&
+				(error.status === 401 || error.status === 403)
+			) {
+				this.publishConnectionError(error);
+			}
+			throw error;
+		}
 	}
 
 	async getMqttIntegration() {
@@ -986,64 +1027,77 @@ export class ControlClient {
 		);
 	}
 
+	private async admitEventSearch(
+		command: Request['command'],
+		signal: AbortSignal,
+		onSent: () => void
+	) {
+		const delays = [60, 120, 240, 480, 960];
+		for (let attempt = 0; ; attempt++) {
+			try {
+				return await this.request(command, controlTimeoutMs, { signal, onSent });
+			} catch (cause) {
+				const delay = delays[attempt];
+				if (!(cause instanceof EventSearchCapacityError) || delay === undefined) throw cause;
+				await waitForEventSearchSlot(delay, signal);
+			}
+		}
+	}
+
 	private async runEventSearch(
 		signal: AbortSignal | undefined,
 		query: (queryId: string) => QueryEvents
 	): Promise<EventPreviewPage> {
-		if (signal?.aborted) throw timelineAbortError();
+		signal?.throwIfAborted();
 		const queryId = `event-search-${this.#nextStoredId++}`;
+		const admission = new AbortController();
+		let sent = false;
 		const completed = new Promise<EventPreviewPage>((resolve, reject) => {
-			const timeout = setTimeout(() => {
-				this.#eventSearchPending.delete(queryId);
-				reject(new Error('Event search timed out.'));
-			}, controlTimeoutMs);
-			this.#eventSearchPending.set(queryId, {
-				hits: [],
-				sequences: new Set(),
-				resolve,
-				reject,
-				timeout
-			});
+			this.#eventSearchPending.set(queryId, { hits: [], sequences: new Set(), resolve, reject });
 		});
-		let awaitingDelivery = false;
-		let aborted = false;
-		const abort = () => {
-			aborted = true;
+		const cancel = (reason: unknown) => {
+			if (admission.signal.aborted) return;
 			const pending = this.#eventSearchPending.get(queryId);
-			if (pending) {
-				clearTimeout(pending.timeout);
-				this.#eventSearchPending.delete(queryId);
-				if (awaitingDelivery) pending.reject(timelineAbortError());
-			}
-			void this.cancelEventSearchQuery(queryId).catch(() => undefined);
+			this.#eventSearchPending.delete(queryId);
+			admission.abort(reason);
+			pending?.reject(reason);
+			if (sent) void this.cancelEventSearchQuery(queryId).catch(() => undefined);
 		};
+		const abort = () => cancel(signal?.reason ?? timelineAbortError());
+		const deadline = setTimeout(
+			() => cancel(new Error('Event search timed out.')),
+			controlTimeoutMs
+		);
 		signal?.addEventListener('abort', abort, { once: true });
 		try {
 			const command = create(EventSearchCommandSchema, {
-				action: {
-					case: 'query',
-					value: query(queryId)
+				action: { case: 'query', value: query(queryId) }
+			});
+			const admitted = this.admitEventSearch(
+				{ case: 'eventSearchCommand', value: command },
+				admission.signal,
+				() => {
+					sent = true;
+				}
+			).then((result) => {
+				if (
+					result.case !== 'eventSearchDelivery' ||
+					result.value.queryId !== queryId ||
+					result.value.channel !== DataChannelKind.RELIABLE_DATA
+				) {
+					throw new Error('Server returned an unexpected event search response.');
 				}
 			});
-			const result = await this.request({ case: 'eventSearchCommand', value: command });
-			if (
-				result.case !== 'eventSearchDelivery' ||
-				result.value.queryId !== queryId ||
-				result.value.channel !== DataChannelKind.RELIABLE_DATA
-			) {
-				throw new Error('Server returned an unexpected event search response.');
-			}
-			if (aborted) throw timelineAbortError();
-			awaitingDelivery = true;
-			if (signal?.aborted) abort();
-			return await completed;
+			const [, page] = await Promise.all([admitted, completed]);
+			return page;
 		} catch (error) {
-			const pending = this.#eventSearchPending.get(queryId);
-			if (pending) clearTimeout(pending.timeout);
-			this.#eventSearchPending.delete(queryId);
+			if (admission.signal.aborted) throw admission.signal.reason;
 			throw error;
 		} finally {
+			clearTimeout(deadline);
 			signal?.removeEventListener('abort', abort);
+			this.#eventSearchPending.delete(queryId);
+			admission.abort();
 		}
 	}
 
@@ -1177,21 +1231,44 @@ export class ControlClient {
 	async openStoredMedia(options: StoredMediaOpenOptions): Promise<StoredMediaPlayback> {
 		options.signal?.throwIfAborted();
 		const storedMediaId = `review-${this.#nextStoredId++}`;
+		const schedule =
+			options.schedule ?? (<T>(operation: (beforeSend?: () => void) => Promise<T>) => operation());
 		const playback = new StoredMediaPlayback(
 			storedMediaId,
 			options.sourceId,
 			options.streamId,
-			(timestampMs) => this.seekStoredMedia(storedMediaId, timestampMs),
-			(timestampMs) => this.refillStoredMedia(storedMediaId, timestampMs),
+			(timestampMs) =>
+				schedule((beforeSend) => this.seekStoredMedia(storedMediaId, timestampMs, beforeSend)),
+			(timestampMs) =>
+				schedule((beforeSend) => this.refillStoredMedia(storedMediaId, timestampMs, beforeSend)),
 			(playing, playbackRate, mode, recordedAudioPreview) =>
-				this.updateStoredMediaPlayback(
-					storedMediaId,
-					playing,
-					playbackRate,
-					mode,
-					recordedAudioPreview
+				schedule((beforeSend) =>
+					this.updateStoredMediaPlayback(
+						storedMediaId,
+						playing,
+						playbackRate,
+						mode,
+						recordedAudioPreview,
+						beforeSend
+					)
 				),
-			() => this.closeStoredMedia(storedMediaId)
+			// Closing uses foreground control so it can release a cursor even while its background lane is full.
+			() => this.closeStoredMedia(storedMediaId),
+			this.#capabilityIds.includes('keeppeek.stored-frame-step.v1')
+				? async (step, signal) => {
+						const command = create(StoredMediaCommandSchema, {
+							action: { case: 'stepFrame', value: step }
+						});
+						const response = await this.request(
+							{ case: 'storedMediaCommand', value: command },
+							2000,
+							{ signal }
+						);
+						if (response.case !== 'storedFrameStepResult')
+							throw new Error('Unexpected recorded frame response.');
+						return response.value;
+					}
+				: undefined
 		);
 		this.#playbacks.set(storedMediaId, playback);
 		try {
@@ -1218,10 +1295,17 @@ export class ControlClient {
 					})
 				}
 			});
-			const result = await this.request(
-				{ case: 'storedMediaCommand', value: command },
-				options.openTimeoutMs ?? 4_000,
-				options.signal
+			const result = await schedule((beforeSend) =>
+				this.request(
+					{ case: 'storedMediaCommand', value: command },
+					options.openTimeoutMs ?? 4_000,
+					{
+						// A dispatched shared request must drain the recorder's one background slot.
+						// The comparison scheduler checks cancellation before dispatch.
+						signal: options.schedule ? undefined : options.signal,
+						onSent: beforeSend
+					}
+				)
 			);
 			if (result.case !== 'storedMediaState') {
 				throw new Error('Server returned an unexpected stored media response.');
@@ -1238,22 +1322,38 @@ export class ControlClient {
 		}
 	}
 
-	async getServerCapabilities(): Promise<ServerCapabilities> {
-		await this.connect();
+	async getServerCapabilities(signal?: AbortSignal): Promise<ServerCapabilities> {
+		await this.connectForRequest(signal);
 		if (this.#serverCapabilities) return this.#serverCapabilities;
 		return new Promise((resolve, reject) => {
-			const timeout = setTimeout(() => {
-				this.#capabilityWaiters = this.#capabilityWaiters.filter(
-					(waiter) => waiter.resolve !== resolve
-				);
-				reject(new Error('WebRTC server capabilities did not arrive.'));
-			}, controlTimeoutMs);
-			this.#capabilityWaiters.push({ resolve, reject, timeout });
+			const fail = (error: Error) => {
+				this.#capabilityWaiters = this.#capabilityWaiters.filter((item) => item !== waiter);
+				clearTimeout(waiter.timeout);
+				waiter.reject(error);
+			};
+			const abort = () => fail(timelineAbortError());
+			const waiter: CapabilityWaiter = {
+				resolve: (capabilities) => {
+					signal?.removeEventListener('abort', abort);
+					resolve(capabilities);
+				},
+				reject: (error) => {
+					signal?.removeEventListener('abort', abort);
+					reject(error);
+				},
+				timeout: setTimeout(
+					() => fail(new Error('WebRTC server capabilities did not arrive.')),
+					controlTimeoutMs
+				)
+			};
+			this.#capabilityWaiters.push(waiter);
+			signal?.addEventListener('abort', abort, { once: true });
+			if (signal?.aborted) abort();
 		});
 	}
 
-	async getCameras(): Promise<CameraListItem[]> {
-		return camerasFromCapabilities(await this.getServerCapabilities());
+	async getCameras(signal?: AbortSignal): Promise<CameraListItem[]> {
+		return camerasFromCapabilities(await this.getServerCapabilities(signal));
 	}
 
 	async getHealth(signal?: AbortSignal): Promise<ServerHealthResponse> {
@@ -1347,6 +1447,7 @@ export class ControlClient {
 		endMs: number;
 		allowPartial?: boolean;
 		burnInTimestamp?: boolean;
+		guestRangePreparation?: boolean;
 		event?: Pick<
 			RecordingEvent,
 			| 'id'
@@ -1369,6 +1470,7 @@ export class ControlClient {
 					endTime: timestampFromDate(new Date(options.endMs)),
 					allowPartial: options.allowPartial ?? false,
 					burnInTimestamp: options.burnInTimestamp ?? false,
+					guestRangePreparation: options.guestRangePreparation,
 					eventSeed: options.event ? protoExportEventSeed(options.event) : undefined
 				})
 			}
@@ -1581,8 +1683,8 @@ export class ControlClient {
 		return result.value.manufacturer ?? null;
 	}
 
-	async getLoggingSettings(): Promise<LoggingSettings> {
-		return this.#system.getLoggingSettings();
+	async getLoggingSettings(signal?: AbortSignal): Promise<LoggingSettings> {
+		return this.#system.getLoggingSettings(signal);
 	}
 
 	async setLoggingFilter(filter: string): Promise<LoggingSettings> {
@@ -2062,8 +2164,8 @@ export class ControlClient {
 		return this.#system.updateRuntimeConfiguration(update);
 	}
 
-	async getRuntimeConfiguration(): Promise<SanitizedConfig> {
-		return this.#system.getRuntimeConfiguration();
+	async getRuntimeConfiguration(signal?: AbortSignal): Promise<SanitizedConfig> {
+		return this.#system.getRuntimeConfiguration(signal);
 	}
 
 	async storageVolumes(command: import('./proto/webrtc_pb').StorageVolumeCommand) {
@@ -2199,7 +2301,8 @@ export class ControlClient {
 
 	private async refillStoredMedia(
 		storedMediaId: string,
-		playbackTimeMs: number
+		playbackTimeMs: number,
+		beforeSend?: () => void
 	): Promise<StoredMediaState> {
 		const command = create(StoredMediaCommandSchema, {
 			action: {
@@ -2210,7 +2313,13 @@ export class ControlClient {
 				})
 			}
 		});
-		const result = await this.request({ case: 'storedMediaCommand', value: command });
+		const result = await this.request(
+			{ case: 'storedMediaCommand', value: command },
+			controlTimeoutMs,
+			undefined,
+			undefined,
+			beforeSend
+		);
 		if (result.case !== 'storedMediaState') {
 			throw new Error('Server returned an unexpected stored media refill response.');
 		}
@@ -2219,7 +2328,8 @@ export class ControlClient {
 
 	private async seekStoredMedia(
 		storedMediaId: string,
-		timestampMs: number
+		timestampMs: number,
+		beforeSend?: () => void
 	): Promise<StoredMediaState> {
 		const command = create(StoredMediaCommandSchema, {
 			action: {
@@ -2230,7 +2340,13 @@ export class ControlClient {
 				})
 			}
 		});
-		const result = await this.request({ case: 'storedMediaCommand', value: command });
+		const result = await this.request(
+			{ case: 'storedMediaCommand', value: command },
+			controlTimeoutMs,
+			undefined,
+			undefined,
+			beforeSend
+		);
 		if (result.case !== 'storedMediaState') {
 			throw new Error('Server returned an unexpected stored media seek response.');
 		}
@@ -2242,7 +2358,8 @@ export class ControlClient {
 		playing: boolean | undefined,
 		playbackRate: number | undefined,
 		mode: StoredMediaMode | undefined,
-		recordedAudioPreview?: RecordedAudioPreview
+		recordedAudioPreview?: RecordedAudioPreview,
+		beforeSend?: () => void
 	): Promise<StoredMediaState> {
 		const command = create(StoredMediaCommandSchema, {
 			action: {
@@ -2256,7 +2373,13 @@ export class ControlClient {
 				})
 			}
 		});
-		const result = await this.request({ case: 'storedMediaCommand', value: command });
+		const result = await this.request(
+			{ case: 'storedMediaCommand', value: command },
+			controlTimeoutMs,
+			undefined,
+			undefined,
+			beforeSend
+		);
 		if (result.case !== 'storedMediaState') {
 			throw new Error('Server returned an unexpected stored media playback response.');
 		}
@@ -2283,21 +2406,31 @@ export class ControlClient {
 		admit?.();
 		signal?.throwIfAborted();
 		await this.connect();
-		admit?.();
-		signal?.throwIfAborted();
 	}
 
 	private async request(
 		command: Request['command'],
 		timeoutMs = controlTimeoutMs,
-		signal?: AbortSignal,
-		admit?: () => void
+		options?: { signal?: AbortSignal; admit?: () => void; onSent?: () => void } | AbortSignal,
+		admit?: () => void,
+		beforeSend?: () => void
 	) {
-		await this.connectForRequest(signal, admit);
+		const signal =
+			options && typeof options === 'object' && 'signal' in options
+				? options.signal
+				: (options as AbortSignal | undefined);
+		const effectiveAdmit =
+			options && typeof options === 'object' && 'admit' in options ? options.admit : admit;
+		const onSent =
+			options && typeof options === 'object' && 'onSent' in options ? options.onSent : beforeSend;
+		await this.connectForRequest(signal, effectiveAdmit);
+		effectiveAdmit?.();
+		signal?.throwIfAborted();
 		const channel = this.#controlChannel;
 		if (!channel || channel.readyState !== 'open') {
 			throw new Error('WebRTC control channel is unavailable.');
 		}
+		onSent?.();
 		const requestId = this.#nextRequestId;
 		this.#nextRequestId += 2n;
 		const response = new Promise<ControlResponse>((resolve, reject) => {
@@ -2312,7 +2445,7 @@ export class ControlClient {
 			if (!pending) return;
 			clearTimeout(pending.timeout);
 			this.#pending.delete(requestId);
-			pending.reject(timelineAbortError());
+			pending.reject(signal?.reason ?? timelineAbortError());
 		};
 		signal?.addEventListener('abort', abort, { once: true });
 		const envelope = create(ControlEnvelopeSchema, {
@@ -2323,42 +2456,20 @@ export class ControlClient {
 		});
 		try {
 			channel.send(toBinary(ControlEnvelopeSchema, envelope));
+			onSent?.();
 			const reply = await response;
 			if (reply.result.case === 'error') {
-				const stateStoreError = decodeStateStoreRequestError(reply.result.value);
-				if (stateStoreError) throw stateStoreError;
-				const configurationError = decodeConfigurationRequestError(reply.result.value);
-				if (configurationError) throw configurationError;
-				const workflowError = decodeEventWorkflowError(reply.result.value);
-				if (workflowError) throw workflowError;
-				const conflict = reply.result.value.details.find(
-					(detail) => detail.typeUrl === 'type.keeppeek.dev/notification-rule-conflict.v1'
-				);
-				if (conflict) {
-					try {
-						const detail: unknown = JSON.parse(new TextDecoder().decode(conflict.value));
-						if (
-							detail &&
-							typeof detail === 'object' &&
-							'active_revision' in detail &&
-							'draft_revision' in detail
-						) {
-							throw new NotificationConflictError(
-								reply.result.value.message,
-								BigInt(String(detail.active_revision)),
-								BigInt(String(detail.draft_revision))
-							);
-						}
-					} catch (error) {
-						if (error instanceof NotificationConflictError) throw error;
-					}
-				}
-				throw new Error(reply.result.value.message);
+				throw controlResponseError(command, reply.result.value);
 			}
 			if (reply.result.case !== 'ok') throw new Error('Server returned an empty control response.');
 			return reply.result.value.result;
 		} finally {
 			signal?.removeEventListener('abort', abort);
+			const pending = this.#pending.get(requestId);
+			if (pending) {
+				clearTimeout(pending.timeout);
+				this.#pending.delete(requestId);
+			}
 		}
 	}
 
@@ -2516,6 +2627,7 @@ export class ControlClient {
 				const capabilities = envelope.message.value.event.value;
 				this.#serverCapabilities = capabilities;
 				void this.#stateStore.handleConnectionOpened();
+				void this.#runtimeProfiles.handleConnectionOpened();
 				for (const waiter of this.#capabilityWaiters) {
 					clearTimeout(waiter.timeout);
 					waiter.resolve(capabilities);
@@ -2594,6 +2706,9 @@ export class ControlClient {
 		}
 		if (stored.case === 'fragment') {
 			this.#playbacks.get(stored.value.storedMediaId)?.receiveFragment(stored.value);
+		}
+		if (stored.case === 'frameStepChunk') {
+			this.#playbacks.get(stored.value.storedMediaId)?.receiveFrameStepChunk(stored.value);
 		}
 		if (stored.case === 'keyFrame') {
 			this.#playbacks.get(stored.value.storedMediaId)?.receiveKeyFrame(stored.value);
@@ -2683,7 +2798,6 @@ export class ControlClient {
 		const pending = this.#eventSearchPending.get(end.queryId);
 		if (!pending) return;
 		this.#eventSearchPending.delete(end.queryId);
-		clearTimeout(pending.timeout);
 		if (pending.hits.length !== numeric(end.resultCount)) {
 			pending.reject(new Error('Event search delivery was incomplete.'));
 			return;
@@ -2830,7 +2944,6 @@ export class ControlClient {
 		const pending = this.#eventSearchPending.get(queryId);
 		if (!pending) return;
 		this.#eventSearchPending.delete(queryId);
-		clearTimeout(pending.timeout);
 		pending.reject(new Error(message));
 	}
 
@@ -3060,6 +3173,7 @@ export class ControlClient {
 			this.#objectUrls.clear();
 		}
 		this.publishCapabilities([]);
+		this.#runtimeProfiles.handleConnectionClosed();
 		this.#stateStore.handleConnectionClosed();
 		this.failPending('WebRTC control connection closed.');
 		return sessionId;
@@ -3144,14 +3258,17 @@ function accessAuditEvent(event: ProtoAccessAuditEvent): AccessAuditEvent {
 	};
 }
 
-type CompletedStoredObject = {
-	generation: bigint;
+type StoredAppend = {
+	catalogStartMs?: number;
 	payload: Uint8Array;
 	deliveredThroughMs?: number;
 	sourceBufferContentType?: string;
 };
 
+type CompletedStoredObject = StoredAppend & { generation: bigint };
+
 type StoredChunkAccumulator = ChunkAccumulator & {
+	catalogStartMs?: number;
 	generation: bigint;
 	deliveredThroughMs?: number;
 	sourceBufferContentType?: string;
@@ -3195,7 +3312,9 @@ export class StoredMediaPlayback {
 	#generation = 0n;
 	#chunks = new Map<string, StoredChunkAccumulator>();
 	#completed: CompletedStoredObject[] = [];
-	#appendQueue: Array<{ payload: Uint8Array; sourceBufferContentType?: string }> = [];
+	#appendQueue: StoredAppend[] = [];
+	#appending?: StoredAppend;
+	#frameClock = new StoredFrameClock();
 	#seek: (timestampMs: number) => Promise<StoredMediaState>;
 	#refill: (timestampMs: number) => Promise<StoredMediaState>;
 	#updatePlayback: (
@@ -3237,6 +3356,9 @@ export class StoredMediaPlayback {
 	#latestKeyFrame: StoredMediaKeyFramePreview | null = null;
 	#firstFragmentGenerations = new Set<bigint>();
 
+	readonly #frameClockListeners = new Set<() => void>();
+	#frameStep?: { abort: AbortController; window: StoredFrameWindow };
+
 	constructor(
 		id: string,
 		sourceId: string,
@@ -3249,7 +3371,11 @@ export class StoredMediaPlayback {
 			mode: StoredMediaMode | undefined,
 			recordedAudioPreview?: RecordedAudioPreview
 		) => Promise<StoredMediaState>,
-		close: () => Promise<void>
+		close: () => Promise<void>,
+		private readonly requestFrameStep?: (
+			step: StepStoredFrame,
+			signal: AbortSignal
+		) => Promise<StoredFrameStepResult>
 	) {
 		this.id = id;
 		this.sourceId = sourceId;
@@ -3264,6 +3390,95 @@ export class StoredMediaPlayback {
 		this.listenForSourceOpen();
 	}
 
+	get canStepExactly(): boolean {
+		return this.requestFrameStep !== undefined && typeof VideoDecoder !== 'undefined';
+	}
+
+	onFrameClockUpdate(listener: () => void): () => void {
+		this.#frameClockListeners.add(listener);
+		return () => this.#frameClockListeners.delete(listener);
+	}
+
+	storedNsForMediaUs(us: number): bigint | undefined {
+		if (this.#sourceBuffer?.mode === 'segments')
+			return BigInt(this.anchorTimeMs) * 1_000_000n + BigInt(us) * 1_000n;
+		return this.#frameClock.storedNs(us);
+	}
+
+	mediaUsForStoredNs(ns: bigint): number | undefined {
+		if (this.#sourceBuffer?.mode === 'segments')
+			return Math.round(Number(ns - BigInt(this.anchorTimeMs) * 1_000_000n) / 1_000);
+		return this.#frameClock.mediaUs(ns);
+	}
+
+	receiveFrameStepChunk(chunk: StoredFrameStepChunk): void {
+		this.#frameStep?.window.receive(chunk);
+	}
+
+	cancelFrameStep(): void {
+		this.#frameStep?.abort.abort();
+	}
+
+	async stepRecordedFrame(
+		direction: -1 | 1,
+		anchor: { displayedTimeNs: bigint } | { sampleToken: Uint8Array },
+		signal: AbortSignal
+	): Promise<PresentedStoredFrame> {
+		if (!this.requestFrameStep || !this.canStepExactly)
+			throw new Error('Exact picture decoding is unavailable.');
+		if (this.#closed || this.#playing || this.#frameStep)
+			throw new Error('Pause playback and finish the current picture request.');
+		signal.throwIfAborted();
+		const abort = new AbortController();
+		const cancel = () => abort.abort();
+		signal.addEventListener('abort', cancel, { once: true });
+		const stepId = crypto.randomUUID();
+		const window = new StoredFrameWindow(this.id, this.#generation, stepId);
+		this.#frameStep = { abort, window };
+		const startDeadline = setTimeout(cancel, 2000);
+		let decodeDeadline: ReturnType<typeof setTimeout> | undefined;
+		try {
+			const request = create(StepStoredFrameSchema, {
+				storedMediaId: this.id,
+				sourceId: this.sourceId,
+				streamId: this.streamId,
+				generation: this.#generation,
+				stepId,
+				direction:
+					direction < 0 ? StoredFrameStepDirection.PREVIOUS : StoredFrameStepDirection.NEXT,
+				anchor:
+					'sampleToken' in anchor
+						? { case: 'sampleToken', value: anchor.sampleToken }
+						: {
+								case: 'displayedTime',
+								value: {
+									seconds: anchor.displayedTimeNs / 1_000_000_000n,
+									nanos: Number(anchor.displayedTimeNs % 1_000_000_000n)
+								}
+							}
+			});
+			const send = this.requestFrameStep;
+			const result = await awaitFrameOperation(
+				this.cursorOperation(() => {
+					abort.signal.throwIfAborted();
+					if (this.#playing || this.#generation !== request.generation)
+						throw new Error('The paused playback cursor changed.');
+					return send(request, abort.signal);
+				}),
+				abort.signal
+			);
+			clearTimeout(startDeadline);
+			abort.signal.throwIfAborted();
+			decodeDeadline = setTimeout(cancel, 5000);
+			return await window.decode(result, abort.signal);
+		} finally {
+			clearTimeout(startDeadline);
+			clearTimeout(decodeDeadline);
+			signal.removeEventListener('abort', cancel);
+			this.#frameStep = undefined;
+		}
+	}
+
 	get contentType(): string | null {
 		return this.#contentType;
 	}
@@ -3274,6 +3489,7 @@ export class StoredMediaPlayback {
 			throw new Error('Server returned incomplete stored media state.');
 		}
 		if (this.#generation !== 0n && state.generation < this.#generation) return;
+		if (state.playing || this.#generation !== state.generation) this.cancelFrameStep();
 		this.recordedAudio = state.recordedAudio;
 		this.publishArchive(state.archive);
 		if (this.#generation !== 0n && state.generation !== this.#generation) {
@@ -3307,10 +3523,7 @@ export class StoredMediaPlayback {
 			this.#latestKeyFrame = null;
 		}
 		for (const object of this.#completed) {
-			this.#appendQueue.push({
-				payload: object.payload,
-				sourceBufferContentType: object.sourceBufferContentType
-			});
+			this.#appendQueue.push(object);
 			if (object.deliveredThroughMs !== undefined) {
 				this.#deliveredThroughMs = Math.max(this.#deliveredThroughMs, object.deliveredThroughMs);
 			}
@@ -3457,7 +3670,9 @@ export class StoredMediaPlayback {
 			fragment.chunkCount,
 			this.#contentType ?? 'video/mp4',
 			fragment.payload,
-			deliveredThroughMs
+			deliveredThroughMs,
+			undefined,
+			fragment.startTime ? timestampDate(fragment.startTime).getTime() : undefined
 		);
 	}
 
@@ -3680,6 +3895,7 @@ export class StoredMediaPlayback {
 	}
 
 	dispose(): void {
+		this.cancelFrameStep();
 		if (this.#closed) return;
 		this.#closed = true;
 		this.#chunks.clear();
@@ -3692,6 +3908,8 @@ export class StoredMediaPlayback {
 		this.#startupEvents = [];
 		this.#latestKeyFrame = null;
 		this.#firstFragmentGenerations.clear();
+		this.#appending = undefined;
+		this.#frameClock.reset();
 		this.#completed = [];
 		this.#appendQueue = [];
 		this.#refillInFlight = false;
@@ -3714,7 +3932,8 @@ export class StoredMediaPlayback {
 		contentType: string,
 		payload: Uint8Array,
 		deliveredThroughMs: number | undefined,
-		sourceBufferContentType?: string
+		sourceBufferContentType?: string,
+		catalogStartMs?: number
 	): void {
 		if (this.#closed || chunkCount === 0 || chunkIndex >= chunkCount) return;
 		const accumulator = this.#chunks.get(key) ?? {
@@ -3723,7 +3942,8 @@ export class StoredMediaPlayback {
 			chunks: Array.from<Uint8Array | undefined>({ length: chunkCount }),
 			contentType,
 			deliveredThroughMs,
-			sourceBufferContentType
+			sourceBufferContentType,
+			catalogStartMs
 		};
 		if (
 			accumulator.generation !== generation ||
@@ -3731,6 +3951,7 @@ export class StoredMediaPlayback {
 			accumulator.contentType !== contentType ||
 			accumulator.deliveredThroughMs !== deliveredThroughMs ||
 			accumulator.sourceBufferContentType !== sourceBufferContentType ||
+			accumulator.catalogStartMs !== catalogStartMs ||
 			accumulator.chunks[chunkIndex] !== undefined
 		) {
 			this.fail('Stored media chunks were inconsistent.');
@@ -3749,7 +3970,8 @@ export class StoredMediaPlayback {
 			generation,
 			payload: concatenateChunks(accumulator.chunks),
 			deliveredThroughMs: accumulator.deliveredThroughMs,
-			sourceBufferContentType: accumulator.sourceBufferContentType
+			sourceBufferContentType: accumulator.sourceBufferContentType,
+			catalogStartMs: accumulator.catalogStartMs
 		};
 		if (this.#generation === 0n) {
 			this.#completed.push(completed);
@@ -3763,10 +3985,7 @@ export class StoredMediaPlayback {
 		if (accumulator.deliveredThroughMs !== undefined) {
 			this.#deliveredThroughMs = Math.max(this.#deliveredThroughMs, accumulator.deliveredThroughMs);
 		}
-		this.#appendQueue.push({
-			payload: completed.payload,
-			sourceBufferContentType: completed.sourceBufferContentType
-		});
+		this.#appendQueue.push(completed);
 		if (
 			accumulator.deliveredThroughMs !== undefined &&
 			!this.#firstFragmentGenerations.has(generation)
@@ -3822,6 +4041,8 @@ export class StoredMediaPlayback {
 	}
 
 	private replaceMediaSource(): void {
+		this.#appending = undefined;
+		this.#frameClock.reset();
 		this.#sourceBuffer = null;
 		this.#sourceBufferContentType = null;
 		this.#appendQueue = [];
@@ -3876,11 +4097,27 @@ export class StoredMediaPlayback {
 			sourceBuffer.mode = this.recordedAudio?.appliedOffsetMs ? 'segments' : 'sequence';
 			sourceBuffer.addEventListener('updateend', () => {
 				if (this.#sourceBuffer !== sourceBuffer) return;
+				const appended = this.#appending;
+				this.#appending = undefined;
+				if (this.requestFrameStep && sourceBuffer.mode === 'sequence' && appended) {
+					if (appended.sourceBufferContentType) this.#frameClock.initialization(appended.payload);
+					else if (appended.catalogStartMs !== undefined)
+						this.#frameClock.fragment(
+							appended.payload,
+							appended.catalogStartMs,
+							sourceBuffer.timestampOffset
+						);
+					else this.#frameClock.reset();
+				}
+				for (const listener of this.#frameClockListeners) listener();
 				this.flushAppendQueue();
 				this.finishIfEnded();
 			});
 			sourceBuffer.addEventListener('error', () => {
-				if (this.#sourceBuffer === sourceBuffer) this.fail('Browser rejected stored media bytes.');
+				if (this.#sourceBuffer !== sourceBuffer) return;
+				this.#appending = undefined;
+				this.#frameClock.reset();
+				this.fail('Browser rejected stored media bytes.');
 			});
 			this.flushAppendQueue();
 		} catch (error) {
@@ -3890,7 +4127,8 @@ export class StoredMediaPlayback {
 
 	private flushAppendQueue(): void {
 		const sourceBuffer = this.#sourceBuffer;
-		if (!sourceBuffer || sourceBuffer.updating || this.#closed) {
+		// updating becomes false before updateend publishes this append's video clock.
+		if (!sourceBuffer || this.#appending || sourceBuffer.updating || this.#closed) {
 			return;
 		}
 		if (this.#appendQueue.length === 0) {
@@ -3916,8 +4154,10 @@ export class StoredMediaPlayback {
 				sourceBuffer.changeType(next.sourceBufferContentType);
 				this.#sourceBufferContentType = next.sourceBufferContentType;
 			}
+			this.#appending = next;
 			sourceBuffer.appendBuffer(ownedArrayBuffer(next.payload));
 		} catch (error) {
+			this.#appending = undefined;
 			this.fail(error instanceof Error ? error.message : 'Unable to append stored media bytes.');
 		}
 	}
@@ -3927,6 +4167,7 @@ export class StoredMediaPlayback {
 			!this.#ended ||
 			this.#closed ||
 			this.#mediaSource.readyState !== 'open' ||
+			this.#appending ||
 			this.#sourceBuffer?.updating ||
 			this.#appendQueue.length > 0 ||
 			this.#chunks.size > 0 ||
@@ -3989,6 +4230,62 @@ function recordingDayWindow(date: string): { startMs: number; endMs: number } {
 		throw new Error('Recording date is invalid.');
 	}
 	return { startMs, endMs: startMs + 86_400_000 };
+}
+
+function waitForEventSearchSlot(delayMs: number, signal?: AbortSignal): Promise<void> {
+	signal?.throwIfAborted();
+	return new Promise((resolve, reject) => {
+		const abort = () => {
+			clearTimeout(timer);
+			reject(signal?.reason ?? timelineAbortError());
+		};
+		const timer = setTimeout(() => {
+			signal?.removeEventListener('abort', abort);
+			resolve();
+		}, delayMs);
+		signal?.addEventListener('abort', abort, { once: true });
+	});
+}
+
+function controlResponseError(command: Request['command'], error: ControlError): Error {
+	// The existing recorder uses REJECTED for both an occupied search slot and a duplicate ID.
+	if (
+		command.case === 'eventSearchCommand' &&
+		command.value.action.case === 'query' &&
+		error.code === ErrorCode.REJECTED &&
+		/^event search task limit is reached[.!]?$/i.test(error.message.trim())
+	) {
+		return new EventSearchCapacityError(error.message);
+	}
+	const stateStoreError = decodeStateStoreRequestError(error);
+	if (stateStoreError) return stateStoreError;
+	const configurationError = decodeConfigurationRequestError(error);
+	if (configurationError) return configurationError;
+	const workflowError = decodeEventWorkflowError(error);
+	if (workflowError) return workflowError;
+	const conflict = error.details.find(
+		(detail) => detail.typeUrl === 'type.keeppeek.dev/notification-rule-conflict.v1'
+	);
+	if (conflict) {
+		try {
+			const detail: unknown = JSON.parse(new TextDecoder().decode(conflict.value));
+			if (
+				detail &&
+				typeof detail === 'object' &&
+				'active_revision' in detail &&
+				'draft_revision' in detail
+			) {
+				return new NotificationConflictError(
+					error.message,
+					BigInt(String(detail.active_revision)),
+					BigInt(String(detail.draft_revision))
+				);
+			}
+		} catch {
+			// A malformed optional detail falls back to the recorder's error message.
+		}
+	}
+	return new Error(error.message);
 }
 
 function timelineAbortError(): DOMException {

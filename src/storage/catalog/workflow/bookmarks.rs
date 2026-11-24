@@ -58,7 +58,44 @@ pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result
              WHERE event_id = OLD.id AND source_id = OLD.camera_id;
          END;",
     ).await?;
-    Ok(())
+    repair_event_times(connection).await
+}
+
+async fn repair_event_times(connection: &turso::Connection) -> anyhow::Result<()> {
+    connection.execute_batch("BEGIN IMMEDIATE").await?;
+    let result = async {
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO catalog_schema_migrations(version, applied_at_ms)
+                 VALUES (4, CAST(unixepoch('subsec') * 1000 AS INTEGER))",
+                (),
+            )
+            .await?;
+        // A rolled-back recorder can move events after migration 4. Repair matching live events on every open.
+        connection
+            .execute(
+                "UPDATE event_bookmarks SET event_start_ms = (
+                     SELECT e.start_time_ms FROM recording_events e
+                     WHERE e.id = event_bookmarks.event_id AND e.camera_id = event_bookmarks.source_id
+                 ), event_deleted_at_ms = NULL
+                 WHERE EXISTS (
+                     SELECT 1 FROM recording_events e
+                     WHERE e.id = event_bookmarks.event_id AND e.camera_id = event_bookmarks.source_id
+                       AND (e.start_time_ms <> event_bookmarks.event_start_ms OR event_bookmarks.event_deleted_at_ms IS NOT NULL)
+                 )",
+                (),
+            )
+            .await?;
+        Ok(())
+    }
+    .await;
+    match result {
+        Ok(()) => connection.execute_batch("COMMIT").await.map_err(Into::into),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK").await;
+            Err(error)
+        }
+    }
 }
 
 pub(super) async fn read(
@@ -66,8 +103,10 @@ pub(super) async fn read(
     key: &EventKey,
 ) -> anyhow::Result<Option<Bookmark>> {
     let mut rows = connection.query(
-        "SELECT active, note, revision, created_by, created_at_ms, updated_by, updated_at_ms,
-             event_start_ms, event_kind FROM event_bookmarks WHERE source_id = ?1 AND event_id = ?2",
+        "SELECT b.active, b.note, b.revision, b.created_by, b.created_at_ms, b.updated_by, b.updated_at_ms,
+             COALESCE(e.start_time_ms, b.event_start_ms), b.event_kind FROM event_bookmarks AS b
+             LEFT JOIN recording_events AS e ON e.id = b.event_id AND e.camera_id = b.source_id
+             WHERE b.source_id = ?1 AND b.event_id = ?2",
         turso::params![key.source_id.clone(), key.event_id.clone()],
     ).await?;
     let Some(row) = rows.next().await? else {

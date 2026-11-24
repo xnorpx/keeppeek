@@ -65,6 +65,24 @@ pub(super) async fn write(
         anyhow::ensure!(event.revision == 1, "new events must start at revision one");
     }
     upsert(connection, event, publication).await?;
+    // Keep the indexed bookmark time and its global page revision in this write transaction.
+    if existing
+        .as_ref()
+        .is_none_or(|old| old.start_time_ms != event.start_time_ms)
+    {
+        connection
+            .execute(
+                "UPDATE event_bookmarks SET event_start_ms = ?1, event_deleted_at_ms = NULL
+             WHERE source_id = ?2 AND event_id = ?3
+               AND (event_start_ms <> ?1 OR event_deleted_at_ms IS NOT NULL)",
+                turso::params![
+                    event.start_time_ms,
+                    event.camera_id.clone(),
+                    event.id.clone()
+                ],
+            )
+            .await?;
+    }
     retention::event_index::write(connection, event).await?;
     replace_intrinsic_event_terms(connection, &event.id, &event.kind, event.text.as_deref())
         .await?;

@@ -321,10 +321,51 @@ impl FakeRtspCamera {
     }
 }
 
+// MP4 samples are transmitted in decode order. Their RTP timestamps identify
+// presentation and may move backward or coincide for adjacent access units.
+#[derive(Clone, Default)]
+struct DecodeSchedule {
+    origin: Option<u64>,
+    runs: Vec<(usize, u64)>,
+    duration_ticks: u64,
+}
+
+impl DecodeSchedule {
+    fn add(
+        &mut self,
+        dts: u64,
+        duration: u32,
+        timescale: u32,
+        packets: usize,
+    ) -> Result<(), FakeRtspCameraError> {
+        if packets == 0 {
+            return Ok(());
+        }
+        let origin = *self.origin.get_or_insert(dts);
+        let delta = dts.checked_sub(origin).ok_or_else(|| {
+            FakeRtspCameraError::Mp4("MP4 decode time moved before its origin".into())
+        })?;
+        let scale = |value: u128| {
+            u64::try_from(value * u128::from(RTP_CLOCK_RATE) / u128::from(timescale))
+                .map_err(|_| FakeRtspCameraError::Mp4("MP4 decode duration overflowed".into()))
+        };
+        let ticks = scale(u128::from(delta))?;
+        if self.runs.last().is_some_and(|&(_, last)| last > ticks) {
+            return Err(FakeRtspCameraError::Mp4(
+                "MP4 decode times are out of order".into(),
+            ));
+        }
+        self.runs.push((packets, ticks));
+        self.duration_ticks = scale(u128::from(delta) + u128::from(duration))?;
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 struct MediaSource {
     describe_body: Bytes,
     rtp_packets: Vec<Bytes>,
+    decode_schedule: Option<DecodeSchedule>,
     initial_sequence_number: u16,
     initial_timestamp: u32,
     hold_after_media: bool,
@@ -345,6 +386,7 @@ impl Default for MediaSource {
                 0x80, 0xe0, 0x00, 0x01, 0x00, 0x01, 0x5f, 0x90, 0x01, 0x02, 0x03, 0x04, 0x65, 0x88,
                 0x84, 0x21,
             ])],
+            decode_schedule: None,
             initial_sequence_number: 1,
             initial_timestamp: 90_000,
             hold_after_media: false,
@@ -471,6 +513,7 @@ impl MediaSource {
         let mut first_timestamp = None;
         let mut first_packet = None;
         let mut rtp_packets = Vec::new();
+        let mut decode_schedule = DecodeSchedule::default();
 
         for sample_id in first_sample..=sample_count {
             let sample = reader
@@ -481,7 +524,10 @@ impl MediaSource {
                         "H.264 sample {sample_id} is missing from the MP4 source"
                     ))
                 })?;
-            let rtp_timestamp = scale_timestamp(sample.start_time, timescale)?;
+            let dts = sample.start_time;
+            let duration = sample.duration;
+            let packet_start = rtp_packets.len();
+            let rtp_timestamp = presentation_timestamp(&sample, timescale);
             let start = *first_timestamp.get_or_insert(rtp_timestamp);
             let timestamp = crate::Timestamp::new(i64::from(rtp_timestamp), clock_rate, start)
                 .ok_or_else(|| {
@@ -505,6 +551,7 @@ impl MediaSource {
                 }
                 rtp_packets.push(Bytes::copy_from_slice(packet.raw()));
             }
+            decode_schedule.add(dts, duration, timescale, rtp_packets.len() - packet_start)?;
         }
 
         let Some((initial_sequence_number, initial_timestamp)) = first_packet else {
@@ -515,6 +562,7 @@ impl MediaSource {
         Ok(Self {
             describe_body: h264_describe_body(&sps, &pps, width, height)?,
             rtp_packets,
+            decode_schedule: Some(decode_schedule),
             initial_sequence_number,
             initial_timestamp,
             hold_after_media: false,
@@ -603,6 +651,7 @@ impl MediaSource {
 
         let mut initial_timestamp = None;
         let mut rtp_packets = Vec::new();
+        let mut decode_schedule = DecodeSchedule::default();
         let mut next_sequence_number = 1;
         for sample_id in first_sample..=sample_count {
             let sample = reader
@@ -613,7 +662,7 @@ impl MediaSource {
                         "H.265 sample {sample_id} is missing from the MP4 source"
                     ))
                 })?;
-            let timestamp = scale_timestamp(sample.start_time, timescale)?;
+            let timestamp = presentation_timestamp(&sample, timescale);
             let packet_count = rtp_packets.len();
             packetize_h265_sample(
                 &sample.bytes,
@@ -621,6 +670,12 @@ impl MediaSource {
                 timestamp,
                 &mut next_sequence_number,
                 &mut rtp_packets,
+            )?;
+            decode_schedule.add(
+                sample.start_time,
+                sample.duration,
+                timescale,
+                rtp_packets.len() - packet_count,
             )?;
             if packet_count != rtp_packets.len() && initial_timestamp.is_none() {
                 initial_timestamp = Some(timestamp);
@@ -635,6 +690,7 @@ impl MediaSource {
         Ok(Self {
             describe_body: h265_describe_body(&vps, &sps, &pps, width, height),
             rtp_packets,
+            decode_schedule: Some(decode_schedule),
             initial_sequence_number: 1,
             initial_timestamp,
             hold_after_media: false,
@@ -838,6 +894,7 @@ fn serve_presentation(
         &mut connection.stream,
         &transport,
         &source.rtp_packets,
+        source.decode_schedule.as_ref(),
         source.playback,
         connection.stop,
     )?;
@@ -1115,6 +1172,7 @@ fn send_rtp_packets(
     stream: &mut TcpStream,
     transport: &SessionTransport,
     packets: &[Bytes],
+    schedule: Option<&DecodeSchedule>,
     playback: Mp4Playback,
     stop: &Receiver<()>,
 ) -> Result<(), FakeRtspCameraError> {
@@ -1125,7 +1183,13 @@ fn send_rtp_packets(
         .transpose()?;
     let loop_duration_ticks = playback
         .looping
-        .then(|| rtp_loop_duration(packets))
+        .then(|| match schedule {
+            Some(clock) if clock.duration_ticks > 0 => Ok(clock.duration_ticks),
+            Some(_) => Err(FakeRtspCameraError::Mp4(
+                "looping MP4 requires a positive decode duration".into(),
+            )),
+            None => rtp_loop_duration(packets).map(u64::from),
+        })
         .transpose()?;
     let packet_count = u64::try_from(packets.len()).map_err(|_| {
         FakeRtspCameraError::Protocol("RTP packet count does not fit u64".to_string())
@@ -1134,7 +1198,7 @@ fn send_rtp_packets(
     let mut loop_index = 0_u64;
     loop {
         let loop_elapsed_ticks = match loop_duration_ticks {
-            Some(duration) => loop_index.checked_mul(u64::from(duration)).ok_or_else(|| {
+            Some(duration) => loop_index.checked_mul(duration).ok_or_else(|| {
                 FakeRtspCameraError::Protocol("RTP playback timeline overflowed".to_string())
             })?,
             None => 0,
@@ -1145,14 +1209,26 @@ fn send_rtp_packets(
         let timestamp_offset = u32::try_from(loop_elapsed_ticks % (u64::from(u32::MAX) + 1))
             .expect("timestamp offset is reduced to u32 range");
 
+        let mut send_times = schedule.into_iter().flat_map(|clock| {
+            clock
+                .runs
+                .iter()
+                .flat_map(|&(count, time)| std::iter::repeat_n(time, count))
+        });
         for packet in packets {
             if playback.realtime {
-                let first_timestamp = first_timestamp.expect("non-empty RTP packet sequence");
-                let elapsed_ticks = loop_elapsed_ticks
-                    .checked_add(u64::from(
-                        rtp_timestamp(packet)?.wrapping_sub(first_timestamp),
-                    ))
-                    .ok_or_else(|| {
+                let send_ticks = if schedule.is_some() {
+                    send_times.next().ok_or_else(|| {
+                        FakeRtspCameraError::Mp4("missing MP4 decode schedule".into())
+                    })?
+                } else {
+                    u64::from(
+                        rtp_timestamp(packet)?
+                            .wrapping_sub(first_timestamp.expect("non-empty RTP packet sequence")),
+                    )
+                };
+                let elapsed_ticks =
+                    loop_elapsed_ticks.checked_add(send_ticks).ok_or_else(|| {
                         FakeRtspCameraError::Protocol(
                             "RTP playback timeline overflowed".to_string(),
                         )
@@ -1494,13 +1570,10 @@ fn push_rtp_packet(
     packets.push(Bytes::from(packet));
 }
 
-fn scale_timestamp(start_time: u64, timescale: u32) -> Result<u32, FakeRtspCameraError> {
-    let ticks = start_time
-        .checked_mul(u64::from(RTP_CLOCK_RATE))
-        .ok_or_else(|| FakeRtspCameraError::Mp4("MP4 timestamp overflowed".to_string()))?
-        / u64::from(timescale);
-    u32::try_from(ticks)
-        .map_err(|_| FakeRtspCameraError::Mp4("MP4 timestamp overflowed".to_string()))
+fn presentation_timestamp(sample: &mp4::Mp4Sample, timescale: u32) -> u32 {
+    let pts = i128::from(sample.start_time) + i128::from(sample.rendering_offset);
+    let ticks = (pts * i128::from(RTP_CLOCK_RATE)).div_euclid(i128::from(timescale));
+    u32::try_from(ticks.rem_euclid(1_i128 << 32)).expect("wire RTP timestamp is reduced to 32 bits")
 }
 
 fn select_start_sample<R: Read + std::io::Seek>(
@@ -1583,6 +1656,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mp4_camera_sends_duplicate_and_reordered_rtp_times_on_the_decode_schedule() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/exact_frame_step/duplicate-pts.mp4");
+        let playback = Mp4Playback::realtime_looping(Duration::ZERO);
+        let source = MediaSource::from_mp4_with_playback(&path, playback).unwrap();
+        let schedule = source.decode_schedule.as_ref().unwrap();
+        assert_eq!(schedule.duration_ticks, 720 * 90);
+        let offsets: Vec<_> = schedule.runs.iter().map(|&(_, when)| when).collect();
+        let dts_ms = [0, 40, 80, 120, 240, 280, 320, 440, 480, 520, 640, 680];
+        assert_eq!(offsets, dts_ms.map(|ms| ms * 90));
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let (stop, stopped) = mpsc::channel();
+        let sender = thread::spawn(move || {
+            send_rtp_packets(
+                &mut server,
+                &SessionTransport::Tcp { channel: 0 },
+                &source.rtp_packets,
+                source.decode_schedule.as_ref(),
+                playback,
+                &stopped,
+            )
+        });
+        let pts_ms = [0, 200, 40, 40, 280, 240, 400, 600, 440, 480, 640, 640];
+        for cycle in [0, 720] {
+            for ms in pts_ms {
+                loop {
+                    let packet = read_interleaved_rtp(&mut client);
+                    assert_eq!(
+                        u32::from_be_bytes(packet[4..8].try_into().unwrap()),
+                        (ms + cycle) * 90
+                    );
+                    if packet[1] & 0x80 != 0 {
+                        break;
+                    }
+                }
+            }
+        }
+        stop.send(()).unwrap();
+        assert!(matches!(
+            sender.join().unwrap(),
+            Err(FakeRtspCameraError::Stopped)
+        ));
+    }
+
+    #[test]
     fn paced_rtp_delivery_follows_media_timestamps() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
@@ -1596,6 +1719,7 @@ mod tests {
                 &mut server,
                 &SessionTransport::Tcp { channel: 0 },
                 &packets,
+                None,
                 Mp4Playback::realtime(Duration::ZERO),
                 &stopped,
             )
@@ -1623,6 +1747,7 @@ mod tests {
                     &mut server,
                     &SessionTransport::Tcp { channel: 0 },
                     &packets,
+                    None,
                     Mp4Playback::realtime_looping(Duration::ZERO),
                     &stopped,
                 ),
@@ -1660,10 +1785,14 @@ mod tests {
         Bytes::copy_from_slice(&packet)
     }
 
-    fn read_interleaved_rtp(stream: &mut TcpStream) -> [u8; 12] {
-        let mut frame = [0_u8; 4 + 12];
-        stream.read_exact(&mut frame).unwrap();
-        assert_eq!(&frame[..4], &[b'$', 0, 0, 12]);
-        frame[4..].try_into().unwrap()
+    fn read_interleaved_rtp(stream: &mut TcpStream) -> Vec<u8> {
+        let mut header = [0_u8; 4];
+        stream.read_exact(&mut header).unwrap();
+        assert_eq!(&header[..2], &[b'$', 0]);
+        let length = usize::from(u16::from_be_bytes([header[2], header[3]]));
+        assert!(length >= 12);
+        let mut packet = vec![0; length];
+        stream.read_exact(&mut packet).unwrap();
+        packet
     }
 }

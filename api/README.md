@@ -23,6 +23,10 @@ stream-state notifications. Session network capacity, per-Auto-track allocation,
 pending variants, and the selection reason are separate runtime facts. See
 [live quality diagnostics](webrtc.md#live-quality-diagnostics).
 
+Recorded players negotiate exact paused-picture navigation with
+`keeppeek.stored-frame-step.v1`. The recorder returns a bounded decode window and a precise
+sample identity for qualified media. See [recorded frame stepping](webrtc.md#recorded-frame-stepping).
+
 ## License
 
 All API definitions and documentation in this directory are licensed under the MIT License. See

@@ -19,6 +19,7 @@ pub struct FixtureFrame {
 impl FixtureFrame {
     fn recording_frame(&self, start: Instant) -> RecordingFrame {
         RecordingFrame {
+            source_rtp: None,
             received_at: start + self.offset,
             timestamp: None,
             frame: MediaFrame::Video(VideoFrame {

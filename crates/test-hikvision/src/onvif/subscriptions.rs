@@ -104,7 +104,7 @@ pub(super) fn route(
                 "",
             );
         }
-        let expires = now + lease.min(shared.config.lease);
+        let expires = now + lease.min(shared.config.renewal_lease);
         state.subscription = Some(Subscription { id, expires });
         state.renews += 1;
         soap::reply(&format!(

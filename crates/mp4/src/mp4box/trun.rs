@@ -172,6 +172,16 @@ impl<R: Read + Seek> ReadBox<&mut R> for TrunBox {
 
 impl<W: Write> WriteBox<&mut W> for TrunBox {
     fn write_box(&self, writer: &mut W) -> Result<u64> {
+        for (flag, entries) in [
+            (Self::FLAG_SAMPLE_DURATION, &self.sample_durations),
+            (Self::FLAG_SAMPLE_SIZE, &self.sample_sizes),
+            (Self::FLAG_SAMPLE_FLAGS, &self.sample_flags),
+            (Self::FLAG_SAMPLE_CTS, &self.sample_cts),
+        ] {
+            if self.flags & flag != 0 && entries.len() != self.sample_count as usize {
+                return Err(Error::InvalidData("sample count out of sync"));
+            }
+        }
         let size = self.box_size();
         BoxHeader::new(self.box_type(), size).write(writer)?;
 
@@ -183,9 +193,6 @@ impl<W: Write> WriteBox<&mut W> for TrunBox {
         }
         if let Some(v) = self.first_sample_flags {
             writer.write_u32::<BigEndian>(v)?;
-        }
-        if self.sample_count != self.sample_sizes.len() as u32 {
-            return Err(Error::InvalidData("sample count out of sync"));
         }
         for i in 0..self.sample_count as usize {
             if Self::FLAG_SAMPLE_DURATION & self.flags > 0 {
