@@ -17,12 +17,16 @@ pub(in crate::server::guest_review) struct Harness {
 
 impl Harness {
     pub(in crate::server::guest_review) fn new() -> Self {
+        Self::with_writer_timeout(Duration::from_secs(3))
+    }
+
+    pub(in crate::server::guest_review) fn with_writer_timeout(timeout: Duration) -> Self {
         let (sent, requests) = mpsc::sync_channel(16);
         let handler: Handler = Box::new(move |request| {
             let (release, wait) = mpsc::sync_channel(1);
             sent.send((request.response_abort_handle().unwrap(), release))
                 .unwrap();
-            let _ = wait.recv_timeout(Duration::from_secs(3));
+            let _ = wait.recv_timeout(timeout);
             Response::text("done")
         });
         Self {
