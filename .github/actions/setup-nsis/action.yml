@@ -1,0 +1,26 @@
+name: Set up NSIS
+description: Install the Windows compiler used for KeepPeek installers.
+runs:
+  using: composite
+  steps:
+    - shell: pwsh
+      run: |
+        $compiler = Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe'
+        if (Test-Path -LiteralPath $compiler -PathType Leaf) {
+          return
+        }
+
+        $PSNativeCommandUseErrorActionPreference = $false
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+          choco.exe install nsis --no-progress --yes --execution-timeout=180
+          $installExitCode = $LASTEXITCODE
+          if ($installExitCode -eq 0 -and (Test-Path -LiteralPath $compiler -PathType Leaf)) {
+            return
+          }
+          if ($attempt -lt 3) {
+            Write-Warning "NSIS installation attempt $attempt did not produce the compiler (Chocolatey exit $installExitCode). Retrying."
+            Start-Sleep -Seconds (15 * $attempt)
+          }
+        }
+
+        throw "NSIS compiler unavailable after 3 installation attempts (last Chocolatey exit $installExitCode)."
