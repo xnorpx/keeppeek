@@ -42,6 +42,45 @@ Variable-rate recording can repeat or skip pictures during approximate seeking. 
 and pause. `[` and `]` set export boundaries. Form fields keep their normal keyboard behavior.
 Arrow keys pan a focused digitally zoomed image.
 
+### Compare recordings from up to four cameras
+
+Open a recording in **Keep**. Under **Compare with**, select a second camera.
+Use **Add camera** to compare up to four selected cameras. **Remove** drops a
+camera from the comparison. Removing one of the last two opens the remaining
+camera at the shared time. **Play**, **Pause**, **Speed** and the five-second seek
+buttons act on one UTC playhead. Enter a date and time under **Seek to UTC** and
+choose **Go to time** to move directly to that instant. Each camera shows the UTC
+time of its most recently presented frame. When a playing camera falls more than
+250 ms from the shared playhead, Keep seeks to the shared time once that footage
+is buffered. A camera outside that tolerance shows **Synchronizing** with its measured
+distance ahead of or behind the shared time. The label clears when the browser presents
+a frame within tolerance. Keep waits at least 750 ms between corrections for the same player.
+If two paused corrections cannot present the selected moment, **Retry recording** reopens just
+that camera.
+A camera with a gap shows its own status and rejoins when the playhead reaches
+playable footage again. **Single camera** opens the focused camera at that moment.
+
+Use **Audio** to select the one camera whose recording can be heard, and **Mute**
+or **Unmute** to control listening. **Focus** chooses which camera has priority
+when decoder capacity is limited. Pausing, seeking or changing the focused or
+audio camera updates the link so it can reopen the comparison at that moment.
+**Copy link to this moment** captures the current playhead while recordings are
+playing. The browser remembers the playback speed and mute preference.
+For an export, choose a camera under **Focus**. Mark the shared UTC playhead with
+**Set range start** and **Set range end**, up to two minutes apart. **Export
+focused camera** opens the usual export workflow for that camera and stream.
+The recorder checks retained coverage. **Back to comparison** restores the
+camera selection, focus, audio, marked range and shared time.
+
+On a compact screen, up to two recordings can decode. On phones, **Comparison
+options** opens the camera, audio, speed, UTC seek and marked-range controls.
+A hidden browser tab releases the comparison players and reopens visible footage
+on return.
+If the connection drops during playback, the sign-in screen clears the camera
+views. After reconnecting, the comparison opens paused at the last shared UTC
+time. A comparison link still opens its authorized cameras when a selected camera
+is unavailable. Focus moves to the first available selection when needed.
+
 ### Use Keep on a phone
 
 In portrait, Keep keeps a compact camera/date row, the player and a horizontal history timeline
