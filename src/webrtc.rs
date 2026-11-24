@@ -2629,16 +2629,30 @@ impl WebRtc {
     }
 
     pub(crate) fn refresh_camera_capabilities(&self, source_id: &str) {
-        let handler = self.live.inner.control_handler.read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(Weak::upgrade);
+        let handler = self
+            .live
+            .inner
+            .control_handler
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(Weak::upgrade);
         let Some(handler) = handler else { return };
         for session_id in self.active_api_session_ids() {
-            let Some(snapshot) = handler.initial_capabilities(session_id) else { continue };
-            if !snapshot.cameras.iter().any(|camera| camera.source_id == source_id) {
+            let Some(snapshot) = handler.initial_capabilities(session_id) else {
+                continue;
+            };
+            if !snapshot
+                .cameras
+                .iter()
+                .any(|camera| camera.source_id == source_id)
+            {
                 continue;
             }
             let notice = crate::api::proto::Notification {
-                event: Some(crate::api::proto::notification::Event::InitialCapabilities(snapshot)),
+                event: Some(crate::api::proto::notification::Event::InitialCapabilities(
+                    snapshot,
+                )),
             };
             if control_notification_encoded_len(&notice) <= MAX_CONTROL_MESSAGE_BYTES {
                 let _ = self.try_enqueue_api_notification(session_id, notice);

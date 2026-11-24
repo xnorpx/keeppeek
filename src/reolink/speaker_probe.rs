@@ -33,7 +33,9 @@ pub(crate) fn compatible(
         now,
     );
     session.handle_input(Input::Command(Command::Login(LoginParams::new(
-        username, password, EncryptionMode::BcEncrypt,
+        username,
+        password,
+        EncryptionMode::BcEncrypt,
     ))))?;
     let mut buffer = vec![0; BUFFER_BYTES];
     let mut received = 0;
@@ -55,7 +57,9 @@ pub(crate) fn compatible(
             Output::Event(Event::ReadTalkAbility(ability)) if queried => {
                 return Ok(super::speaker::select_profile(*ability, channel).is_ok());
             }
-            Output::Event(Event::LoginFailed(_) | Event::CommandFailed { .. } | Event::SessionTimeout) => {
+            Output::Event(
+                Event::LoginFailed(_) | Event::CommandFailed { .. } | Event::SessionTimeout,
+            ) => {
                 return Ok(false);
             }
             Output::Event(_) => {}

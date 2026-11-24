@@ -193,7 +193,16 @@ impl Talkback {
     }
 }
 
-pub(super) fn select_profile(mut ability: TalkAbility, channel: u8) -> Result<TalkConfig, reo_proto::BcError> {
+pub(super) fn select_profile(
+    mut ability: TalkAbility,
+    channel: u8,
+) -> Result<TalkConfig, reo_proto::BcError> {
+    ability.duplex_modes.retain(|mode| {
+        mode.eq_ignore_ascii_case("fullDuplex") || mode.eq_ignore_ascii_case("halfDuplex")
+    });
+    ability.audio_stream_modes.retain(|mode| {
+        mode.eq_ignore_ascii_case("speaker") || mode.eq_ignore_ascii_case("followVideoStream")
+    });
     ability.audio_profiles.retain(|profile| {
         matches!(profile.sample_rate, 8_000 | 16_000)
             && profile.sample_precision == 16
@@ -440,6 +449,15 @@ mod tests {
                 valid
             );
         }
+        let mut unknown = ability.clone();
+        unknown.duplex_modes.clear();
+        unknown.duplex_modes.push("unknown".try_into().unwrap());
+        assert!(select_profile(unknown, 0).is_err());
+        ability.audio_stream_modes.clear();
+        ability
+            .audio_stream_modes
+            .push("unknown".try_into().unwrap());
+        assert!(select_profile(ability, 0).is_err());
     }
 
     #[test]

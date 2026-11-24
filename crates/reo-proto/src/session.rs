@@ -919,7 +919,9 @@ impl BcSession {
             Command::Talk(command) => self.send_talk_command(&command),
             Command::ReadTalkAbility { channel } => {
                 if self.role != Role::Client || self.state != SessionState::Connected {
-                    return Err(BcError::Protocol("speaker ability requires an authenticated client"));
+                    return Err(BcError::Protocol(
+                        "speaker ability requires an authenticated client",
+                    ));
                 }
                 self.query_talk_ability(channel, PendingCommandKind::ReadTalkAbility(channel))
             }
@@ -2243,7 +2245,8 @@ impl BcSession {
     fn query_talk_ability(&mut self, channel: u8, kind: PendingCommandKind) -> Result<(), BcError> {
         let mut extension = [0_u8; crate::MAX_XML_BODY];
         let len = crate::talk::build_extension(channel, false, &mut extension)?;
-        let header = crate::talk::command_header(crate::COMMAND_TALK_CAPABILITIES, channel, len, 0)?;
+        let header =
+            crate::talk::command_header(crate::COMMAND_TALK_CAPABILITIES, channel, len, 0)?;
         self.queue_correlated_send_parts(header, &extension[..len], &[], false, kind)
             .map(|_| ())
     }

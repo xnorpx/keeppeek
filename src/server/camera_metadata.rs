@@ -100,6 +100,7 @@ fn run(state: &ServerState) {
                 .map(|client| client.get_audio_output_capabilities(0, &control.username))
                 .unwrap_or_default();
             apply_audio_capabilities(state, &entry, capabilities);
+            state.probe_reolink_speaker(&entry);
         }
         if current(state, &entry) {
             state.probe_hikvision_capabilities(entry.configuration.ip);
@@ -120,8 +121,29 @@ fn apply_audio_capabilities(
         camera.info.id == previous.info.id
             && std::sync::Arc::ptr_eq(&camera.control_revision, &previous.control_revision)
     }) {
+        let before = camera.speaker_available();
+        let different_assets = |previous: &[crate::cameras::CameraAudioAsset],
+                                next: &[(String, String)]| {
+            !previous
+                .iter()
+                .map(|asset| (&asset.asset_id, &asset.display_name))
+                .eq(next.iter().map(|(id, label)| (id, label)))
+        };
+        let assets_changed =
+            different_assets(
+                &camera.info.capabilities.quick_replies,
+                &capabilities.quick_reply_assets,
+            ) || different_assets(&camera.info.capabilities.chimes, &capabilities.chime_assets);
         camera.reolink_talk_permitted = capabilities.talkback;
+        if !camera.reolink_talk_permitted {
+            camera.reolink_profile_verified = false;
+        }
         capabilities.apply_audio_assets(&mut camera.info.capabilities);
+        let changed = assets_changed || before != camera.speaker_available();
+        drop(cameras);
+        if changed {
+            state.webrtc.refresh_camera_capabilities(&previous.info.id);
+        }
     }
 }
 

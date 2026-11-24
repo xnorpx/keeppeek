@@ -1270,7 +1270,11 @@ fn update_talkback(
         .into_iter()
         .map(|camera| {
             let enabled = camera.speaker_available();
-            talkback::CameraTarget { source_id: camera.info.id, groups: camera.groups, enabled }
+            talkback::CameraTarget {
+                source_id: camera.info.id,
+                groups: camera.groups,
+                enabled,
+            }
         })
         .collect::<Vec<_>>();
     let state = match command.action {

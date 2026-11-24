@@ -82,9 +82,15 @@ fn resolve_configured_camera_route(
     resolve_camera_route(config.backend, config.transport, is_reolink)
 }
 
-pub(crate) fn powered_reolink_channel(config: &crate::cameras::CameraConfig, is_reolink: bool) -> Option<u8> {
-    matches!(resolve_configured_camera_route(config, is_reolink), Ok(CameraRoute::ReoProto(CameraTransport::Tcp)))
-        .then_some(crate::reolink::CONFIGURED_CHANNEL)
+pub(crate) fn powered_reolink_channel(
+    config: &crate::cameras::CameraConfig,
+    is_reolink: bool,
+) -> Option<u8> {
+    matches!(
+        resolve_configured_camera_route(config, is_reolink),
+        Ok(CameraRoute::ReoProto(CameraTransport::Tcp))
+    )
+    .then_some(crate::reolink::CONFIGURED_CHANNEL)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

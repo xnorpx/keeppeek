@@ -35,19 +35,37 @@ fn read_only_speaker_ability_requires_matching_request_header_and_extension() {
         (3, 3, false, false),
     ] {
         let mut session = BcSession::default_client(now);
-        assert!(session.handle_input(Input::Command(Command::ReadTalkAbility { channel: 3 })).is_err());
+        assert!(
+            session
+                .handle_input(Input::Command(Command::ReadTalkAbility { channel: 3 }))
+                .is_err()
+        );
         session.set_state(SessionState::Connected);
-        session.handle_input(Input::Command(Command::ReadTalkAbility { channel: 3 })).unwrap();
+        session
+            .handle_input(Input::Command(Command::ReadTalkAbility { channel: 3 }))
+            .unwrap();
         let sent = drain_tcp_sends(&mut session);
         let (header, len) = PacketHeader::parse(&sent).unwrap();
         assert_eq!(header.msg_id, COMMAND_TALK_CAPABILITIES);
         assert_eq!(header.channel_id(), 3);
         assert_eq!(sent.len(), len + header.body_len as usize);
         let payload = talk_ability_response(xml_channel);
-        let extension = payload.windows(6).position(|part| part == b"<body>").unwrap() as u32;
-        let mut reply = make_wire_message(COMMAND_TALK_CAPABILITIES, &payload, make_status(BC_CLASS_MODERN_EXT, 200), Some(extension));
+        let extension = payload
+            .windows(6)
+            .position(|part| part == b"<body>")
+            .unwrap() as u32;
+        let mut reply = make_wire_message(
+            COMMAND_TALK_CAPABILITIES,
+            &payload,
+            make_status(BC_CLASS_MODERN_EXT, 200),
+            Some(extension),
+        );
         reply[12] = header_channel;
-        let number = if matched_request { header.message_number() } else { 0 };
+        let number = if matched_request {
+            header.message_number()
+        } else {
+            0
+        };
         reply[14..16].copy_from_slice(&number.to_le_bytes());
         session.handle_input(Input::TcpData(now, &reply)).unwrap();
         let mut buffer = [0; 4096];
@@ -55,7 +73,10 @@ fn read_only_speaker_ability_requires_matching_request_header_and_extension() {
         loop {
             match session.poll_output(&mut buffer).unwrap() {
                 Output::Event(Event::ReadTalkAbility(value)) => {
-                    assert_eq!(value.select_adpcm(3).unwrap().audio_profile.sample_rate, 16000);
+                    assert_eq!(
+                        value.select_adpcm(3).unwrap().audio_profile.sample_rate,
+                        16000
+                    );
                     verified = true;
                 }
                 Output::Event(_) => {}
