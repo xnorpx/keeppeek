@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-a4fb7b7d.js";
+            window.path_to_searchindex_js = "searchindex-ef396abe.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-6871163b.js"></script>
@@ -1118,6 +1118,41 @@ pause and seek by an estimated interval when camera health supplies a positive f
 Variable-rate recording can repeat or skip pictures during approximate seeking. Space toggles playback. J, K and L control shuttle
 and pause. <code>[</code> and <code>]</code> set export boundaries. Form fields keep their normal keyboard behavior.
 Arrow keys pan a focused digitally zoomed image.</p>
+<h3 id="compare-recordings-from-up-to-four-cameras"><a class="header" href="#compare-recordings-from-up-to-four-cameras">Compare recordings from up to four cameras</a></h3>
+<p>Open a recording in <strong>Keep</strong>. Under <strong>Compare with</strong>, select a second camera.
+Use <strong>Add camera</strong> to compare up to four selected cameras. <strong>Remove</strong> drops a
+camera from the comparison. Removing one of the last two opens the remaining
+camera at the shared time. <strong>Play</strong>, <strong>Pause</strong>, <strong>Speed</strong> and the five-second seek
+buttons act on one UTC playhead. Enter a date and time under <strong>Seek to UTC</strong> and
+choose <strong>Go to time</strong> to move directly to that instant. Each camera shows the UTC
+time of its most recently presented frame. When a playing camera falls more than
+250 ms from the shared playhead, Keep seeks to the shared time once that footage
+is buffered. A camera outside that tolerance shows <strong>Synchronizing</strong> with its measured
+distance ahead of or behind the shared time. The label clears when the browser presents
+a frame within tolerance. Keep waits at least 750 ms between corrections for the same player.
+If two paused corrections cannot present the selected moment, <strong>Retry recording</strong> reopens just
+that camera.
+A camera with a gap shows its own status and rejoins when the playhead reaches
+playable footage again. <strong>Single camera</strong> opens the focused camera at that moment.</p>
+<p>Use <strong>Audio</strong> to select the one camera whose recording can be heard, and <strong>Mute</strong>
+or <strong>Unmute</strong> to control listening. <strong>Focus</strong> chooses which camera has priority
+when decoder capacity is limited. Pausing, seeking or changing the focused or
+audio camera updates the link so it can reopen the comparison at that moment.
+<strong>Copy link to this moment</strong> captures the current playhead while recordings are
+playing. The browser remembers the playback speed and mute preference.
+For an export, choose a camera under <strong>Focus</strong>. Mark the shared UTC playhead with
+<strong>Set range start</strong> and <strong>Set range end</strong>, up to two minutes apart. <strong>Export
+focused camera</strong> opens the usual export workflow for that camera and stream.
+The recorder checks retained coverage. <strong>Back to comparison</strong> restores the
+camera selection, focus, audio, marked range and shared time.</p>
+<p>On a compact screen, up to two recordings can decode. On phones, <strong>Comparison
+options</strong> opens the camera, audio, speed, UTC seek and marked-range controls.
+A hidden browser tab releases the comparison players and reopens visible footage
+on return.
+If the connection drops during playback, the sign-in screen clears the camera
+views. After reconnecting, the comparison opens paused at the last shared UTC
+time. A comparison link still opens its authorized cameras when a selected camera
+is unavailable. Focus moves to the first available selection when needed.</p>
 <h3 id="use-keep-on-a-phone"><a class="header" href="#use-keep-on-a-phone">Use Keep on a phone</a></h3>
 <p>In portrait, Keep keeps a compact camera/date row, the player and a horizontal history timeline
 in the main view. Tap the camera name or date to open <strong>Camera and date</strong>. Search for a camera or
