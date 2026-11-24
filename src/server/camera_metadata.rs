@@ -97,11 +97,13 @@ fn run(state: &ServerState) {
             && current(state, &entry)
         {
             let capabilities = super::logged_in_reolink(control)
-                .map(|client| {
-                    client.get_audio_output_capabilities(
+                .map(|mut client| {
+                    let capabilities = client.get_audio_output_capabilities(
                         u32::from(crate::reolink::CONFIGURED_CHANNEL),
                         &control.username,
-                    )
+                    );
+                    let _ = client.logout();
+                    capabilities
                 })
                 .unwrap_or_default();
             apply_audio_capabilities(state, &entry, capabilities);
