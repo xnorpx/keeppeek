@@ -149,6 +149,7 @@ impl ApiHandshake {
             control,
             media: ApiMediaRuntime::default(),
             runtime: ApiControlRuntime {
+                selection: Default::default(),
                 control_output_ready: false,
                 dispatch_tx,
                 dispatch_rx,

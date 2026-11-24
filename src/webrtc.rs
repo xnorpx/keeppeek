@@ -42,6 +42,7 @@ use str0m::{
     net::{Protocol, Receive},
 };
 
+mod background;
 mod bandwidth;
 mod session_registry;
 mod subscriptions;
@@ -524,7 +525,7 @@ enum SessionCommand {
 enum ApiSessionCommand {
     Data {
         message: Box<OutboundDataMessage>,
-        cancelled: Arc<AtomicBool>,
+        lifetime: ApiDataLifetime,
     },
     Complete {
         group: String,
@@ -734,6 +735,7 @@ struct ApiSessionControl {
 }
 
 struct ApiControlRuntime {
+    selection: background::Selection,
     dispatch_tx: Sender<BackgroundControlDispatch>,
     dispatch_rx: Receiver<BackgroundControlDispatch>,
     control_output_ready: bool,
@@ -962,9 +964,21 @@ impl<T> GuardedMedia<T> {
     }
 }
 
+struct ApiDataLifetime {
+    cancelled: Arc<AtomicBool>,
+    deadline: Option<Instant>,
+}
+
+impl ApiDataLifetime {
+    fn current(&self, now: Instant) -> bool {
+        !self.cancelled.load(Ordering::Acquire) && self.deadline.is_none_or(|end| now < end)
+    }
+}
+
 struct QueuedDataMessage {
     target: DataChannelTarget,
     group: String,
+    lifetime: Option<ApiDataLifetime>,
     payload: GuardedMedia<Vec<u8>>,
 }
 
@@ -1009,6 +1023,7 @@ impl ApiMediaRuntime {
             queued.push(QueuedApiData::Message(QueuedDataMessage {
                 target: message.target,
                 group: message.group,
+                lifetime: None,
                 payload: GuardedMedia {
                     value: payload,
                     permit: message.permit.or_else(|| permit.cloned()),
@@ -1032,13 +1047,14 @@ impl ApiMediaRuntime {
         Ok(())
     }
 
-    fn enqueue_background(&mut self, message: OutboundDataMessage) {
+    fn enqueue_background(&mut self, message: OutboundDataMessage, lifetime: ApiDataLifetime) {
         let payload = message.message.encode_to_vec();
         self.outbound_bytes = self.outbound_bytes.saturating_add(payload.len());
         self.outbound
             .push_back(QueuedApiData::Message(QueuedDataMessage {
                 target: message.target,
                 group: message.group,
+                lifetime: Some(lifetime),
                 payload: GuardedMedia {
                     value: payload,
                     permit: message.permit,
@@ -1064,6 +1080,15 @@ impl ApiMediaRuntime {
             }
         });
         self.outbound_bytes = self.outbound_bytes.saturating_sub(removed_bytes);
+    }
+
+    fn cancel_control_group(&mut self, group: &str) {
+        // Replacing a whole cursor invalidates the step and playback transfers.
+        // Replacing a step must leave the player's queued MP4 fragments intact.
+        if let Some(cursor) = group.strip_prefix("stored:") {
+            self.cancel_group(&frame_step_group(cursor));
+        }
+        self.cancel_group(group);
     }
 
     fn cancel_event_subscription(&mut self, subscription_id: &str) {
@@ -1253,6 +1278,23 @@ impl ApiMediaRuntime {
     }
 
     fn flush_outbound(&mut self, rtc: &mut Rtc, channels: SessionChannels) -> anyhow::Result<()> {
+        self.flush_data_queue(Instant::now, |target, payload| {
+            let channel_id = match target {
+                DataChannelTarget::Reliable => channels.reliable_data,
+                DataChannelTarget::Unreliable => channels.unreliable_data,
+            };
+            let Some(mut channel) = rtc.channel(channel_id) else {
+                anyhow::bail!("WebRTC data channel disappeared before queued delivery");
+            };
+            Ok(channel.write(true, payload)?)
+        })
+    }
+
+    fn flush_data_queue(
+        &mut self,
+        now: impl Fn() -> Instant,
+        mut write: impl FnMut(DataChannelTarget, &[u8]) -> anyhow::Result<bool>,
+    ) -> anyhow::Result<()> {
         while let Some(queued) = self.outbound.pop_front() {
             let message = match queued {
                 QueuedApiData::Complete {
@@ -1264,18 +1306,17 @@ impl ApiMediaRuntime {
                 }
                 QueuedApiData::Message(message) => message,
             };
-            let channel_id = match message.target {
-                DataChannelTarget::Reliable => channels.reliable_data,
-                DataChannelTarget::Unreliable => channels.unreliable_data,
-            };
+            if message
+                .lifetime
+                .as_ref()
+                .is_some_and(|lifetime| !lifetime.current(now()))
+            {
+                self.outbound_bytes = self.outbound_bytes.saturating_sub(message.payload.value.len());
+                continue;
+            }
             let wrote = message
                 .payload
-                .deliver(|payload| -> anyhow::Result<bool> {
-                    let Some(mut channel) = rtc.channel(channel_id) else {
-                        anyhow::bail!("WebRTC data channel disappeared before queued delivery");
-                    };
-                    Ok(channel.write(true, payload)?)
-                })
+                .deliver(|payload| write(message.target, payload))
                 .transpose()?;
             if wrote == Some(true) {
                 self.permits.remember(message.payload.permit.as_ref())?;
@@ -2702,19 +2743,42 @@ impl WebRtc {
         message: OutboundDataMessage,
         cancelled: Arc<AtomicBool>,
     ) -> anyhow::Result<()> {
+        self.enqueue_api_data_with_deadline(session_id, message, cancelled, None)
+    }
+
+    pub(crate) fn enqueue_api_data_with_deadline(
+        &self,
+        session_id: SessionId,
+        message: OutboundDataMessage,
+        cancelled: Arc<AtomicBool>,
+        deadline: Option<Instant>,
+    ) -> anyhow::Result<()> {
         let control = self
             .live
             .inner
             .sessions
             .api_control(session_id)
             .ok_or_else(|| anyhow::anyhow!("API WebRTC session is unavailable"))?;
-        control
-            .data_tx
-            .send(ApiSessionCommand::Data {
-                message: Box::new(message),
+        let command = ApiSessionCommand::Data {
+            message: Box::new(message),
+            lifetime: ApiDataLifetime {
                 cancelled,
-            })
-            .map_err(|_| anyhow::anyhow!("API WebRTC session data queue is closed"))?;
+                deadline,
+            },
+        };
+        if let Some(deadline) = deadline {
+            control
+                .data_tx
+                .send_deadline(command, deadline)
+                .map_err(|_| {
+                    anyhow::anyhow!("API WebRTC session data queue closed or timed out")
+                })?;
+        } else {
+            control
+                .data_tx
+                .send(command)
+                .map_err(|_| anyhow::anyhow!("API WebRTC session data queue is closed"))?;
+        }
         control.poller.notify()?;
         Ok(())
     }
@@ -3547,6 +3611,7 @@ fn run_api_session(
     let mut media = ApiMediaRuntime::default();
     let (dispatch_tx, dispatch_rx) = bounded(2);
     let mut control_runtime = ApiControlRuntime {
+        selection: Default::default(),
         dispatch_tx,
         dispatch_rx,
         control_output_ready: false,
@@ -3626,7 +3691,7 @@ fn drive_api_session(
             break;
         }
         drain_api_session_commands(deps.data_rx, media);
-        if drain_pending_control_dispatches(control_runtime, media)? {
+        if drain_pending_control_dispatches(deps.control, control_runtime, media)? {
             next_timeout = drain_api_outputs(
                 rtc,
                 socket,
@@ -3687,7 +3752,7 @@ fn drive_api_session(
             &mut events,
             Some(next_timeout.saturating_duration_since(Instant::now())),
         )?;
-        if drain_pending_control_dispatches(control_runtime, media)? {
+        if drain_pending_control_dispatches(deps.control, control_runtime, media)? {
             next_timeout = drain_api_outputs(
                 rtc,
                 socket,
@@ -3798,9 +3863,9 @@ fn drain_api_session_commands(data_rx: &Receiver<ApiSessionCommand>, media: &mut
             break;
         };
         match command {
-            ApiSessionCommand::Data { message, cancelled } => {
-                if !cancelled.load(Ordering::Acquire) {
-                    media.enqueue_background(*message);
+            ApiSessionCommand::Data { message, lifetime } => {
+                if lifetime.current(Instant::now()) {
+                    media.enqueue_background(*message, lifetime);
                 }
             }
             ApiSessionCommand::Complete { group, completion } => media
@@ -4427,33 +4492,7 @@ fn drain_api_outputs(
                     && is_background_control_request(&request)
                     && let Some(handler) = handler.clone()
                 {
-                    let request_id = request.request_id;
-                    let operation = background_operation_slot(control, &request).clone();
-                    if operation.swap(true, Ordering::AcqRel) {
-                        enqueue_control_dispatch(
-                            envelope_dispatch(failed_control_dispatch(
-                                request_id,
-                                ErrorCode::Rejected,
-                                "another background control operation is already in progress",
-                            )),
-                            control_runtime,
-                        )?;
-                    } else if let Err(error) = spawn_background_control_operation(
-                        request,
-                        handler,
-                        control,
-                        control_runtime.dispatch_tx.clone(),
-                    ) {
-                        operation.store(false, Ordering::Release);
-                        enqueue_control_dispatch(
-                            envelope_dispatch(failed_control_dispatch(
-                                request_id,
-                                ErrorCode::Unavailable,
-                                format!("unable to start background control operation: {error}"),
-                            )),
-                            control_runtime,
-                        )?;
-                    }
+                    background::dispatch(request, handler, control, control_runtime)?;
                     continue;
                 }
                 let reply =
@@ -4497,22 +4536,34 @@ fn drain_api_outputs(
 }
 
 fn drain_pending_control_dispatches(
+    control: &ApiSessionControl,
     control_runtime: &mut ApiControlRuntime,
     media: &mut ApiMediaRuntime,
 ) -> anyhow::Result<bool> {
     let mut dispatched = false;
-    while let Ok(background) = control_runtime.dispatch_rx.try_recv() {
+    while let Ok(mut background) = control_runtime.dispatch_rx.try_recv() {
+        let deferred = if Arc::ptr_eq(
+            &background.operation_in_flight,
+            &control.background_operation_in_flight,
+        ) {
+            control_runtime.selection.finish(&mut background.dispatch)
+        } else {
+            None
+        };
         if matches!(
             background.dispatch.response.result.as_ref(),
             Some(control_response::Result::Ok(_))
         ) && let Some(group) = background.data_group
         {
-            media.cancel_group(&group);
+            media.cancel_control_group(&group);
         }
         enqueue_control_dispatch(envelope_dispatch(background.dispatch), control_runtime)?;
         background
             .operation_in_flight
             .store(false, Ordering::Release);
+        if let Some((request, handler)) = deferred {
+            background::dispatch(request, handler, control, control_runtime)?;
+        }
         dispatched = true;
     }
     Ok(dispatched)
@@ -4608,6 +4659,7 @@ const fn is_background_control_request(request: &crate::api::proto::Request) -> 
             command.action.as_ref(),
             Some(
                 crate::api::proto::stored_media_command::Action::Open(_)
+                    | crate::api::proto::stored_media_command::Action::StepFrame(_)
                     | crate::api::proto::stored_media_command::Action::Seek(_)
                     | crate::api::proto::stored_media_command::Action::Refill(_)
                     | crate::api::proto::stored_media_command::Action::SetPlayback(_)
@@ -5058,7 +5110,7 @@ fn api_control_reply(
                     media.cancel_event_subscription(&subscription_id);
                 }
                 if let Some(data_group) = data_group {
-                    media.cancel_group(&data_group);
+                    media.cancel_control_group(&data_group);
                 }
             }
             dispatch
@@ -5079,6 +5131,10 @@ fn authorization_control_dispatch(
     envelope_dispatch(dispatch)
 }
 
+pub(crate) fn frame_step_group(cursor: &str) -> String {
+    format!("frame-step:{cursor}")
+}
+
 fn control_data_group(command: Option<&crate::api::proto::request::Command>) -> Option<String> {
     match command? {
         crate::api::proto::request::Command::StoredMediaCommand(command) => {
@@ -5086,6 +5142,10 @@ fn control_data_group(command: Option<&crate::api::proto::request::Command>) -> 
             match command.action.as_ref()? {
                 Action::Open(open) => Some(format!("stored:{}", open.stored_media_id)),
                 Action::Seek(seek) => Some(format!("stored:{}", seek.stored_media_id)),
+                Action::StepFrame(step) => Some(frame_step_group(&step.stored_media_id)),
+                Action::SetPlayback(update) if update.playing == Some(true) => {
+                    Some(frame_step_group(&update.stored_media_id))
+                }
                 Action::Close(close) => Some(format!("stored:{}", close.stored_media_id)),
                 Action::QueryTimeline(query) => Some(format!("query:{}", query.query_id)),
                 Action::CancelTimelineQuery(cancel) => Some(format!("query:{}", cancel.query_id)),
@@ -5626,6 +5686,115 @@ mod tests {
     }
 
     #[test]
+    fn frame_step_cancellation_preserves_playback_and_unrelated_cursors() {
+        use crate::api::proto::{self, request, stored_media_command::Action};
+        let step = || {
+            Action::StepFrame(proto::StepStoredFrame {
+                stored_media_id: "front".into(),
+                ..Default::default()
+            })
+        };
+        let resume = || {
+            Action::SetPlayback(proto::SetStoredMediaPlayback {
+                stored_media_id: "front".into(),
+                playing: Some(true),
+                ..Default::default()
+            })
+        };
+        let close = || {
+            Action::Close(proto::CloseStoredMedia {
+                stored_media_id: "front".into(),
+            })
+        };
+        for (action, keep_playback) in [(step(), true), (resume(), true), (close(), false)] {
+            let mut media = ApiMediaRuntime::default();
+            let groups = [
+                String::from("stored:front"),
+                frame_step_group("front"),
+                String::from("stored:garage"),
+                frame_step_group("garage"),
+            ];
+            media
+                .enqueue(
+                    groups
+                        .iter()
+                        .map(|group| OutboundDataMessage {
+                            target: DataChannelTarget::Reliable,
+                            group: group.clone(),
+                            message: test_event_data_message(),
+                        })
+                        .collect(),
+                )
+                .unwrap();
+            let group = control_data_group(Some(&request::Command::StoredMediaCommand(
+                proto::StoredMediaCommand {
+                    action: Some(action),
+                },
+            )))
+            .unwrap();
+            media.cancel_control_group(&group);
+            let remaining: Vec<_> = media.outbound.iter().map(QueuedApiData::group).collect();
+            let mut expected = vec!["stored:garage", "frame-step:garage"];
+            if keep_playback {
+                expected.insert(0, "stored:front");
+            }
+            assert_eq!(remaining, expected);
+            assert_eq!(
+                media.outbound_bytes,
+                expected.len() * test_event_data_message().encoded_len()
+            );
+        }
+    }
+
+    #[test]
+    fn cancelled_or_expired_frame_chunks_cannot_cross_a_backpressured_channel() {
+        let start = Instant::now();
+        let deadline = start + Duration::from_secs(60);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = bounded(3);
+        for (id, flag, end) in [
+            ("resumed", cancelled.clone(), None),
+            ("expired", Arc::new(AtomicBool::new(false)), Some(deadline)),
+            ("active", Arc::new(AtomicBool::new(false)), None),
+        ] {
+            tx.send(ApiSessionCommand::Data {
+                message: Box::new(OutboundDataMessage {
+                    target: DataChannelTarget::Reliable,
+                    group: frame_step_group(id),
+                    message: test_event_data_message(),
+                }),
+                lifetime: ApiDataLifetime {
+                    cancelled: flag,
+                    deadline: end,
+                },
+            })
+            .unwrap();
+        }
+        let mut media = ApiMediaRuntime::default();
+        drain_api_session_commands(&rx, &mut media);
+        assert_eq!(media.outbound.len(), 3);
+        let bytes = test_event_data_message().encoded_len();
+        assert!(bytes > 0);
+        media.flush_data_queue(|| start, |_, _| Ok(false)).unwrap();
+        assert_eq!(media.outbound_bytes, 3 * bytes);
+        cancelled.store(true, Ordering::Release);
+        let mut calls = 0;
+        media
+            .flush_data_queue(
+                || deadline,
+                |_, data| {
+                    calls += 1;
+                    assert_eq!(data.len(), bytes);
+                    Ok(true)
+                },
+            )
+            .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(media.outbound_bytes, 0);
+        assert!(media.outbound.is_empty());
+    }
+
+    #[test]
     fn cancelled_background_data_never_enters_the_outbound_queue() {
         let (tx, rx) = bounded(4);
         let active = Arc::new(AtomicBool::new(false));
@@ -5641,7 +5810,10 @@ mod tests {
                     group: group.to_owned(),
                     message: crate::api::proto::Message::default(),
                 }),
-                cancelled: token,
+                lifetime: ApiDataLifetime {
+                    cancelled: token,
+                    deadline: None,
+                },
             })
             .unwrap();
         }
@@ -5659,7 +5831,10 @@ mod tests {
                 group: "event-search-query:active".to_owned(),
                 message: crate::api::proto::Message::default(),
             }),
-            cancelled: active,
+            lifetime: ApiDataLifetime {
+                cancelled: active,
+                deadline: None,
+            },
         })
         .unwrap();
         let completed = Arc::new(AtomicBool::new(false));
@@ -5692,7 +5867,10 @@ mod tests {
                 group: "event-search-media:waiting".to_owned(),
                 message: crate::api::proto::Message::default(),
             }),
-            cancelled: Arc::new(AtomicBool::new(false)),
+            lifetime: ApiDataLifetime {
+                cancelled: Arc::new(AtomicBool::new(false)),
+                deadline: None,
+            },
         })
         .unwrap();
         let mut media = ApiMediaRuntime::default();
@@ -5701,6 +5879,7 @@ mod tests {
             .push_back(QueuedApiData::Message(QueuedDataMessage {
                 target: DataChannelTarget::Reliable,
                 group: "full".to_owned(),
+                lifetime: None,
                 payload: GuardedMedia {
                     value: vec![0; API_BACKGROUND_OUTBOUND_MAX_BYTES],
                     permit: None,
@@ -7167,7 +7346,7 @@ mod tests {
         }
     }
 
-    fn test_background_control() -> ApiSessionControl {
+    pub(super) fn test_background_control() -> ApiSessionControl {
         ApiSessionControl {
             session_id: SessionId(1),
             inner: Arc::new(Inner::default()),
@@ -7334,6 +7513,7 @@ mod tests {
     fn completed_background_media_replaces_only_its_data_group() {
         let (dispatch_tx, dispatch_rx) = bounded(1);
         let mut runtime = ApiControlRuntime {
+            selection: Default::default(),
             dispatch_tx,
             dispatch_rx,
             control_output_ready: false,
@@ -7375,7 +7555,10 @@ mod tests {
                 })
                 .is_ok()
         );
-        assert!(drain_pending_control_dispatches(&mut runtime, &mut media).unwrap());
+        assert!(
+            drain_pending_control_dispatches(&test_background_control(), &mut runtime, &mut media)
+                .unwrap()
+        );
         assert!(!operation_in_flight.load(Ordering::Acquire));
         assert_eq!(media.outbound.len(), 1);
         assert!(matches!(media.outbound.front(),
@@ -7392,7 +7575,10 @@ mod tests {
                 })
                 .is_ok()
         );
-        assert!(drain_pending_control_dispatches(&mut runtime, &mut media).unwrap());
+        assert!(
+            drain_pending_control_dispatches(&test_background_control(), &mut runtime, &mut media)
+                .unwrap()
+        );
         assert_eq!(media.outbound.len(), 1);
     }
 
@@ -7464,6 +7650,7 @@ mod tests {
 
         let (dispatch_tx, dispatch_rx) = bounded(1);
         let mut control_runtime = ApiControlRuntime {
+            selection: Default::default(),
             dispatch_tx,
             dispatch_rx,
             control_output_ready: false,

@@ -145,6 +145,7 @@ pub(crate) mod state_store_settings;
 pub(crate) mod state_store_watch;
 mod storage_archive;
 mod storage_volumes;
+mod stored_frame_step;
 mod stored_media;
 mod talkback;
 
@@ -854,6 +855,9 @@ impl ControlRequestHandler for ServerControlHandler {
                     Some(control_request::Command::StoredMediaCommand(command)) => {
                         match stored_media::dispatch(&self.state, session_id, command) {
                             Ok(dispatch) => {
+                                after_send = dispatch
+                                    .frame_transfer
+                                    .map(stored_frame_step::Delivery::after_send);
                                 data_messages = dispatch.messages;
                                 notifications = dispatch.notifications;
                                 Ok(dispatch.result)
@@ -1377,6 +1381,9 @@ fn server_capability_ids(state: &ServerState) -> Vec<String> {
         "keeppeek.event-publication.v1".to_owned(),
         "stored-media-keyframe-preview.v1".to_owned(),
     ];
+    if state.catalog.is_some() {
+        capability_ids.push(stored_frame_step::CAPABILITY_ID.to_owned());
+    }
     if state.notifications.is_some() {
         capability_ids.push("keeppeek.rules.v1".to_owned());
     }
@@ -3616,6 +3623,7 @@ struct StoredMediaPeriod {
 }
 
 struct StoredMediaDispatch {
+    frame_transfer: Option<Box<stored_frame_step::Delivery>>,
     result: Option<control_ok::Result>,
     messages: Vec<OutboundDataMessage>,
     notifications: Vec<proto::Notification>,
@@ -8185,6 +8193,8 @@ fn proto_access_audit_event(event: AccessAuditEvent) -> proto::AccessAuditEvent 
 }
 
 struct StoredMediaCursor {
+    frames: stored_frame_step::CursorFrames,
+    requested_stream_id: String,
     incarnation: Uuid,
     identifiers: StoredMediaIdentifiers,
     recorded_audio: proto::RecordedAudioTiming,
@@ -8573,6 +8583,7 @@ pub struct ServerState {
     http_stream_cancellations: Arc<Mutex<Vec<HttpStreamCancellation>>>,
     stored_media_cursors: Arc<Mutex<HashMap<(SessionId, String), StoredMediaCursor>>>,
     recorded_audio_workers: Arc<AtomicUsize>,
+    frame_step_workers: Arc<AtomicUsize>,
     stored_media_cursor_reservations: Arc<Mutex<HashMap<(SessionId, String), uuid::Uuid>>>,
     ptz_owners: Arc<Mutex<HashMap<String, camera_control::Owner>>>,
     export_jobs: Arc<Mutex<HashMap<String, ExportJobRecord>>>,
@@ -8763,6 +8774,7 @@ impl ServerState {
             http_stream_cancellations: Arc::new(Mutex::new(Vec::new())),
             stored_media_cursors: Arc::new(Mutex::new(HashMap::new())),
             recorded_audio_workers: Arc::new(AtomicUsize::new(0)),
+            frame_step_workers: Arc::new(AtomicUsize::new(0)),
             stored_media_cursor_reservations: Arc::new(Mutex::new(HashMap::new())),
             ptz_owners: Arc::new(Mutex::new(HashMap::new())),
             export_jobs: Arc::new(Mutex::new(export_jobs)),
