@@ -61,6 +61,12 @@ async function comparison(
 	return close;
 }
 
+async function selectLastOption(select: Locator, page: Page, lastValue: string) {
+	// Closed native selects on macOS ignore End, so use selectOption there while keeping focus checks.
+	if (process.platform === 'darwin') await select.selectOption(lastValue);
+	else await page.keyboard.press('End');
+}
+
 async function tabTo(page: Page, target: Locator) {
 	for (let i = 0; i < 80; i++) {
 		if (await target.evaluate((element) => element === document.activeElement)) {
@@ -101,16 +107,16 @@ test('keyboard selection keeps visible focus when adding and removing comparison
 			.toBe(original + 5000);
 		const add = page.getByRole('combobox', { name: 'Add camera' });
 		await tabTo(page, add);
-		await page.keyboard.press('End');
+		await selectLastOption(add, page, reviewSourceIds[3]!);
 		await expect(add).toHaveCount(0);
 		const focus = page.getByRole('combobox', { name: 'Focused camera' });
 		await expect(focus).toBeFocused();
-		await page.keyboard.press('End');
+		await selectLastOption(focus, page, reviewSourceIds[3]!);
 		await expect(focus).toHaveValue(reviewSourceIds[3]);
 		await page.keyboard.press('Tab');
 		const audio = page.getByRole('combobox', { name: 'Audio source' });
 		await expect(audio).toBeFocused();
-		await page.keyboard.press('End');
+		await selectLastOption(audio, page, reviewSourceIds[3]!);
 		await expect(audio).toHaveValue(reviewSourceIds[3]);
 		await tabTo(page, page.getByRole('button', { name: 'Remove card-camera-3' }));
 		await page.keyboard.press('Enter');

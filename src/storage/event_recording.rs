@@ -1101,6 +1101,7 @@ mod tests {
                 frame: MediaFrame::Audio(AudioFrame {
                     codec: AudioCodec::Aac,
                     sample_rate: 16000,
+                    raw_aac_config: None,
                     duration: Duration::from_millis(20),
                     data: Bytes::from_static(&[0xaa]),
                 }),
@@ -1205,6 +1206,7 @@ mod tests {
             frame: MediaFrame::Audio(AudioFrame {
                 codec: AudioCodec::Aac,
                 sample_rate: 16000,
+                raw_aac_config: None,
                 duration: Duration::from_millis(20),
                 data: Bytes::from_static(&[0xaa]),
             }),

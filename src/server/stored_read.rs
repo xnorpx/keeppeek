@@ -15,15 +15,10 @@ pub(super) fn read(
     work: &Work<'_>,
 ) -> Result<Vec<u8>, ControlCommandError> {
     work.check().map_err(unavailable)?;
-    if range.length == 0 || range.length > MAX_STORED_OBJECT_BYTES {
-        return Err(internal("stored media byte range is invalid"));
-    }
+    validate_length(range.length)?;
     if let Some(archive) = range.archive {
         return crate::storage::archive::read_range(archive, range.offset, range.length, work)
-            .map_err(|error| {
-                tracing::warn!(%error, "archive playback range is unavailable");
-                unavailable("Archive media is unavailable or failed integrity verification. Check the archive target and retry.")
-            });
+            .map_err(archive_error);
     }
     let mut file = File::open(range.path)
         .map_err(|error| internal(format!("unable to open indexed recording: {error}")))?;
@@ -58,6 +53,20 @@ pub(super) fn read(
     }
     work.check().map_err(unavailable)?;
     Ok(payload)
+}
+
+pub(super) fn validate_length(length: u64) -> Result<(), ControlCommandError> {
+    if length == 0 || length > MAX_STORED_OBJECT_BYTES {
+        return Err(internal("stored media byte range is invalid"));
+    }
+    Ok(())
+}
+
+pub(super) fn archive_error(error: anyhow::Error) -> ControlCommandError {
+    tracing::warn!(%error, "archive playback range is unavailable");
+    unavailable(
+        "Archive media is unavailable or failed integrity verification. Check the archive target and retry.",
+    )
 }
 
 fn unavailable(error: impl std::fmt::Display) -> ControlCommandError {

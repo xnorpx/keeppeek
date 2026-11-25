@@ -365,6 +365,8 @@ struct CameraEntry {
     recording_label: String,
     control: Option<CameraControl>,
     control_revision: Arc<()>,
+    reolink_profile_verified: bool,
+    reolink_talk_permitted: bool,
     hikvision: Option<camera_control::Report>,
     runtime_camera: Option<crate::cameras::Camera>,
 }
@@ -749,6 +751,12 @@ impl ControlRequestHandler for ServerControlHandler {
         }
     }
 
+    fn talkback_source_failed(&self, source_id: &str, owner: SessionId) {
+        self.state
+            .talkback
+            .retire_source_for_owner(source_id, owner, &self.state.webrtc);
+    }
+
     fn handle_for_session(
         &self,
         session_id: SessionId,
@@ -977,6 +985,19 @@ impl ControlRequestHandler for ServerControlHandler {
 
     fn session_closed(&self, session_id: SessionId) {
         close_api_session(&self.state, session_id);
+    }
+
+    fn camera_capability(
+        &self,
+        session_id: SessionId,
+        source_id: &str,
+    ) -> Option<proto::CameraInfo> {
+        let entry = camera_access::updated_camera(&self.state, session_id, source_id)?;
+        Some(camera_capability(
+            &self.state,
+            &entry,
+            &self.state.camera_info(&entry),
+        ))
     }
 
     fn initial_capabilities(&self, session_id: SessionId) -> Option<proto::ServerCapabilities> {
@@ -1273,15 +1294,6 @@ fn update_talkback(
     session_id: SessionId,
     command: proto::TalkbackCommand,
 ) -> Result<proto::Notification, ControlCommandError> {
-    let cameras = server_state
-        .camera_entries()
-        .into_iter()
-        .map(|camera| talkback::CameraTarget {
-            source_id: camera.info.id,
-            groups: camera.groups,
-            enabled: camera.info.capabilities.two_way_audio,
-        })
-        .collect::<Vec<_>>();
     let state = match command.action {
         Some(talkback_command::Action::Start(start)) => {
             let target = start.target.ok_or_else(|| {
@@ -1291,10 +1303,25 @@ fn update_talkback(
                     "talkback start requires a target",
                 )
             })?;
-            server_state
+            // A replacement or withdrawal takes the same inventory lock exclusively.
+            let entries = server_state
+                .cameras
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let cameras = entries
+                .iter()
+                .map(|camera| talkback::CameraTarget {
+                    source_id: camera.info.id.clone(),
+                    groups: camera.groups.clone(),
+                    enabled: camera.speaker_available(),
+                })
+                .collect::<Vec<_>>();
+            let state = server_state
                 .talkback
                 .start(session_id, target, &cameras, &server_state.webrtc)
-                .map_err(talkback_error)?
+                .map_err(talkback_error)?;
+            drop(entries);
+            state
         }
         Some(talkback_command::Action::Stop(_)) => server_state
             .talkback
@@ -1313,6 +1340,32 @@ fn update_talkback(
     })
 }
 
+fn camera_capability(
+    state: &ServerState,
+    entry: &CameraEntry,
+    info: &CameraInfo,
+) -> proto::CameraInfo {
+    let mut camera = proto_camera_info(info, camera_control::ptz_capability(entry), &entry.groups);
+    let (active, epoch, error) = match state.privacy.decision(&entry.info.id, chrono::Utc::now()) {
+        Ok((active, epoch)) => (active, epoch, None),
+        Err(error) => (true, u64::MAX, Some(error.to_string())),
+    };
+    let source = state
+        .privacy_sources
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&entry.info.id)
+        .copied();
+    camera.privacy = Some(privacy_status(
+        state.privacy.schedule(&entry.info.id).as_ref(),
+        active,
+        epoch,
+        source,
+        error,
+    ));
+    camera
+}
+
 fn server_capabilities(
     state: &ServerState,
     camera_entries: &[CameraEntry],
@@ -1324,29 +1377,7 @@ fn server_capabilities(
     let cameras = camera_entries
         .iter()
         .zip(camera_info.iter())
-        .map(|(entry, info)| {
-            let mut camera =
-                proto_camera_info(info, camera_control::ptz_capability(entry), &entry.groups);
-            let (active, epoch, error) =
-                match state.privacy.decision(&entry.info.id, chrono::Utc::now()) {
-                    Ok((active, epoch)) => (active, epoch, None),
-                    Err(error) => (true, u64::MAX, Some(error.to_string())),
-                };
-            let source = state
-                .privacy_sources
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(&entry.info.id)
-                .copied();
-            camera.privacy = Some(privacy_status(
-                state.privacy.schedule(&entry.info.id).as_ref(),
-                active,
-                epoch,
-                source,
-                error,
-            ));
-            camera
-        })
+        .map(|(entry, info)| camera_capability(state, entry, info))
         .collect();
     let source_sessions = camera_info
         .iter()
@@ -7878,6 +7909,8 @@ fn camera_entry(camera_config: &CameraConfig, camera: Option<&Camera>) -> Camera
             .unwrap_or_else(|| camera_config.ip.to_string()),
         control,
         control_revision: Arc::new(()),
+        reolink_profile_verified: false,
+        reolink_talk_permitted: false,
         hikvision: None,
         runtime_camera: camera.cloned(),
     }
@@ -9014,6 +9047,9 @@ impl ServerState {
             .iter_mut()
             .find(|camera| camera.info.id == entry.info.id)
         {
+            if !Arc::ptr_eq(&existing.control_revision, &entry.control_revision) {
+                self.talkback.retire_source(&existing.info.id, &self.webrtc);
+            }
             if entry.groups.is_empty() {
                 entry.groups.clone_from(&existing.groups);
             }
@@ -9061,6 +9097,7 @@ impl ServerState {
 
     fn camera_info(&self, camera: &CameraEntry) -> CameraInfo {
         let mut info = camera.info.clone();
+        info.capabilities.two_way_audio = camera.speaker_available();
         if let Ok(ip) = info.ip.parse()
             && let Some(evidence) = self.health.events.snapshot(ip)
         {
@@ -13079,6 +13116,7 @@ fn delete_camera_settings(
     }
     match config::remove_camera(config_path, ip) {
         Ok(()) => {
+            camera_metadata::forget_removed_audio(state, camera_id);
             sharing::refresh_sources(state, config_path)?;
             reconcile_removed_camera(state, config_path, ip)?;
             camera_configuration_revision(state)
@@ -23687,6 +23725,8 @@ mod tests {
             recording_label: "back-yard".to_owned(),
             control: None,
             control_revision: Arc::new(()),
+            reolink_profile_verified: false,
+            reolink_talk_permitted: false,
             hikvision: None,
             runtime_camera: None,
         }]));

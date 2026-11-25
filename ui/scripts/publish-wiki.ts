@@ -45,6 +45,7 @@ export function publishWiki(
 	if (expectedSourceCommit !== undefined && incoming.sourceCommit !== expectedSourceCommit) {
 		throw new Error('Wiki manifest source commit does not match the trusted GITHUB_SHA.');
 	}
+	manifestDirectoryNames(generated, Object.keys(incoming.files));
 	const content = readOwnedFiles(generated, incoming, true);
 	const previousPath = safeTarget(wiki, manifestName);
 	const previous = previousPath
@@ -247,12 +248,12 @@ function safeTarget(directory: string, path: string): string | undefined {
 	return target;
 }
 
-function assertNoCaseCollisions(wiki: string, paths: string[]): void {
+function manifestDirectoryNames(root: string, paths: string[]) {
 	const directories = new Map<string, Map<string, string>>();
 	for (const path of paths) {
 		const parts = path.split('/');
 		for (let index = 0; index < parts.length; index++) {
-			const parent = join(wiki, ...parts.slice(0, index));
+			const parent = join(root, ...parts.slice(0, index));
 			const names = directories.get(parent) ?? new Map<string, string>();
 			const folded = parts[index].toLowerCase();
 			const previous = names.get(folded);
@@ -263,13 +264,18 @@ function assertNoCaseCollisions(wiki: string, paths: string[]): void {
 			directories.set(parent, names);
 		}
 	}
-	const rootNames = directories.get(wiki)!;
+	const rootNames = directories.get(root)!;
 	for (const name of rootNames.values()) {
 		const page = wikiPageFilename(rootNames, name);
 		if (page !== undefined && page !== name) {
 			throw new Error(`Manifest Wiki title collision: ${name}`);
 		}
 	}
+	return directories;
+}
+
+function assertNoCaseCollisions(wiki: string, paths: string[]): void {
+	const directories = manifestDirectoryNames(wiki, paths);
 	let entries = 0;
 	for (const [directory, names] of directories) {
 		let handle;

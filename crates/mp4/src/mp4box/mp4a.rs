@@ -28,7 +28,7 @@ impl Mp4aBox {
     pub const fn new(config: &AacConfig) -> Self {
         Self {
             data_reference_index: 1,
-            channelcount: config.chan_conf as u16,
+            channelcount: config.chan_conf.channel_count() as u16,
             samplesize: 16,
             samplerate: FixedPointU16::new(config.freq_index.freq() as u16),
             esds: Some(EsdsBox::new(config)),
@@ -651,6 +651,30 @@ impl<W: Write> WriteDesc<&mut W> for SLConfigDescriptor {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn seven_one_aac_writes_eight_channels_and_the_matching_configuration_index() {
+        let sample = Mp4aBox::new(&AacConfig {
+            chan_conf: ChannelConfig::SevenOne,
+            ..AacConfig::default()
+        });
+        let mut encoded = Vec::new();
+        sample.write_box(&mut encoded).unwrap();
+        let mut reader = Cursor::new(encoded);
+        let header = BoxHeader::read(&mut reader).unwrap();
+        let parsed = Mp4aBox::read_box(&mut reader, header.size).unwrap();
+        assert_eq!(parsed.channelcount, 8);
+        assert_eq!(
+            parsed
+                .esds
+                .unwrap()
+                .es_desc
+                .dec_config
+                .dec_specific
+                .chan_conf,
+            7
+        );
+    }
 
     #[test]
     fn test_mp4a() {

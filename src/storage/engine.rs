@@ -2488,6 +2488,7 @@ mod tests {
             frame: MediaFrame::Audio(AudioFrame {
                 codec: AudioCodec::Aac,
                 sample_rate: 48_000,
+                raw_aac_config: None,
                 duration: Duration::from_millis(20),
                 data: vec![0xff, 0xf1, 0x4c, 0x40, 0, 0, 0, 0xaa].into(),
             }),
