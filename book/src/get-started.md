@@ -17,6 +17,19 @@ Record that version and retain its checksum information. By default, clients on 
 networks receive Administrator access without signing in; review
 [the access policy](./authentication.md) before exposing the listener to other devices.
 
+## Monitor a foreground server
+
+Run `keeppeek` in an interactive terminal to see server health and stream statistics. The default
+`--tui auto` opens the dashboard when the terminal supports it and all three standard streams are
+attached. Use `keeppeek --tui never` to show plain logs. With `--tui always`, KeepPeek prints a
+diagnostic and continues with logs if it cannot open the dashboard. Services, redirected output
+and unattended containers use plain logs. For interactive Docker or SSH sessions, allocate a TTY.
+
+Use the arrow keys or Page Up and Page Down to select a stream. Press **q** to return to logs
+while the recorder keeps running. Press **Ctrl+C** to request a graceful server shutdown and
+finalize recordings. Resizing the terminal changes the visible rows. After a hard kill, opening
+a new terminal restores the normal display. On Unix you can also run `reset` in the affected shell.
+
 ## Linux with Docker
 
 The published image supports `linux/amd64` and `linux/arm64`. It runs KeepPeek directly as the

@@ -1068,7 +1068,7 @@ impl RtspLoop {
             streams,
         };
         log_camera_report(&report);
-        self.health.publish(report);
+        self.health.publish_from(report, self.stream);
         *previous = snapshot;
     }
 

@@ -17,6 +17,10 @@ pub(crate) const CAMERA_HEALTH_CONTRACT_VERSION: u32 = 1;
 pub(crate) const STREAM_REPORT_FRESHNESS_THRESHOLD_MS: u64 = 30_000;
 pub(crate) const OFFLINE_EVIDENCE_THRESHOLD_MS: u64 = 90_000;
 
+pub(crate) const fn in_startup_grace(uptime_seconds: u64) -> bool {
+    uptime_seconds < crate::stats::REPORT_INTERVAL.as_secs() * 2
+}
+
 /// Canonical camera and stream presentation state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]

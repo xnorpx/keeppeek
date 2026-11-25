@@ -23,10 +23,12 @@ use crate::config;
 #[cfg(windows)]
 use crate::config::ServiceLogDestination;
 
+mod console;
 mod hub;
 mod layer;
 mod stream;
 
+pub(crate) use console::ConsolePause;
 pub use hub::{
     LogBufferStats, LogEntry, LogHub, LogHubLimits, LogLevel, LogSnapshot, LogStreamError,
 };
@@ -236,9 +238,7 @@ impl Drop for RedactingWriter {
 impl RedactingDestination {
     fn write(&self, output: &[u8]) {
         match self {
-            Self::Stderr => {
-                let _ = std::io::stderr().write_all(output);
-            }
+            Self::Stderr => console::write(output),
             #[cfg(any(windows, test))]
             Self::File(file) => {
                 let _ = file
@@ -280,6 +280,10 @@ impl LoggingService {
             filter_error: Arc::new(Mutex::new(filter_error)),
             update_lock: Arc::new(Mutex::new(())),
         }
+    }
+
+    pub(crate) fn dashboard_redactor(&self) -> LogHub {
+        self.hub.clone()
     }
 
     pub fn settings(&self) -> LoggingSettings {

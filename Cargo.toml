@@ -128,6 +128,13 @@ harness = false
 test = false
 
 [dependencies]
+crossterm = { version = "0.29.0", default-features = false, features = [
+  "events",
+  "windows",
+] }
+ratatui = { version = "0.30.2", default-features = false, features = [
+  "crossterm_0_29",
+] }
 oauth2 = { workspace = true }
 jsonwebtoken = { workspace = true }
 cap-fs-ext = { workspace = true }
@@ -198,6 +205,9 @@ zip = { version = "9.0.0", default-features = false, features = ["deflate"] }
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "=1.1.6", features = ["process", "fs"] }
 
+[target.'cfg(unix)'.dev-dependencies]
+rustix = { version = "=1.1.6", features = ["termios"] }
+
 [target.'cfg(windows)'.dependencies]
 str0m = { version = "0.24.1", default-features = false, features = [
   "wincrypto-dimpl",
@@ -225,6 +235,7 @@ str0m = { version = "0.24.1", default-features = false, features = [
 ] }
 
 [dev-dependencies]
+portable-pty = "0.9"
 rustls = { version = "=0.23.46", default-features = false, features = [
   "std",
   "tls12",

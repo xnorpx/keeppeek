@@ -92,12 +92,32 @@ fn open_recording_catalog(storage_config: &StorageConfig) -> anyhow::Result<Reco
 
 /// Runs KeepPeek until shutdown and reports whether configuration requested a restart.
 pub fn run(
-    _cfg: Config,
+    cfg: Config,
     config_path: &Path,
     logging: LoggingService,
     shutdown: Shutdown,
     restart: Restart,
 ) -> anyhow::Result<bool> {
+    run_with_dashboard(
+        cfg,
+        config_path,
+        logging,
+        shutdown,
+        restart,
+        crate::tui::DashboardMode::Never,
+    )
+}
+
+/// Runs the foreground server with the requested terminal presentation.
+pub fn run_with_dashboard(
+    _cfg: Config,
+    config_path: &Path,
+    logging: LoggingService,
+    shutdown: Shutdown,
+    restart: Restart,
+    mode: crate::tui::DashboardMode,
+) -> anyhow::Result<bool> {
+    let redactor = logging.dashboard_redactor();
     crate::server::migrate_template_store(config_path)?;
     crate::event_forwarder::remove_legacy_outbox(config_path)?;
     let cfg = config::migrate_camera_profile_configuration(config_path)?;
@@ -327,6 +347,8 @@ pub fn run(
     let listener = bind_server_listener(&cfg.host, cfg.port)?;
 
     let server_state_for_metadata = server_state.clone();
+    let dashboard_state = server_state.clone();
+    let dashboard_router = router_tx.clone();
     let server_shutdown = shutdown.clone();
     let (server_ready_tx, server_ready_rx) = std::sync::mpsc::sync_channel(1);
     let server_handle = std::thread::Builder::new()
@@ -351,6 +373,17 @@ pub fn run(
         .recv()
         .err()
         .map(|_| anyhow::anyhow!("HTTP server stopped before reporting readiness"));
+    let _dashboard = startup_error
+        .is_none()
+        .then(|| {
+            crate::tui::Dashboard::start(
+                mode,
+                shutdown.clone(),
+                move || crate::server::dashboard_health(&dashboard_router, &dashboard_state),
+                redactor,
+            )
+        })
+        .flatten();
     if startup_error.is_some() {
         shutdown.cancel();
     }

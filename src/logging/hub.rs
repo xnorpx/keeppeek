@@ -182,7 +182,7 @@ impl LogHub {
             .sensitive_values = values;
     }
 
-    pub(super) fn redact_output(&self, text: &str) -> String {
+    pub(crate) fn redact_output(&self, text: &str) -> String {
         let state = self
             .inner
             .lock()

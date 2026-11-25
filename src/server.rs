@@ -43,7 +43,7 @@ use crate::{
         FacadeSendError, FacadeSender, RouterError, RouterMessage, RouterQuery, RouterResponse,
     },
     shutdown::{Restart, Shutdown},
-    stats::{HealthRegistry, REPORT_INTERVAL, StreamHealthReport},
+    stats::{HealthRegistry, StreamHealthReport},
     storage::{
         CatalogMediaFragment, DEFAULT_PREVIEW_AFTER_MS, DEFAULT_PREVIEW_BEFORE_MS, EventEmbedding,
         EventImageFilter, EventMetadataQuery, EventSearch, EventSearchField, EventSearchTerm,
@@ -11183,21 +11183,27 @@ fn project_stream_snapshot(
 ) -> StreamHealth {
     let stream_id = normalized_video_stream_id(&stream.report.kind);
     let is_video = stream_id.is_some();
-    let expected = stream_id.is_none_or(|stream_id| {
+    let transport_stream_id = match stream.report.kind.as_str() {
+        "audio_main" => Some("main"),
+        "audio_sub" => Some("sub"),
+        _ => stream_id,
+    };
+    let expected = transport_stream_id.is_none_or(|stream_id| {
         context
             .expected_streams
             .iter()
             .any(|expected| expected == stream_id)
     });
-    let transport_connected = stream_id
-        .and_then(|stream_id| stream_transport_connected(stream_id, context.router_status))
-        .or_else(|| {
-            (!is_video).then(|| {
+    let transport_connected = transport_stream_id.map_or_else(
+        || {
+            Some(
                 context
                     .router_status
-                    .is_some_and(|status| status.lifecycle == CameraLifecycle::Connected)
-            })
-        });
+                    .is_some_and(|status| status.lifecycle == CameraLifecycle::Connected),
+            )
+        },
+        |id| stream_transport_connected(id, context.router_status),
+    );
     let report_fresh = stream.report_age_ms <= STREAM_REPORT_FRESHNESS_THRESHOLD_MS;
     let frame_threshold_ms = frame_freshness_threshold_ms(stream.report.expected_fps);
     let frames_fresh = report_fresh
@@ -11307,7 +11313,7 @@ fn project_camera_snapshot(
     let expected_streams = expected_video_stream_ids(camera, context.router_status, &streams);
     let connected_streams = connected_video_stream_ids(context.router_status);
     let uptime_ms = context.uptime_seconds.saturating_mul(1_000);
-    let startup_grace = context.uptime_seconds < REPORT_INTERVAL.as_secs() * 2;
+    let startup_grace = crate::health::in_startup_grace(context.uptime_seconds);
     let battery_configured = camera.battery_uid.is_some();
     let battery_source = context.battery_wake.zip(camera.battery_uid.as_deref());
     let battery_health = battery_source.map(|(wake, uid)| wake.health(uid));
@@ -11619,13 +11625,94 @@ fn server_health(
     router_tx: &FacadeSender<RouterMessage>,
     state: &ServerState,
 ) -> ServerHealthResponse {
+    collect_server_health(
+        router_tx,
+        state,
+        HealthRegistry::snapshot,
+        state.catalog.as_ref(),
+    )
+    .0
+}
+
+pub(crate) fn dashboard_health(
+    router_tx: &FacadeSender<RouterMessage>,
+    state: &ServerState,
+) -> Option<ServerHealthResponse> {
+    let (health, lifecycle_available) = collect_server_health(
+        router_tx,
+        state,
+        HealthRegistry::local_stream_snapshot,
+        None,
+    );
+    lifecycle_available.then_some(health)
+}
+
+fn collect_server_health(
+    router_tx: &FacadeSender<RouterMessage>,
+    state: &ServerState,
+    ingress_snapshot: impl FnOnce(&HealthRegistry) -> Vec<crate::stats::CameraHealthReport>,
+    history_catalog: Option<&RecordingCatalogHandle>,
+) -> (ServerHealthResponse, bool) {
     let uptime_seconds = state.started_at.elapsed().as_secs();
     let system = state
         .system
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .snapshot(&state.storage_config.long_term_path);
+    let HealthAcquisition {
+        lifecycle,
+        operational_events,
+        mut issues,
+        lifecycle_available,
+    } = acquire_health_sources(router_tx, state);
+    let ingress = ingress_snapshot(&state.health);
+    let recording = state.recording_health.snapshot();
+    let (totals, cameras) = collect_camera_health(
+        state,
+        ingress,
+        recording.streams,
+        &lifecycle,
+        &operational_events,
+        uptime_seconds,
+        &mut issues,
+    );
+    let storage = collect_storage_health(state, history_catalog, recording.storage, &mut issues);
+    let webrtc = state.webrtc.health_snapshot();
+    append_server_health_issues(&system, &storage, &webrtc, &mut issues);
+    let status = server_health_status(&issues);
+
+    (
+        ServerHealthResponse {
+            status: status.to_owned(),
+            health_contract_version: CAMERA_HEALTH_CONTRACT_VERSION,
+            generated_at_ms: unix_time_ms(),
+            uptime_seconds,
+            version: env!("CARGO_PKG_VERSION"),
+            totals,
+            system,
+            storage,
+            webrtc,
+            cameras,
+            issues,
+            operational_events,
+        },
+        lifecycle_available,
+    )
+}
+
+struct HealthAcquisition {
+    lifecycle: HashMap<String, CameraStatus>,
+    operational_events: Vec<crate::operational_events::OperationalEvent>,
+    issues: Vec<HealthIssue>,
+    lifecycle_available: bool,
+}
+
+fn acquire_health_sources(
+    router_tx: &FacadeSender<RouterMessage>,
+    state: &ServerState,
+) -> HealthAcquisition {
     let mut issues = Vec::new();
+    let mut lifecycle_available = true;
     let operational_events = state.events.as_ref().map_or_else(Vec::new, |events| {
         match events.open_operational_events() {
             Ok(events) => events,
@@ -11648,6 +11735,7 @@ fn server_health(
             .map(|status| (status.id.to_string(), status))
             .collect::<HashMap<_, _>>(),
         Ok(RouterResponse::Camera(_)) => {
+            lifecycle_available = false;
             issues.push(HealthIssue {
                 severity: "warning".to_owned(),
                 scope: "runtime".to_owned(),
@@ -11659,6 +11747,7 @@ fn server_health(
             HashMap::new()
         }
         Err(_) => {
+            lifecycle_available = false;
             issues.push(HealthIssue {
                 severity: "warning".to_owned(),
                 scope: "runtime".to_owned(),
@@ -11670,16 +11759,28 @@ fn server_health(
             HashMap::new()
         }
     };
-    let mut ingress = state
-        .health
-        .snapshot()
+    HealthAcquisition {
+        lifecycle,
+        operational_events,
+        issues,
+        lifecycle_available,
+    }
+}
+
+fn collect_camera_health(
+    state: &ServerState,
+    ingress: Vec<crate::stats::CameraHealthReport>,
+    recording: Vec<RecordingStreamHealthSnapshot>,
+    lifecycle: &HashMap<String, CameraStatus>,
+    operational_events: &[crate::operational_events::OperationalEvent],
+    uptime_seconds: u64,
+    issues: &mut Vec<HealthIssue>,
+) -> (HealthTotals, Vec<CameraHealth>) {
+    let mut ingress = ingress
         .into_iter()
         .map(|report| (report.ip, report))
         .collect::<HashMap<_, _>>();
-    let recording_snapshot = state.recording_health.snapshot();
-    let storage_safety = recording_snapshot.storage;
-    let recording_health = recording_snapshot
-        .streams
+    let recording_health = recording
         .into_iter()
         .map(|stream| (stream.stream_id.clone(), stream))
         .collect::<HashMap<_, _>>();
@@ -11695,7 +11796,7 @@ fn server_health(
         let ip = camera.info.ip.parse::<IpAddr>().ok();
         let report = ip.and_then(|ip| ingress.remove(&ip));
         let streams = report.map_or_else(Vec::new, |report| report.streams);
-        health_snapshot::aggregate_video_streams(camera, &streams, &mut totals, &mut issues);
+        health_snapshot::aggregate_video_streams(camera, &streams, &mut totals, issues);
 
         let router_status = lifecycle.get(&camera.recording_label);
         let projection_context = CameraProjectionContext {
@@ -11750,27 +11851,33 @@ fn server_health(
         cameras.push(camera_health);
     }
 
-    let catalog = state
-        .catalog
-        .as_ref()
-        .and_then(|catalog| match catalog.stats() {
-            Ok(stats) => Some(stats),
-            Err(error) => {
-                issues.push(HealthIssue {
-                    severity: "warning".to_owned(),
-                    scope: "storage".to_owned(),
-                    message: format!("Recording catalog statistics are unavailable: {error}"),
-                    operational_event_id: None,
-                    timeline_start_ms: None,
-                    timeline_end_ms: None,
-                });
-                None
-            }
-        });
+    (totals, cameras)
+}
+
+fn collect_storage_health(
+    state: &ServerState,
+    history_catalog: Option<&RecordingCatalogHandle>,
+    safety: crate::storage::safety::StorageSafetyHealthSnapshot,
+    issues: &mut Vec<HealthIssue>,
+) -> StorageHealth {
+    let catalog = history_catalog.and_then(|catalog| match catalog.stats() {
+        Ok(stats) => Some(stats),
+        Err(error) => {
+            issues.push(HealthIssue {
+                severity: "warning".to_owned(),
+                scope: "storage".to_owned(),
+                message: format!("Recording catalog statistics are unavailable: {error}"),
+                operational_event_id: None,
+                timeline_start_ms: None,
+                timeline_end_ms: None,
+            });
+            None
+        }
+    });
     let catalog_bytes = std::fs::metadata(&state.storage_config.recording_catalog_path)
         .ok()
         .map(|metadata| metadata.len());
-    let storage = StorageHealth {
+    StorageHealth {
         medium_term_path: state.config.storage.medium_term_path.clone(),
         long_term_path: state.config.storage.long_term_path.clone(),
         paths_are_same: state.storage_config.medium_term_path
@@ -11787,9 +11894,17 @@ fn server_health(
         cleanup_hysteresis_bytes: state.storage_config.cleanup_hysteresis_bytes,
         catalog_bytes,
         catalog,
-        safety: storage_safety,
+        safety,
         demand: state.recording_demand.health_snapshot(),
-    };
+    }
+}
+
+fn append_server_health_issues(
+    system: &crate::health::SystemHealth,
+    storage: &StorageHealth,
+    webrtc: &crate::webrtc::WebRtcHealth,
+    issues: &mut Vec<HealthIssue>,
+) {
     if storage.safety.recording_state.as_str() == "paused" {
         issues.push(HealthIssue {
             severity: "critical".to_owned(),
@@ -11831,7 +11946,6 @@ fn server_health(
             timeline_end_ms: None,
         });
     }
-    let webrtc = state.webrtc.health_snapshot();
     if webrtc.queue_drops > 0 {
         issues.push(HealthIssue {
             severity: "info".to_owned(),
@@ -11846,22 +11960,6 @@ fn server_health(
             timeline_start_ms: None,
             timeline_end_ms: None,
         });
-    }
-    let status = server_health_status(&issues);
-
-    ServerHealthResponse {
-        status: status.to_owned(),
-        health_contract_version: CAMERA_HEALTH_CONTRACT_VERSION,
-        generated_at_ms: unix_time_ms(),
-        uptime_seconds,
-        version: env!("CARGO_PKG_VERSION"),
-        totals,
-        system,
-        storage,
-        webrtc,
-        cameras,
-        issues,
-        operational_events,
     }
 }
 
@@ -14289,6 +14387,80 @@ mod tests {
     }
 
     #[test]
+    fn local_audio_health_uses_its_own_transport_without_counting_video() {
+        use crate::stats::{CameraReport, IngressStats, audio_report};
+
+        let state = media_test_state();
+        let mut ingress = IngressStats::new();
+        let previous = ingress.snapshot();
+        ingress.on_audio_frame(160);
+        let received = ingress.snapshot();
+        let audio = audio_report(&received, &received.rates_since(&previous), Some("AAC")).unwrap();
+        for source in [StreamKind::Main, StreamKind::Sub] {
+            state.health.publish_from(
+                CameraReport {
+                    ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    name: None,
+                    brand: None,
+                    port: 554,
+                    streams: vec![audio.clone()],
+                },
+                source,
+            );
+        }
+        let router_status = CameraStatus {
+            id: crate::api::CameraId::new("front-door"),
+            lifecycle: CameraLifecycle::Reconnecting,
+            expected_streams: vec!["main".into(), "sub".into()],
+            connected_streams: vec!["main".into()],
+            last_error: None,
+        };
+        let context = CameraProjectionContext {
+            router_status: Some(&router_status),
+            recording_health: &HashMap::new(),
+            battery_wake: None,
+            storage_config: &state.storage_config,
+            uptime_seconds: 60,
+        };
+        let camera = state.camera_entries().remove(0);
+        let project = |mut reports: Vec<crate::stats::CameraHealthReport>| {
+            project_camera_snapshot(
+                &camera,
+                state.camera_info(&camera),
+                reports.remove(0).streams,
+                &context,
+            )
+        };
+        let local = project(state.health.local_stream_snapshot());
+        let main = local
+            .streams
+            .iter()
+            .find(|s| s.ingress.report.kind == "audio_main")
+            .unwrap();
+        let sub = local
+            .streams
+            .iter()
+            .find(|s| s.ingress.report.kind == "audio_sub")
+            .unwrap();
+        assert_eq!(main.dimensions.transport_connected, Some(true));
+        assert_eq!(main.reason, CameraHealthReason::Healthy);
+        assert_eq!(sub.dimensions.transport_connected, Some(false));
+        assert_eq!(sub.reason, CameraHealthReason::TransportReconnecting);
+        assert!(!main.dimensions.recording_requested && !sub.dimensions.recording_requested);
+        assert_eq!(local.dimensions.reporting_video_streams, 0);
+        assert_eq!(local.dimensions.fresh_video_streams, 0);
+        assert_eq!(local.dimensions.decodable_video_streams, 0);
+
+        let public = project(state.health.snapshot());
+        assert_eq!(public.streams.len(), 1);
+        assert_eq!(public.streams[0].ingress.report.kind, "audio");
+        assert_eq!(
+            public.streams[0].dimensions.transport_connected,
+            Some(false)
+        );
+    }
+
+    #[test]
     fn detector_failure_does_not_demote_healthy_camera_recording() {
         let camera = project_camera_health(&CameraHealthEvidence {
             expected: true,
@@ -14317,6 +14489,67 @@ mod tests {
         assert_eq!(camera.state, CameraHealthState::Healthy);
         assert_eq!(camera.reason, CameraHealthReason::Healthy);
         assert_eq!(server_health_status(&external_findings), "degraded");
+    }
+
+    #[test]
+    fn dashboard_health_skips_recording_catalog_history() {
+        let path = std::env::temp_dir().join(format!("keeppeek-tui-catalog-{}", Uuid::new_v4()));
+        std::fs::create_dir(&path).unwrap();
+        let catalog = crate::storage::RecordingCatalog::open(&path.join("recordings.db")).unwrap();
+        let mut state = media_test_state();
+        state.catalog = Some(catalog.handle());
+        let (router, tx) = crate::runtime::Router::new().unwrap();
+        let worker = spawn_router_query_worker(router);
+        let dashboard = dashboard_health(&tx, &state).unwrap();
+        assert_eq!(worker.join().unwrap(), 1);
+        assert!(dashboard.storage.catalog.is_none());
+        let (router, tx) = crate::runtime::Router::new().unwrap();
+        let worker = spawn_router_query_worker(router);
+        assert!(server_health(&tx, &state).storage.catalog.is_some());
+        assert_eq!(worker.join().unwrap(), 1);
+        drop(state);
+        catalog.shutdown();
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn dashboard_health_keeps_live_data_when_event_history_is_unavailable() {
+        let folder = std::env::temp_dir().join(format!("keeppeek-tui-events-{}", Uuid::new_v4()));
+        std::fs::create_dir(&folder).unwrap();
+        let catalog =
+            crate::storage::RecordingCatalog::open(&folder.join("recordings.db")).unwrap();
+        let mut state = media_test_state();
+        state.events =
+            Some(EventStore::new(catalog.handle(), &folder.join("thumbnails"), 1024).unwrap());
+        catalog.shutdown();
+
+        let (router, tx) = crate::runtime::Router::new().unwrap();
+        let worker = spawn_router_query_worker(router);
+        let dashboard = dashboard_health(&tx, &state).unwrap();
+        assert_eq!(worker.join().unwrap(), 1);
+        assert!(dashboard.operational_events.is_empty());
+        assert!(dashboard.issues.iter().any(|issue| {
+            issue.scope == "storage"
+                && issue
+                    .message
+                    .starts_with("Operational event history is unavailable")
+        }));
+        drop(state);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn dashboard_health_rejects_a_collection_without_its_router() {
+        let state = media_test_state();
+        let (router, tx) = crate::runtime::Router::new().unwrap();
+        drop(router);
+        assert!(dashboard_health(&tx, &state).is_none());
+        assert!(
+            server_health(&tx, &state)
+                .issues
+                .iter()
+                .any(|issue| issue.scope == "runtime")
+        );
     }
 
     #[test]

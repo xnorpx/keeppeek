@@ -30,4 +30,5 @@ pub mod stats;
 pub mod storage;
 #[doc(hidden)]
 pub mod test_support;
+pub mod tui;
 pub mod webrtc;
