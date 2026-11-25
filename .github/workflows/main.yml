@@ -232,8 +232,8 @@ jobs:
     name: Main UI E2E (${{ matrix.os }})
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
-    # ponytail: Match Main Platform's Windows budget; cold release build plus serial Playwright takes ~45m.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 75 || 45 }}
+    # ponytail: Cold release build plus serial Playwright exceeds 45m on both Windows and macOS.
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
