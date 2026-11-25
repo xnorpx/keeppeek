@@ -15,13 +15,13 @@ pub type LiveAudioSettings = AudioOffsetSettings<MAX_LIVE_AUDIO_OFFSET_MS>;
 #[serde(deny_unknown_fields)]
 pub struct AudioOffsetSettings<const LIMIT_MS: i32> {
     /// An absent camera default resolves to zero.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_offset_ms: Option<i32>,
     /// An absent main-stream override inherits the camera default.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub main_offset_ms: Option<i32>,
     /// An absent sub-stream override inherits the camera default.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sub_offset_ms: Option<i32>,
 }
 
@@ -146,5 +146,25 @@ mod tests {
         ] {
             assert!(toml::from_str::<RecordedAudioSettings>(invalid).is_err());
         }
+    }
+
+    #[test]
+    fn partial_audio_settings_default_absent_overrides() {
+        let partial: LiveAudioSettings = toml::from_str("default_offset_ms = 50").unwrap();
+        assert_eq!(partial.default_offset_ms, Some(50));
+        assert_eq!(partial.main_offset_ms, None);
+        assert_eq!(partial.sub_offset_ms, None);
+        assert_eq!(partial.effective_offset_ms("main").unwrap(), 50);
+
+        let empty_toml: LiveAudioSettings = toml::from_str("").unwrap();
+        assert_eq!(empty_toml, LiveAudioSettings::default());
+
+        let partial_json: LiveAudioSettings =
+            serde_json::from_str(r#"{"default_offset_ms": 50}"#).unwrap();
+        assert_eq!(partial_json, partial);
+        assert_eq!(
+            serde_json::from_str::<LiveAudioSettings>("{}").unwrap(),
+            LiveAudioSettings::default()
+        );
     }
 }
