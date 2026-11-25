@@ -77,7 +77,8 @@ export function workspaceAccessChanged(
 ): boolean {
 	if (!previous.session) return false;
 	if (
-		session?.principalId !== previous.session.principalId ||
+		!session ||
+		session.principalId !== previous.session.principalId ||
 		session.role !== previous.session.role
 	)
 		return true;

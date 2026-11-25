@@ -2,7 +2,11 @@ import { createRawSnippet, tick } from 'svelte';
 import { page, userEvent } from 'vitest/browser';
 import { describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
-import type { AccessConnectionState, AccessSession } from '$lib/access';
+import {
+	workspaceAccessChanged,
+	type AccessConnectionState,
+	type AccessSession
+} from '$lib/access';
 import AppShell from './AppShell.svelte';
 import CameraAccessDialog from './CameraAccessDialog.svelte';
 import { cameraAccessCapability } from '$lib/control-client-camera-access';
@@ -215,5 +219,15 @@ describe('workspace recovery', () => {
 		expect(node.isConnected).toBe(false);
 		await expect.element(input).toHaveValue('');
 		await view.unmount();
+	});
+
+	it('treats a cleared session as an access change without dereferencing null', () => {
+		const session = { ...admin(''), principalId: '' };
+		expect(
+			workspaceAccessChanged(
+				{ status: 'authenticated', session, generation: 1, message: null },
+				null
+			)
+		).toBe(true);
 	});
 });
