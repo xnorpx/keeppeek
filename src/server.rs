@@ -11829,11 +11829,16 @@ fn collect_server_health(
     history_mode: HealthHistoryMode,
 ) -> (ServerHealthResponse, bool) {
     let uptime_seconds = state.started_at.elapsed().as_secs();
-    let system = state
-        .system
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .snapshot(&state.storage_config.long_term_path);
+    let system = {
+        let mut monitor = state
+            .system
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match history_mode {
+            HealthHistoryMode::Full => monitor.snapshot(&state.storage_config.long_term_path),
+            HealthHistoryMode::LiveOnly => monitor.live_snapshot(),
+        }
+    };
     let HealthAcquisition {
         lifecycle,
         operational_events,
@@ -14800,9 +14805,16 @@ mod tests {
         let dashboard = dashboard_health(&tx, &state).unwrap();
         assert_eq!(worker.join().unwrap(), 1);
         assert!(dashboard.storage.catalog.is_none());
+        assert!(dashboard.system.disks.is_empty());
+        assert!(dashboard.system.networks.is_empty());
+        assert!(dashboard.system.temperatures.is_empty());
+        assert!(dashboard.system.memory.total_bytes > 0);
+        assert!(dashboard.system.process.resident_memory_bytes.is_some());
         let (router, tx) = crate::runtime::Router::new().unwrap();
         let worker = spawn_router_query_worker(router);
-        assert!(server_health(&tx, &state).storage.catalog.is_some());
+        let public = server_health(&tx, &state);
+        assert!(public.storage.catalog.is_some());
+        assert!(!public.system.disks.is_empty());
         assert_eq!(worker.join().unwrap(), 1);
         drop(state);
         catalog.shutdown();

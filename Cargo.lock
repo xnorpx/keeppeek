@@ -5369,6 +5369,7 @@ dependencies = [
  "keeppeek",
  "mp4",
  "onvif",
+ "portable-pty",
  "reo-proto",
  "retina",
  "rouille",
