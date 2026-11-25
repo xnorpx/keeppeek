@@ -121,6 +121,7 @@ import {
 	HealthIssueSnapshotSchema,
 	HealthProfileSummarySchema,
 	HealthTotalsSnapshotSchema,
+	LiveAudioTimingSchema,
 	LogBufferStatsSchema,
 	LoadHealthSnapshotSchema,
 	LoggingSettingsResultSchema,
@@ -3615,7 +3616,19 @@ function protoHealthSnapshot(health: HealthFixture) {
 					subscribers: fixtureBigInt(source.subscribers),
 					bitrateBps: optionalFixtureBigInt(source.bitrate_bps),
 					hasKeyframe: source.has_keyframe ?? false,
-					keyframeAgeMs: optionalFixtureBigInt(source.keyframe_age_ms)
+					keyframeAgeMs: optionalFixtureBigInt(source.keyframe_age_ms),
+					liveAudio: source.live_audio
+						? create(LiveAudioTimingSchema, {
+								configuredOffsetMs: source.live_audio.configured_offset_ms,
+								appliedOffsetMs: source.live_audio.applied_offset_ms,
+								preview: source.live_audio.preview,
+								heldAudioBytes: source.live_audio.held_audio_bytes,
+								heldVideoBytes: source.live_audio.held_video_bytes,
+								heldVideoFrames: source.live_audio.held_video_frames,
+								capacityDrops: fixtureBigInt(source.live_audio.capacity_drops),
+								expiredDrops: fixtureBigInt(source.live_audio.expired_drops)
+							})
+						: undefined
 				})
 			)
 		}),

@@ -10,10 +10,18 @@
 		timing?: RecordedAudioTiming;
 		name: string;
 		disabled?: boolean;
+		liveAudioSupported?: boolean;
 		onapply: (offsetMs: number | null) => Promise<void>;
 		onclose: () => void;
 	};
-	let { timing, name, disabled = false, onapply, onclose }: Props = $props();
+	let {
+		timing,
+		name,
+		disabled = false,
+		liveAudioSupported = false,
+		onapply,
+		onclose
+	}: Props = $props();
 	let dialog = $state<HTMLDialogElement>();
 	let draft = $state<number | undefined>(untrack(() => timing?.appliedOffsetMs ?? 0));
 	let error = $state<string | null>(null);
@@ -115,7 +123,11 @@
 		</p>
 		<p class="mt-2 text-xs text-text-muted">New exports use saved settings.</p>
 		<p class="mt-2 text-xs text-text-muted">
-			Save a permanent change in Camera / Audio. Live correction is unavailable.
+			{#if liveAudioSupported}
+				Save a permanent change in Camera / Audio. Live timing uses its own settings there.
+			{:else}
+				Save a permanent change in Camera / Audio. Live correction is unavailable.
+			{/if}
 		</p>
 	</dialog>
 </Portal>

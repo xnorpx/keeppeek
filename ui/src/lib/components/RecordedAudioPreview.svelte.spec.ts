@@ -75,4 +75,18 @@ describe('recorded audio preview', () => {
 		await expect.element(page.getByText('No audio in the inspected export range.')).toBeVisible();
 		await expect.element(page.getByText(/Later setting or preview changes/)).toBeVisible();
 	});
+
+	it('reflects server live-audio capability in the settings note', async () => {
+		const view = await render(RecordedAudioPreview, {
+			timing,
+			name: 'Front Door / Main',
+			liveAudioSupported: false,
+			onapply: vi.fn(async () => {}),
+			onclose: vi.fn()
+		});
+		await expect.element(page.getByText(/Live correction is unavailable/)).toBeVisible();
+		await view.rerender({ liveAudioSupported: true });
+		await expect.element(page.getByText(/Live correction is unavailable/)).not.toBeInTheDocument();
+		await expect.element(page.getByText(/Live timing uses its own settings there/)).toBeVisible();
+	});
 });

@@ -1209,6 +1209,17 @@ export interface WebRtcSessionQueueHealth {
 	recovery_drops: number;
 }
 
+export interface LiveAudioTimingHealth {
+	configured_offset_ms: number;
+	applied_offset_ms: number;
+	preview: boolean;
+	held_audio_bytes: number;
+	held_video_bytes: number;
+	held_video_frames: number;
+	capacity_drops: number;
+	expired_drops: number;
+}
+
 export interface WebRtcSourceHealth {
 	camera_ip: string;
 	stream: 'main' | 'sub';
@@ -1216,6 +1227,7 @@ export interface WebRtcSourceHealth {
 	bitrate_bps: number | null;
 	has_keyframe: boolean;
 	keyframe_age_ms: number | null;
+	live_audio?: LiveAudioTimingHealth | null;
 }
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';

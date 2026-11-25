@@ -93,6 +93,17 @@ impl CameraTiming {
         }
     }
 
+    pub(super) fn reset_stream(&self, stream: StreamKind) {
+        let now = Instant::now();
+        let mut policy = self
+            .settings
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let profile = &mut policy[usize::from(stream == StreamKind::Sub)];
+        profile.source_reset_at = Some(now);
+        profile.reset(now);
+    }
+
     fn budget(&self, stream: StreamKind, audio: bool) -> &Mutex<Usage> {
         let index = usize::from(stream == StreamKind::Sub);
         if audio {
@@ -894,6 +905,65 @@ mod tests {
         camera.reset();
         assert_ne!(camera.policy(StreamKind::Main).generation, generation);
         assert_ne!(camera.policy(StreamKind::Sub).generation, sub_generation);
+    }
+
+    #[test]
+    fn stream_reset_flushes_only_the_reconnected_stream_and_preserves_configured_offset() {
+        let camera = Arc::new(CameraTiming::default());
+        camera.configure(LiveAudioSettings {
+            main_offset_ms: Some(-120),
+            sub_offset_ms: Some(120),
+            ..Default::default()
+        });
+        let mut main_video = Queue::new(camera.clone());
+        let mut sub_audio = Queue::new(camera.clone());
+        let before = Instant::now();
+        assert!(
+            main_video
+                .admit(1, packet(StreamKind::Main, VIDEO, before, 64), before)
+                .is_none()
+        );
+        assert!(
+            sub_audio
+                .admit(2, packet(StreamKind::Sub, AUDIO, before, 32), before)
+                .is_none()
+        );
+        assert_eq!(main_video.report(StreamKind::Main).held_video_bytes, 64);
+        assert_eq!(sub_audio.report(StreamKind::Sub).held_audio_bytes, 32);
+        let main_due = before + Duration::from_millis(120);
+        let permit = main_video
+            .delivery_permit(StreamKind::Main, before, main_due)
+            .unwrap();
+        assert!(permit.current(before));
+
+        std::thread::sleep(Duration::from_millis(2));
+        camera.reset_stream(StreamKind::Main);
+
+        assert!(!permit.current(before));
+        assert_eq!(
+            main_video.report(StreamKind::Main).configured_offset_ms,
+            -120
+        );
+        assert_eq!(main_video.pop_due(main_due), None);
+        assert_eq!(main_video.report(StreamKind::Main).held_video_bytes, 0);
+        assert_eq!(
+            main_video.admit(3, packet(StreamKind::Main, VIDEO, before, 64), before),
+            None
+        );
+        let after = Instant::now() + Duration::from_millis(1);
+        assert!(
+            main_video
+                .admit(4, packet(StreamKind::Main, VIDEO, after, 64), after)
+                .is_none()
+        );
+        assert_eq!(
+            main_video.pop_due(after + Duration::from_millis(120)),
+            Some((4, after + Duration::from_millis(120)))
+        );
+        assert_eq!(
+            sub_audio.pop_due(before + Duration::from_millis(120)),
+            Some((2, before + Duration::from_millis(120)))
+        );
     }
 
     #[test]

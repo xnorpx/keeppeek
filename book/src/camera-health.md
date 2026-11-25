@@ -246,8 +246,11 @@ Unknown evidence is not counted as connected, fresh, decodable, recording, or he
 ## API and metrics
 
 `HealthCommand` returns the versioned protobuf health snapshot. Version 1 includes the canonical
-`state`, stable reasons, camera and stream dimensions, media progress timestamps, and explicit fleet
-counts. Unknown future state or reason strings are presented as `unknown`.
+`state`, stable reasons, camera and stream dimensions, media progress timestamps, explicit fleet
+counts, and per-source WebRTC live-audio timing occupancy and drop counters (`WebRtcSourceHealthSnapshot.live_audio`).
+Unknown future state or reason strings are presented as `unknown`. See
+[Calibrating live audio](./recording-and-evidence.md#calibrating-live-audio) for live timing
+bounds and queue drop semantics.
 
 `GET /metrics` exposes the same projection. Important gauges include:
 
