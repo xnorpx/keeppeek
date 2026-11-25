@@ -35,7 +35,7 @@ runs:
           return (Get-Command ffmpeg.exe -CommandType Application -ErrorAction SilentlyContinue) -and
             (Get-Command ffprobe.exe -CommandType Application -ErrorAction SilentlyContinue)
         }
-        if (-not (Test-MediaTools)) {
+        if (-not (Test-MediaTools) -and (Get-Command choco -ErrorAction SilentlyContinue)) {
           $attempt = 1
           while ($attempt -le 3) {
             choco install ffmpeg --no-progress --yes
@@ -45,7 +45,7 @@ runs:
             $attempt++
           }
         }
-        if (-not (Test-MediaTools)) {
+        if (-not (Test-MediaTools) -and (Get-Command winget -ErrorAction SilentlyContinue)) {
           winget install --id Gyan.FFmpeg --exact --source winget --silent --accept-source-agreements --accept-package-agreements
           if (-not (Test-MediaTools)) {
             $links = @(
@@ -55,11 +55,52 @@ runs:
             $env:PATH = (@($env:PATH) + $links) -join [IO.Path]::PathSeparator
           }
         }
+        if (-not (Test-MediaTools)) {
+          # Download a static archive when package managers are unavailable on the runner.
+          $ProgressPreference = 'SilentlyContinue'
+          $urls = if ($env:RUNNER_ARCH -eq 'ARM64') {
+            @(
+              'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-winarm64-gpl.zip'
+              'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'
+              'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
+            )
+          } else {
+            @(
+              'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'
+              'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
+            )
+          }
+          $ffmpegRoot = Join-Path $env:RUNNER_TEMP 'ffmpeg'
+          $archive = Join-Path $env:RUNNER_TEMP 'ffmpeg.zip'
+          foreach ($url in $urls) {
+            for ($attempt = 1; $attempt -le 2; $attempt++) {
+              try {
+                Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+                Remove-Item -LiteralPath $ffmpegRoot -Recurse -Force -ErrorAction SilentlyContinue
+                Invoke-WebRequest -Uri $url -OutFile $archive -MaximumRedirection 5 -TimeoutSec 120 -ErrorAction Stop
+                Expand-Archive -LiteralPath $archive -DestinationPath $ffmpegRoot -Force -ErrorAction Stop
+                Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+                $ffmpegExe = Get-ChildItem -LiteralPath $ffmpegRoot -Recurse -Filter ffmpeg.exe -File | Select-Object -First 1
+                $ffprobeExe = Get-ChildItem -LiteralPath $ffmpegRoot -Recurse -Filter ffprobe.exe -File | Select-Object -First 1
+                if ($ffmpegExe -and $ffprobeExe) {
+                  $dirs = @($ffmpegExe.DirectoryName, $ffprobeExe.DirectoryName) | Sort-Object -Unique
+                  $env:PATH = (@($dirs) + $env:PATH) -join [IO.Path]::PathSeparator
+                  break
+                }
+              } catch {
+                Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+                Write-Warning "FFmpeg archive download failed ($url, attempt $attempt): $($_.Exception.Message)"
+              }
+              if ($attempt -lt 2) { Start-Sleep -Seconds 5 }
+            }
+            if (Test-MediaTools) { break }
+          }
+        }
         $tools = Get-Command -Name ffmpeg.exe, ffprobe.exe -CommandType Application -ErrorAction Stop
         foreach ($tool in $tools) {
           & $tool.Path -version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         }
-        # WinGet can expose the applications in this shell before later steps inherit their directories.
+        # Expose installed media tool directories so later steps inherit them.
         $tools | ForEach-Object { Split-Path -Parent $_.Path } |
           Sort-Object -Unique | Add-Content -LiteralPath $env:GITHUB_PATH -Encoding utf8

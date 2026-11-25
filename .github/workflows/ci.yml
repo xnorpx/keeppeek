@@ -646,6 +646,7 @@ jobs:
     steps:
       - name: Skip UI static checks without UI changes
         if: github.event_name != 'push' && needs.changes.outputs.ui != 'true'
+        working-directory: .
         run: echo "Skipping UI static checks because no UI files changed."
       - if: github.event_name == 'push' || needs.changes.outputs.ui == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -679,6 +680,7 @@ jobs:
     steps:
       - name: Skip UI Bun unit tests without UI changes
         if: github.event_name != 'push' && needs.changes.outputs.ui != 'true'
+        working-directory: .
         run: echo "Skipping UI Bun unit tests because no UI files changed."
       - if: github.event_name == 'push' || needs.changes.outputs.ui == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
