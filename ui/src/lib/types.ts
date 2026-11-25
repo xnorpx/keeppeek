@@ -1252,6 +1252,21 @@ export interface LogSnapshot {
 	newest_sequence: number | null;
 	truncated: boolean;
 	stats: LogBufferStats;
+	generation?: string;
+}
+
+export interface ReportingStatus {
+	configured: boolean;
+	origin?: string;
+	retention_days?: number;
+}
+
+export type ReportingAuditEventName = 'start' | 'cancel' | 'local_download' | 'complete' | 'failed';
+
+export interface ReportingAuditPayload {
+	event: ReportingAuditEventName;
+	mode?: 'logs_only' | 'screen';
+	report_id?: string;
 }
 
 export interface LoggingSettings {

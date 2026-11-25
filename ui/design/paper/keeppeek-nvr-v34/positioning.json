@@ -60,6 +60,7 @@
 	"authenticationHttpPaths": ["/auth/session", "/auth/login", "/auth/callback", "/auth/logout"],
 	"backupHttpPaths": ["/config/export", "/config/apply"],
 	"internalHttpPaths": ["/recording-coverage"],
+	"reportingHttpPaths": ["/reporting/status", "/reporting/grants", "/reporting/audit"],
 	"principles": [
 		{
 			"index": 1,

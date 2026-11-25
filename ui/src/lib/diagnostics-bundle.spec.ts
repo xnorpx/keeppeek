@@ -84,10 +84,11 @@ function input(): DiagnosticsBundleInput {
 					level: 'error',
 					target: 'keeppeek::camera',
 					message:
-						'Marcus Front Door rtsp://operator:camera-secret@192.168.1.22/live token=abc123 user@example.com',
+						'Marcus Front Door rtsp://operator:camera-secret@192.168.1.22/live token=abc123 grant=private-upload-grant-canary user@example.com',
 					fields: {
 						password: 'camera-secret',
 						session_id: 'private-session',
+						grant: 'field-upload-grant-canary',
 						path: '/Users/marcus/private/file.mp4'
 					}
 				}
@@ -155,6 +156,8 @@ describe('diagnostics bundle', () => {
 			'camera-secret',
 			'abc123',
 			'private-session',
+			'private-upload-grant-canary',
+			'field-upload-grant-canary',
 			'private-browser-token',
 			'user@example.com'
 		]) {

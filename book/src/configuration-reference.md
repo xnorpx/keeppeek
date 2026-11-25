@@ -849,9 +849,11 @@ the configuration directory if you need it during a recovery rehearsal. Source:
 
 ## Bug reporting service
 
-The optional `[reporting]` section configures the recorder's reporting service. Omit it to keep
-bug reports local. The configuration loader validates the section. Remote submission is pending
-recorder integration.
+The optional `[reporting]` section configures the recorder's HTTPS reporting service. Omit it to
+keep bug reports local-only. When configured, KeepPeek exposes service availability on
+`GET /reporting/status`, issues short-lived single-report upload grants on `POST /reporting/grants`,
+and records non-sensitive lifecycle audit events on `POST /reporting/audit`. Every reporting
+endpoint requires Administrator authorization and the existing secure remote-access classification.
 
 | Field            | Type            | Default  | Meaning                                                                                     |
 | ---------------- | --------------- | -------- | ------------------------------------------------------------------------------------------- |
@@ -860,7 +862,9 @@ recorder integration.
 | `retention_days` | `u8`            | `7`      | Requested retention for the private evidence, from 1 to 30 days.                            |
 
 Keep the reusable credential in `secrets.toml`. The loader preserves the reference in
-`config.toml` and validates its syntax without resolving it at recorder startup.
+`config.toml` and validates its syntax without resolving it at recorder startup. The recorder
+resolves the secret only when forwarding a confirmed grant request to `POST {origin}/v1/reports`
+and registers both the resolved credential and issued grant token for log redaction.
 
 ## Operational events
 

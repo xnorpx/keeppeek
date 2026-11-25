@@ -37,4 +37,26 @@ The service permits these methods and authorization headers only for configured 
 
 The issue contains the reviewed fields, evidence warnings, a scrubbed diagnostic summary, and the opaque report ID. The service checks the public text and summary again for private values and fails closed when the recorder could not gather the scrub context. Diagnostics and screen media stay private. Maintainer authentication is required to view artifacts. Operators see the retention before submitting. Expiry removes artifacts within at most 30 days. Issue text, screen media, bearer links, and service credentials stay out of request and audit logs.
 
-The GitHub integration uses credentials owned by the reporting service. A local test fixture uses an in-memory provider, synthetic content, and a fake issue URL. Production hosting, GitHub App installation, abuse limits, and retention jobs belong to the service deployment.
+The GitHub integration uses credentials owned by the reporting service. A local test fixture uses an in-memory provider, synthetic content, and a fake issue URL.
+
+## Recorder HTTP surface
+
+The recorder exposes three Administrator-only endpoints in [the OpenAPI specification](../api/openapi.yaml), each enforcing the existing secure remote-access policy (`426` on plaintext remote HTTP) and `Cache-Control: no-store`:
+
+| Endpoint                 | Purpose and bounds                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /reporting/status`  | Returns `{ configured, origin?, retention_days? }` without credentials or secret references. When `[reporting]` is omitted, returns `{ configured: false }`.                                                                                                                                                                                                                   |
+| `POST /reporting/grants` | Accepts a bounded (`<= 128 KiB`) `{ idempotencyKey, manifest }` payload, validates it against the v1 schema, resolves any `{secret:KEY}` credential on the recorder, forwards `POST {origin}/v1/reports` over HTTPS with no redirects and a 10-second timeout, registers the issued grant for log redaction, audits `bug_report_submit`, and returns `{ id, grant, expires }`. |
+| `POST /reporting/audit`  | Accepts a bounded (`<= 512 B`) closed-enum payload (`start`, `cancel`, `local_download`, `complete`, `failed`) with optional mode and opaque `report_id` and records a non-sensitive entry in the access audit log.                                                                                                                                                            |
+
+`GET /logs/snapshot` also includes an additive per-process `generation` string so the report session can verify that start and stop server log cursors belong to the same recorder epoch and disclose restarts explicitly.
+
+## Production deployment dependencies
+
+Production operation of the external reporting service is a separate deployment responsibility outside recorder core:
+
+- Dedicated HTTPS hosting, TLS lifecycle, and CORS origin allowlisting for configured KeepPeek origins.
+- GitHub App ownership, installation, and least-privilege repository permissions (`issues:write` only); KeepPeek clients and recorders never embed GitHub tokens.
+- Maintainer authentication and authorization for reading private diagnostics packages and screen recordings.
+- Automated retention enforcement that deletes expired private artifacts within at most 30 days.
+- Service-side abuse protection, storage quotas, monitoring, and availability commitments.

@@ -16,12 +16,15 @@ import { durationFromMs, timestampDate, timestampFromDate } from '@bufbuild/prot
 import {
 	ApiRequestError,
 	applyCookieConfigurationArchive,
+	createReportingGrant as createAuthenticatedReportingGrant,
 	createSession,
 	deleteSession,
 	fetchLogSnapshot as fetchAuthenticatedLogSnapshot,
 	fetchLogStream as fetchAuthenticatedLogStream,
 	fetchMetricsSnapshot as fetchAuthenticatedMetricsSnapshot,
-	fetchRecordingCoverage as fetchAuthenticatedRecordingCoverage
+	fetchRecordingCoverage as fetchAuthenticatedRecordingCoverage,
+	fetchReportingStatus as fetchAuthenticatedReportingStatus,
+	recordReportingAudit as recordAuthenticatedReportingAudit
 } from './api';
 import type { HttpCredential } from './api';
 import { ExternalAuthentication, authenticationError } from './external-authentication.svelte';
@@ -221,6 +224,7 @@ import type {
 	RecordingCoverageResponse,
 	RecordingSegment,
 	RecordingsResponse,
+	ReportingAuditPayload,
 	SanitizedConfig,
 	ServerHealthResponse,
 	SettingsConfigUpdate,
@@ -800,6 +804,22 @@ export class ControlClient {
 
 	async getMetricsSnapshot(signal?: AbortSignal): Promise<string> {
 		return this.diagnosticsSnapshot(fetchAuthenticatedMetricsSnapshot, signal);
+	}
+
+	async getReportingStatus(signal?: AbortSignal) {
+		return this.diagnosticsSnapshot(fetchAuthenticatedReportingStatus, signal);
+	}
+
+	async createReportingGrant(idempotencyKey: string, manifest: unknown, signal?: AbortSignal) {
+		return this.diagnosticsSnapshot(
+			(credential, activeSignal) =>
+				createAuthenticatedReportingGrant(idempotencyKey, manifest, credential, activeSignal),
+			signal
+		);
+	}
+
+	async recordReportingAudit(payload: ReportingAuditPayload, signal?: AbortSignal): Promise<void> {
+		await recordAuthenticatedReportingAudit(payload, this.#accessKey, signal);
 	}
 
 	private async diagnosticsSnapshot<T>(

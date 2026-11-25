@@ -12,15 +12,18 @@
 	import { diagnosticsBundleFilename, downloadDiagnosticsArtifact } from '$lib/diagnostics-bundle';
 	import { reportCaptureSupported } from '$lib/report-capture';
 	import type { ReportSession } from '$lib/report-session.svelte';
+	import type { ReportingAuditPayload } from '$lib/types';
 
 	let {
 		session,
 		open = $bindable(false),
-		reporting
+		reporting,
+		onaudit
 	}: {
 		session: ReportSession;
 		open?: boolean;
 		reporting?: { transport: ReportTransport; retentionDays: number };
+		onaudit?: (payload: ReportingAuditPayload) => void;
 	} = $props();
 
 	let dialog: HTMLDialogElement | undefined = $state();
@@ -85,6 +88,7 @@
 			new Blob([lines.join('\n\n')], { type: 'text/plain;charset=utf-8' }),
 			`keeppeek-report-notes-${name}.txt`
 		);
+		onaudit?.({ event: 'local_download' });
 	}
 
 	function downloadRecord(blob: Blob, stopUtc: string): void {
@@ -93,6 +97,7 @@
 			blob,
 			`keeppeek-screen-${new Date(stopUtc).toISOString().replace(/[:.]/g, '-')}.${extension}`
 		);
+		onaudit?.({ event: 'local_download' });
 	}
 
 	$effect(() => {
@@ -177,17 +182,23 @@
 					!/^\/[^/]+\/[^/]+\/issues\/[1-9][0-9]*$/.test(url.pathname)
 				) {
 					submissionState = 'complete';
+					session.markCompleted();
 					submissionError = 'The service created the issue but returned an invalid issue link.';
+					onaudit?.({ event: 'complete', report_id: attempt.reportId });
 					return;
 				}
 				issueUrl = url.href;
 				submissionState = 'complete';
+				session.markCompleted();
+				onaudit?.({ event: 'complete', report_id: attempt.reportId });
 				return;
 			}
+			onaudit?.({ event: 'failed', report_id: attempt.reportId });
 			submissionError =
 				'The service has not returned an issue. You can check again or download the report.';
 		} catch {
 			if (submission !== attempt || submissionState !== 'sending') return;
+			onaudit?.({ event: 'failed', report_id: attempt.reportId });
 			submissionError =
 				'The service could not confirm submission. You can retry or download the report.';
 		}
@@ -433,11 +444,13 @@
 					<Button
 						variant="outline"
 						onclick={() => {
-							if (review?.diagnostics)
+							if (review?.diagnostics) {
 								downloadDiagnosticsArtifact(
 									review.diagnostics,
 									diagnosticsBundleFilename(new Date(review.window.stopUtc))
 								);
+								onaudit?.({ event: 'local_download' });
+							}
 						}}>Download report diagnostics</Button
 					>
 				{/if}

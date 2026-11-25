@@ -122,6 +122,7 @@ mod recorded_audio_settings;
 mod recorded_audio_settings_tests;
 pub(crate) mod recording_coverage;
 mod recording_maintenance;
+mod reporting;
 mod stored_encoding;
 mod stored_playback;
 mod stored_read;
@@ -8681,6 +8682,7 @@ pub struct ServerState {
     catalog: Option<RecordingCatalogHandle>,
     backup_manager: Option<Arc<BackupManager>>,
     logging: Option<LoggingService>,
+    reporting: reporting::Runtime,
     notifications: Option<NotificationHandle>,
     event_forwarder: Option<EventForwarderHandle>,
     started_at: Instant,
@@ -8875,6 +8877,7 @@ impl ServerState {
             catalog: None,
             backup_manager: None,
             logging: None,
+            reporting: reporting::Runtime::new(config.reporting.clone()),
             notifications: None,
             event_forwarder: None,
             started_at: Instant::now(),
@@ -10245,7 +10248,14 @@ fn handle_request(
         return service_error(404, "not found");
     }
     if request.method() == "OPTIONS"
-        && matches!(request_path.as_str(), "/config/apply" | "/config/export")
+        && matches!(
+            request_path.as_str(),
+            "/config/apply"
+                | "/config/export"
+                | "/reporting/status"
+                | "/reporting/grants"
+                | "/reporting/audit"
+        )
     {
         return config_api_preflight(request, state);
     }
@@ -10294,6 +10304,21 @@ fn handle_request(
         (POST) (/config/apply) => {
             authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
                 config_apply(request, state, &identity)
+            })
+        },
+        (GET) (/reporting/status) => {
+            authenticated_api_request(request, state, true, AccessRole::Administrator, |_| {
+                reporting::status(state)
+            })
+        },
+        (POST) (/reporting/grants) => {
+            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
+                reporting::create_grant(request, state, &identity)
+            })
+        },
+        (POST) (/reporting/audit) => {
+            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
+                reporting::record_audit(request, state, &identity)
             })
         },
         _ => serve_ui(request)

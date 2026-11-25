@@ -8,7 +8,7 @@ import {
 	type ReportLogCheckpoint,
 	type ReportLogWindow
 } from './report-log-window';
-import type { BrowserLogEntry, LogSnapshot } from './types';
+import type { BrowserLogEntry, LogSnapshot, ReportingAuditPayload } from './types';
 
 type Capture = Awaited<ReturnType<typeof startReportCapture>>;
 type Position = { cursor: ReportLogCheckpoint; server: LogSnapshot | null; warnings?: string[] };
@@ -35,15 +35,18 @@ type Dependencies = {
 	): Promise<ReportDiagnostics>;
 	capture: typeof startReportCapture;
 	now(): number;
+	audit?: (event: ReportingAuditPayload) => void;
 };
 
 export function createReportSession(
 	control: ControlClient,
-	browser: BrowserLogStore
+	browser: BrowserLogStore,
+	audit?: (event: ReportingAuditPayload) => void
 ): ReportSession {
 	return new ReportSession({
 		now: Date.now,
 		capture: startReportCapture,
+		audit,
 		browserEntries: () => browser.snapshot(),
 		latestBrowserSequence: () => browser.latestSequence,
 		package: (snapshot, window, signal) =>
@@ -63,6 +66,7 @@ export function createReportSession(
 					server: server
 						? {
 								sequence: server.newest_sequence ?? 0,
+								generation: server.generation,
 								filter: settings.status === 'fulfilled' ? settings.value.active_filter : undefined
 							}
 						: null
@@ -93,11 +97,14 @@ export class ReportSession {
 	bytes = $state(0);
 	review: Review | null = $state.raw(null);
 	#session: Session | null = null;
+	#completed = false;
 
 	constructor(private readonly deps: Dependencies) {}
 
 	start(withDisplay: boolean): void {
 		if (this.phase !== 'idle') return;
+		this.#completed = false;
+		this.deps.audit?.({ event: 'start', mode: withDisplay ? 'screen' : 'logs_only' });
 		this.startedAt = this.deps.now();
 		this.phase = 'recording';
 		this.mediaState = withDisplay ? 'requesting' : 'logs-only';
@@ -214,17 +221,24 @@ export class ReportSession {
 		if (this.review) this.review = { ...this.review, recording: null };
 	}
 
+	markCompleted(): void {
+		if (this.phase === 'review') this.#completed = true;
+	}
+
 	cancel(): void {
+		const shouldAuditCancel = this.phase !== 'idle' && !this.#completed;
 		if (this.#session) {
 			clearTimeout(this.#session.timer);
 			this.#session.media.abort();
 			this.#session.evidence.abort();
 		}
 		this.#session = null;
+		this.#completed = false;
 		this.review = null;
 		this.bytes = 0;
 		this.startedAt = 0;
 		this.mediaState = 'logs-only';
 		this.phase = 'idle';
+		if (shouldAuditCancel) this.deps.audit?.({ event: 'cancel' });
 	}
 }
