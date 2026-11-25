@@ -67,12 +67,9 @@ fn run(
         if shutdown.is_cancelled() {
             return;
         }
-        if privacy
-            .decision(&job.camera_id, chrono::Utc::now())
-            .map_or(true, |(active, _)| active)
-        {
+        let Some(permit) = privacy.media_permit(job.camera_id.as_str().into()) else {
             continue;
-        }
+        };
         let Some(endpoint) = registry.snapshot_endpoint(ip) else {
             slot.update(|evidence| evidence.snapshot_failures += 1);
             continue;
@@ -87,14 +84,17 @@ fn run(
         if shutdown.is_cancelled() {
             return;
         }
-        if slot
-            .try_send(Input::Snapshot {
+        // Recheck the privacy epoch after the HTTP fetch so an in-flight snapshot cannot cross a transition.
+        let Some(sent) = permit.deliver(|| {
+            slot.try_send(Input::Snapshot {
                 camera_id: job.camera_id,
                 event_id: job.event_id,
                 jpeg,
             })
-            .is_ok()
-        {
+        }) else {
+            continue;
+        };
+        if sent.is_ok() {
             slot.update(|evidence| evidence.snapshots += 1);
         } else {
             slot.update(|evidence| evidence.snapshot_failures += 1);

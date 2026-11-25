@@ -4451,4 +4451,94 @@ mod tests {
         .expect_err("Users must not read profile definitions");
         assert_eq!(error.code, proto::ErrorCode::Rejected);
     }
+
+    #[test]
+    fn concurrent_activations_commit_one_winner_and_reject_losers_with_conflict() {
+        let fixture = Fixture::new();
+        let camera_id = fixture.add_camera(&camera_config(
+            std::net::Ipv4Addr::new(192, 0, 2, 10).into(),
+        ));
+        let profiles: BTreeMap<_, _> = ["away", "home", "night", "vacation"]
+            .into_iter()
+            .map(|id| {
+                (
+                    id.to_owned(),
+                    RuntimeProfile {
+                        id: id.to_owned(),
+                        name: id.to_owned(),
+                        revision: 1,
+                        cameras: BTreeMap::from([(
+                            camera_id.clone(),
+                            crate::profiles::CameraProfileOverride {
+                                availability: Some(id != "away"),
+                                ..Default::default()
+                            },
+                        )]),
+                    },
+                )
+            })
+            .collect();
+        let registry = crate::profiles::ProfileRegistry {
+            revision: 1,
+            active_profile_id: None,
+            profiles,
+        };
+        let mut root = config::load_configuration_table(&fixture.config_path()).unwrap();
+        root.insert(
+            "runtime_profiles".to_owned(),
+            config::runtime_profile_configuration_value(&registry).unwrap(),
+        );
+        config::write_configuration_table(&fixture.config_path(), &root).unwrap();
+
+        let contenders = ["away", "home", "night", "vacation"];
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(contenders.len()));
+        let outcomes: Vec<_> = std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(contenders.len());
+            for (index, profile_id) in contenders.into_iter().enumerate() {
+                let state = fixture.state.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                handles.push(scope.spawn(move || {
+                    let principal = ApiPrincipal::local(std::net::Ipv4Addr::LOCALHOST.into());
+                    barrier.wait();
+                    let result = super::super::dispatch(
+                        &state,
+                        SessionId::from_u64(20_300 + index as u64),
+                        &principal,
+                        put_active(profile_id, 1),
+                    );
+                    (profile_id, result)
+                }));
+            }
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect()
+        });
+
+        let winners: Vec<_> = outcomes
+            .iter()
+            .filter_map(|(profile_id, result)| result.is_ok().then_some(*profile_id))
+            .collect();
+        assert_eq!(
+            winners.len(),
+            1,
+            "exactly one concurrent activation must win"
+        );
+        for (profile_id, result) in &outcomes {
+            if *profile_id == winners[0] {
+                continue;
+            }
+            let error = result
+                .as_ref()
+                .expect_err("losing concurrent activations must fail with conflict");
+            assert_eq!(error.code, proto::ErrorCode::Rejected);
+            assert_eq!(error._http_status, 409);
+        }
+
+        let persisted = config::load_config(&fixture.config_path())
+            .unwrap()
+            .runtime_profiles;
+        assert_eq!(persisted.revision, 2);
+        assert_eq!(persisted.active_profile_id.as_deref(), Some(winners[0]));
+    }
 }

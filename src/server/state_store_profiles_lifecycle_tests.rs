@@ -1073,3 +1073,335 @@ fn recovered_camera_confirms_the_current_configuration_before_releasing_privacy(
     state.confirm_recovered_profile(2);
     wait(&|| !private() && lifecycle.application().state == RuntimeApplicationState::Applied);
 }
+
+fn publish_test_live_source(state: &ServerState) -> Option<String> {
+    use crate::keeppeek::StreamKind;
+    use crate::server::proto_camera_source_session;
+    use crate::webrtc::Source;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    state.webrtc.live().publish(
+        Source {
+            camera_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            stream: StreamKind::Sub,
+        },
+        VideoCodec::H264,
+        true,
+        Instant::now(),
+        None,
+        bytes::Bytes::from_static(&[0, 0, 0, 1]),
+    );
+    let camera = state.camera(SOURCE)?;
+    proto_camera_source_session(&camera.info, &state.webrtc).map(|source| source.source_session_id)
+}
+
+fn bind_privacy_test_sessions(
+    state: &ServerState,
+) -> (SessionId, SessionId, crate::server::ServerControlHandler) {
+    use crate::access::CameraAccess;
+    use crate::server::{ServerControlHandler, tests::local_test_session};
+    use std::net::IpAddr;
+
+    state.cameras.write().unwrap()[0].groups = vec!["lobby".to_owned()];
+    let admin_session = SessionId::from_u64(31_001);
+    let group_user_session = SessionId::from_u64(31_002);
+    let group_user = state
+        .access_manager
+        .create_credential("Lobby Viewer", None, AccessRole::User, None, 1_000)
+        .unwrap();
+    state
+        .access_manager
+        .set_camera_access(
+            group_user.metadata.id,
+            group_user.metadata.revision,
+            CameraAccess {
+                all_cameras: false,
+                camera_ids: Vec::new(),
+                group_ids: vec!["lobby".to_owned()],
+            },
+        )
+        .unwrap();
+    let auth = format!("Bearer {}", group_user.access_key.canonical());
+    let remote: IpAddr = "192.0.2.20".parse().unwrap();
+    let principal = ApiPrincipal::credential(
+        state
+            .access_manager
+            .authenticate(remote, &[&auth], 1_001, Instant::now())
+            .unwrap(),
+    );
+    let mut user_record = local_test_session();
+    user_record.principal = principal;
+    let mut owners = state.api_session_owners.lock().unwrap();
+    owners.insert(admin_session, local_test_session());
+    owners.insert(group_user_session, user_record);
+    drop(owners);
+    let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+    let handler = ServerControlHandler::new(state.clone(), router_tx);
+    (admin_session, group_user_session, handler)
+}
+
+fn subscribe_test_events(handler: &crate::server::ServerControlHandler, session: SessionId) {
+    use crate::webrtc::ControlRequestHandler as _;
+
+    let reply = handler.handle_for_session(
+        session,
+        proto::Request {
+            request_id: 49,
+            command: Some(proto::request::Command::SubscribeEvents(
+                proto::SubscribeEvents {
+                    subscription_id: "privacy-events".to_owned(),
+                    attachment_routes: vec![proto::EventAttachmentRoute {
+                        attachment_type: "snapshot".to_owned(),
+                        content_type: "image/jpeg".to_owned(),
+                        channel: proto::DataChannelKind::ReliableData as i32,
+                    }],
+                    ..Default::default()
+                },
+            )),
+        },
+    );
+    assert!(matches!(
+        reply.response.result,
+        Some(proto::response::Result::Ok(_))
+    ));
+}
+
+fn test_subscribe_video(source_session_id: &str) -> proto::SubscribeMedia {
+    proto::SubscribeMedia {
+        subscription_id: "live-video-privacy".to_owned(),
+        kind: proto::MediaKind::Video as i32,
+        source_session_id: source_session_id.to_owned(),
+        requested_delivery_transport: proto::DeliveryTransport::Rtp as i32,
+        video_quality: proto::VideoQuality::Auto as i32,
+        ..Default::default()
+    }
+}
+
+fn sample_privacy_event(event_id: &str, source_session_id: &str) -> proto::Event {
+    proto::Event {
+        event_id: event_id.to_owned(),
+        revision: 1,
+        source_id: SOURCE.to_owned(),
+        media_kind: Some(proto::MediaKind::Video as i32),
+        origin: proto::EventOrigin::Keeppeek as i32,
+        source_session_id: Some(source_session_id.to_owned()),
+        event_type: "person".to_owned(),
+        start_time: Some(crate::server::millis_timestamp(12_345)),
+        ..Default::default()
+    }
+}
+
+fn assert_live_media_blocked(
+    state: &ServerState,
+    admin_session: SessionId,
+    group_user_session: SessionId,
+    handler: &crate::server::ServerControlHandler,
+    source_session_id: &str,
+) {
+    use crate::webrtc::ControlRequestHandler as _;
+
+    let subscribe_request = test_subscribe_video(source_session_id);
+    let subscribe_envelope = proto::Request {
+        request_id: 1,
+        command: Some(proto::request::Command::SubscribeMedia(
+            subscribe_request.clone(),
+        )),
+    };
+    for session in [admin_session, group_user_session] {
+        let principal = state
+            .api_session_owners
+            .lock()
+            .unwrap()
+            .get(&session)
+            .unwrap()
+            .principal
+            .clone();
+        assert!(
+            crate::server::camera_access::authorize_command(state, &principal, &subscribe_envelope)
+                .is_ok()
+        );
+    }
+    let Err(media_error) = handler.resolve_media_subscription(&subscribe_request) else {
+        panic!("live media subscription must fail while profile privacy is active");
+    };
+    assert_eq!(media_error.code, proto::ErrorCode::Rejected);
+    assert!(media_error.message.contains("privacy is active"));
+}
+
+fn assert_privacy_surfaces_blocked(
+    state: &ServerState,
+    admin_session: SessionId,
+    pump: &mut impl FnMut() -> Vec<Vec<u8>>,
+    source_session_id: &str,
+) {
+    use crate::server::{
+        camera_control, create_export_job, event_publication, event_subscription, millis_timestamp,
+    };
+
+    assert!(state.privacy.media_permit(SOURCE.into()).is_none());
+    let event = sample_privacy_event("private-event-attachment", source_session_id);
+    event_subscription::publish_images(
+        state,
+        &event,
+        Some(std::sync::Arc::from(b"private-jpeg-bytes".as_slice())),
+        &[],
+    );
+    assert!(pump().is_empty());
+
+    let Err(publication) = event_publication::dispatch(
+        state,
+        admin_session,
+        proto::EventPublicationCommand {
+            action: Some(proto::event_publication_command::Action::Start(
+                proto::StartEventPublication {
+                    publication_id: "svc-pub-1".to_owned(),
+                    event: Some(event),
+                    attachment_channel: proto::DataChannelKind::ReliableData as i32,
+                },
+            )),
+        },
+    ) else {
+        panic!("external analysis event publication must fail under profile privacy");
+    };
+    assert!(publication.message.contains("privacy is active"));
+
+    let export_error = create_export_job(
+        state,
+        "owner",
+        proto::CreateExportJob {
+            job_id: "profile-privacy-export".to_owned(),
+            source_id: SOURCE.to_owned(),
+            stream_id: "main".to_owned(),
+            start_time: Some(millis_timestamp(1_000)),
+            end_time: Some(millis_timestamp(2_000)),
+            ..Default::default()
+        },
+    )
+    .expect_err("export creation must fail under profile privacy");
+    assert_eq!(export_error.code, proto::ErrorCode::Rejected);
+    assert!(export_error.message.contains("privacy is active"));
+
+    let ptz_error = camera_control::handle_ptz(
+        state,
+        admin_session,
+        proto::PtzCommand {
+            source_id: SOURCE.to_owned(),
+            action: Some(proto::ptz_command::Action::ListPresets(
+                proto::PtzPresetList {},
+            )),
+        },
+    )
+    .expect_err("PTZ control must fail under profile privacy");
+    assert_eq!(ptz_error.code, proto::ErrorCode::Rejected);
+    assert!(ptz_error.message.contains("privacy is active"));
+}
+
+#[test]
+fn profile_privacy_blocks_live_media_events_services_groups_controls_and_exports() {
+    use crate::server::event_subscription;
+    use crate::webrtc::ControlRequestHandler as _;
+
+    let mut lifecycle = Lifecycle::with_privacy(false, true);
+    let source_session_id =
+        publish_test_live_source(&lifecycle.state).expect("Base live video source must advertise");
+    let (admin_session, group_user_session, handler) = bind_privacy_test_sessions(&lifecycle.state);
+    let mut pump = lifecycle
+        .state
+        .webrtc
+        .stage_api_session_pump(group_user_session);
+    subscribe_test_events(&handler, group_user_session);
+
+    // Baseline under Base: live media, permits, and subscribed event delivery all succeed.
+    assert!(
+        lifecycle
+            .state
+            .privacy
+            .media_permit(SOURCE.into())
+            .is_some()
+    );
+    assert!(
+        handler
+            .resolve_media_subscription(&test_subscribe_video(&source_session_id))
+            .is_ok()
+    );
+    event_subscription::publish_images(
+        &lifecycle.state,
+        &sample_privacy_event("base-event-allowed", &source_session_id),
+        Some(std::sync::Arc::from(b"base-jpeg-bytes".as_slice())),
+        &[],
+    );
+    assert!(
+        !pump().is_empty(),
+        "group-scoped event subscription must deliver while privacy is inactive"
+    );
+
+    // Activate privacy profile; live media and permits close before async convergence settles.
+    lifecycle.activate("away", 0);
+    assert_live_media_blocked(
+        &lifecycle.state,
+        admin_session,
+        group_user_session,
+        &handler,
+        &source_session_id,
+    );
+    lifecycle.assert_applied(1, Some("away"), CameraRecordingMode::Off);
+    assert_privacy_surfaces_blocked(
+        &lifecycle.state,
+        admin_session,
+        &mut pump,
+        &source_session_id,
+    );
+
+    drop(pump);
+
+    // Restart recorder and confirm live ingress drops and all surfaces remain closed.
+    lifecycle.restart();
+    assert!(lifecycle.private_before_start);
+    assert!(
+        publish_test_live_source(&lifecycle.state).is_none(),
+        "live video source session must not advertise while restored profile privacy is active"
+    );
+    let (admin_after, user_after, handler_after) = bind_privacy_test_sessions(&lifecycle.state);
+    let mut restarted_pump = lifecycle.state.webrtc.stage_api_session_pump(user_after);
+    subscribe_test_events(&handler_after, user_after);
+    assert_privacy_surfaces_blocked(
+        &lifecycle.state,
+        admin_after,
+        &mut restarted_pump,
+        &source_session_id,
+    );
+
+    // Return to Base and confirm live media and subscribed event delivery both resume.
+    lifecycle.activate("", 1);
+    lifecycle.assert_applied(2, None, CameraRecordingMode::Sub);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while lifecycle
+        .state
+        .privacy
+        .media_permit(SOURCE.into())
+        .is_none()
+    {
+        assert!(
+            Instant::now() < deadline,
+            "Base restoration did not release profile privacy"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let resumed_source_session = publish_test_live_source(&lifecycle.state)
+        .expect("Base restoration must re-advertise live video source");
+    assert!(
+        handler_after
+            .resolve_media_subscription(&test_subscribe_video(&resumed_source_session))
+            .is_ok()
+    );
+    event_subscription::publish_images(
+        &lifecycle.state,
+        &sample_privacy_event("base-event-resumed", &resumed_source_session),
+        Some(std::sync::Arc::from(b"resumed-jpeg-bytes".as_slice())),
+        &[],
+    );
+    assert!(
+        !restarted_pump().is_empty(),
+        "group-scoped event subscription must resume after Base clears profile privacy"
+    );
+}
