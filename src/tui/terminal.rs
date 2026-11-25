@@ -210,6 +210,7 @@ pub(super) fn present(
             .name("terminal-input".into())
             .spawn_scoped(scope, move || {
                 let result = read_input(&sender, stop, server);
+                drop(sender);
                 stop.cancel();
                 detach_when_output_stalled(
                     || restoration.wait_timeout(Duration::from_millis(150)),

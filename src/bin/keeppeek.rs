@@ -81,6 +81,8 @@ fn run_server(tui: keeppeek::tui::DashboardMode) -> anyhow::Result<()> {
     let shutdown = Shutdown::new();
     let restart = Restart::default();
     let signal_shutdown = shutdown.clone();
+    #[cfg(windows)]
+    enable_windows_ctrl_c();
     ctrlc::set_handler(move || {
         tracing::info!("shutting down");
         signal_shutdown.cancel();
@@ -93,6 +95,15 @@ fn run_server(tui: keeppeek::tui::DashboardMode) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(windows)]
+fn enable_windows_ctrl_c() {
+    // Processes spawned under CREATE_NEW_PROCESS_GROUP or a parent that set IGNORE_CTRL_C
+    // inherit ignored Ctrl+C delivery even after registering a console handler.
+    // SAFETY: Passing `None` with `false` clears only the calling process's inherited
+    // `IGNORE_CTRL_C` attribute; no callback pointer is registered or dereferenced.
+    let _ = unsafe { windows::Win32::System::Console::SetConsoleCtrlHandler(None, false) };
 }
 
 #[cfg(test)]
