@@ -2351,17 +2351,12 @@ mod tests {
         let bundle_path = directory.join("backup.zip");
         std::fs::write(&bundle_path, bundle.into_inner()).unwrap();
         let target_dir = target_config.parent().unwrap();
-        let request = backup_proto::CreateRestorePlanRequest {
-            client_request_id: "archive-zip-roundtrip".to_owned(),
-            backup_id: "archive-zip-roundtrip".to_owned(),
-            sections: Vec::new(),
-            path_mappings: vec![backup_proto::RestorePathMapping {
-                kind: backup_proto::BackupPathKind::ConfigDirectory as i32,
-                source_path: manifest.source_paths[0].path.clone(),
-                target_path: target_dir.to_string_lossy().into_owned(),
-            }],
-            expected_target_revision: target_revision(target_config).unwrap(),
-        };
+        let request = restore_request(
+            &manifest,
+            target_dir,
+            target_config,
+            "archive-zip-roundtrip",
+        );
         let plan = plan_restore(RestorePlanOptions {
             bundle_path: &bundle_path,
             target_config_path: target_config,
@@ -2433,7 +2428,14 @@ mod tests {
         assert!(raw.contains("{secret:ARCHIVE_ID}"));
         assert!(raw.contains("{secret:ARCHIVE_ROOT}"));
         assert!(raw.contains("{secret:ARCHIVE_SOURCE}"));
+        assert!(!raw.contains("local-archive"));
+        assert!(!raw.contains("archive-root"));
         assert!(!raw.contains("192.0.2.10"));
+        assert!(
+            !std::fs::read_to_string(target.join("secrets.toml"))
+                .unwrap()
+                .contains("OLD_SECRET")
+        );
         assert!(!archive_root.exists());
         std::fs::remove_dir_all(directory).unwrap();
     }
