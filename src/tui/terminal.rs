@@ -177,6 +177,7 @@ fn read_input(
 
 fn detach_when_output_stalled(
     wait: impl FnOnce() -> bool,
+    resume_console: bool,
     restore: impl FnOnce(),
     release_console: impl FnOnce(),
 ) -> bool {
@@ -184,8 +185,10 @@ fn detach_when_output_stalled(
         return false;
     }
     restore();
-    // Resume plain logs even when render_until_closed is still blocked inside terminal.draw.
-    release_console();
+    if resume_console {
+        // Keep console logs paused during server shutdown on stalled output so stderr writes cannot wedge exit.
+        release_console();
+    }
     true
 }
 
@@ -210,6 +213,7 @@ pub(super) fn present(
                 stop.cancel();
                 detach_when_output_stalled(
                     || restoration.wait_timeout(Duration::from_millis(150)),
+                    !server.is_cancelled(),
                     restore_before_exit,
                     || console_lease.release(),
                 );
@@ -309,21 +313,28 @@ mod tests {
     }
 
     #[test]
-    fn detaching_during_blocked_output_releases_console_pause_independently() {
-        let console = ConsoleLease::acquire().unwrap();
-        assert!(ConsolePause::acquire().is_err());
+    fn blocked_output_releases_console_pause_only_when_detaching() {
+        for (resume_console, expected_events) in
+            [(true, vec!["restore", "release"]), (false, vec!["restore"])]
+        {
+            let console = ConsoleLease::acquire().unwrap();
+            assert!(ConsolePause::acquire().is_err());
 
-        let events = std::cell::RefCell::new(Vec::new());
-        let detached = detach_when_output_stalled(
-            || false,
-            || events.borrow_mut().push("restore"),
-            || {
-                events.borrow_mut().push("release");
-                console.release();
-            },
-        );
-        assert!(detached);
-        assert_eq!(*events.borrow(), vec!["restore", "release"]);
-        assert!(ConsolePause::acquire().is_ok());
+            let events = std::cell::RefCell::new(Vec::new());
+            let detached = detach_when_output_stalled(
+                || false,
+                resume_console,
+                || events.borrow_mut().push("restore"),
+                || {
+                    events.borrow_mut().push("release");
+                    console.release();
+                },
+            );
+            assert!(detached);
+            assert_eq!(*events.borrow(), expected_events);
+            assert_eq!(ConsolePause::acquire().is_ok(), resume_console);
+            console.release();
+            assert!(ConsolePause::acquire().is_ok());
+        }
     }
 }
