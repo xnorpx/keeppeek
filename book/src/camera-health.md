@@ -32,9 +32,13 @@ treat it as `unknown`, never as healthy.
 ## Read the terminal dashboard
 
 The foreground dashboard uses the recorder's health evidence for its summary, stream states
-and warnings. Select a main or sub stream to see its source identity, media type, report age
-and available counters. Received bitrate uses decimal kbit/s. Ingest FPS comes from received
-video frames. Process CPU and resident memory describe the KeepPeek process.
+and warnings. To stay non-blocking, the foreground dashboard derives camera warnings from live
+camera state instead of querying stored operational event history. Each stream row shows its
+camera name (with source identity on wide terminals or when names collide), main/sub video or
+audio stream kind, health state, received bitrate, and report/frame age. Select a row to
+inspect its source identity, media type, recording progress age, and available counters.
+Received bitrate uses decimal kbit/s. Ingest FPS comes from received video frames. Process CPU
+and resident memory describe the KeepPeek process.
 
 A zero is a measured value. A dash marks evidence that is unavailable or does not apply to the
 selected stream. The report age shows how recently the recorder sampled the stream. The header

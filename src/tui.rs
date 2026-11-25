@@ -90,19 +90,14 @@ impl Dashboard {
                     thread::Builder::new()
                         .name("terminal-health".into())
                         .spawn(move || {
-                            let _screen_lifetime = CancelOnDrop(collector_stop.clone());
-                            while !collector_stop.is_cancelled() && !server_stop.is_cancelled() {
-                                let snapshot = collect().map(|health| {
-                                    Arc::new(Snapshot::from_health(health, &redactor))
-                                });
-                                writer
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                    .update(snapshot, Instant::now());
-                                if collector_stop.wait_timeout(Duration::from_secs(2)) {
-                                    break;
-                                }
-                            }
+                            run_collector(
+                                writer,
+                                collector_stop,
+                                server_stop,
+                                collect,
+                                redactor,
+                                Duration::from_secs(2),
+                            );
                         })
                         .map(|_| ())
                 });
@@ -135,5 +130,80 @@ impl Drop for Dashboard {
         ) {
             terminal::restore_before_exit();
         }
+    }
+}
+
+fn run_collector(
+    writer: Latest,
+    collector_stop: Shutdown,
+    server_stop: Shutdown,
+    collect: impl Fn() -> Option<ServerHealthResponse>,
+    redactor: LogHub,
+    cadence: Duration,
+) {
+    let _screen_lifetime = CancelOnDrop(collector_stop.clone());
+    while !collector_stop.is_cancelled() && !server_stop.is_cancelled() {
+        let snapshot = collect().map(|health| Arc::new(Snapshot::from_health(health, &redactor)));
+        writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .update(snapshot, Instant::now());
+        if collector_stop.wait_timeout(cadence) {
+            break;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn slow_collector_stays_single_flight_skips_ticks_and_recovers_after_failure() {
+        let latest = Latest::default();
+        let stop = Shutdown::new();
+        let server = Shutdown::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let max_in_flight = Arc::new(AtomicUsize::new(0));
+
+        let c_calls = calls.clone();
+        let c_max = max_in_flight.clone();
+        let c_latest = latest.clone();
+        let handle = thread::spawn(move || {
+            run_collector(
+                c_latest,
+                stop.clone(),
+                server,
+                move || {
+                    let active = in_flight.fetch_add(1, Ordering::AcqRel) + 1;
+                    c_max.fetch_max(active, Ordering::AcqRel);
+                    let attempt = c_calls.fetch_add(1, Ordering::AcqRel) + 1;
+                    thread::sleep(Duration::from_millis(45));
+                    in_flight.fetch_sub(1, Ordering::AcqRel);
+                    if attempt == 2 {
+                        None
+                    } else {
+                        if attempt >= 3 {
+                            stop.cancel();
+                        }
+                        Some(snapshot::test_server_health(
+                            Vec::new(),
+                            Vec::new(),
+                            attempt as u64,
+                        ))
+                    }
+                },
+                LogHub::default(),
+                Duration::from_millis(10),
+            );
+        });
+        handle.join().unwrap();
+        assert_eq!(max_in_flight.load(Ordering::Acquire), 1);
+        assert_eq!(calls.load(Ordering::Acquire), 3);
+        let obs = latest.lock().unwrap().read_for_render();
+        assert_eq!(obs.snapshot.as_ref().unwrap().uptime_s, 3);
+        assert!(obs.failed_at.is_none());
     }
 }
