@@ -786,7 +786,8 @@ mod tests {
                 .is_some()
         );
         let pruned = limited.event_by_id("event-1").unwrap().unwrap();
-        assert_eq!(pruned.revision, 2);
+        // Detaching the pruned thumbnail bumps revision (2 -> 3) so stored embeddings invalidate.
+        assert_eq!(pruned.revision, 3);
         assert_eq!(pruned.canonical_attachment_id.as_deref(), Some("thumbnail"));
         assert_eq!(pruned.attachments[0].id, "thumbnail");
         assert!(pruned.thumbnail_filename.is_none());
