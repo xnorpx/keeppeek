@@ -234,7 +234,7 @@ async fn read_rows(connection: &turso::Connection, deadline: Instant) -> anyhow:
             , started_at_ms, ended_at_ms, init_offset, init_len
          FROM recording_files
          WHERE NOT EXISTS (SELECT 1 FROM archive_replicas a
-                           WHERE a.recording_id=recording_files.id AND (a.state='ready' OR a.local_evicted!=0))
+                           WHERE a.recording_id=recording_files.id AND (a.state IN('ready','deleting') OR a.local_evicted!=0))
          ORDER BY id LIMIT ?1",
         turso::params![i64::try_from(MAX_SCAN_RECORDINGS + 1)?, i64::try_from(PATH_BYTES_MAX)?, i64::try_from(IDENTITY_BYTES_MAX)?],
     ).await?;

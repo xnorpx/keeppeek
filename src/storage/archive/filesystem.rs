@@ -64,6 +64,29 @@ impl FilesystemArchiveTarget {
         work.check()
     }
 
+    pub(super) fn delete_while_primary_is_verified<G>(
+        &self,
+        version: &Version,
+        digest: [u8; 32],
+        operation: ObjectId,
+        work: &Work<'_>,
+        recheck: impl FnOnce() -> anyhow::Result<G>,
+    ) -> anyhow::Result<bool> {
+        work.check()?;
+        version.validate()?;
+        let complete = self.root.advance_archive_retirement(
+            &format!("{}.mp4", version.object),
+            &version.token,
+            version.bytes,
+            digest,
+            &operation.to_string(),
+            work.deadline,
+            recheck,
+        )?;
+        work.check()?;
+        Ok(complete)
+    }
+
     pub(super) fn delete_key(
         &self,
         key: &str,

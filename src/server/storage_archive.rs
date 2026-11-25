@@ -11,6 +11,7 @@ use std::path::Path;
 
 type Result<T> = std::result::Result<T, ControlCommandError>;
 
+mod deletion;
 #[cfg(test)]
 mod tests;
 
@@ -19,6 +20,18 @@ pub(super) fn from_wire(path: &Path, value: proto::ArchiveSettings) -> anyhow::R
         value.source_ids.len() <= 127,
         "archive source selector limit exceeded"
     );
+    anyhow::ensure!(
+        !(value.clear_retention_days && value.retention_days.is_some()),
+        "archive retention update is ambiguous"
+    );
+    let retention_days = if value.retention_days.is_none() && !value.clear_retention_days {
+        crate::config::load_config(path)?
+            .storage
+            .archive
+            .and_then(|settings| settings.retention_days)
+    } else {
+        value.retention_days
+    };
     let settings = Settings {
         target_id: value.target_id,
         root: value.root.into(),
@@ -27,6 +40,7 @@ pub(super) fn from_wire(path: &Path, value: proto::ArchiveSettings) -> anyhow::R
         source_ids: value.source_ids,
         minimum_age_secs: value.minimum_age_secs,
         evict_after_archive: value.evict_after_archive,
+        retention_days,
         maximum_object_bytes: value.maximum_object_bytes,
         maximum_pending_count: value.maximum_pending_count,
         maximum_pending_bytes: value.maximum_pending_bytes,
@@ -47,6 +61,8 @@ pub(super) fn to_wire(value: Settings) -> proto::ArchiveSettings {
         source_ids: value.source_ids,
         minimum_age_secs: value.minimum_age_secs,
         evict_after_archive: value.evict_after_archive,
+        retention_days: value.retention_days,
+        clear_retention_days: false,
         maximum_object_bytes: value.maximum_object_bytes,
         maximum_pending_count: value.maximum_pending_count,
         maximum_pending_bytes: value.maximum_pending_bytes,
@@ -73,6 +89,37 @@ pub(super) fn sanitized(config: &Config) -> Option<Settings> {
     )
 }
 
+pub(super) fn validate_saved_binding_change(
+    state: &ServerState,
+    previous: Option<&Settings>,
+    next: Option<&Settings>,
+) -> Result<()> {
+    fn active_binding(settings: Option<&Settings>) -> Option<(&str, &Path)> {
+        settings
+            .filter(|s| s.enabled)
+            .map(|s| (s.target_id.as_str(), s.root.as_path()))
+    }
+    if active_binding(previous) == active_binding(next) {
+        return Ok(());
+    }
+    validate_claim_recovery(state, next)
+}
+
+pub(super) fn validate_claim_recovery(state: &ServerState, next: Option<&Settings>) -> Result<()> {
+    let result = if let Some(handle) = &state.storage_config.archive_runtime {
+        handle.ensure_recovery_binding(next)
+    } else if let Some(catalog) = &state.catalog {
+        catalog.ensure_archive_recovery_binding(next)
+    } else {
+        return Ok(());
+    };
+    result.map_err(|_| ControlCommandError::new(
+        proto::ErrorCode::Rejected,
+        409,
+        "cancel queued archive deletions and finish any started retirement before disabling or replacing its target",
+    ))
+}
+
 pub(super) fn dispatch(
     state: &ServerState,
     principal: &ApiPrincipal,
@@ -91,13 +138,7 @@ pub(super) fn dispatch(
         Some(Action::List(request)) => Wire::Jobs(list(state, handle, request)?),
         Some(Action::Get(request)) => {
             require_job_id(&request.job_id)?;
-            Wire::Job(wire_job(
-                target_names(state)?.as_ref(),
-                handle
-                    .ok_or_else(unavailable)?
-                    .get(&request.job_id)
-                    .map_err(operation_failed)?,
-            ))
+            Wire::Job(get(state, handle, &request.job_id)?)
         }
         Some(Action::Copy(request)) => {
             Wire::Job(copy(state, handle.ok_or_else(unavailable)?, request)?)
@@ -110,6 +151,15 @@ pub(super) fn dispatch(
             Wire::Job(change(state, handle, &request.job_id, "restore")?)
         }
         Some(Action::Evict(request)) => Wire::Job(change(state, handle, &request.job_id, "evict")?),
+        Some(Action::PreviewDeletion(request)) => Wire::DeletionPreview(deletion::preview(
+            state,
+            principal,
+            handle.ok_or_else(unavailable)?,
+            request,
+        )?),
+        Some(Action::ConfirmDeletion(request)) => {
+            Wire::DeletionPreview(deletion::confirm(state, principal, handle, request)?)
+        }
         None => return Err(invalid("archive action is required")),
     };
     let result = proto::ArchiveResult {
@@ -156,6 +206,27 @@ fn status(handle: Option<&Handle>) -> proto::ArchiveStatus {
     }
 }
 
+fn get(state: &ServerState, handle: Option<&Handle>, job_id: &str) -> Result<proto::ArchiveJob> {
+    if let Some(worker) = handle {
+        return Ok(wire_job(
+            target_names(state)?.as_ref(),
+            worker.get(job_id).map_err(operation_failed)?,
+        ));
+    }
+    use crate::storage::catalog::archive::{Reply, Request};
+    let catalog = state.catalog.as_ref().ok_or_else(unavailable)?;
+    let reply = catalog
+        .archive(Request::Get(job_id.into()))
+        .map_err(operation_failed)?;
+    let Reply::Job(Some(job)) = reply else {
+        return Err(unavailable());
+    };
+    if job.pending_deletion().is_none() {
+        return Err(unavailable());
+    }
+    Ok(wire_job(None, *job))
+}
+
 fn list(
     state: &ServerState,
     handle: Option<&Handle>,
@@ -172,18 +243,30 @@ fn list(
     if !request.after_job_id.is_empty() {
         require_job_id(&request.after_job_id)?;
     }
-    let Some(handle) = handle else {
-        return Ok(proto::ArchiveJobList {
-            status: Some(status(None)),
-            ..Default::default()
-        });
-    };
-    let jobs = handle
-        .list(
-            &request.after_job_id,
-            u16::try_from(limit).expect("validated archive page limit fits u16"),
+    let page_limit = u16::try_from(limit).expect("validated archive page limit fits u16");
+    let (jobs, names) = if let Some(worker) = handle {
+        (
+            worker
+                .list(&request.after_job_id, page_limit)
+                .map_err(operation_failed)?,
+            target_names(state)?,
         )
-        .map_err(operation_failed)?;
+    } else if let Some(catalog) = &state.catalog {
+        use crate::storage::catalog::archive::{Reply, Request, deletion};
+        let request = deletion::Request::ListPending {
+            after: request.after_job_id,
+            limit: page_limit,
+        };
+        let Reply::Jobs(jobs) = catalog
+            .archive(Request::Deletion(request))
+            .map_err(operation_failed)?
+        else {
+            return Err(unavailable());
+        };
+        (jobs, None)
+    } else {
+        (Vec::new(), None)
+    };
     let next_after_job_id =
         if jobs.len() == usize::try_from(limit).expect("validated archive page limit fits usize") {
             jobs.last()
@@ -193,7 +276,6 @@ fn list(
         } else {
             String::new()
         };
-    let names = target_names(state)?;
     Ok(proto::ArchiveJobList {
         jobs: jobs
             .into_iter()
@@ -201,7 +283,7 @@ fn list(
             .map(|job| wire_job(names.as_ref(), job))
             .collect(),
         next_after_job_id,
-        status: Some(status(Some(handle))),
+        status: Some(status(handle)),
     })
 }
 
@@ -277,6 +359,21 @@ fn change(
     action: &str,
 ) -> Result<proto::ArchiveJob> {
     require_job_id(id)?;
+    if action == "cancel" && handle.is_none() {
+        use crate::storage::catalog::archive::{Reply, Request, deletion};
+        let reply = state
+            .catalog
+            .as_ref()
+            .ok_or_else(unavailable)?
+            .archive(Request::Deletion(deletion::Request::WithdrawQueued(
+                id.into(),
+            )))
+            .map_err(operation_failed)?;
+        let Reply::Job(Some(job)) = reply else {
+            return Err(unavailable());
+        };
+        return Ok(wire_job(None, *job));
+    }
     let handle = handle.ok_or_else(unavailable)?;
     let result = match action {
         "cancel" => handle.cancel(id),
@@ -309,6 +406,8 @@ fn wire_job(
     names: Option<&(String, String)>,
     job: crate::storage::catalog::archive::Job,
 ) -> proto::ArchiveJob {
+    let error_code = job.error_code().to_owned();
+    let deletion_attempts = job.pending_deletion().map(|d| d.attempts);
     let target_id = names
         .filter(|(private, _)| *private == job.binding.id)
         .map_or_else(|| "unavailable-target".into(), |(_, public)| public.clone());
@@ -326,27 +425,29 @@ fn wire_job(
         },
         target_id,
         state: match job.state.as_str() {
-            "queued" | "copying" | "ready" | "failed" | "cancelled" | "deleted" => job.state,
+            "queued" | "copying" | "ready" | "failed" | "cancelled" | "deleting" | "deleted" => {
+                job.state
+            }
             _ => "unavailable".into(),
         },
         bytes: job.bytes,
         attempts: job.attempts,
-        error_code: if job.error.is_some() {
-            "archive_operation_failed".into()
-        } else {
-            String::new()
-        },
+        error_code,
         primary_copy: match job.local_evicted {
             0 => proto::ArchivePrimaryCopyState::Present as i32,
             1 => proto::ArchivePrimaryCopyState::Evicted as i32,
             2 => proto::ArchivePrimaryCopyState::Evicting as i32,
             _ => proto::ArchivePrimaryCopyState::Unspecified as i32,
         },
-        action: match job.action.as_str() {
-            "restore" | "evict" => job.action,
-            _ => String::new(),
+        action: if deletion_attempts.is_some() {
+            "delete".into()
+        } else {
+            match job.action.as_str() {
+                "restore" | "evict" => job.action,
+                _ => String::new(),
+            }
         },
-        action_attempts: job.action_attempts,
+        action_attempts: deletion_attempts.unwrap_or(job.action_attempts),
     }
 }
 

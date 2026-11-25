@@ -17,6 +17,9 @@ struct Cli {
     /// Use a specific server configuration file.
     #[arg(short = 'c', long, value_name = "PATH")]
     config: Option<std::path::PathBuf>,
+    /// Show stream statistics in an interactive terminal.
+    #[arg(long, value_enum, default_value_t = keeppeek::tui::DashboardMode::Auto)]
+    tui: keeppeek::tui::DashboardMode,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -66,10 +69,10 @@ fn run() -> Result<(), MainError> {
         return keeppeek_backup::run(args).map_err(MainError::Backup);
     }
     let _ = cli.config;
-    run_server().map_err(MainError::Server)
+    run_server(cli.tui).map_err(MainError::Server)
 }
 
-fn run_server() -> anyhow::Result<()> {
+fn run_server(tui: keeppeek::tui::DashboardMode) -> anyhow::Result<()> {
     let (cfg, config_path) = config::load()?;
     let logging = initialize_global_logging(&config_path)?;
 
@@ -84,7 +87,7 @@ fn run_server() -> anyhow::Result<()> {
     })
     .map_err(|error| anyhow::anyhow!("unable to install shutdown signal handler: {error}"))?;
 
-    if keeppeek::app::run(cfg, &config_path, logging, shutdown, restart)? {
+    if keeppeek::app::run_with_dashboard(cfg, &config_path, logging, shutdown, restart, tui)? {
         tracing::info!("restarting to apply camera configuration");
         restart_current_process()?;
     }

@@ -49,6 +49,7 @@ fn object_pages_exclude_unpublished_and_retired_move_sources() -> anyhow::Result
             volume: volume.into(),
             after,
             limit,
+            archive_copy_candidates_only: false,
         }))
     };
     let Reply::Objects(first) = page("primary", None, 1)? else {

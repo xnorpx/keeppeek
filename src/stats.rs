@@ -389,10 +389,20 @@ impl HealthRegistry {
     }
 
     pub(crate) fn publish(&self, report: CameraReport) {
-        self.publish_at(report, Instant::now(), unix_time_ms());
+        self.publish_from(report, StreamKind::Main);
     }
 
-    fn publish_at(&self, report: CameraReport, now: Instant, updated_at_ms: u64) {
+    pub(crate) fn publish_from(&self, report: CameraReport, audio_source: StreamKind) {
+        self.publish_at(report, audio_source, Instant::now(), unix_time_ms());
+    }
+
+    fn publish_at(
+        &self,
+        report: CameraReport,
+        audio_source: StreamKind,
+        now: Instant,
+        updated_at_ms: u64,
+    ) {
         let mut cameras = self
             .inner
             .lock()
@@ -413,64 +423,16 @@ impl HealthRegistry {
         }
         camera.port = report.port;
         for stream in report.streams {
-            let previous = camera.streams.get(&stream.kind);
-            let frames = stream.frames.unwrap_or(0);
-            let keyframes = stream.keyframes.unwrap_or(0);
-            let frame_progressed = counter_progressed(
-                previous.map(|entry| entry.report.frames.unwrap_or(0)),
-                frames,
-            );
-            let keyframe_progressed = counter_progressed(
-                previous.map(|entry| entry.report.keyframes.unwrap_or(0)),
-                keyframes,
-            );
-            let frame_updated_at = if frame_progressed {
-                Some(now)
-            } else {
-                previous.and_then(|entry| entry.frame_updated_at)
-            };
-            let frame_updated_at_ms = if frame_progressed {
-                Some(updated_at_ms)
-            } else {
-                previous.and_then(|entry| entry.frame_updated_at_ms)
-            };
-            let keyframe_updated_at = if keyframe_progressed {
-                Some(now)
-            } else {
-                previous.and_then(|entry| entry.keyframe_updated_at)
-            };
-            let keyframe_updated_at_ms = if keyframe_progressed {
-                Some(updated_at_ms)
-            } else {
-                previous.and_then(|entry| entry.keyframe_updated_at_ms)
-            };
-            let recent_reconnects = counter_delta(
-                previous.map(|entry| entry.report.reconnects.unwrap_or(0)),
-                stream.reconnects.unwrap_or(0),
-            );
-            let recent_drops = counter_delta(
-                previous.map(|entry| entry.report.drops.unwrap_or(0)),
-                stream.drops.unwrap_or(0),
-            );
-            let recent_errors = counter_delta(
-                previous.map(|entry| entry.report.errors.unwrap_or(0)),
-                stream.errors.unwrap_or(0),
-            );
-            camera.streams.insert(
-                stream.kind.clone(),
-                RegisteredStream {
-                    report: stream,
-                    updated_at: now,
-                    updated_at_ms,
-                    frame_updated_at,
-                    frame_updated_at_ms,
-                    keyframe_updated_at,
-                    keyframe_updated_at_ms,
-                    recent_reconnects,
-                    recent_drops,
-                    recent_errors,
-                },
-            );
+            if stream.kind == "audio" {
+                let mut local = stream.clone();
+                local.kind = match audio_source {
+                    StreamKind::Main => "audio_main",
+                    StreamKind::Sub => "audio_sub",
+                }
+                .into();
+                register_stream(&mut camera.streams, local, now, updated_at_ms);
+            }
+            register_stream(&mut camera.streams, stream, now, updated_at_ms);
         }
     }
 
@@ -479,6 +441,14 @@ impl HealthRegistry {
     }
 
     fn snapshot_at(&self, now: Instant) -> Vec<CameraHealthReport> {
+        self.snapshot_streams(now, false)
+    }
+
+    pub(crate) fn local_stream_snapshot(&self) -> Vec<CameraHealthReport> {
+        self.snapshot_streams(Instant::now(), true)
+    }
+
+    fn snapshot_streams(&self, now: Instant, separate_audio: bool) -> Vec<CameraHealthReport> {
         let cameras = self
             .inner
             .lock()
@@ -486,47 +456,62 @@ impl HealthRegistry {
         let mut reports = cameras
             .iter()
             .map(|(ip, camera)| {
-                let mut streams = camera
+                let streams = camera
                     .streams
                     .values()
-                    .map(|stream| StreamHealthReport {
-                        report: stream.report.clone(),
-                        updated_at_ms: stream.updated_at_ms,
-                        report_age_ms: now
-                            .saturating_duration_since(stream.updated_at)
-                            .as_millis()
-                            .try_into()
-                            .unwrap_or(u64::MAX),
-                        frame_updated_at_ms: stream.frame_updated_at_ms,
-                        frame_age_ms: stream.frame_updated_at.map(|updated_at| {
-                            now.saturating_duration_since(updated_at)
+                    .filter(|s| match s.report.kind.as_str() {
+                        "audio" => !separate_audio,
+                        "audio_main" | "audio_sub" => separate_audio,
+                        _ => true,
+                    })
+                    .map(|stream| {
+                        let report = stream.report.clone();
+                        StreamHealthReport {
+                            report,
+                            updated_at_ms: stream.updated_at_ms,
+                            report_age_ms: now
+                                .saturating_duration_since(stream.updated_at)
                                 .as_millis()
                                 .try_into()
-                                .unwrap_or(u64::MAX)
-                        }),
-                        keyframe_updated_at_ms: stream.keyframe_updated_at_ms,
-                        keyframe_age_ms: stream.keyframe_updated_at.map(|updated_at| {
-                            now.saturating_duration_since(updated_at)
-                                .as_millis()
-                                .try_into()
-                                .unwrap_or(u64::MAX)
-                        }),
-                        recent_reconnects: stream.recent_reconnects,
-                        recent_drops: stream.recent_drops,
-                        recent_errors: stream.recent_errors,
+                                .unwrap_or(u64::MAX),
+                            frame_updated_at_ms: stream.frame_updated_at_ms,
+                            frame_age_ms: stream.frame_updated_at.map(|updated_at| {
+                                now.saturating_duration_since(updated_at)
+                                    .as_millis()
+                                    .try_into()
+                                    .unwrap_or(u64::MAX)
+                            }),
+                            keyframe_updated_at_ms: stream.keyframe_updated_at_ms,
+                            keyframe_age_ms: stream.keyframe_updated_at.map(|updated_at| {
+                                now.saturating_duration_since(updated_at)
+                                    .as_millis()
+                                    .try_into()
+                                    .unwrap_or(u64::MAX)
+                            }),
+                            recent_reconnects: stream.recent_reconnects,
+                            recent_drops: stream.recent_drops,
+                            recent_errors: stream.recent_errors,
+                        }
                     })
                     .collect::<Vec<_>>();
-                streams.sort_unstable_by(|left, right| left.report.kind.cmp(&right.report.kind));
                 CameraHealthReport {
                     ip: *ip,
                     name: camera.name.clone(),
                     brand: camera.brand.clone(),
                     port: camera.port,
                     streams,
-                    events: self.events.snapshot(*ip),
+                    events: None,
                 }
             })
             .collect::<Vec<_>>();
+        drop(cameras);
+        // Event evidence and presentation order are independent of ingest publication.
+        for camera in &mut reports {
+            camera.events = self.events.snapshot(camera.ip);
+            camera
+                .streams
+                .sort_unstable_by(|left, right| left.report.kind.cmp(&right.report.kind));
+        }
         reports.sort_unstable_by_key(|report| report.ip);
         reports
     }
@@ -537,6 +522,72 @@ impl HealthRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&camera_ip);
     }
+}
+
+fn register_stream(
+    streams: &mut HashMap<String, RegisteredStream>,
+    stream: StreamReport,
+    now: Instant,
+    updated_at_ms: u64,
+) {
+    let previous = streams.get(&stream.kind);
+    let frames = stream.frames.unwrap_or(0);
+    let keyframes = stream.keyframes.unwrap_or(0);
+    let frame_progressed = counter_progressed(
+        previous.map(|entry| entry.report.frames.unwrap_or(0)),
+        frames,
+    );
+    let keyframe_progressed = counter_progressed(
+        previous.map(|entry| entry.report.keyframes.unwrap_or(0)),
+        keyframes,
+    );
+    let frame_updated_at = if frame_progressed {
+        Some(now)
+    } else {
+        previous.and_then(|entry| entry.frame_updated_at)
+    };
+    let frame_updated_at_ms = if frame_progressed {
+        Some(updated_at_ms)
+    } else {
+        previous.and_then(|entry| entry.frame_updated_at_ms)
+    };
+    let keyframe_updated_at = if keyframe_progressed {
+        Some(now)
+    } else {
+        previous.and_then(|entry| entry.keyframe_updated_at)
+    };
+    let keyframe_updated_at_ms = if keyframe_progressed {
+        Some(updated_at_ms)
+    } else {
+        previous.and_then(|entry| entry.keyframe_updated_at_ms)
+    };
+    let recent_reconnects = counter_delta(
+        previous.map(|entry| entry.report.reconnects.unwrap_or(0)),
+        stream.reconnects.unwrap_or(0),
+    );
+    let recent_drops = counter_delta(
+        previous.map(|entry| entry.report.drops.unwrap_or(0)),
+        stream.drops.unwrap_or(0),
+    );
+    let recent_errors = counter_delta(
+        previous.map(|entry| entry.report.errors.unwrap_or(0)),
+        stream.errors.unwrap_or(0),
+    );
+    streams.insert(
+        stream.kind.clone(),
+        RegisteredStream {
+            report: stream,
+            updated_at: now,
+            updated_at_ms,
+            frame_updated_at,
+            frame_updated_at_ms,
+            keyframe_updated_at,
+            keyframe_updated_at_ms,
+            recent_reconnects,
+            recent_drops,
+            recent_errors,
+        },
+    );
 }
 
 fn counter_progressed(previous: Option<u64>, current: u64) -> bool {
@@ -588,12 +639,12 @@ pub(crate) fn video_report(
         jitter_samples: snap.jitter_samples,
         jitter_p50_ms: round1(snap.jitter_p50_ms),
         jitter_p99_ms: round1(snap.jitter_p99_ms),
-        frames: nonzero_u64(snap.video_frames),
-        bytes: nonzero_u64(snap.video_bytes),
+        frames: Some(snap.video_frames),
+        bytes: Some(snap.video_bytes),
         keyframes: nonzero_u64(snap.video_keyframes),
-        reconnects: nonzero_u64(snap.reconnects),
-        drops: nonzero_u64(snap.dropped_frames),
-        errors: nonzero_u64(snap.error_count),
+        reconnects: Some(snap.reconnects),
+        drops: Some(snap.dropped_frames),
+        errors: Some(snap.error_count),
     }
 }
 
@@ -624,8 +675,8 @@ pub(crate) fn audio_report(
         jitter_samples: 0,
         jitter_p50_ms: 0.0,
         jitter_p99_ms: 0.0,
-        frames: nonzero_u64(snap.audio_frames),
-        bytes: nonzero_u64(snap.audio_bytes),
+        frames: Some(snap.audio_frames),
+        bytes: Some(snap.audio_bytes),
         keyframes: None,
         reconnects: None,
         drops: None,
@@ -749,6 +800,23 @@ mod tests {
         assert_eq!(report.reconnects, Some(5));
         assert_eq!(report.drops, Some(3));
         assert_eq!(report.errors, Some(4));
+
+        let mut counters = snapshot;
+        counters.video_frames = 0;
+        counters.video_bytes = 0;
+        counters.reconnects = 0;
+        counters.dropped_frames = 0;
+        counters.error_count = 0;
+        let measured_zero = video_report(StreamKind::Main, &counters, &rates, None, 0, 0, 0.0);
+        assert_eq!(measured_zero.frames, Some(0));
+        assert_eq!(measured_zero.bytes, Some(0));
+        assert_eq!(measured_zero.reconnects, Some(0));
+        assert_eq!(measured_zero.drops, Some(0));
+        assert_eq!(measured_zero.errors, Some(0));
+        let json = serde_json::to_value(&measured_zero).unwrap();
+        for field in ["frames", "bytes", "reconnects", "drops", "errors"] {
+            assert!(json.get(field).is_none());
+        }
     }
 
     fn stream(kind: &str, fps: f64) -> StreamReport {
@@ -814,6 +882,62 @@ mod tests {
     }
 
     #[test]
+    fn separate_audio_reports_preserve_source_identity_and_the_public_audio_kind() {
+        let registry = HealthRegistry::new();
+        let ip = IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+        let audio = |codec: &str, frames| {
+            let mut audio = stream("audio", 50.0);
+            audio.codec = Some(codec.to_owned());
+            audio.frames = Some(frames);
+            CameraReport {
+                ip,
+                name: None,
+                brand: None,
+                port: 554,
+                streams: vec![audio],
+            }
+        };
+        registry.publish_from(audio("AAC", 1000), StreamKind::Main);
+        registry.publish_from(audio("PCMU", 25), StreamKind::Sub);
+        let public = registry.snapshot();
+        let physical = registry.local_stream_snapshot();
+        assert_eq!(public[0].streams.len(), 1);
+        assert_eq!(public[0].streams[0].report.kind, "audio");
+        assert_eq!(public[0].streams[0].report.codec.as_deref(), Some("PCMU"));
+        let pairs = physical[0]
+            .streams
+            .iter()
+            .map(|s| {
+                (
+                    s.report.kind.as_str(),
+                    s.report.codec.as_deref(),
+                    s.report.frames,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            pairs,
+            [
+                ("audio_main", Some("AAC"), Some(1000)),
+                ("audio_sub", Some("PCMU"), Some(25)),
+            ]
+        );
+        let mut main_and_sub = audio("AAC", 1001);
+        let mut sub = audio("G711", 26).streams.remove(0);
+        sub.kind = "audio_sub".into();
+        main_and_sub.streams.push(sub);
+        registry.publish(main_and_sub);
+        let public = registry.snapshot();
+        assert_eq!(public[0].streams.len(), 1);
+        assert_eq!(public[0].streams[0].report.codec.as_deref(), Some("AAC"));
+        let local = registry.local_stream_snapshot();
+        assert_eq!(local[0].streams[1].report.kind, "audio_sub");
+        assert_eq!(local[0].streams[1].report.codec.as_deref(), Some("G711"));
+        registry.remove(ip);
+        assert!(registry.local_stream_snapshot().is_empty());
+    }
+
+    #[test]
     fn registry_tracks_media_progress_with_monotonic_ages_and_recent_deltas() {
         let registry = HealthRegistry::new();
         let ip = IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 2));
@@ -829,6 +953,7 @@ mod tests {
                 port: 554,
                 streams: vec![initial.clone()],
             },
+            StreamKind::Main,
             started_at,
             1_000,
         );
@@ -849,6 +974,7 @@ mod tests {
                 port: 554,
                 streams: vec![next],
             },
+            StreamKind::Main,
             started_at + Duration::from_secs(10),
             11_000,
         );
@@ -876,6 +1002,7 @@ mod tests {
                 port: 554,
                 streams: vec![reset],
             },
+            StreamKind::Main,
             started_at + Duration::from_secs(40),
             41_000,
         );

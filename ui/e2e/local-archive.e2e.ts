@@ -1,13 +1,21 @@
-import { expect, test, type Locator, type Page, type Route, type TestInfo } from '@playwright/test';
-import { writeFile } from 'node:fs/promises';
+import {
+	expect,
+	test,
+	type BrowserContext,
+	type Locator,
+	type Page,
+	type TestInfo
+} from '@playwright/test';
+import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import {
 	cardAdminKey,
 	cardSourceIds,
 	startHomeAssistantServer
 } from './fixtures/home-assistant-server';
 import {
+	archiveLiveFrame,
 	installArchiveVideoProbe,
-	liveFrames,
 	measureArchivePlayback
 } from './fixtures/archive-playback';
 import type { RecordingCoverageResponse } from '../src/lib/types';
@@ -17,10 +25,9 @@ const archiveViewports = [
 	{ name: 'mobile', width: 390, height: 844 }
 ];
 
-function isolatedBackendRoute(origin: string, backend: string) {
-	return async (route: Route) => {
-		const url = new URL(route.request().url());
-		if (
+async function routeIsolatedBackend(context: BrowserContext, origin: string, backend: string) {
+	await context.route(
+		(url) =>
 			url.origin === origin &&
 			(url.pathname === '/create' ||
 				url.pathname === '/delete' ||
@@ -28,16 +35,18 @@ function isolatedBackendRoute(origin: string, backend: string) {
 				url.pathname.startsWith('/auth/') ||
 				url.pathname.startsWith('/config/') ||
 				url.pathname === '/metrics' ||
-				url.pathname === '/logs')
-		) {
-			await route.continue({ url: `${backend}${url.pathname}${url.search}` });
-		} else await route.continue();
-	};
+				url.pathname === '/logs'),
+		(route) => {
+			const url = new URL(route.request().url());
+			return route.continue({ url: backend + url.pathname + url.search });
+		}
+	);
 }
 
-async function selectSeededRecording(archive: Locator, objectId: string) {
-	await archive.getByRole('button', { name: 'Load archive source volumes' }).click();
-	const sources = archive.getByRole('combobox', { name: 'Source volume', exact: true });
+async function selectSeededRecording(archive: Locator, objectId: string): Promise<boolean> {
+	const picker = archive.getByRole('region', { name: 'Copy media to archive', exact: true });
+	await picker.getByRole('button', { name: 'Load archive source volumes' }).click();
+	const sources = picker.getByRole('combobox', { name: 'Source volume', exact: true });
 	await expect(sources.locator('option').nth(1)).toBeAttached();
 	const volumes = await sources
 		.locator('option')
@@ -47,29 +56,29 @@ async function selectSeededRecording(archive: Locator, objectId: string) {
 				.filter(Boolean)
 		);
 	expect(volumes.length).toBeGreaterThan(0);
-	for (const volume of volumes.slice(0, 16)) {
+	for (const volume of volumes) {
 		await sources.selectOption(volume);
-		const load = archive.getByRole('button', { name: 'Load eligible media' });
+		const load = picker.getByRole('button', { name: 'Load eligible media' });
 		await load.click();
-		await expect(load).toBeEnabled();
-		const objects = archive.getByRole('combobox', { name: 'Media object', exact: true });
-		if (!(await objects.count())) continue;
-		const value = await objects
-			.locator('option')
-			.evaluateAll(
-				(options, id) =>
-					options
-						.find(
-							(option) => option instanceof HTMLOptionElement && option.value.endsWith(`:${id}`)
-						)
-						?.getAttribute('value'),
-				objectId
-			);
-		if (!value) continue;
-		await objects.selectOption(value);
-		return value.slice(value.indexOf(':') + 1);
+		for (let page = 0; page < 16; page++) {
+			await expect(load).toBeEnabled();
+			await expect(picker.getByRole('alert')).toHaveCount(0);
+			const objects = picker.getByRole('combobox', { name: 'Media object', exact: true });
+			const option = objects.getByRole('option').filter({ hasText: objectId });
+			if (await option.count()) {
+				const value = await option.getAttribute('value');
+				if (!value?.endsWith(`:${objectId}`))
+					throw new Error('Unexpected archive candidate identity');
+				await objects.selectOption(value);
+				return true;
+			}
+			const next = picker.getByRole('button', { name: 'Next media page' });
+			if (!(await next.count())) break;
+			if (page === 15) throw new Error('Isolated fixture exceeded 16 archive inventory pages');
+			await next.click();
+		}
 	}
-	throw new Error('No seeded finalized recording appeared in the isolated catalog.');
+	return false;
 }
 
 async function refreshUntil(archive: Locator, job: Locator, text: string) {
@@ -131,28 +140,36 @@ async function captureSetupThemes(info: TestInfo, page: Page, archive: Locator) 
 	}
 }
 
+async function probeDestination(archive: Locator, online: boolean) {
+	const message = online
+		? 'Archive destination is available.'
+		: 'Archive destination unavailable. Recording continues';
+	await archive.getByRole('button', { name: 'Test archive destination' }).click();
+	await expect(async () => {
+		await archive.getByRole('button', { name: 'Refresh archive jobs' }).click();
+		await expect(archive).toContainText(message, { timeout: 1000 });
+	}).toPass({ timeout: 20_000 });
+}
+
 async function configureArchive(
 	page: Page,
 	archive: Locator,
 	fixture: Awaited<ReturnType<typeof startHomeAssistantServer>>,
-	info: TestInfo
+	info?: TestInfo
 ) {
 	await page.goto('/settings#storage');
-	await expect(archive).toContainText('Archive runtime unavailable.');
+	// The first navigation also compiles the settings route on the isolated Vite server.
+	await expect(archive).toContainText('Archive runtime unavailable.', { timeout: 45_000 });
 	await archive.getByRole('button', { name: 'Edit archive settings' }).click();
 	await archive.getByLabel('Archive folder', { exact: true }).fill(fixture.archiveRoot);
 	await archive.getByLabel('Enable local archive', { exact: true }).check();
-	await captureSetupThemes(info, page, archive);
+	if (info) await captureSetupThemes(info, page, archive);
 	await archive.getByRole('button', { name: 'Save archive settings', exact: true }).click();
 	await expect(archive).toContainText('Archive settings saved. Restart to apply them.');
 	await fixture.restart();
-	await reportBackendProcess(info, fixture);
+	if (info) await reportBackendProcess(info, fixture);
 	await page.reload();
-	await archive.getByRole('button', { name: 'Test archive destination' }).click();
-	await expect(async () => {
-		await archive.getByRole('button', { name: 'Refresh archive jobs' }).click();
-		await expect(archive).toContainText('Archive destination is available.', { timeout: 1000 });
-	}).toPass({ timeout: 20_000 });
+	await probeDestination(archive, true);
 }
 
 async function reportBackendProcess(
@@ -182,24 +199,58 @@ async function recordingProgress(page: Page, backend: string) {
 	};
 }
 
-async function continuitySnapshot(live: Page, backend: string) {
-	await expect.poll(() => liveFrames(live), { timeout: 20_000 }).toBeGreaterThan(0);
+async function continuityBaseline(live: Page, backend: string, previousSession = '') {
+	let sessionId = '';
+	let firstFrames = 0;
+	let frames = 0;
+	await expect
+		.poll(
+			async () => {
+				const current = await archiveLiveFrame(live);
+				if (!current || current.sessionId === previousSession) return false;
+				if (sessionId !== current.sessionId) {
+					sessionId = current.sessionId;
+					firstFrames = current.frames;
+				}
+				frames = current.frames;
+				return frames > firstFrames;
+			},
+			{
+				timeout: 20_000,
+				message:
+					'An admitted live session must decode advancing camera frames before the archive operation'
+			}
+		)
+		.toBe(true);
 	await expect
 		.poll(async () => (await recordingProgress(live, backend)).lastWriteAtMs, { timeout: 20_000 })
 		.toBeGreaterThan(0);
-	return { frames: await liveFrames(live), ...(await recordingProgress(live, backend)) };
+	return { sessionId, reading: { frames, ...(await recordingProgress(live, backend)) } };
 }
 
 async function expectContinuity(
 	live: Page,
 	backend: string,
-	before: Awaited<ReturnType<typeof continuitySnapshot>>
+	before: Awaited<ReturnType<typeof continuityBaseline>>
 ) {
-	await expect.poll(() => liveFrames(live), { timeout: 20_000 }).toBeGreaterThan(before.frames);
+	let frames = 0;
+	await expect
+		.poll(
+			async () => {
+				const current = await archiveLiveFrame(live);
+				frames = current?.sessionId === before.sessionId ? current.frames : 0;
+				return frames;
+			},
+			{
+				timeout: 20_000,
+				message: 'The same live session must decode new frames during the archive operation'
+			}
+		)
+		.toBeGreaterThan(before.reading.frames);
 	await expect
 		.poll(async () => (await recordingProgress(live, backend)).lastWriteAtMs, { timeout: 20_000 })
-		.toBeGreaterThan(before.lastWriteAtMs);
-	return { before, after: await continuitySnapshot(live, backend) };
+		.toBeGreaterThan(before.reading.lastWriteAtMs);
+	return { before: before.reading, after: { frames, ...(await recordingProgress(live, backend)) } };
 }
 
 type ArchiveFixture = Awaited<ReturnType<typeof startHomeAssistantServer>>;
@@ -219,8 +270,9 @@ async function copyAndEvict(
 	await page.goto('/settings#storage');
 	await live.goto('/');
 	const archive = page.getByRole('region', { name: 'Local archive', exact: true });
-	const baseline = await continuitySnapshot(live, fixture.url);
-	const objectId = await selectSeededRecording(archive, fixture.seededObjectId);
+	const objectId = fixture.seededObjectId;
+	expect(await selectSeededRecording(archive, objectId)).toBe(true);
+	const baseline = await continuityBaseline(live, fixture.url);
 	const startedAt = performance.now();
 	await archive.getByRole('button', { name: 'Queue archive copy' }).click();
 	const job = archive.getByRole('article').first();
@@ -242,15 +294,18 @@ async function copyAndEvict(
 	await captureResponsive(info, page, eviction, 'archive-eviction-confirmation');
 	await eviction.getByRole('button', { name: 'Evict primary', exact: true }).click();
 	await refreshUntil(archive, job, 'Primary evicted; archive retained.');
+	return baseline.sessionId;
 }
 
 async function observeArchivedPlayback(
 	page: Page,
+	live: Page,
 	fixture: ArchiveFixture,
 	info: TestInfo,
 	evidence: ArchiveEvidence
 ) {
 	await fixture.restart();
+	await live.reload();
 	await reportBackendProcess(info, fixture);
 	evidence.timings.push(
 		await measureArchivePlayback(page, fixture.seededAtMs + 5000, 'archive-initial')
@@ -271,15 +326,22 @@ async function restorePrimary(
 	live: Page,
 	fixture: ArchiveFixture,
 	info: TestInfo,
-	evidence: ArchiveEvidence
+	evidence: ArchiveEvidence,
+	previousSession: string
 ) {
 	await page.goto('/settings#storage');
-	await live.reload();
 	const archive = page.getByRole('region', { name: 'Local archive', exact: true });
 	const job = archive.getByRole('article').first();
-	const baseline = await continuitySnapshot(live, fixture.url);
 	await expect(job).toContainText('Primary evicted; archive retained.');
+	await job
+		.getByRole('button', { name: `Preview archive deletion ${fixture.seededObjectId}` })
+		.click();
+	const blocked = page.getByRole('dialog', { name: 'Archive deletion preview' });
+	await expect(blocked).toContainText('Restore the primary copy first');
+	await expect(blocked.getByRole('button', { name: 'Confirm archive deletion' })).toHaveCount(0);
+	await blocked.getByRole('button', { name: 'Close', exact: true }).click();
 	await job.getByRole('button', { name: `Restore primary ${fixture.seededObjectId}` }).click();
+	const baseline = await continuityBaseline(live, fixture.url, previousSession);
 	const startedAt = performance.now();
 	await page
 		.getByRole('dialog', { name: 'Restore primary copy?' })
@@ -296,9 +358,11 @@ async function restorePrimary(
 		evidence: await expectContinuity(live, fixture.url, baseline)
 	});
 	await fixture.restart();
-	await reportBackendProcess(info, fixture);
-	await page.reload();
+	if (info) await reportBackendProcess(info, fixture);
+	// Restart invalidates the operator and live spectator sessions.
+	await Promise.all([page.reload(), live.reload()]);
 	await expect(job).toContainText('Primary copy retained.');
+	return baseline.sessionId;
 }
 
 async function attachArchiveEvidence(
@@ -347,7 +411,7 @@ test('local archive survives restart and plays evicted media before restoring it
 		trustedLocal: true,
 		archiveFixture: true
 	});
-	await context.route('**/*', isolatedBackendRoute(new URL(baseURL).origin, fixture.url));
+	await routeIsolatedBackend(context, new URL(baseURL).origin, fixture.url);
 	await installArchiveVideoProbe(page);
 	const live = await context.newPage();
 	const evidence: ArchiveEvidence = { timings: [], transfers: [], continuity: [] };
@@ -356,15 +420,130 @@ test('local archive survives restart and plays evicted media before restoring it
 		const archive = page.getByRole('region', { name: 'Local archive', exact: true });
 		await configureArchive(page, archive, fixture, info);
 		evidence.timings.push(await measureArchivePlayback(page, fixture.seededAtMs + 5000, 'local'));
-		await copyAndEvict(page, live, fixture, info, evidence);
-		await observeArchivedPlayback(page, fixture, info, evidence);
-		await restorePrimary(page, live, fixture, info, evidence);
+		const previousSession = await copyAndEvict(page, live, fixture, info, evidence);
+		await observeArchivedPlayback(page, live, fixture, info, evidence);
+		const restoredSession = await restorePrimary(
+			page,
+			live,
+			fixture,
+			info,
+			evidence,
+			previousSession
+		);
 		evidence.timings.push(
 			await measureArchivePlayback(page, fixture.seededAtMs + 5000, 'local-restored')
+		);
+		await page.goto('/settings#storage');
+		const job = archive.getByRole('article').first();
+		await job
+			.getByRole('button', { name: `Preview archive deletion ${fixture.seededObjectId}` })
+			.click();
+		const deletion = page.getByRole('dialog', { name: 'Archive deletion preview' });
+		await expect(deletion).toContainText('1 selected');
+		await expect(deletion).toContainText(fixture.seededObjectId);
+		const beforeDeletion = await continuityBaseline(live, fixture.url, restoredSession);
+		const startedAt = performance.now();
+		await deletion.getByRole('button', { name: 'Confirm archive deletion' }).click();
+		await expect(deletion).toContainText('Batch confirmed');
+		await deletion.getByRole('button', { name: 'Close', exact: true }).click();
+		const deletionCompleted = process.platform === 'win32';
+		const outcome = deletionCompleted
+			? 'delete archive replica'
+			: 'retain archive with mutable primary';
+		await refreshUntil(
+			archive,
+			job,
+			deletionCompleted
+				? 'Deletion acknowledged'
+				: 'Archive retained. The primary needs filesystem-enforced write protection'
+		);
+		evidence.transfers.push({
+			operation: outcome,
+			elapsed_ms: performance.now() - startedAt,
+			object_bytes: fixture.seededObjectBytes
+		});
+		evidence.continuity.push({
+			operation: outcome,
+			evidence: await expectContinuity(live, fixture.url, beforeDeletion)
+		});
+		expect(await selectSeededRecording(archive, fixture.seededObjectId)).toBe(false);
+		evidence.timings.push(
+			await measureArchivePlayback(
+				page,
+				fixture.seededAtMs + 5000,
+				deletionCompleted ? 'local-after-archive-deletion' : 'local-after-blocked-deletion'
+			)
 		);
 	} finally {
 		try {
 			await attachArchiveEvidence(info, page, fixture, evidence, context.browser()?.version());
+		} finally {
+			await live.close();
+			await fixture.close();
+		}
+	}
+});
+
+test('live, recording and primary timeline playback continue when the bound archive disappears or is replaced', async ({
+	page,
+	context,
+	baseURL
+}, info) => {
+	test.setTimeout(180_000);
+	if (!baseURL) throw new Error('Archive outage coverage requires the configured UI origin.');
+	const fixture = await startHomeAssistantServer(new URL(baseURL).origin, {
+		trustedLocal: true,
+		archiveFixture: true
+	});
+	const root = fixture.archiveRoot;
+	const live = await context.newPage();
+	const evidence = [];
+	try {
+		await routeIsolatedBackend(context, new URL(baseURL).origin, fixture.url);
+		await installArchiveVideoProbe(page);
+		const archive = page.getByRole('region', { name: 'Local archive', exact: true });
+		await configureArchive(page, archive, fixture);
+		await live.goto('/');
+		const pid = fixture.backendProcessId();
+		for (const mode of ['missing', 'replaced'] as const) {
+			await page.goto('/settings#storage');
+			const before = await continuityBaseline(live, fixture.url);
+			const detached = root + '.detached';
+			await rename(root, detached);
+			try {
+				if (mode === 'replaced') {
+					await mkdir(root);
+					await writeFile(join(root, 'unrelated.txt'), 'keep this file');
+				}
+				await probeDestination(archive, false);
+				const playback = await measureArchivePlayback(page, fixture.seededAtMs + 5000, 'local');
+				const continuity = await expectContinuity(live, fixture.url, before);
+				expect(fixture.backendProcessId()).toBe(pid);
+				if (mode === 'missing') {
+					await expect(stat(root)).rejects.toMatchObject({ code: 'ENOENT' });
+				} else {
+					expect(await readdir(root)).toEqual(['unrelated.txt']);
+					expect(await readFile(join(root, 'unrelated.txt'), 'utf8')).toBe('keep this file');
+				}
+				evidence.push({ mode, playback, continuity });
+			} finally {
+				if (mode === 'replaced') await rename(root, root + '.replacement');
+				await rename(detached, root);
+			}
+			await page.goto('/settings#storage');
+			await probeDestination(archive, true);
+		}
+		expect(fixture.backendProcessId()).toBe(pid);
+		await info.attach('isolated-target-outages', {
+			contentType: 'application/json',
+			body: JSON.stringify(evidence)
+		});
+	} finally {
+		try {
+			await info.attach('isolated-archive-outage-server.log', {
+				contentType: 'text/plain',
+				body: fixture.logs()
+			});
 		} finally {
 			await live.close();
 			await fixture.close();

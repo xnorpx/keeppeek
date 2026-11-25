@@ -430,14 +430,44 @@ struct StreamEntry {
     kind: StreamKind,
     stats: IngressStats,
     prev: IngressSnapshot,
+    audio_codec: Option<AudioEncoding>,
     meta: VideoMeta,
     timestamps: SessionTimestampNormalizer,
     media_deadline: Option<Instant>,
 }
 
+impl StreamEntry {
+    fn observe_audio(
+        &mut self,
+        camera_ip: IpAddr,
+        codec: BcAudioCodec,
+        bytes: usize,
+        preferred_kind: StreamKind,
+        retains_event_audio: impl FnOnce(StreamKind) -> bool,
+    ) -> Option<AudioCodec> {
+        let (encoding, frame_codec) = match codec {
+            BcAudioCodec::Aac => (AudioEncoding::AAC, Some(AudioCodec::Aac)),
+            BcAudioCodec::G711Alaw => (AudioEncoding::G711, Some(AudioCodec::G711Alaw)),
+            BcAudioCodec::G711Ulaw => (AudioEncoding::G711, Some(AudioCodec::G711Ulaw)),
+            other => (AudioEncoding::Unknown(format!("{other:?}")), None),
+        };
+        if self.audio_codec.is_none() {
+            tracing::info!(ip = %camera_ip, stream = %self.kind, codec = %encoding, "first audio frame received");
+        }
+        self.audio_codec = Some(encoding);
+        self.stats.on_audio_frame(bytes);
+        if self.kind == preferred_kind || retains_event_audio(self.kind) {
+            frame_codec
+        } else {
+            None
+        }
+    }
+}
+
 fn reset_stream_bindings(streams: &mut [StreamEntry]) {
     for entry in streams {
         entry.stream_id = None;
+        entry.audio_codec = None;
         entry.timestamps.begin_session();
         entry.media_deadline = None;
         entry.prev = entry.stats.snapshot();
@@ -470,6 +500,7 @@ fn bind_stream_entry(
         kind,
         stats,
         prev,
+        audio_codec: None,
         meta: expected_meta,
         timestamps: SessionTimestampNormalizer::new(),
         media_deadline: Some(now + MEDIA_IDLE_TIMEOUT),
@@ -692,7 +723,6 @@ impl ReolinkLoop {
         let mut sub_framerates = Vec::new();
         let mut active_ids: Vec<u32> = Vec::new();
         let mut last_report = Instant::now();
-        let mut audio_codec: Option<String> = None;
         let mut pending_snapshots = VecDeque::<Vec<String>>::new();
         let mut snapshot_in_flight = false;
         let mut event_gate = events::Gate::default();
@@ -1024,49 +1054,28 @@ impl ReolinkLoop {
                                         StreamKind::Sub
                                     }
                                 });
-                            let Some(audio_stream) = streams
-                                .iter()
+                            let Some(entry) = streams
+                                .iter_mut()
                                 .find(|entry| entry.stream_id == Some(stream_id))
-                                .map(|entry| entry.kind)
                             else {
                                 continue;
                             };
-                            if audio_stream != preferred_kind
-                                && !self.storage.as_ref().is_some_and(|storage| {
-                                    let stream = match audio_stream {
+                            let audio_stream = entry.kind;
+                            if let Some(fc) = entry.observe_audio(
+                                self.camera_ip,
+                                codec,
+                                data.len(),
+                                preferred_kind,
+                                |kind| {
+                                    let stream = match kind {
                                         StreamKind::Main => "main",
                                         StreamKind::Sub => "sub",
                                     };
-                                    storage.retains_event_audio(&camera_id, stream)
-                                })
-                            {
-                                continue;
-                            }
-                            let (encoding, frame_codec) = match codec {
-                                BcAudioCodec::Aac => (AudioEncoding::AAC, Some(AudioCodec::Aac)),
-                                BcAudioCodec::G711Alaw => {
-                                    (AudioEncoding::G711, Some(AudioCodec::G711Alaw))
-                                }
-                                BcAudioCodec::G711Ulaw => {
-                                    (AudioEncoding::G711, Some(AudioCodec::G711Ulaw))
-                                }
-                                other => (AudioEncoding::Unknown(format!("{other:?}")), None),
-                            };
-                            if audio_codec.is_none() {
-                                tracing::info!(
-                                    ip = %self.camera_ip,
-                                    codec = %encoding,
-                                    "first audio frame received"
-                                );
-                            }
-                            audio_codec = Some(encoding.to_string());
-
-                            if let Some(entry) =
-                                streams.iter_mut().find(|entry| entry.kind == audio_stream)
-                            {
-                                entry.stats.on_audio_frame(data.len());
-                            }
-                            if let Some(fc) = frame_codec {
+                                    self.storage.as_ref().is_some_and(|storage| {
+                                        storage.retains_event_audio(&camera_id, stream)
+                                    })
+                                },
+                            ) {
                                 let sample_rate = fc.default_sample_rate();
                                 let web_codec = match fc {
                                     AudioCodec::Aac => Some(WebRtcAudioCodec::Aac),
@@ -1284,6 +1293,7 @@ impl ReolinkLoop {
                 last_report = Instant::now();
                 tracing::debug!(ip = %self.camera_ip, stats = ?session.stats(), "baichuan session stats");
                 let mut stream_reports = Vec::new();
+                let mut local_sub_audio = None;
                 for entry in streams.iter_mut() {
                     let snap = entry.stats.snapshot();
                     let rates = snap.rates_since(&entry.prev);
@@ -1306,14 +1316,26 @@ impl ReolinkLoop {
                         entry.stats.height,
                         entry.stats.expected_fps,
                     ));
-                    if entry.kind == StreamKind::Main
-                        && let Some(audio) = audio_report(&snap, &rates, audio_codec.as_deref())
-                    {
-                        stream_reports.push(audio);
+                    if let Some(mut audio) = audio_report(
+                        &snap,
+                        &rates,
+                        entry
+                            .audio_codec
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .as_deref(),
+                    ) {
+                        match entry.kind {
+                            StreamKind::Main => stream_reports.push(audio),
+                            StreamKind::Sub => {
+                                audio.kind = "audio_sub".into();
+                                local_sub_audio = Some(audio);
+                            }
+                        }
                     }
                     entry.prev = snap;
                 }
-                let report = CameraReport {
+                let mut report = CameraReport {
                     ip: self.camera_ip,
                     name: self.camera_name.clone(),
                     brand: self.camera_brand.clone(),
@@ -1321,6 +1343,7 @@ impl ReolinkLoop {
                     streams: stream_reports,
                 };
                 log_camera_report(&report);
+                report.streams.extend(local_sub_audio);
                 self.health.publish(report);
             }
         }
@@ -1622,6 +1645,52 @@ mod tests {
         let id = random_event_id();
         assert_eq!(id.len(), 32);
         assert!(id.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn unretained_reolink_sub_audio_is_observed_without_forwarding() {
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let now = Instant::now();
+        let meta = VideoMeta {
+            encoding: VideoEncoding::H264,
+            width: 0,
+            height: 0,
+            framerate: 0.0,
+        };
+        let mut streams = Vec::new();
+        let main = bind_stream_entry(&mut streams, 11, StreamKind::Main, meta.clone(), now);
+        assert_eq!(
+            main.observe_audio(ip, BcAudioCodec::Aac, 64, StreamKind::Main, |_| false),
+            Some(AudioCodec::Aac)
+        );
+        let sub = bind_stream_entry(&mut streams, 22, StreamKind::Sub, meta, now);
+        assert_eq!(
+            sub.observe_audio(ip, BcAudioCodec::G711Ulaw, 96, StreamKind::Main, |_| false),
+            None
+        );
+        let snapshot = sub.stats.snapshot();
+        let report = audio_report(
+            &snapshot,
+            &snapshot.rates_since(&sub.prev),
+            sub.audio_codec.as_ref().map(ToString::to_string).as_deref(),
+        )
+        .unwrap();
+        assert_eq!(report.codec, Some(AudioEncoding::G711.to_string()));
+        assert_eq!((report.frames, report.bytes), (Some(1), Some(96)));
+        assert_eq!(
+            sub.observe_audio(
+                ip,
+                BcAudioCodec::G711Ulaw,
+                80,
+                StreamKind::Main,
+                |kind| kind == StreamKind::Sub
+            ),
+            Some(AudioCodec::G711Ulaw)
+        );
+        assert_eq!(
+            (streams[0].stats.audio_bytes, streams[1].stats.audio_bytes),
+            (64, 176)
+        );
     }
 
     #[test]

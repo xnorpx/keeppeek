@@ -782,6 +782,11 @@ operation_timeout_secs = 120
 maximum_attempts = 3
 ```
 
+Optional `retention_days` accepts 1 through 4,294,967,295 whole days since durable archive
+verification. Omit it to retain copies indefinitely. Setting a period makes copies
+eligible for an Administrator's deletion preview. Deletion starts only after
+confirmation of a specific batch and independent verification of the surviving primary.
+
 | Field                    | Type          | Default          | Validation and meaning                                                                                                                                             |
 | ------------------------ | ------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `target_id`              | `String`      | Required         | Stable ID with 1–64 lowercase ASCII letters, digits, hyphens or underscores; `legacy-` is reserved.                                                                |
@@ -791,6 +796,7 @@ maximum_attempts = 3
 | `source_ids`             | `Vec<String>` | Empty            | Automatic-selection filter; empty selects all sources. At most 127 distinct, nonblank IDs, each at most 256 UTF-8 bytes without control or surrounding whitespace. |
 | `minimum_age_secs`       | `u64`         | `0`              | Minimum finalized recording age for automatic selection, at most 315,360,000 seconds (ten 365-day years).                                                          |
 | `evict_after_archive`    | `bool`        | `false`          | Explicitly permit policy-driven primary-copy eviction after verification; holds, leases and durable archive indexes still apply.                                   |
+| `retention_days`         | `Option<u32>` | Omitted          | Omit for indefinite retention. Values from 1 through 4,294,967,295 make verified copies eligible for Administrator-confirmed removal after that many days.         |
 | `maximum_object_bytes`   | `u64`         | `4,294,967,296`  | Per-object admission limit, from 1 byte through 64 GiB; cannot exceed the pending-byte limit.                                                                      |
 | `maximum_pending_count`  | `u32`         | `256`            | Retained pending jobs, from 1 through 4,096.                                                                                                                       |
 | `maximum_pending_bytes`  | `u64`         | `68,719,476,736` | Pending-byte admission ceiling, positive and at most `i64::MAX`.                                                                                                   |

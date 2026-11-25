@@ -234,6 +234,39 @@ still works. Listing reads the local catalog. Downloading opens and verifies the
 disconnected destination can prevent retrieval.
 
 **Restore primary** queues a verified transfer back to the original primary destination.
+
+**Preview archive deletion** shows whether the selected archive copy can be removed.
+**Preview expired archive copies** shows one page of up to 16 jobs when archive
+retention days are configured. Review the target, object IDs and byte count.
+**Confirm archive deletion** authorizes only the selected copies on that page.
+Each additional page needs its own confirmation. Leaving retention days blank
+keeps copies indefinitely. Expiry alone performs no deletion.
+
+The worker first verifies both complete copies within one configured operation timeout before it
+claims the job. Subsequent turns record the retirement intent, quarantine the archive, and record
+staging in separate durable steps. Removing the staged file requires a fresh check of its bytes
+and the protected primary in the same turn. A restart resumes from the last durable step.
+Set the timeout long enough to read both full copies at the storage devices' sustained speed.
+
+Windows holds a read handle that excludes writers through archive removal. On Linux,
+the surviving primary requires fs-verity and the immutable inode flag. An ordinary mutable Linux file,
+macOS and other server platforms retain both copies. After the job reaches `acknowledged`, a Linux
+filesystem administrator can verify the surviving primary's catalog identity and digest, then clear
+its immutable flag with `chattr -i -- /absolute/path/to/the/verified-primary.mp4` if normal moves or
+retention must resume. The file's fs-verity content protection persists. Leave the flag set while
+the job is queued, claimed or awaiting acknowledgement.
+
+KeepPeek records each acknowledged deletion in the catalog. The retained primary remains
+available. The automatic archive worker and manual copy picker permanently exclude that
+recording or export while this catalog is in use.
+
+An evicted recording needs a successful **Restore primary** first. An expired
+export whose primary was already retired remains available through its authorized
+archive download. KeepPeek preserves that archive copy. Holds, active readers,
+changed media and unavailable primary storage also prevent removal. Refresh
+archive jobs to see progress. A blocked preview can be repeated after the
+condition clears.
+
 Cancellation stops cancellable copy or restore work and cleans up partial staging.
 **Retry / finish cleanup** retains the cancelled copy's job identity. Copying resumes only after
 cleanup is acknowledged and current source evidence is validated. Refresh to distinguish pending

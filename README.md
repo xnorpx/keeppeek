@@ -10,6 +10,10 @@ KeepPeek is a local-first network video recorder (NVR) and Media Gateway for IP 
 focused Rust service records camera streams as MP4, serves the Svelte browser interface, and lets
 independent viewers, inference services, and integrations consume or publish media and events.
 
+When running the server in a terminal, use the read-only dashboard to inspect stream statistics and
+server health. Press **q** to return to logs while recording continues. The
+[getting started guide](book/src/get-started.md#monitor-a-foreground-server) covers startup modes and controls.
+
 ## Documentation
 
 Read the [KeepPeek Wiki](https://github.com/xnorpx/keeppeek/wiki) or the

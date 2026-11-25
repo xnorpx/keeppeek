@@ -195,6 +195,103 @@ it('preserves a conflicting dirty draft, references and original CAS revision du
 		confirm.mockRestore();
 	}
 });
+
+it('previews each retention page independently and retries the same confirmation after a lost reply', async () => {
+	const config = fixture();
+	config.storage.archive!.retentionDays = 30;
+	const control = controller();
+	const response = Promise.withResolvers<void>();
+	let confirmations = 0;
+	control.archive.mockImplementation(async (request) => {
+		if (request.action.case === 'list')
+			return create(ArchiveResultSchema, {
+				result: { case: 'jobs', value: { status: { runtimeAvailable: true, online: true } } }
+			});
+		const second =
+			request.action.case === 'previewDeletion' &&
+			request.action.value.selection.case === 'retentionPage' &&
+			request.action.value.selection.value.afterJobId === 'next';
+		if (request.action.case === 'confirmDeletion' && confirmations++ === 0) {
+			await response.promise;
+			throw new Error('Lost confirmation reply');
+		}
+		const confirmed = request.action.case === 'confirmDeletion';
+		return create(ArchiveResultSchema, {
+			result: {
+				case: 'deletionPreview',
+				value: {
+					targetId: 'local-archive',
+					planId: second ? 'p2' : 'p1',
+					revision: 'rev',
+					confirmationNonce: confirmed ? '' : 'nonce',
+					nextAfterJobId: second ? '' : 'next',
+					selectedCount: second ? 0 : 1,
+					selectedBytes: second ? 0n : 10n,
+					confirmed,
+					items: [
+						{
+							jobId: second ? 'two' : 'one',
+							objectId: second ? 'protected' : 'footage',
+							kind: StorageObjectKind.RECORDING,
+							bytes: 10n,
+							state: second ? 'preservation_hold' : confirmed ? 'queued' : 'eligible'
+						}
+					]
+				}
+			}
+		});
+	});
+	await page.viewport(320, 844);
+	await render(ArchiveSection, {
+		config,
+		controller: control,
+		retentionAvailable: true,
+		onsaved: vi.fn()
+	});
+	await page.getByRole('button', { name: 'Preview expired archive copies' }).click();
+	const dialog = page.getByRole('dialog', { name: 'Archive deletion preview' });
+	await expect
+		.element(dialog.getByText('Eligible for deletion · 10 bytes', { exact: true }))
+		.toBeVisible();
+	await expect.element(dialog.getByRole('button', { name: 'Close', exact: true })).toHaveFocus();
+	await expect
+		.element(
+			dialog.getByText(
+				'After removal, KeepPeek permanently excludes these objects from automatic archiving and the manual copy picker.',
+				{ exact: true }
+			)
+		)
+		.toBeVisible();
+	expect(dialog.element().scrollWidth).toBeLessThanOrEqual(dialog.element().clientWidth);
+	const confirm = dialog.getByRole('button', { name: 'Confirm archive deletion' });
+	const close = dialog.getByRole('button', { name: 'Close', exact: true });
+	await confirm.click();
+	await expect.element(close).toBeDisabled();
+	await userEvent.keyboard('{Escape}');
+	await expect.element(dialog).toBeVisible();
+	response.resolve();
+	await expect.element(dialog.getByRole('alert')).toHaveTextContent('Lost confirmation reply');
+	await expect.element(close).toHaveFocus();
+	await confirm.click();
+	await expect
+		.element(dialog.getByRole('status'))
+		.toHaveTextContent('Batch confirmed. Refresh archive jobs to follow progress.');
+	await expect.element(close).toHaveFocus();
+	const requests = control.archive.mock.calls.flatMap(([r]) =>
+		r.action.case === 'confirmDeletion' ? [r.action.value] : []
+	);
+	expect(requests).toHaveLength(2);
+	expect(requests[0]).toEqual(requests[1]);
+	await dialog.getByRole('button', { name: 'Preview next page' }).click();
+	await expect
+		.element(dialog.getByText('Preservation hold or maintenance · 10 bytes', { exact: true }))
+		.toBeVisible();
+	await expect.element(confirm).not.toBeInTheDocument();
+	await expect.element(close).toHaveFocus();
+	await expect
+		.element(dialog.getByRole('status'))
+		.toHaveTextContent('Target local-archive · 0 selected · 0 bytes');
+});
 it('queues and reconciles a real selection, then confirms eviction and restores the primary', async () => {
 	const control = controller();
 	const job = {
@@ -336,3 +433,145 @@ it('cancels a transfer and retries a failed restore using their existing durable
 		{ case: 'retry', value: { jobId: 'restore' } }
 	]);
 });
+
+it('retries verification of a legacy archive and requires a fresh preview for a blocked deletion', async () => {
+	const control = controller();
+	const legacy = {
+		jobId: 'legacy',
+		objectId: 'legacy-clip',
+		state: 'ready',
+		errorCode: 'archive_reverification_failed'
+	};
+	const blocked = {
+		jobId: 'blocked',
+		objectId: 'protected-clip',
+		state: 'ready',
+		errorCode: 'archive_primary_write_protection_required'
+	};
+	const retained = {
+		jobId: 'retained',
+		objectId: 'retained-clip',
+		state: 'ready',
+		errorCode: 'archive_deletion_blocked'
+	};
+	const pending = { jobId: 'pending', state: 'deleted', action: 'delete' };
+	const acknowledged = { jobId: 'acknowledged', state: 'deleted', action: '' };
+	control.archive.mockImplementation(async (request) =>
+		create(ArchiveResultSchema, {
+			result:
+				request.action.case === 'list'
+					? {
+							case: 'jobs',
+							value: {
+								jobs: [legacy, blocked, retained, pending, acknowledged],
+								status: { runtimeAvailable: true }
+							}
+						}
+					: { case: 'job', value: { ...legacy, errorCode: '' } }
+		})
+	);
+	await render(ArchiveSection, {
+		config: fixture(),
+		controller: control,
+		retentionAvailable: true,
+		onsaved: vi.fn()
+	});
+	await expect
+		.element(page.getByRole('button', { name: 'Retry archive job blocked' }))
+		.not.toBeInTheDocument();
+	await expect
+		.element(page.getByRole('button', { name: 'Preview archive deletion protected-clip' }))
+		.toBeVisible();
+	const retainedRow = page.getByRole('article', { name: 'Archive job retained' });
+	await expect
+		.element(retainedRow.getByRole('alert'))
+		.toHaveTextContent(
+			'Archive retained. Check that the primary copy is present and verified, resolve the blocking condition, then preview archive deletion again.'
+		);
+	await expect
+		.element(retainedRow.getByRole('button', { name: 'Retry archive job retained' }))
+		.not.toBeInTheDocument();
+	await expect
+		.element(retainedRow.getByRole('button', { name: 'Preview archive deletion retained-clip' }))
+		.toBeVisible();
+	await expect
+		.element(
+			page
+				.getByRole('article', { name: 'Archive job pending' })
+				.getByText('Recording · Deletion acknowledgement pending', { exact: true })
+		)
+		.toBeVisible();
+	await expect
+		.element(
+			page
+				.getByRole('article', { name: 'Archive job acknowledged' })
+				.getByText('Recording · Deletion acknowledged', { exact: true })
+		)
+		.toBeVisible();
+	await page.getByRole('button', { name: 'Retry archive job legacy' }).click();
+	expect(control.archive.mock.calls.at(-1)?.[0].action).toMatchObject({
+		case: 'retry',
+		value: { jobId: 'legacy' }
+	});
+	await expect
+		.element(page.getByRole('button', { name: 'Retry archive job legacy' }))
+		.not.toBeInTheDocument();
+	await page.getByRole('button', { name: 'Edit archive settings' }).click();
+	await expect
+		.element(page.getByRole('textbox', { name: 'Archive retention days', exact: true }))
+		.toHaveAccessibleDescription(/Age starts when a replica is verified/);
+});
+
+it.each([true, false])(
+	'withdraws only queued archive deletions with runtime available %s',
+	async (runtimeAvailable) => {
+		const control = controller();
+		const queued = { jobId: 'queued', objectId: 'retained-clip', state: 'ready', action: 'delete' };
+		const claimed = { ...queued, jobId: 'claimed', state: 'deleting' };
+		const retired = { ...queued, jobId: 'retired', state: 'deleted' };
+		control.archive.mockImplementation(async (request) =>
+			create(ArchiveResultSchema, {
+				result:
+					request.action.case === 'list'
+						? {
+								case: 'jobs',
+								value: { status: { runtimeAvailable }, jobs: [queued, claimed, retired] }
+							}
+						: { case: 'job', value: { ...queued, action: '' } }
+			})
+		);
+		await render(ArchiveSection, {
+			config: fixture(),
+			controller: control,
+			retentionAvailable: true,
+			onsaved: vi.fn()
+		});
+		const row = page.getByRole('article', { name: 'Archive job queued' });
+		await expect
+			.element(row.getByText('Recording · Archive deletion queued', { exact: true }))
+			.toBeVisible();
+		for (const id of ['claimed', 'retired']) {
+			await expect
+				.element(
+					page
+						.getByRole('article', { name: 'Archive job ' + id })
+						.getByRole('button', { name: /cancel/i })
+				)
+				.not.toBeInTheDocument();
+		}
+		const withdraw = row.getByRole('button', {
+			name: 'Cancel queued archive deletion retained-clip'
+		});
+		await withdraw.click();
+		expect(control.archive.mock.calls.map(([request]) => request.action)).toContainEqual(
+			expect.objectContaining({
+				case: 'cancel',
+				value: expect.objectContaining({ jobId: 'queued' })
+			})
+		);
+		await expect.element(withdraw).not.toBeInTheDocument();
+		const preview = row.getByRole('button', { name: 'Preview archive deletion retained-clip' });
+		if (runtimeAvailable) await expect.element(preview).toBeVisible();
+		else await expect.element(row.getByRole('button')).not.toBeInTheDocument();
+	}
+);

@@ -16,6 +16,7 @@ use std::{
 };
 use zip::ZipArchive;
 
+pub(super) mod archive_deletion;
 mod owned_storage;
 
 const RESTORE_PLAN_TTL_MS: u64 = 10 * 60 * 1_000;
@@ -2301,6 +2302,39 @@ mod tests {
     }
 
     #[test]
+    fn staged_configuration_fences_archive_deletion_using_restored_secret_bindings() {
+        let root = std::env::temp_dir().join(format!("archive-target-{}", uuid::Uuid::new_v4()));
+        let root = toml::Value::String(root.to_string_lossy().into_owned());
+        let config = format!(
+            "[storage.archive]\nenabled=true\ntarget_id='{{secret:FIXTURE_SECRET}}'\nroot={root}\n"
+        );
+        for preserve_binding in [false, true] {
+            let source = if preserve_binding {
+                config.replace("{secret:FIXTURE_SECRET}", "target-value")
+            } else {
+                config.clone()
+            };
+            let (directory, bundle, path, plan) =
+                activatable_fixture_with_configs("archive-deletion-stage", &source, &config);
+            let active = config::load_config(&path).unwrap().storage.archive.unwrap();
+            assert_eq!(active.target_id, "target-value");
+            archive_deletion::check_staged_archive_deletion(&path, &active).unwrap();
+            stage_restore(StageRestoreOptions {
+                bundle_path: &bundle,
+                target_config_path: &path,
+                plan: &plan,
+                now_unix_ms: plan.created_at_unix_ms + 1,
+            })
+            .unwrap();
+            assert_eq!(
+                archive_deletion::check_staged_archive_deletion(&path, &active).is_ok(),
+                preserve_binding
+            );
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
     fn native_candidate_override_stages_admitted_identity_and_original_archive_secrets() {
         use crate::access::{AccessRole, CameraAccess, external::Grant, identities};
         let (directory, bundle_path, target_config, plan) =
@@ -3830,6 +3864,23 @@ password = "{{secret:MQTT_PASSWORD}}"
         std::path::PathBuf,
         backup_proto::RestorePlan,
     ) {
+        activatable_fixture_with_configs(
+            name,
+            "[storage]\nlong_term_max_gb = 10\n",
+            "[storage]\nlong_term_max_gb = 20\n",
+        )
+    }
+
+    fn activatable_fixture_with_configs(
+        name: &str,
+        source_settings: &str,
+        target_settings: &str,
+    ) -> (
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        backup_proto::RestorePlan,
+    ) {
         let directory = test_directory(name);
         let source = directory.join("source");
         let target = directory.join("target");
@@ -3837,8 +3888,8 @@ password = "{{secret:MQTT_PASSWORD}}"
         std::fs::create_dir_all(&target).unwrap();
         let source_config = source.join("config.toml");
         let target_config = target.join("config.toml");
-        std::fs::write(&source_config, "[storage]\nlong_term_max_gb = 10\n").unwrap();
-        std::fs::write(&target_config, "[storage]\nlong_term_max_gb = 20\n").unwrap();
+        std::fs::write(&source_config, source_settings).unwrap();
+        std::fs::write(&target_config, target_settings).unwrap();
         std::fs::write(
             source.join("secrets.toml"),
             "FIXTURE_SECRET = \"source-value\"\n",

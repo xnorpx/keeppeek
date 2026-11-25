@@ -29,6 +29,19 @@ diagnostic panel as a camera failure.
 The current health contract version is `1`. A client that cannot understand a state or reason must
 treat it as `unknown`, never as healthy.
 
+## Read the terminal dashboard
+
+The foreground dashboard uses the recorder's health evidence for its summary, stream states
+and warnings. Select a main or sub stream to see its source identity, media type, report age
+and available counters. Received bitrate uses decimal kbit/s. Ingest FPS comes from received
+video frames. Process CPU and resident memory describe the KeepPeek process.
+
+A zero is a measured value. A dash marks evidence that is unavailable or does not apply to the
+selected stream. The report age shows how recently the recorder sampled the stream. The header
+shows the age of the latest successful health collection. A stale bitrate retains its last
+measured value and carries a stale label. Use the selected row's recording progress age and
+health reason when investigating a stalled recording.
+
 ## Evidence dimensions
 
 Health keeps these dimensions separate:

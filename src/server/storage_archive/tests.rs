@@ -15,6 +15,8 @@ fn archive_controls_reject_users_before_reading_configuration_or_runtime() {
         Action::Retry(Default::default()),
         Action::Restore(Default::default()),
         Action::Evict(Default::default()),
+        Action::PreviewDeletion(Default::default()),
+        Action::ConfirmDeletion(Default::default()),
     ] {
         let command = proto::ArchiveCommand {
             action: Some(action),
@@ -89,6 +91,56 @@ fn archive_wire_configuration_keeps_private_references_and_rejects_invalid_limit
     assert_eq!(wire.root, "{secret:ROOT}");
     assert_eq!(wire.target_id, "{secret:TARGET}");
     assert_eq!(wire.source_ids, ["{secret:SOURCE}"]);
+    assert!(wire.retention_days.is_none());
+    let finite = proto::ArchiveSettings {
+        retention_days: Some(30),
+        ..wire.clone()
+    };
+    let private = from_wire(&path, finite).unwrap();
+    assert_eq!(private.retention_days, Some(30));
+    assert_eq!(private.target_id, "{secret:TARGET}");
+    assert_eq!(private.root, Path::new("{secret:ROOT}"));
+    let effective = crate::config::validate_archive_configuration(&path, &private).unwrap();
+    assert_eq!(effective.target_id, "local-archive");
+    assert_eq!(effective.root, directory.join("archive"));
+    let mut saved = crate::config::load_configuration_table(&path).unwrap();
+    saved
+        .get_mut("storage")
+        .unwrap()
+        .get_mut("archive")
+        .unwrap()
+        .as_table_mut()
+        .unwrap()
+        .insert("retention_days".into(), toml::Value::Integer(45));
+    crate::config::write_private_file(&path, toml::to_string(&saved).unwrap().as_bytes()).unwrap();
+    assert_eq!(
+        from_wire(&path, wire.clone()).unwrap().retention_days,
+        Some(45)
+    );
+    let clear = proto::ArchiveSettings {
+        clear_retention_days: true,
+        ..wire.clone()
+    };
+    let mut clearing = crate::config::load_config(&path).unwrap();
+    clearing.storage.archive = Some(from_wire(&path, clear.clone()).unwrap());
+    crate::config::update_settings(&path, &clearing).unwrap();
+    let cleared = crate::config::load_config(&path).unwrap();
+    assert_eq!(cleared.storage.archive.unwrap().retention_days, None);
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("{secret:ROOT}")
+    );
+    assert!(
+        from_wire(
+            &path,
+            proto::ArchiveSettings {
+                retention_days: Some(1),
+                ..clear
+            }
+        )
+        .is_err()
+    );
     assert_eq!(
         from_wire(&path, wire.clone()).unwrap().root,
         Path::new("{secret:ROOT}")

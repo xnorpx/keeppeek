@@ -432,3 +432,47 @@ fn event_hook_count(catalog: &RecordingCatalog) -> i64 {
         .get(0)
         .unwrap()
 }
+
+#[test]
+fn event_retention_defers_active_eviction_and_completes_after_eviction() {
+    let root = Directory::new();
+    let path = root.path().join("catalog.db");
+    let catalog = RecordingCatalog::open(&path).unwrap();
+    let handle = catalog.handle();
+    handle
+        .upsert_recording(recording("a", root.path()))
+        .unwrap();
+    let settings: Settings = toml::from_str("[default.events]\nperson=30.0").unwrap();
+    handle.request_retention_settings(Some(&settings)).unwrap();
+    drain(&catalog);
+    let before = handle.retention_decision("a").unwrap().unwrap();
+    assert_eq!(before.deadline_ms, None);
+    seed_interrupted_archive(&handle);
+    publish_event(&handle, "person-during-eviction");
+    assert_eq!(drain(&catalog), 0);
+    let owner = handle.retention.upgrade().unwrap();
+    let connection = owner.connection.lock().unwrap();
+    let deferred: Option<i64> = pollster::block_on(async {
+        let mut rows = connection
+            .query(
+                "SELECT 1 FROM archive_deletion_deferred_retention LIMIT 1",
+                (),
+            )
+            .await
+            .unwrap();
+        rows.next().await.unwrap().map(|row| row.get(0).unwrap())
+    });
+    assert_eq!(deferred, None);
+    pollster::block_on(connection.execute(
+        "UPDATE archive_replicas SET local_evicted=1,action='' WHERE job_id='pause'",
+        (),
+    ))
+    .unwrap();
+    drop(connection);
+    drop(owner);
+    assert_eq!(drain(&catalog), 0);
+    assert_current_retention_file(&handle, "a");
+    let after = handle.retention_decision("a").unwrap().unwrap();
+    assert_eq!(after.deadline_ms, Some(2_592_002_000));
+    catalog.shutdown();
+}
