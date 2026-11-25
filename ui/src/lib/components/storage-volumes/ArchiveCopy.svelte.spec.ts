@@ -32,6 +32,14 @@ describe('archive copy identity failure', () => {
 		await page.getByRole('button', { name: 'Load archive source volumes' }).click();
 		await page.getByLabelText('Source volume', { exact: true }).selectOptions('primary');
 		await page.getByRole('button', { name: 'Load eligible media' }).click();
+		expect(control.storageVolumes).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				action: {
+					case: 'objects',
+					value: expect.objectContaining({ archiveCopyCandidatesOnly: true })
+				}
+			})
+		);
 		await page
 			.getByLabelText('Media object', { exact: true })
 			.selectOptions(`${StorageObjectKind.RECORDING}:clip`);

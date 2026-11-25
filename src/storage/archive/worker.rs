@@ -73,6 +73,7 @@ struct Context {
     settings: Arc<Settings>,
     catalog: RecordingCatalogHandle,
     shared: Arc<Shared>,
+    saved_configuration: Option<(std::path::PathBuf, Arc<Mutex<()>>)>,
 }
 
 struct Scan {
@@ -81,6 +82,7 @@ struct Scan {
     pending: VecDeque<Job>,
     jobs_active: bool,
     candidates_active: bool,
+    legacy_active: bool,
     include_failed: bool,
     rescan: bool,
     bound: bool,
@@ -106,6 +108,31 @@ impl std::fmt::Debug for Worker {
 }
 
 impl Handle {
+    pub(crate) fn ensure_recovery_binding(&self, next: Option<&Settings>) -> anyhow::Result<()> {
+        self.catalog.ensure_archive_recovery_binding(next)
+    }
+
+    pub(crate) fn deletion_policy(
+        &self,
+    ) -> anyhow::Result<crate::storage::catalog::archive::deletion::Policy> {
+        self.enabled()?;
+        crate::storage::catalog::archive::deletion::Policy::from_settings(&self.settings)
+    }
+
+    pub(crate) fn deletion(
+        &self,
+        request: crate::storage::catalog::archive::deletion::Request,
+    ) -> anyhow::Result<crate::storage::catalog::archive::deletion::Plan> {
+        self.enabled()?;
+        let Reply::Deletion(plan) = self.catalog.archive(Request::Deletion(request))? else {
+            anyhow::bail!("invalid archive deletion reply")
+        };
+        if plan.confirmed {
+            self.scan()?;
+        }
+        Ok(*plan)
+    }
+
     pub(crate) fn target_id(&self) -> &str {
         &self.settings.target_id
     }
@@ -253,7 +280,25 @@ impl Handle {
 }
 
 impl Worker {
+    #[cfg(test)]
     pub fn start(settings: Settings, catalog: RecordingCatalogHandle) -> anyhow::Result<Self> {
+        Self::start_inner(settings, catalog, None)
+    }
+
+    pub(crate) fn start_with_saved_configuration(
+        settings: Settings,
+        catalog: RecordingCatalogHandle,
+        path: std::path::PathBuf,
+        lock: Arc<Mutex<()>>,
+    ) -> anyhow::Result<Self> {
+        Self::start_inner(settings, catalog, Some((path, lock)))
+    }
+
+    fn start_inner(
+        settings: Settings,
+        catalog: RecordingCatalogHandle,
+        saved_configuration: Option<(std::path::PathBuf, Arc<Mutex<()>>)>,
+    ) -> anyhow::Result<Self> {
         let settings = Arc::new(settings);
         let shared = Arc::new(Shared {
             stopped: AtomicBool::new(false),
@@ -269,6 +314,7 @@ impl Worker {
             settings: settings.clone(),
             catalog: catalog.clone(),
             shared: shared.clone(),
+            saved_configuration,
         };
         let thread = thread::Builder::new()
             .name("archive-worker".into())
@@ -352,7 +398,36 @@ impl Context {
             *active = None;
         }
         if result.is_err() && !cancellation() {
-            let request = if job.cancelled {
+            let unprotected_primary = result.as_ref().is_err_and(|error| {
+                error.is::<crate::storage::volumes::root::ArchiveSurvivorUnprotected>()
+            });
+            let request = if let Some(work) = job.pending_deletion() {
+                use crate::storage::catalog::archive::deletion::Request as Deletion;
+                Request::Deletion(Deletion::RecordFailure {
+                    job: job.id.clone(),
+                    operation: work.operation.clone(),
+                    unprotected_primary,
+                })
+            } else if job.state == "ready"
+                && job.action.is_empty()
+                && job.kind != "probe"
+                && job.verified_ms.is_none()
+            {
+                if FilesystemArchiveTarget::open(&job.binding.root, &job.binding.identity).is_err()
+                {
+                    self.health(
+                        false,
+                        Some("Archive target is unavailable; check its configuration"),
+                    );
+                    return result;
+                }
+                // The target is reachable and this row now has durable backoff. Other
+                // unverified copies may proceed on the next bounded scheduling pass.
+                self.catalog.archive(Request::Deletion(
+                    crate::storage::catalog::archive::deletion::Request::LegacyFailed(job.id),
+                ))?;
+                return Ok(());
+            } else if job.cancelled {
                 Request::CleanupFailed(job.id.clone())
             } else if job.action.is_empty() {
                 Request::Fail(job.id.clone())
@@ -365,12 +440,49 @@ impl Context {
                     "archive failure state could not be committed; journal retained"
                 );
             }
-            self.health(
-                false,
-                Some("Archive operation failed; check the target and retry"),
-            );
+            if !unprotected_primary {
+                self.health(
+                    false,
+                    Some("Archive operation failed; check the target and retry"),
+                );
+            }
         }
         result
+    }
+
+    fn claim_deletion(&self, job: &Job) -> anyhow::Result<()> {
+        use crate::storage::catalog::archive::deletion::{Policy, Request as Deletion};
+        let _lock = self
+            .saved_configuration
+            .as_ref()
+            .map(|(_, lock)| {
+                lock.lock()
+                    .map_err(|_| anyhow::anyhow!("archive configuration lock unavailable"))
+            })
+            .transpose()?;
+        let policy = if let Some((path, _)) = &self.saved_configuration {
+            let config = crate::config::load_config(path)?;
+            let saved = config
+                .storage
+                .archive
+                .as_ref()
+                .filter(|settings| settings.enabled)
+                .ok_or_else(|| anyhow::anyhow!("archive is disabled in saved configuration"))?;
+            crate::backup::check_staged_archive_deletion(path, saved)?;
+            Policy::from_settings(saved)?
+        } else {
+            Policy::from_settings(&self.settings)?
+        };
+        self.catalog.archive(Request::Deletion(Deletion::Claim {
+            job: job.id.clone(),
+            operation: job
+                .pending_deletion()
+                .ok_or_else(|| anyhow::anyhow!("archive deletion is not pending"))?
+                .operation
+                .clone(),
+            policy,
+        }))?;
+        Ok(())
     }
 
     fn attempt(&self, job: &Job, work: &Work<'_>) -> anyhow::Result<()> {
@@ -379,7 +491,11 @@ impl Context {
             job.binding.id == self.settings.target_id && job.binding.root == self.settings.root,
             "archive job target is no longer configured"
         );
-        if job.cancelled {
+        if job.pending_deletion().is_some() {
+            super::operations::remove_replica(&self.catalog, job, work, || {
+                self.claim_deletion(job)
+            })?;
+        } else if job.cancelled {
             return cleanup::execute(&self.catalog, job, work);
         } else if !job.action.is_empty() {
             let Reply::Job(Some(started)) = self.catalog.archive(Request::StartAction {
@@ -401,6 +517,8 @@ impl Context {
             if outcome == transfer::ProbeOutcome::Unchanged {
                 return Ok(());
             }
+        } else if job.state == "ready" && job.verified_ms.is_none() {
+            super::operations::reverify_legacy(&self.catalog, job, work)?;
         } else {
             // An offline target must not exhaust the transfer retry budget.
             drop(FilesystemArchiveTarget::open(
@@ -550,6 +668,7 @@ impl Scan {
             pending: VecDeque::new(),
             jobs_active: true,
             candidates_active: true,
+            legacy_active: true,
             include_failed: false,
             rescan: false,
             bound: false,
@@ -558,7 +677,7 @@ impl Scan {
     }
 
     fn active(&self) -> bool {
-        self.jobs_active || self.candidates_active || !self.pending.is_empty()
+        self.jobs_active || self.candidates_active || self.legacy_active || !self.pending.is_empty()
     }
 
     fn begin(&mut self, periodic: bool) {
@@ -567,6 +686,7 @@ impl Scan {
         self.pending.clear();
         self.jobs_active = true;
         self.candidates_active = true;
+        self.legacy_active = true;
         self.include_failed = periodic;
         self.rescan = false;
         self.bound = false;
@@ -589,6 +709,7 @@ impl Scan {
         self.candidates_active = false;
         self.rescan = false;
         self.bound = false;
+        self.legacy_active = false;
         self.next_periodic = Instant::now() + SCAN_INTERVAL;
     }
 
@@ -610,7 +731,9 @@ impl Scan {
             self.bound = true;
         }
         if let Some(job) = self.pending.pop_front() {
-            let attempts = if job.action.is_empty() {
+            let attempts = if let Some(intent) = job.pending_deletion() {
+                intent.attempts
+            } else if job.action.is_empty() {
                 job.attempts
             } else {
                 job.action_attempts
@@ -618,14 +741,19 @@ impl Scan {
             let probe_cleanup =
                 job.kind == "probe" && matches!(job.state.as_str(), "ready" | "deleted");
             let failed = job.state == "failed"
-                || ((!job.action.is_empty() || job.cancelled) && job.error.is_some());
+                || ((!job.action.is_empty() || job.cancelled || job.pending_deletion().is_some())
+                    && job.error.is_some());
             if (attempts < context.settings.maximum_attempts || probe_cleanup || job.cancelled)
                 && (!failed || self.include_failed)
             {
-                let _ = context.process(
+                let retiring = job.pending_deletion().is_some();
+                let result = context.process(
                     job,
                     Instant::now() + Duration::from_secs(context.settings.operation_timeout_secs),
                 );
+                // Each durable deletion checkpoint gets a fresh, bounded turn. Let new work
+                // progress between turns; only failures consume the configured retry count.
+                self.rescan |= retiring && result.is_ok();
             }
             return Ok(true);
         }
@@ -646,6 +774,29 @@ impl Scan {
         }
         if self.candidates_active {
             return self.candidates(context);
+        }
+        // One historical read per pass. Recheck new submissions and admit current recordings
+        // before spending another potentially long operation deadline on legacy media.
+        if self.legacy_active {
+            self.legacy_active = false;
+            use crate::storage::catalog::archive::deletion::Request as Deletion;
+            let Reply::Job(job) =
+                context
+                    .catalog
+                    .archive(Request::Deletion(Deletion::NextLegacy {
+                        target: context.settings.target_id.clone(),
+                        maximum_attempts: context.settings.maximum_attempts,
+                        include_unrequested: context.settings.retention_days.is_some(),
+                    }))?
+            else {
+                anyhow::bail!("invalid archive reverification reply")
+            };
+            if let Some(job) = job {
+                let deadline =
+                    Instant::now() + Duration::from_secs(context.settings.operation_timeout_secs);
+                self.rescan |= context.process(*job, deadline).is_ok();
+            }
+            return Ok(true);
         }
         if self.rescan {
             self.begin(Instant::now() >= self.next_periodic);

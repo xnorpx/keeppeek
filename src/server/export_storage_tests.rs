@@ -605,6 +605,7 @@ fn archive_completed_export(
         source_ids: vec![],
         minimum_age_secs: 0,
         evict_after_archive: false,
+        retention_days: None,
         maximum_object_bytes: 4 * 1024 * 1024 * 1024,
         maximum_pending_count: 256,
         maximum_pending_bytes: 64 * 1024 * 1024 * 1024,
@@ -730,6 +731,22 @@ fn archived_export_after_primary_retirement() -> (Vec<u8>, String) {
             .unwrap()
     );
     assert!(!record.path.as_ref().unwrap().exists());
+    {
+        use crate::storage::catalog::archive::deletion::{Request, Selection};
+        let handle = worker.handle();
+        let preview = handle
+            .deletion(Request::Preview {
+                actor: "admin".into(),
+                policy: handle.deletion_policy().unwrap(),
+                selection: Selection::Explicit(archive_job_id),
+            })
+            .unwrap();
+        assert_eq!(preview.items[0].state, "primary_unavailable");
+        assert!(preview.id.is_empty());
+        assert!(preview.revision.is_empty());
+        assert!(preview.nonce.is_none());
+        assert_eq!(preview.expires_ms, 0);
+    }
     let (result, messages) = download_export(&state, "owner", request.clone()).unwrap();
     let job = result.job.unwrap();
     assert_eq!(job.job_id, "named-export");
@@ -824,6 +841,75 @@ fn archived_export_owner_download_decodes_on_a_clean_destination_volume() -> any
     std::fs::remove_file(path)?;
     std::fs::remove_dir(directory)?;
     Ok(())
+}
+
+#[test]
+fn archive_deletion_removes_redundant_export_and_preserves_primary_download() {
+    use crate::storage::catalog::archive::deletion::{Request, Selection};
+    let (root, catalog, manager, state) = completed_named_export();
+    let record = export_record(&state);
+    let original = std::fs::read(record.path.as_ref().unwrap()).unwrap();
+    let (worker, id) = archive_completed_export(&root, &catalog, &state);
+    let handle = worker.handle();
+    let plan = handle
+        .deletion(Request::Preview {
+            actor: "admin".into(),
+            policy: handle.deletion_policy().unwrap(),
+            selection: Selection::Explicit(id.clone()),
+        })
+        .unwrap();
+    assert_eq!(plan.items[0].state, "eligible");
+    handle
+        .deletion(Request::Confirm {
+            actor: "admin".into(),
+            policy: handle.deletion_policy().unwrap(),
+            plan: plan.id,
+            revision: plan.revision,
+            nonce: plan.nonce.unwrap(),
+        })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let current = handle.get(&id).unwrap();
+        if cfg!(windows) && current.state == "deleted" {
+            break;
+        }
+        if cfg!(unix)
+            && current.error.as_deref() == Some("archive_primary_write_protection_required")
+        {
+            assert_eq!(current.state, "ready");
+            assert_eq!(current.deletion.unwrap().phase, "blocked");
+            assert_eq!(
+                std::fs::read(
+                    current
+                        .binding
+                        .root
+                        .join(format!("{}.mp4", current.object_id))
+                )
+                .unwrap(),
+                original
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "redundant export deletion did not finish"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let request = proto::DownloadExport {
+        job_id: "named-export".into(),
+        channel: proto::DataChannelKind::ReliableData as i32,
+    };
+    let (_, messages) = download_export(&state, "owner", request).unwrap();
+    assert_eq!(downloaded_bytes(messages), original);
+    assert_eq!(std::fs::read(record.path.unwrap()).unwrap(), original);
+    drop(handle);
+    worker.shutdown().unwrap();
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -1163,6 +1249,372 @@ fn download_persists_managed_history_and_cannot_recreate_missing_history() {
     metadata_catalog.shutdown();
     std::fs::remove_dir_all(root).unwrap();
     std::fs::remove_dir_all(metadata_dir).unwrap();
+}
+
+fn archive_deletion_response(
+    state: &ServerState,
+    principal: &ApiPrincipal,
+    action: proto::archive_command::Action,
+) -> Result<proto::ArchiveDeletionPreview, ControlCommandError> {
+    let command = proto::ArchiveCommand {
+        action: Some(action),
+    };
+    let proto::ok::Result::ArchiveResult(result) =
+        super::storage_archive::dispatch(state, principal, command)?
+    else {
+        panic!("expected archive result")
+    };
+    let Some(proto::archive_result::Result::DeletionPreview(preview)) = result.result else {
+        panic!("expected archive deletion preview")
+    };
+    Ok(preview)
+}
+
+#[test]
+fn confirmed_archive_receipt_replays_without_the_worker_but_new_confirmation_is_refused() {
+    use proto::archive_command::Action;
+    let (root, catalog, manager, mut state) = completed_named_export();
+    let (worker, job) = archive_completed_export(&root, &catalog, &state);
+    state.storage_config.archive_runtime = Some(worker.handle());
+    let administrator = ApiPrincipal::local("127.0.0.1".parse().unwrap());
+    let preview = Action::PreviewDeletion(proto::PreviewArchiveDeletion {
+        selection: Some(proto::preview_archive_deletion::Selection::JobId(
+            job.clone(),
+        )),
+    });
+    let confirm = |plan: &proto::ArchiveDeletionPreview| {
+        assert!(!plan.confirmation_nonce.is_empty());
+        Action::ConfirmDeletion(proto::ConfirmArchiveDeletion {
+            plan_id: plan.plan_id.clone(),
+            expected_revision: plan.revision.clone(),
+            confirmation_nonce: plan.confirmation_nonce.clone(),
+        })
+    };
+    let first = archive_deletion_response(&state, &administrator, preview.clone()).unwrap();
+    let second = archive_deletion_response(&state, &administrator, preview).unwrap();
+    let receipt = archive_deletion_response(&state, &administrator, confirm(&first)).unwrap();
+    assert!(receipt.confirmed);
+    state.storage_config.archive_runtime = None;
+    worker.shutdown().unwrap();
+    let restored = archive_deletion_response(&state, &administrator, confirm(&first)).unwrap();
+    assert!(restored.confirmed && restored.confirmation_nonce.is_empty());
+    assert_eq!(restored.plan_id, receipt.plan_id);
+    assert_eq!(restored.revision, receipt.revision);
+    assert_eq!(restored.items[0].job_id, job);
+    let refused = archive_deletion_response(&state, &administrator, confirm(&second)).unwrap_err();
+    assert_eq!(refused.code, proto::ErrorCode::Rejected);
+    assert_eq!(refused._http_status, 503);
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+fn offline_archive_jobs(
+    state: &ServerState,
+    admin: &ApiPrincipal,
+    after: &str,
+) -> proto::ArchiveJobList {
+    let command = proto::ArchiveCommand {
+        action: Some(proto::archive_command::Action::List(
+            proto::ListArchiveJobs {
+                after_job_id: after.into(),
+                limit: 1,
+            },
+        )),
+    };
+    let proto::ok::Result::ArchiveResult(result) =
+        super::storage_archive::dispatch(state, admin, command).unwrap()
+    else {
+        panic!("expected archive response")
+    };
+    let Some(proto::archive_result::Result::Jobs(page)) = result.result else {
+        panic!("expected archive job page")
+    };
+    assert!(!page.status.as_ref().unwrap().runtime_available);
+    page
+}
+
+fn discover_offline_archive_job(state: &ServerState, admin: &ApiPrincipal) -> String {
+    let page = offline_archive_jobs(state, admin, "");
+    let [job] = page.jobs.as_slice() else {
+        panic!("expected only the pending deletion")
+    };
+    assert_eq!(job.action, "delete");
+    assert_eq!(job.target_id, "unavailable-target");
+    assert_eq!(page.next_after_job_id, job.job_id);
+    assert!(
+        offline_archive_jobs(state, admin, &page.next_after_job_id)
+            .jobs
+            .is_empty()
+    );
+    let command = proto::ArchiveCommand {
+        action: Some(proto::archive_command::Action::Get(proto::GetArchiveJob {
+            job_id: job.job_id.clone(),
+        })),
+    };
+    let proto::ok::Result::ArchiveResult(result) =
+        super::storage_archive::dispatch(state, admin, command).unwrap()
+    else {
+        panic!("expected archive response")
+    };
+    let Some(proto::archive_result::Result::Job(found)) = result.result else {
+        panic!("expected archive job")
+    };
+    assert_eq!(&found, job);
+    found.job_id
+}
+
+#[test]
+fn administrator_can_withdraw_an_offline_queued_archive_deletion_before_changing_target() {
+    use crate::storage::catalog::{archive, maintenance::jobs::Nonce};
+    use proto::archive_command::Action;
+    let (root, catalog, manager, mut state) = completed_named_export();
+    let (worker, job) = archive_completed_export(&root, &catalog, &state);
+    let policy = worker.handle().deletion_policy().unwrap();
+    state.storage_config.archive_runtime = Some(worker.handle());
+    let administrator = ApiPrincipal::local("127.0.0.1".parse().unwrap());
+    let preview = archive_deletion_response(
+        &state,
+        &administrator,
+        Action::PreviewDeletion(proto::PreviewArchiveDeletion {
+            selection: Some(proto::preview_archive_deletion::Selection::JobId(
+                job.clone(),
+            )),
+        }),
+    )
+    .unwrap();
+    state.storage_config.archive_runtime = None;
+    worker.shutdown().unwrap();
+    assert!(
+        offline_archive_jobs(&state, &administrator, "")
+            .jobs
+            .is_empty()
+    );
+    let ordinary_cancel = proto::ArchiveCommand {
+        action: Some(Action::Cancel(proto::CancelArchiveJob {
+            job_id: job.clone(),
+        })),
+    };
+    assert_eq!(
+        super::storage_archive::dispatch(&state, &administrator, ordinary_cancel)
+            .unwrap_err()
+            ._http_status,
+        503
+    );
+    // Persist the confirmation without waking a worker, as at a restart before its first claim.
+    catalog
+        .handle()
+        .archive(archive::Request::Deletion(
+            archive::deletion::Request::Confirm {
+                actor: administrator.id(),
+                policy,
+                plan: preview.plan_id.clone(),
+                revision: preview.revision.clone(),
+                nonce: Nonce::parse(&preview.confirmation_nonce).unwrap(),
+            },
+        ))
+        .unwrap();
+    assert_eq!(
+        super::storage_archive::validate_claim_recovery(&state, None)
+            .unwrap_err()
+            ._http_status,
+        409
+    );
+    // An unrelated configuration update leaves the already-saved binding untouched.
+    super::storage_archive::validate_saved_binding_change(&state, None, None).unwrap();
+    let command = proto::ArchiveCommand {
+        action: Some(Action::Cancel(proto::CancelArchiveJob {
+            job_id: discover_offline_archive_job(&state, &administrator),
+        })),
+    };
+    let proto::ok::Result::ArchiveResult(result) =
+        super::storage_archive::dispatch(&state, &administrator, command).unwrap()
+    else {
+        panic!("expected archived job");
+    };
+    let Some(proto::archive_result::Result::Job(retained)) = result.result else {
+        panic!("expected retained replica");
+    };
+    assert_eq!(retained.job_id, job);
+    assert!(
+        offline_archive_jobs(&state, &administrator, "")
+            .jobs
+            .is_empty()
+    );
+    assert_eq!(retained.state, "ready");
+    assert!(retained.action.is_empty() && retained.error_code.is_empty());
+    let receipt = archive_deletion_response(
+        &state,
+        &administrator,
+        Action::ConfirmDeletion(proto::ConfirmArchiveDeletion {
+            plan_id: preview.plan_id,
+            expected_revision: preview.revision,
+            confirmation_nonce: preview.confirmation_nonce,
+        }),
+    )
+    .unwrap();
+    assert_eq!(receipt.items[0].state, "blocked");
+    super::storage_archive::validate_claim_recovery(&state, None).unwrap();
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn save_runtime_settings_blocks_disabling_archive_while_deletion_recovery_is_pending_and_preserves_none()
+ {
+    use crate::storage::{
+        archive::settings::Settings as ArchiveSettings,
+        catalog::{archive, maintenance::jobs::Nonce},
+    };
+    use proto::archive_command::Action;
+
+    let (root, catalog, manager, mut state) = completed_named_export();
+    let (worker, job) = archive_completed_export(&root, &catalog, &state);
+    let policy = worker.handle().deletion_policy().unwrap();
+    state.storage_config.archive_runtime = Some(worker.handle());
+    let administrator = ApiPrincipal::local("127.0.0.1".parse().unwrap());
+    let preview = archive_deletion_response(
+        &state,
+        &administrator,
+        Action::PreviewDeletion(proto::PreviewArchiveDeletion {
+            selection: Some(proto::preview_archive_deletion::Selection::JobId(job)),
+        }),
+    )
+    .unwrap();
+    state.storage_config.archive_runtime = None;
+    worker.shutdown().unwrap();
+    catalog
+        .handle()
+        .archive(archive::Request::Deletion(
+            archive::deletion::Request::Confirm {
+                actor: administrator.id(),
+                policy,
+                plan: preview.plan_id,
+                revision: preview.revision,
+                nonce: Nonce::parse(&preview.confirmation_nonce).unwrap(),
+            },
+        ))
+        .unwrap();
+
+    let medium_term_path = root.join("medium");
+    let long_term_path = root.join("legacy");
+    let recording_catalog_path = long_term_path.join("recordings.db");
+    let event_thumbnail_path = long_term_path.join(".event-thumbnails");
+    let archive_root = root.join("archive");
+    std::fs::create_dir_all(&medium_term_path).unwrap();
+    std::fs::create_dir_all(&event_thumbnail_path).unwrap();
+    state.storage_config.medium_term_path = medium_term_path.clone();
+    state.storage_config.long_term_path = long_term_path.clone();
+    state.storage_config.recording_catalog_path = recording_catalog_path.clone();
+    state.storage_config.event_thumbnail_path = event_thumbnail_path.clone();
+
+    let config_path = root.join("config.toml");
+    crate::config::write_private_file(
+        &config_path,
+        format!(
+            r#"
+            host = "127.0.0.1"
+            port = 3000
+
+            [storage]
+            medium_term_path = {medium_term_path:?}
+            long_term_path = {long_term_path:?}
+
+            [storage.archive]
+            target_id = "export-archive"
+            root = {archive_root:?}
+            enabled = true
+            "#
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    state.camera_config_path = Some(config_path.clone());
+
+    let build_update = |archive, port| super::RuntimeSettingsUpdate {
+        host: "127.0.0.1".to_owned(),
+        port,
+        expected_configuration_revision: String::new(),
+        storage: super::RuntimeStorageSettingsUpdate {
+            archive,
+            named_volumes: None,
+            medium_term_path: medium_term_path.to_string_lossy().into_owned(),
+            long_term_path: long_term_path.to_string_lossy().into_owned(),
+            recording_catalog_path: recording_catalog_path.to_string_lossy().into_owned(),
+            event_thumbnail_path: event_thumbnail_path.to_string_lossy().into_owned(),
+            event_thumbnail_max_mb: 512,
+            short_term_secs: 30,
+            medium_term_secs: 120,
+            flush_interval_secs: 15,
+            write_buffer_bytes: 16_384,
+            long_term_max_gb: 24,
+            minimum_free_gb: 0,
+            maximum_used_percent: None,
+            warning_free_gb: 0,
+            critical_free_gb: 0,
+            cleanup_hysteresis_gb: 0,
+            pre_recording_stream_max_bytes: crate::config::default_pre_recording_stream_max_bytes(),
+            pre_recording_global_max_bytes: crate::config::default_pre_recording_global_max_bytes(),
+        },
+        move_existing_recordings: false,
+    };
+    let disabled_archive = || ArchiveSettings {
+        target_id: "export-archive".into(),
+        root: archive_root.clone(),
+        enabled: false,
+        automatic: false,
+        source_ids: vec![],
+        minimum_age_secs: 0,
+        evict_after_archive: false,
+        retention_days: None,
+        maximum_object_bytes: 4 * 1024 * 1024 * 1024,
+        maximum_pending_count: 256,
+        maximum_pending_bytes: 64 * 1024 * 1024 * 1024,
+        operation_timeout_secs: 30,
+        maximum_attempts: 3,
+    };
+
+    let disable_error =
+        super::save_runtime_settings(build_update(Some(disabled_archive()), 3200), &state)
+            .err()
+            .expect("disabling archive must fail");
+    assert_eq!(disable_error._http_status, 409);
+
+    // Older runtime settings commands omit archive (None) and must preserve [storage.archive].
+    let preserved = super::save_runtime_settings(build_update(None, 3201), &state).unwrap();
+    assert_eq!(preserved.config.port, 3201);
+    assert!(
+        crate::config::load_config(&config_path)
+            .unwrap()
+            .storage
+            .archive
+            .expect("archive configuration must remain preserved")
+            .enabled
+    );
+
+    let cancel = proto::ArchiveCommand {
+        action: Some(Action::Cancel(proto::CancelArchiveJob {
+            job_id: discover_offline_archive_job(&state, &administrator),
+        })),
+    };
+    super::storage_archive::dispatch(&state, &administrator, cancel).unwrap();
+    super::save_runtime_settings(build_update(Some(disabled_archive()), 3202), &state).unwrap();
+    assert!(
+        !crate::config::load_config(&config_path)
+            .unwrap()
+            .storage
+            .archive
+            .expect("disabled archive configuration must remain present")
+            .enabled
+    );
+
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

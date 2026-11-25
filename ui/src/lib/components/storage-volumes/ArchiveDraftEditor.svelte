@@ -13,14 +13,17 @@
 	let {
 		config,
 		controller,
+		retentionAvailable,
 		onsaved,
 		oncancel
 	}: {
 		config: SanitizedConfig;
 		controller: ArchiveController;
+		retentionAvailable: boolean;
 		onsaved: (result: SettingsConfigUpdateResponse) => void;
 		oncancel: () => void;
 	} = $props();
+	const retentionHelpId = $props.id();
 	let snapshot = $state.raw(untrack(() => config));
 	let initial = $state(archiveDraft(untrack(() => snapshot.storage.archive)));
 	let draft = $state(archiveDraft(untrack(() => snapshot.storage.archive)));
@@ -43,7 +46,10 @@
 				port: snapshot.port,
 				expected_configuration_revision: snapshot.configuration_revision,
 				move_existing_recordings: false,
-				storage: { ...snapshot.storage, archive: encodeArchiveDraft(draft) }
+				storage: {
+					...snapshot.storage,
+					archive: encodeArchiveDraft(draft, snapshot.storage.archive)
+				}
 			});
 			accepted = true;
 			onsaved(result);
@@ -125,6 +131,22 @@
 			Eviction removes the primary file after verification and reader checks. Timeline metadata
 			remains available for archive playback. Leave this off to retain primary copies.
 		</p>
+		{#if retentionAvailable}<label class="space-y-1 text-sm sm:col-span-2">
+				Archive retention days
+				<input
+					class="min-h-11 w-full rounded-sm border border-hairline bg-surface px-3 py-2 sm:min-h-0"
+					inputmode="numeric"
+					maxlength="10"
+					aria-label="Archive retention days"
+					aria-describedby={retentionHelpId}
+					bind:value={draft.retentionDays}
+					placeholder="Indefinite"
+				/>
+				<span id={retentionHelpId} class="text-xs text-text-muted"
+					>Age starts when a replica is verified. Leave blank to keep it indefinitely. An
+					Administrator must preview and confirm each deletion batch.</span
+				>
+			</label>{/if}
 		<details class="space-y-3 border-t border-hairline pt-4 sm:col-span-2">
 			<summary
 				class="min-h-11 cursor-pointer py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring sm:min-h-0 sm:py-0"

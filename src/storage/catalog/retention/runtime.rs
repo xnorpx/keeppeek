@@ -9,6 +9,8 @@ use crate::storage::retention::settings::Settings;
 mod expiry;
 mod schema;
 mod work;
+#[cfg(test)]
+pub(in crate::storage::catalog) use work::step as test_reconciliation_turn;
 
 const SETTINGS_BYTES_MAX: usize = 524_288;
 const RECORDS_PER_CALL_MAX: usize = 8;

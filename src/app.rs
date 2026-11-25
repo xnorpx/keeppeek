@@ -191,12 +191,18 @@ pub fn run_with_dashboard(
         .map(|manager| crate::storage::volumes::runtime::worker::Worker::start((**manager).clone()))
         .transpose()?;
     storage_config.volume_mover = volume_worker.as_ref().map(|worker| worker.handle());
+    let configuration_update = Arc::new(std::sync::Mutex::new(()));
     let archive_worker = storage_config
         .archive
         .as_ref()
         .filter(|settings| settings.enabled)
         .map(|settings| {
-            crate::storage::archive::Worker::start(settings.clone(), catalog_handle.clone())
+            crate::storage::archive::Worker::start_with_saved_configuration(
+                settings.clone(),
+                catalog_handle.clone(),
+                config_path.to_owned(),
+                configuration_update.clone(),
+            )
         })
         .transpose()?;
     storage_config.archive_runtime = archive_worker.as_ref().map(|worker| worker.handle());
@@ -247,7 +253,8 @@ pub fn run_with_dashboard(
         &storage_config,
         recording_demand,
         webrtc.clone(),
-    );
+    )
+    .with_configuration_update_lock(configuration_update);
     storage_engine.set_privacy_registry(server_state.privacy_registry());
     server_state.open_state_store();
     server_state.open_guest_store();

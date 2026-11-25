@@ -83,7 +83,7 @@ impl Nonce {
         &self.0
     }
 
-    fn generate() -> Self {
+    pub(in crate::storage::catalog) fn generate() -> Self {
         Self(format!(
             "{:032x}{:032x}",
             rand::random::<u128>(),
@@ -91,7 +91,7 @@ impl Nonce {
         ))
     }
 
-    fn digest(&self) -> String {
+    pub(in crate::storage::catalog) fn digest(&self) -> String {
         Sha256::digest(self.0.as_bytes())
             .iter()
             .map(|byte| format!("{byte:02x}"))

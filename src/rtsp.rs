@@ -1,3 +1,4 @@
+mod audio;
 mod blocking;
 mod timing;
 
