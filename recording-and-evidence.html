@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-933d6fda.js";
+            window.path_to_searchindex_js = "searchindex-981fe74c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-6871163b.js"></script>
@@ -307,6 +307,12 @@ health reports the requested and available history, retained bytes, and the curr
 Pending replay means media is queued; it does not prove a successful disk or catalog commit.
 Use Recording integrity and playback to inspect committed evidence. Audio packets crossing the
 selected video boundary are omitted without re-encoding.</p>
+<p>When a profile activates camera privacy, a viewer carrying that camera’s media can briefly
+disconnect. KeepPeek makes up to three attempts to reconnect and restore the viewer’s authorized
+streams. An access denial ends the retries. If a talkback, chime, or quick reply was interrupted,
+start it again only if you still want the camera to perform it. An active guest download for the
+camera stops when privacy takes effect. Previously stored recordings remain available to authorized
+operators in the timeline.</p>
 <p>If a runtime profile reports a camera as <strong>Degraded</strong> because storage rejected its recording
 settings or could not queue the change, new recording input for that camera stops. Live viewing
 can continue, and other cameras still apply their profile changes. <strong>Pending</strong> means the recording
@@ -627,6 +633,24 @@ is under qualification; confirmed jobs can remove selected recordings permanentl
 <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/event-presentation.md">event presentation</a>,
 and <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/evidence-exports.md">evidence export</a>
 references.</p>
+<h2 id="calibrating-live-audio"><a class="header" href="#calibrating-live-audio">Calibrating live audio</a></h2>
+<p>Open the camera’s Audio synchronization settings and select Live audio. Use a clearly
+visible sound, such as one clap, on the Main or Sub stream you want to calibrate.
+If the sound arrives early, try a positive offset to delay audio. If it arrives late,
+try a negative offset to delay video. The preview shows the added video latency before
+you apply it. Choose <strong>Apply preview</strong> to test in this viewer, or <strong>Reset preview</strong> to
+return to saved timing. Listening for several repetitions helps distinguish a persistent
+offset from variable network or browser jitter.</p>
+<p>Save a camera default or override each stream separately. Whole-millisecond offsets range
+from −200 through +200. An explicit zero disables correction on that stream. Inherit
+uses the camera default. Recorded playback and exports use the separate recorded setting.
+Changing live timing leaves the original recording and its timestamps intact.</p>
+<p>Live diagnostics show saved and applied timing independently of browser jitter-buffer delay.
+Source health includes held bytes, held encoded video frames, and capacity or expiry drops.
+A rising drop count means the server could not hold every frame within its time or memory
+budget. These measurements end at the server listener handoff. Camera capture latency,
+external transcoder buffering, loudspeaker latency and physical alignment require
+separate measurements.</p>
 
                     </main>
 

@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-933d6fda.js";
+            window.path_to_searchindex_js = "searchindex-981fe74c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-6871163b.js"></script>
@@ -608,12 +608,28 @@ compatible pre-migration configuration as well. Unknown identity schema versions
 <tr><td><code>event_recording_stream</code></td><td><code>EventRecordingStream</code></td><td>Shared default or <code>"main"</code></td><td><code>"main"</code> or <code>"sub"</code>; selects the event-only recording stream. EventBoost always boosts to main.</td></tr>
 <tr><td><code>events</code></td><td><code>EventConfig</code></td><td>Defaults below</td><td>Camera-native event policy, independent of video backend; configured through the file.</td></tr>
 <tr><td><code>recorded_audio</code></td><td><code>RecordedAudioSettings</code></td><td>All offsets inherit</td><td>Recorded-media correction only; fields and bounds below.</td></tr>
+<tr><td><code>live_audio</code></td><td><code>LiveAudioSettings</code></td><td>All offsets inherit</td><td>Camera live listener correction. See values and bounds below.</td></tr>
 </tbody>
 </table>
 </div>
 <p>These are stored configuration types, not promises that every camera supports every backend,
 transport, or recording capability. Discovery results such as <code>CameraCapabilities</code>, <code>CameraPorts</code>,
 <code>MediaProfile</code>, <code>VideoConfig</code>, and <code>AudioConfig</code> are not additional editable camera tables.</p>
+<h3 id="live-audio-timing"><a class="header" href="#live-audio-timing">Live audio timing</a></h3>
+<p>The optional <code>[&lt;namespace&gt;.&lt;camera-key&gt;.live_audio]</code> table accepts signed whole
+milliseconds from −200 through +200. <code>default_offset_ms</code> defaults to zero.
+<code>main_offset_ms</code> and <code>sub_offset_ms</code> inherit that default when absent. An explicit
+zero disables correction for its stream. Positive values delay audio. Negative
+values delay video and add their absolute value to live video latency, including
+for muted listeners. These numeric fields cannot contain secret references.</p>
+<p>For example, this setting delays Main audio by 80 ms and leaves Sub uncorrected:</p>
+<pre><code class="language-toml">[cameras.front_door.live_audio]
+default_offset_ms = 80
+sub_offset_ms = 0
+</code></pre>
+<p>A timing-only camera settings update applies to current listeners without restarting
+ingest or recording writers. Previewing changes in the camera page only affects the
+selected viewer and stream. Recorded correction uses its own table.</p>
 <h3 id="recorded-audio-timing"><a class="header" href="#recorded-audio-timing">Recorded-audio timing</a></h3>
 <p>Type: <code>RecordedAudioSettings</code>, section <code>[&lt;namespace&gt;.&lt;camera-key&gt;.recorded_audio]</code>, for example
 <code>[cameras.front_door.recorded_audio]</code>. Source:
