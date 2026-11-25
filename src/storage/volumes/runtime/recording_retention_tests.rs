@@ -218,7 +218,10 @@ fn begin(catalog: &RecordingCatalog, volume: &str) -> anyhow::Result<Box<Job>> {
 }
 
 fn usage(catalog: &RecordingCatalog) -> anyhow::Result<u64> {
-    let Reply::Usage(usage) = catalog.handle().volume_location(Request::Usage)? else {
+    let Reply::Usage(usage) = catalog
+        .handle()
+        .volume_location_read_only_retried(Request::Usage, None)?
+    else {
         anyhow::bail!("usage reply missing");
     };
     Ok(usage.iter().map(|volume| volume.allocated_bytes).sum())
@@ -680,7 +683,8 @@ fn refused_allocation_wakes_retention_then_can_use_reclaimed_capacity() -> anyho
             .reserve(VolumeRole::Export, "camera", &[], object.clone(), 32)
             .is_err()
     );
-    for _ in 0..100 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    while std::time::Instant::now() < deadline {
         if !path.exists() && usage(&catalog)? == 0 {
             break;
         }
