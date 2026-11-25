@@ -266,11 +266,17 @@ test('only the chosen calibrated AAC camera is unmuted on reload and after an au
 			{ muted: true, decoded: true },
 			{ muted: false, decoded: true }
 		]);
+		await expect(
+			page.getByRole('article', { name: 'card-camera-1' }).locator('[data-review-audio-state]')
+		).toHaveText('Audio active (+200 ms)');
 		await page.getByRole('combobox', { name: 'Audio source' }).selectOption(cardSourceIds[0]);
 		await expect.poll(witness).toEqual([
 			{ muted: false, decoded: true },
 			{ muted: true, decoded: true }
 		]);
+		await expect(
+			page.getByRole('article', { name: 'card-camera-0' }).locator('[data-review-audio-state]')
+		).toHaveText('Audio active (+200 ms)');
 	} finally {
 		try {
 			await context.unroute('**/*', redirect);
@@ -868,6 +874,88 @@ test('a late paused picture stays identifiable until a corrected camera frame is
 		await verifyPausedFrameCorrection(tile, target, 'ahead-clock');
 		await verifyPausedFrameCorrection(tile, target, 'stalled');
 		await expect(play).toHaveAttribute('aria-pressed', 'false');
+	} finally {
+		try {
+			await context.unroute('**/*', redirect);
+		} finally {
+			await server.close();
+		}
+	}
+});
+
+test('mixed AVC and HEVC recordings keep the compatible camera playing and report codec status', async ({
+	page,
+	context,
+	baseURL
+}) => {
+	test.setTimeout(75_000);
+	page.setDefaultTimeout(8_000);
+	if (!baseURL) throw new Error('The mixed-codec fixture requires a UI origin.');
+	await setDecoderConcurrency(page, 2);
+	const origin = new URL(baseURL).origin;
+	const server = await startHomeAssistantServer(origin, {
+		trustedLocal: true,
+		reviewFixture: 'mixed-codec'
+	});
+	const redirect = recordedAudioBackendRoute(origin, server.url);
+	try {
+		await context.route('**/*', redirect);
+		let at = 0;
+		await expect
+			.poll(
+				async () => {
+					const response = await page.request.get(server.url + '/recording-coverage?stream=sub', {
+						headers: { Authorization: 'Bearer ' + cardAdminKey }
+					});
+					if (!response.ok()) return false;
+					const coverage: RecordingCoverageResponse = await response.json();
+					const ranges = cardSourceIds.map(
+						(id) =>
+							coverage.cameras
+								.find((camera) => camera.camera_id === id)
+								?.streams.find((stream) => stream.stream_id === 'sub')?.ranges[0]
+					);
+					if (!ranges[0] || !ranges[1]) return false;
+					const start = Math.max(ranges[0].start_ms, ranges[1].start_ms);
+					const end = Math.min(ranges[0].end_ms, ranges[1].end_ms);
+					if (end - start < 4_000) return false;
+					at = start + 600;
+					return true;
+				},
+				{ timeout: 30_000, intervals: [500] }
+			)
+			.toBe(true);
+		const query = new URLSearchParams({ camera: cardSourceIds[0], at: String(at), stream: 'sub' });
+		for (const id of cardSourceIds) query.append('compare', id);
+		await page.goto('/keep?' + query);
+		const avcTile = page.getByRole('article', { name: 'card-camera-0' });
+		const hevcTile = page.getByRole('article', { name: 'card-camera-1' });
+		await expect(avcTile.locator('video')).toHaveCount(1, { timeout: 30_000 });
+		const hevcSupported = await page.evaluate(
+			() =>
+				MediaSource.isTypeSupported('video/mp4; codecs="hvc1.1.6.L120.B0"') ||
+				MediaSource.isTypeSupported('video/mp4; codecs="hev1.1.6.L120.B0"')
+		);
+		await page.getByRole('button', { name: 'Play recordings', pressed: false }).click();
+		const avcStart = (await displayed(avcTile.locator('video'))).seconds;
+		await expect
+			.poll(async () => (await displayed(avcTile.locator('video'))).seconds)
+			.toBeGreaterThan(avcStart + 0.35);
+		await expect
+			.poll(async () => (await displayed(avcTile.locator('video'))).decoded)
+			.toBeGreaterThan(3);
+		if (hevcSupported) {
+			await expect(hevcTile.locator('video')).toHaveCount(1);
+			await expect
+				.poll(async () => (await displayed(hevcTile.locator('video'))).decoded)
+				.toBeGreaterThan(3);
+		} else {
+			await expect(hevcTile.locator('video')).toHaveCount(0);
+			await expect(hevcTile.getByRole('status')).toContainText(
+				/This browser cannot decode the available recordings:.*h265/i
+			);
+			await expect(hevcTile.getByText('No playable footage at this time')).toHaveCount(0);
+		}
 	} finally {
 		try {
 			await context.unroute('**/*', redirect);

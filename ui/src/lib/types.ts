@@ -59,6 +59,7 @@ export interface CameraListItem {
 	web_url?: string;
 	ports?: CameraPorts;
 	capabilities?: CameraCapabilities;
+	group_ids?: string[];
 	profiles: ProfileSummary[];
 }
 

@@ -56,6 +56,7 @@
 	import type { CameraListItem, RecordingEvent, RecordingSegment } from '$lib/types';
 	import RecordedReviewExport from '$lib/components/RecordedReviewExport.svelte';
 	import RecordedReviewWorkspace from '$lib/components/RecordedReviewWorkspace.svelte';
+	import { reviewGroupPresets } from '$lib/recorded-review-requests';
 	import KeepCameraSwitcher from '$lib/components/KeepCameraSwitcher.svelte';
 	import CopyMomentLink from '$lib/components/CopyMomentLink.svelte';
 	import KeepExportPanel from '$lib/components/KeepExportPanel.svelte';
@@ -107,6 +108,7 @@
 	let selectedWorkflowEvent = $state.raw<RecordingEvent | null>(null);
 
 	let cameras: CameraListItem[] = $state([]);
+	let reviewGroups = $derived(reviewGroupPresets(cameras));
 	let mode = $state<KeepMode>('timeline');
 	let cameraId = $state('');
 	let stream = $state<'main' | 'sub'>('main');
@@ -2746,13 +2748,18 @@
 	) {
 		const search =
 			'?' +
-			keepMomentSearchParams({
-				cameraId: focus,
-				timestampMs: Math.floor(at),
-				streamPreference: recordedPreference(playbackPreferences, focus),
-				mode: 'timeline',
-				review
-			});
+			keepMomentSearchParams(
+				{
+					cameraId: focus,
+					timestampMs: Math.floor(at),
+					streamPreference: recordedPreference(playbackPreferences, focus),
+					mode: 'timeline',
+					eventId: routeContext?.cameraId === focus ? routeContext.eventId : null,
+					returnHref: exportReturnHref,
+					review
+				},
+				resolve('/events')
+			);
 		if (replace) appliedSearch = search;
 		// eslint-disable-next-line svelte/no-navigation-without-resolve
 		void goto(resolve('/keep') + search, { state: page.state, shallow: replace, replace });
@@ -2764,23 +2771,39 @@
 		stream: RecordedStreamId,
 		review: NonNullable<KeepRoute['review']>
 	) {
-		const search = keepMomentSearchParams({
-			cameraId: focus,
-			timestampMs: at,
-			streamPreference: stream,
-			mode: 'export',
-			review
-		});
+		const search = keepMomentSearchParams(
+			{
+				cameraId: focus,
+				timestampMs: at,
+				streamPreference: stream,
+				mode: 'export',
+				eventId: routeContext?.cameraId === focus ? routeContext.eventId : null,
+				returnHref: exportReturnHref,
+				review
+			},
+			resolve('/events')
+		);
 		// eslint-disable-next-line svelte/no-navigation-without-resolve
 		void goto(resolve('/keep') + '?' + search);
 	}
-	function compareWith(secondId: string) {
-		if (!secondId || !cameraId || playheadMs === null) return;
+	function compareWith(selectionValue: string) {
+		if (!selectionValue || !cameraId || playheadMs === null) return;
 		const at =
 			selected && video && video.readyState >= 1
 				? playbackAnchorMs + video.currentTime * 1000
 				: playheadMs;
-		navigateReview(at, cameraId, { cameraIds: [cameraId, secondId], audioCameraId: cameraId });
+		if (selectionValue.startsWith('group:')) {
+			const groupName = selectionValue.slice('group:'.length);
+			const preset = reviewGroups.find((entry) => entry.name === groupName);
+			if (!preset) return;
+			const focus = preset.cameraIds.includes(cameraId) ? cameraId : preset.cameraIds[0]!;
+			navigateReview(at, focus, { cameraIds: preset.cameraIds, audioCameraId: focus });
+			return;
+		}
+		navigateReview(at, cameraId, {
+			cameraIds: [cameraId, selectionValue],
+			audioCameraId: cameraId
+		});
 	}
 
 	function currentMomentLink(): string | null {
@@ -2894,6 +2917,8 @@
 				startMs={reviewRoute.timestampMs}
 				focusedId={reviewRoute.cameraId}
 				preferences={playbackPreferences}
+				returnHref={reviewRoute.returnHref}
+				eventId={reviewRoute.eventId}
 				updateLink={(at, focus, selection) => navigateReview(at, focus, selection, true)}
 				openExport={exportComparison}
 				single={(at, focus) => navigateReview(at, focus)}
@@ -2964,6 +2989,15 @@
 						{#each cameras.filter((camera) => camera.id !== cameraId) as camera (camera.id)}
 							<option value={camera.id}>{camera.name || camera.id}</option>
 						{/each}
+						{#if reviewGroups.length > 0}
+							<optgroup label="Camera groups">
+								{#each reviewGroups as preset (preset.name)}
+									<option value={'group:' + preset.name}
+										>{preset.name} ({preset.totalCameras})</option
+									>
+								{/each}
+							</optgroup>
+						{/if}
 					</select>
 				</label>
 			{/if}

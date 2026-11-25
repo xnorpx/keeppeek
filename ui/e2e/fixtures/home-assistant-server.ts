@@ -26,7 +26,7 @@ type FixtureOptions = {
 	hikvisionSpeaker?: boolean;
 	trustedLocal?: boolean;
 	archiveFixture?: boolean;
-	reviewFixture?: boolean | 'four';
+	reviewFixture?: boolean | 'four' | 'mixed-codec';
 	calibrationFixture?: { mediaPath: string; bothCameras?: boolean };
 	frameStepMedia?: string;
 };
@@ -112,7 +112,7 @@ async function writeFixtureConfiguration(options: {
 	configurations: string[];
 	trustedLocal?: boolean;
 	archiveFixture?: boolean;
-	reviewFixture?: boolean | 'four';
+	reviewFixture?: boolean | 'four' | 'mixed-codec';
 	calibrationFixture?: { mediaPath: string; bothCameras?: boolean };
 	frameStepMedia?: string;
 }): Promise<string> {
@@ -129,9 +129,9 @@ require_secure_remote = false
 allowed_origins = [${JSON.stringify(origin)}]
 [storage]
 short_term_secs = 5
-medium_term_secs = ${options.frameStepMedia ? 8 : 60}
+medium_term_secs = ${options.frameStepMedia || options.reviewFixture === 'mixed-codec' ? 8 : 60}
 long_term_max_gb = 0
-${options.frameStepMedia ? 'flush_interval_secs = 1\n' : ''}${options.archiveFixture || options.calibrationFixture || options.reviewFixture || options.frameStepMedia || options.profileCapacity ? '\n[camera_defaults]\nrecording_mode = "off"\n' : ''}
+${options.frameStepMedia || options.reviewFixture === 'mixed-codec' ? 'flush_interval_secs = 1\n' : ''}${options.archiveFixture || options.calibrationFixture || options.reviewFixture || options.frameStepMedia || options.profileCapacity ? '\n[camera_defaults]\nrecording_mode = "off"\n' : ''}
 [access_credentials]
 version = 1
 ${[...cardTestKeys, cardAdminKey].map((key) => credentialRecord(key, key === cardAdminKey)).join('\n')}
@@ -188,6 +188,7 @@ function capacityConfiguration(sources: string[], size: RuntimeProfileCapacity):
 
 function fixtureCameraConfiguration(configuration: string, index: number, options: FixtureOptions) {
 	if (options.frameStepMedia && index === 0) return `${configuration}\nrecording_mode = "sub"\n`;
+	if (options.reviewFixture === 'mixed-codec') return `${configuration}\nrecording_mode = "sub"\n`;
 	if (options.calibrationFixture) {
 		return `${configuration}\nrecorded_audio = { default_offset_ms = 200 }\n`;
 	}
@@ -248,18 +249,22 @@ async function fixtureCameras(
 	children: ChildProcess[],
 	nameBySource: boolean,
 	sourceIds: readonly string[] = cardSourceIds,
-	media = resolve(repositoryRoot, 'crates/test-camera/testdata/cc-4k-640x360-h264.mp4')
+	media: string | ((index: number) => string) = resolve(
+		repositoryRoot,
+		'crates/test-camera/testdata/cc-4k-640x360-h264.mp4'
+	)
 ): Promise<string[]> {
 	const configurations: string[] = [];
 	for (const [index, sourceId] of sourceIds.entries()) {
+		const sourceMedia = typeof media === 'function' ? media(index) : media;
 		const child = spawn(
 			binary,
 			[
 				'rtsp',
 				'--main',
-				media,
+				sourceMedia,
 				'--sub',
-				media,
+				sourceMedia,
 				'--start-at-seconds',
 				'0',
 				'--config-ip',
@@ -532,6 +537,16 @@ async function prepareFixture(
 		configurations = [await cameraConfig(camera)];
 		speakerObservation = () => observeSpeaker(camera);
 	} else {
+		const mediaSelector =
+			options.reviewFixture === 'mixed-codec'
+				? (index: number) =>
+						resolve(
+							repositoryRoot,
+							index === 1
+								? 'crates/test-camera/testdata/cc-4k-640x360-h265.mp4'
+								: 'crates/test-camera/testdata/cc-4k-640x360-h264.mp4'
+						)
+				: options.frameStepMedia;
 		configurations = await fixtureCameras(
 			binary,
 			children,
@@ -542,7 +557,7 @@ async function prepareFixture(
 				options.frameStepMedia
 			),
 			sourceIds,
-			options.frameStepMedia
+			mediaSelector
 		);
 	}
 	const configPath = await writeFixtureConfiguration({
@@ -552,7 +567,8 @@ async function prepareFixture(
 		configurations,
 		...options
 	});
-	if (options.reviewFixture) await seedComparisonStreams(binary, directory, configPath, sourceIds);
+	if (options.reviewFixture && options.reviewFixture !== 'mixed-codec')
+		await seedComparisonStreams(binary, directory, configPath, sourceIds);
 	const archive = await prepareArchiveFixture(
 		binary,
 		directory,

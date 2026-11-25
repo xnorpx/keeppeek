@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	expectedGridEpochMs,
 	GridPlaybackSession,
+	gridPlaybackRateForDrift,
 	needsGridDriftCorrection
 } from './grid-playback-session';
 
@@ -91,5 +92,20 @@ describe('GridPlaybackSession', () => {
 		expect(needsGridDriftCorrection(250)).toBe(false);
 		expect(needsGridDriftCorrection(251)).toBe(true);
 		expect(needsGridDriftCorrection(-300)).toBe(true);
+	});
+
+	it('applies bounded rate slew only for small drift between 100 ms and 250 ms', () => {
+		expect(gridPlaybackRateForDrift(1, 0)).toBe(1);
+		expect(gridPlaybackRateForDrift(1, 100)).toBe(1);
+		expect(gridPlaybackRateForDrift(1, -100)).toBe(1);
+		expect(gridPlaybackRateForDrift(1, 101)).toBeCloseTo(1.03, 6);
+		expect(gridPlaybackRateForDrift(1, 250)).toBeCloseTo(1.03, 6);
+		expect(gridPlaybackRateForDrift(1, -101)).toBeCloseTo(0.97, 6);
+		expect(gridPlaybackRateForDrift(1, -250)).toBeCloseTo(0.97, 6);
+		expect(gridPlaybackRateForDrift(2, 180)).toBeCloseTo(2.06, 6);
+		expect(gridPlaybackRateForDrift(1, 251)).toBe(1);
+		expect(gridPlaybackRateForDrift(1, -251)).toBe(1);
+		expect(gridPlaybackRateForDrift(1, Number.NaN)).toBe(1);
+		expect(gridPlaybackRateForDrift(0, 150)).toBe(0);
 	});
 });
