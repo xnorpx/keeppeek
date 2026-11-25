@@ -45,7 +45,8 @@ Official Windows release builds publish three Authenticode-signed, RFC 3161 time
 Requires NSIS 3.13 (`makensis.exe`). For local unsigned builds, `installer/keeppeek.nsi` defaults to single-pass `WriteUninstaller`:
 
 ```powershell
-cargo build --locked --release --bin keeppeek --bin keeppeek-service -p keeppeek-desktop
+cargo build --locked --release -p keeppeek --bin keeppeek --bin keeppeek-service
+cargo build --locked --release -p keeppeek-desktop --bin keeppeek-desktop
 & 'C:\Program Files (x86)\NSIS\makensis.exe' `
   '/DARCH=x86_64' `
   "/DBUILD_DIR=$PWD\target\release" `

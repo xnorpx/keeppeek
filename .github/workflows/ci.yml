@@ -576,7 +576,10 @@ jobs:
       - working-directory: ui
         run: bun install --no-save --registry=https://registry.npmjs.org/
       - name: Build Windows binaries
-        run: cargo build --locked --bin keeppeek --bin keeppeek-service -p keeppeek-desktop
+        shell: bash
+        run: |
+          cargo build --locked -p keeppeek --bin keeppeek --bin keeppeek-service
+          cargo build --locked -p keeppeek-desktop --bin keeppeek-desktop
       - name: Sign in to Azure
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
         env:
