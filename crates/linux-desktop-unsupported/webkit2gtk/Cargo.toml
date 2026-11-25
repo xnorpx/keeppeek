@@ -1,0 +1,11 @@
+[package]
+name = "webkit2gtk"
+version = "2.0.2"
+edition = "2024"
+publish = false
+description = "Compile-time guard excluding unused Linux WebKit2GTK from KeepPeek Desktop"
+
+[features]
+default = []
+v2_38 = []
+v2_40 = []

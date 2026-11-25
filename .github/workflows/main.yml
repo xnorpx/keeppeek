@@ -189,19 +189,38 @@ jobs:
           INSTALLER: ${{ steps.windows-installer.outputs.installer }}
           OUTPUT_DIRECTORY: ${{ steps.windows-installer.outputs.output_directory }}
         run: |
+          $zeroDirectory = Join-Path $env:RUNNER_TEMP 'keeppeek-install-zero'
           $installDirectory = Join-Path $env:RUNNER_TEMP 'keeppeek-install'
           $serviceName = 'KeepPeekService'
           $installer = $env:INSTALLER
+          $desktopShortcut = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\KeepPeek\KeepPeek Desktop.lnk'
           try {
+            $zeroProcess = Start-Process -FilePath $installer -ArgumentList @('/S', '/NO_DESKTOP', '/NO_SERVER', '/NO_SERVICE', "/D=$zeroDirectory") -PassThru -Wait
+            if ($zeroProcess.ExitCode -eq 0) {
+              throw 'Installer must fail when zero components are selected'
+            }
+            if (Test-Path $zeroDirectory) {
+              throw 'Zero-component install must not create the target directory'
+            }
+
             $process = Start-Process -FilePath $installer -ArgumentList @('/S', '/SERVICE', "/D=$installDirectory") -PassThru -Wait
             if ($process.ExitCode -ne 0) {
               throw 'Unable to install KeepPeek'
             }
 
-            foreach ($binary in 'keeppeek.exe', 'keeppeek-service.exe') {
+            foreach ($binary in 'keeppeek.exe', 'keeppeek-service.exe', 'keeppeek-desktop.exe', 'uninstall.exe') {
               if (-not (Test-Path (Join-Path $installDirectory $binary))) {
                 throw "$binary was not installed"
               }
+            }
+
+            if (-not (Test-Path $desktopShortcut)) {
+              throw "KeepPeek Desktop Start Menu shortcut was not installed at $desktopShortcut"
+            }
+
+            & (Join-Path $installDirectory 'keeppeek-desktop.exe') --help
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Installed keeppeek-desktop.exe --help failed'
             }
 
             $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
@@ -222,7 +241,7 @@ jobs:
             } else {
               & sc.exe delete $serviceName
             }
-            Remove-Item -Force -Recurse -ErrorAction SilentlyContinue $installDirectory, $env:OUTPUT_DIRECTORY
+            Remove-Item -Force -Recurse -ErrorAction SilentlyContinue $zeroDirectory, $installDirectory, $env:OUTPUT_DIRECTORY
           }
       - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2
         if: matrix.os == 'windows-11-arm'

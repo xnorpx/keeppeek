@@ -3,6 +3,7 @@ members = [
   ".",
   "crates/chunked-transfer",
   "crates/isapi",
+  "crates/keeppeek-desktop",
   "crates/mp4",
   "crates/onvif/onvif",
   "crates/onvif/schema",
@@ -61,6 +62,14 @@ yaserde_derive = "0.13.2"
 chrono = { path = "crates/chrono-compat" }
 chunked_transfer = { path = "crates/chunked-transfer" }
 tiny_http = { path = "crates/tiny-http" }
+# Tauri v2 requests urlpattern 0.3, which pulls unmaintained unic-* crates; urlpattern 0.6 uses icu_properties.
+urlpattern = { path = "crates/urlpattern-compat" }
+# KeepPeek Desktop supports Windows and macOS only; exclude unused Linux GTK3 crates from Cargo.lock.
+gtk = { path = "crates/linux-desktop-unsupported/gtk" }
+javascriptcore-rs = { path = "crates/linux-desktop-unsupported/javascriptcore-rs" }
+libappindicator = { path = "crates/linux-desktop-unsupported/libappindicator" }
+soup3 = { path = "crates/linux-desktop-unsupported/soup3" }
+webkit2gtk = { path = "crates/linux-desktop-unsupported/webkit2gtk" }
 
 [package]
 name = "keeppeek"

@@ -1,0 +1,10 @@
+[package]
+name = "javascriptcore-rs"
+version = "1.1.2"
+edition = "2024"
+publish = false
+description = "Compile-time guard excluding unused Linux JavaScriptCore GTK bindings from KeepPeek Desktop"
+
+[features]
+default = []
+v2_28 = []

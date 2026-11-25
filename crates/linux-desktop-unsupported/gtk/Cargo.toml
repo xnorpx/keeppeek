@@ -1,0 +1,10 @@
+[package]
+name = "gtk"
+version = "0.18.2"
+edition = "2024"
+publish = false
+description = "Compile-time guard excluding unused Linux GTK3 from KeepPeek Desktop"
+
+[features]
+default = []
+v3_24 = []

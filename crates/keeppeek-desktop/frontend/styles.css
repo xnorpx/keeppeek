@@ -1,0 +1,247 @@
+:root {
+	color-scheme: dark light;
+	--ground: #0c0d0f;
+	--surface: #141619;
+	--raised: #1c1f23;
+	--hairline: #282c31;
+	--hairline-strong: #3a3f45;
+	--text: #e8e9ea;
+	--text-muted: #9aa0a6;
+	--primary: #b7410e;
+	--primary-hover: #8b3a20;
+	--on-primary: #fff7f3;
+	--focus-ring: #d67b53;
+	--error-bg: #2a1416;
+	--error-border: #c93b40;
+	--error-text: #ee7175;
+}
+
+@media (prefers-color-scheme: light) {
+	:root {
+		--ground: #efe8da;
+		--surface: #f8f4ec;
+		--raised: #ffffff;
+		--hairline: #ddd5c5;
+		--hairline-strong: #bfb4a0;
+		--text: #1c1a16;
+		--text-muted: #5a5346;
+		--primary: #b7410e;
+		--primary-hover: #8b3a20;
+		--on-primary: #fff7f3;
+		--focus-ring: #8b3a20;
+		--error-bg: #fcebeb;
+		--error-border: #b3272c;
+		--error-text: #8c1d21;
+	}
+}
+
+* {
+	box-sizing: border-box;
+}
+
+body {
+	margin: 0;
+	min-height: 100vh;
+	display: grid;
+	place-items: center;
+	padding: 24px;
+	background: var(--ground);
+	color: var(--text);
+	font-family:
+		system-ui,
+		-apple-system,
+		'Segoe UI',
+		sans-serif;
+	line-height: 1.5;
+}
+
+.shell {
+	width: 100%;
+	max-width: 520px;
+	display: grid;
+	gap: 20px;
+}
+
+.brand {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+}
+
+.badge {
+	width: 40px;
+	height: 36px;
+	border-radius: 4px;
+	background: var(--primary);
+	color: var(--on-primary);
+	display: grid;
+	place-items: center;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-size: 13px;
+	font-weight: 700;
+}
+
+.brand-name {
+	margin: 0;
+	font-size: 15px;
+	font-weight: 600;
+}
+
+.brand-subtitle {
+	margin: 0;
+	font-size: 12px;
+	color: var(--text-muted);
+}
+
+.panel,
+.help {
+	background: var(--surface);
+	border: 1px solid var(--hairline);
+	border-radius: 6px;
+	padding: 20px;
+}
+
+h1 {
+	margin: 0 0 8px;
+	font-size: 20px;
+	line-height: 1.25;
+}
+
+h2 {
+	margin: 0 0 10px;
+	font-size: 13px;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: var(--text-muted);
+}
+
+.lead {
+	margin: 0 0 18px;
+	font-size: 14px;
+	color: var(--text-muted);
+}
+
+.form {
+	display: grid;
+	gap: 14px;
+}
+
+.field {
+	display: grid;
+	gap: 6px;
+}
+
+label {
+	font-size: 13px;
+	font-weight: 600;
+}
+
+input[type='url'] {
+	width: 100%;
+	min-height: 40px;
+	padding: 8px 12px;
+	border-radius: 4px;
+	border: 1px solid var(--hairline-strong);
+	background: var(--raised);
+	color: var(--text);
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-size: 13px;
+}
+
+input[type='url']:focus-visible,
+input[type='checkbox']:focus-visible,
+.button:focus-visible {
+	outline: 2px solid var(--focus-ring);
+	outline-offset: 2px;
+}
+
+.hint {
+	margin: 0;
+	font-size: 12px;
+	color: var(--text-muted);
+}
+
+.checkbox-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-weight: 400;
+	font-size: 13px;
+	cursor: pointer;
+}
+
+.actions {
+	display: flex;
+	gap: 10px;
+}
+
+.button {
+	min-height: 40px;
+	padding: 0 16px;
+	border-radius: 4px;
+	border: 1px solid transparent;
+	font-size: 14px;
+	font-weight: 600;
+	cursor: pointer;
+}
+
+.button:disabled {
+	opacity: 0.6;
+	cursor: not-allowed;
+}
+
+.button-primary {
+	background: var(--primary);
+	color: var(--on-primary);
+}
+
+.button-primary:hover:not(:disabled) {
+	background: var(--primary-hover);
+}
+
+.button-secondary {
+	background: var(--raised);
+	color: var(--text);
+	border-color: var(--hairline-strong);
+}
+
+.status,
+.error {
+	margin: 14px 0 0;
+	padding: 10px 12px;
+	border-radius: 4px;
+	font-size: 13px;
+}
+
+.status {
+	background: var(--raised);
+	border: 1px solid var(--hairline-strong);
+	color: var(--text);
+}
+
+.error {
+	background: var(--error-bg);
+	border: 1px solid var(--error-border);
+	color: var(--error-text);
+}
+
+.help ul {
+	margin: 0;
+	padding-left: 18px;
+	display: grid;
+	gap: 6px;
+	font-size: 13px;
+	color: var(--text-muted);
+}
+
+.meta {
+	margin: 12px 0 0;
+	font-size: 12px;
+	color: var(--text-muted);
+	word-break: break-word;
+}
+
+code {
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-size: 0.92em;
+}

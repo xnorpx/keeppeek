@@ -6,6 +6,7 @@
 # Getting started
 
 - [Get started](./get-started.md)
+- [Desktop application](./desktop-app.md)
 - [Authentication and access control](./authentication.md)
 - [Camera controls](./camera-controls.md)
 - [Demo videos](./demo-videos.md)

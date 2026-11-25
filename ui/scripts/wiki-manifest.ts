@@ -8,6 +8,7 @@ export const selectedDocs = [
 	'computer-vision',
 	'configuration-management',
 	'demo-video-publishing',
+	'desktop-app',
 	'event-forwarder',
 	'event-loop-runtime',
 	'event-presentation',

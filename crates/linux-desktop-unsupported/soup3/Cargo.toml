@@ -1,0 +1,6 @@
+[package]
+name = "soup3"
+version = "0.5.0"
+edition = "2024"
+publish = false
+description = "Compile-time guard excluding unused Linux libsoup3 from KeepPeek Desktop"

@@ -1,0 +1,6 @@
+[package]
+name = "libappindicator"
+version = "0.9.0"
+edition = "2024"
+publish = false
+description = "Compile-time guard excluding unused Linux libappindicator from KeepPeek Desktop"
