@@ -7,7 +7,7 @@ use super::{
     verified::{VERIFY_TIMEOUT, Verified},
 };
 use crate::{
-    access::ClientClassificationReason,
+    access::{ClientClassification, ClientClassificationReason},
     shares::{ExportBinding, GrantSummary, Mode, SessionContext, Ticket},
     storage::{catalog::readers::LeaseSet, volumes::root::OwnedFile},
 };
@@ -23,9 +23,11 @@ pub(super) fn response(
     state: &ServerState,
     context: &SessionContext,
     guard: RequestGuard,
+    classification: ClientClassification,
     mode: Mode,
 ) -> Response {
-    prepare(request, state, context, guard, mode).unwrap_or_else(|response| response)
+    prepare_classified(request, state, context, guard, classification, mode)
+        .unwrap_or_else(|response| response)
 }
 
 struct Admission {
@@ -33,8 +35,10 @@ struct Admission {
     range: ranges::ByteRange,
     guard: TransferGuard,
     owner: Delivery,
+    peer: IpAddr,
 }
 
+#[cfg(test)]
 fn prepare(
     request: &Request,
     state: &ServerState,
@@ -42,7 +46,21 @@ fn prepare(
     guard: RequestGuard,
     mode: Mode,
 ) -> Result<Response, Response> {
-    let admission = admission(request, state, context, guard, mode)?;
+    let classification = state
+        .network_access
+        .classify(request.remote_addr().ip(), request.headers());
+    prepare_classified(request, state, context, guard, classification, mode)
+}
+
+fn prepare_classified(
+    request: &Request,
+    state: &ServerState,
+    context: &SessionContext,
+    guard: RequestGuard,
+    classification: ClientClassification,
+    mode: Mode,
+) -> Result<Response, Response> {
+    let admission = admission(request, state, context, guard, classification, mode)?;
     let binding = &admission.bound.grant.intent.binding;
     let (mut file, lease) = verified(state, binding, &admission.guard)?;
     file.seek(SeekFrom::Start(admission.range.start))
@@ -56,7 +74,7 @@ fn prepare(
         owner: admission.owner,
         grant: admission.bound.grant,
         guard: admission.guard,
-        peer: request.remote_addr().ip(),
+        peer: admission.peer,
         remaining: length,
     };
     Ok(sized_response(reader, admission.range, bytes, mode))
@@ -67,6 +85,7 @@ fn admission(
     state: &ServerState,
     context: &SessionContext,
     guard: RequestGuard,
+    classification: ClientClassification,
     mode: Mode,
 ) -> Result<Admission, Response> {
     let id = session_id(request, true)?.ok_or_else(|| failure(400))?;
@@ -95,9 +114,6 @@ fn admission(
         store.begin_delivery(handle, context, &checked.binding, mode, clock)
     })
     .map_err(control_failure)?;
-    let classification = state
-        .network_access
-        .classify(request.remote_addr().ip(), request.headers());
     let owner = Delivery {
         permit,
         state: state.clone(),
@@ -113,6 +129,7 @@ fn admission(
         range,
         guard,
         owner,
+        peer: classification.effective_address,
     })
 }
 

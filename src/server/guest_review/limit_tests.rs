@@ -121,3 +121,67 @@ fn active_egress_survives_request_window_reset_without_granting_another_burst() 
     assert_eq!(budget.addresses.len(), 1);
     assert_eq!(budget.addresses[&peer(1)].window.counts[2], 1);
 }
+
+#[test]
+fn sustained_high_cardinality_flood_bounds_memory_and_recovers_after_window() {
+    let now = Instant::now();
+    let mut budget = Budget::new(now);
+    let mut admitted = [0_u32; 4];
+    let actions = [
+        Action::Exchange,
+        Action::Status,
+        Action::Media,
+        Action::Download,
+    ];
+    for index in 0..2_048_u32 {
+        let octets = index.to_be_bytes();
+        let attacker = IpAddr::V4(std::net::Ipv4Addr::new(198, 51, octets[2], octets[3]));
+        for (slot, action) in actions.into_iter().enumerate() {
+            if budget.admit(attacker, action, now).is_ok() {
+                admitted[slot] += 1;
+            }
+            assert!(budget.addresses.len() <= MAX_ADDRESSES);
+        }
+    }
+    assert_eq!(budget.addresses.len(), MAX_ADDRESSES);
+    let max_addresses = u32::try_from(MAX_ADDRESSES).unwrap();
+    for action in actions {
+        let (slot, _, global_limit) = action.limits();
+        assert_eq!(admitted[slot], global_limit.min(max_addresses));
+    }
+
+    let after = now + WINDOW;
+    budget.admit(peer(200), Action::Exchange, after).unwrap();
+    assert_eq!(budget.addresses.len(), 1);
+}
+
+#[test]
+fn simultaneous_eight_peer_egress_load_enforces_global_and_per_peer_ceilings() {
+    let start = Instant::now();
+    let mut budget = Budget::new(start);
+    let peers: Vec<_> = (1..=8).map(peer).collect();
+    for address in &peers {
+        budget.admit(*address, Action::Download, start).unwrap();
+    }
+    let mut delivered = [0_u64; 8];
+    let mut clock = start;
+    let duration = Duration::from_secs(1);
+    while clock.saturating_duration_since(start) < duration {
+        for (slot, address) in peers.iter().enumerate() {
+            if budget
+                .egress_delay(*address, CHUNK_BYTES, clock)
+                .unwrap()
+                .is_zero()
+            {
+                delivered[slot] += CHUNK_BYTES;
+            }
+        }
+        clock += Duration::from_millis(1);
+    }
+    let total: u64 = delivered.iter().sum();
+    assert!(total > 0);
+    assert!(total <= GLOBAL_RATE + 4 * CHUNK_BYTES);
+    for bytes in delivered {
+        assert!(bytes <= ADDRESS_RATE + CHUNK_BYTES);
+    }
+}

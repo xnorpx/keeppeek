@@ -1335,3 +1335,57 @@ fn fixture_diagnostics_drain_the_entire_stream_but_retain_a_bounded_prefix() {
     assert_eq!(prefix, bytes[..32 * 1024]);
     assert_eq!(reader.position(), bytes.len() as u64);
 }
+
+#[test]
+fn deterministic_malformed_token_fuzz_always_denies_without_affecting_valid_grant() {
+    const URL_SAFE: &[u8] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_+/= \r\n\0";
+    let mut f = Fixture::new();
+    let (_, valid_token) = f.grant();
+    let valid_session = f.session(&valid_token);
+    let mut seed = 0x1320_70ce_0000_0001_u64;
+    for case in 0..1_000_usize {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let candidate = if case < valid_token.len() {
+            let mut mutated = valid_token.as_bytes().to_vec();
+            mutated[case] = if mutated[case] == b'A' { b'B' } else { b'A' };
+            String::from_utf8(mutated).unwrap()
+        } else {
+            let len = usize::try_from(seed % 96).unwrap();
+            (0..len)
+                .map(|_| {
+                    seed = seed
+                        .wrapping_mul(6_364_136_223_846_793_005)
+                        .wrapping_add(1_442_695_040_888_963_407);
+                    let index = usize::try_from(seed % URL_SAFE.len() as u64).unwrap();
+                    URL_SAFE[index] as char
+                })
+                .collect()
+        };
+        if candidate == valid_token || candidate == valid_session {
+            continue;
+        }
+        assert_eq!(
+            f.store.exchange(&candidate, &f.context, f.now).unwrap_err(),
+            Error::Denied
+        );
+        assert_eq!(
+            f.store
+                .inspect_session(&candidate, None, &f.context, f.now)
+                .unwrap_err(),
+            Error::Denied
+        );
+        assert_eq!(
+            f.begin(&candidate, Mode::Stream).unwrap_err(),
+            Error::Denied
+        );
+    }
+    let inspected = f
+        .store
+        .inspect_session(&valid_session, None, &f.context, f.now)
+        .unwrap();
+    assert_eq!(inspected.grant.views, 0);
+    assert_eq!(inspected.grant.downloads, 0);
+}

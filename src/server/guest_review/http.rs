@@ -1,6 +1,6 @@
 use super::super::{ControlCommandError, ServerState, api_status, authentication, sharing};
 use super::{limits::Action, registry::RequestGuard};
-use crate::shares::SessionContext;
+use crate::{access::ClientClassification, shares::SessionContext};
 use rouille::{Request, Response};
 use std::io;
 use uuid::Uuid;
@@ -52,7 +52,7 @@ fn dispatch(request: &Request, state: &ServerState) -> Response {
         }
         _ => return reject_unread(request, failure(404)),
     };
-    let (context, guard) = match admit(request, state, action) {
+    let (context, guard, classification) = match admit(request, state, action) {
         Ok(value) => value,
         Err(response) => return reject_unread(request, response),
     };
@@ -60,14 +60,20 @@ fn dispatch(request: &Request, state: &ServerState) -> Response {
         ("POST", "/guest/session") => super::session::exchange(request, state, &context, guard),
         ("GET", "/guest/session") => super::session::status(request, state, &context, guard),
         ("DELETE", "/guest/session") => super::session::end(request, state, &context, guard),
-        ("GET", "/guest/media") => {
-            super::media::response(request, state, &context, guard, crate::shares::Mode::Stream)
-        }
+        ("GET", "/guest/media") => super::media::response(
+            request,
+            state,
+            &context,
+            guard,
+            classification,
+            crate::shares::Mode::Stream,
+        ),
         ("GET", "/guest/download") => super::media::response(
             request,
             state,
             &context,
             guard,
+            classification,
             crate::shares::Mode::Download,
         ),
         _ => unreachable!("guest route was classified before admission"),
@@ -78,10 +84,10 @@ fn admit(
     request: &Request,
     state: &ServerState,
     action: Action,
-) -> Result<(SessionContext, RequestGuard), Response> {
+) -> Result<(SessionContext, RequestGuard, ClientClassification), Response> {
     let context = sharing::context(state).map_err(control_failure)?;
-    let guard = admit_context(request, state, &context, action)?;
-    Ok((context, guard))
+    let (guard, classification) = admit_context(request, state, &context, action)?;
+    Ok((context, guard, classification))
 }
 
 fn admit_context(
@@ -89,15 +95,23 @@ fn admit_context(
     state: &ServerState,
     context: &SessionContext,
     action: Action,
-) -> Result<RequestGuard, Response> {
+) -> Result<(RequestGuard, ClientClassification), Response> {
     boundary(request, state, context)?;
     let abort = request
         .response_abort_handle()
         .ok_or_else(|| failure(503))?;
-    state
+    let classification = classify_peer(request, state);
+    let guard = state
         .guest_review
-        .admit_request(request.remote_addr().ip(), action, abort)
-        .map_err(io_failure)
+        .admit_request(classification.effective_address, action, abort)
+        .map_err(io_failure)?;
+    Ok((guard, classification))
+}
+
+fn classify_peer(request: &Request, state: &ServerState) -> ClientClassification {
+    state
+        .network_access
+        .classify(request.remote_addr().ip(), request.headers())
 }
 
 fn boundary(
@@ -269,7 +283,7 @@ fn page(request: &Request, state: &ServerState) -> Response {
             return Err(failure(400));
         }
         let context = sharing::page_context(state).map_err(control_failure)?;
-        let guard = admit_context(request, state, &context, Action::Status)?;
+        let (guard, _) = admit_context(request, state, &context, Action::Status)?;
         let csp = sharing::page_csp(state).map_err(control_failure)?;
         guard.check().map_err(io_failure)?;
         Ok(headers(super::super::serve_ui(request))

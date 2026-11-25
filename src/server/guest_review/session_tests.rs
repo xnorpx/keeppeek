@@ -65,3 +65,72 @@ fn token_exchange_requires_one_bounded_decimal_length_and_json_without_transfer_
         256
     );
 }
+
+#[test]
+fn deterministic_exchange_body_fuzz_rejects_malformed_and_oversized_payloads() {
+    use super::super::{limits::Action, registry::Registry, registry::tests::Harness};
+    use crate::shutdown::Shutdown;
+    use std::sync::Arc;
+
+    let registry = Arc::new(Registry::default());
+    let shutdown = Shutdown::new();
+    let watchdog = registry.start_deadline_watchdog(shutdown.clone()).unwrap();
+    let mut harness = Harness::new();
+    let guard = registry
+        .admit_request(
+            "127.0.0.1".parse().unwrap(),
+            Action::Exchange,
+            harness.request(),
+        )
+        .unwrap();
+
+    let fixed_bad: &[&[u8]] = &[
+        b"{}",
+        b"{\"token\":123}",
+        b"{\"token\":null}",
+        b"{\"token\":\"valid\",\"extra\":true}",
+        b"\xff\xfe\xfd",
+        b"{\"token\":\"abc\0def\"}",
+    ];
+    for payload in fixed_bad {
+        let req = Request::fake_https(
+            "POST",
+            "/guest/session",
+            vec![
+                ("Content-Length".into(), payload.len().to_string()),
+                ("Content-Type".into(), "application/json".into()),
+            ],
+            payload.to_vec(),
+        );
+        let status = exchange_body(&req, &guard).unwrap_err().status_code;
+        assert!((400..500).contains(&status));
+    }
+
+    let mut seed = 0x1320_5e55_1000_0001_u64;
+    for _ in 0..500 {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let len = usize::try_from(seed % 320).unwrap();
+        let mut bytes = Vec::with_capacity(len);
+        for _ in 0..len {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            bytes.push((seed >> 56) as u8);
+        }
+        let req = Request::fake_https(
+            "POST",
+            "/guest/session",
+            vec![
+                ("Content-Length".into(), len.to_string()),
+                ("Content-Type".into(), "application/json".into()),
+            ],
+            bytes,
+        );
+        let status = exchange_body(&req, &guard).unwrap_err().status_code;
+        assert!((400..500).contains(&status));
+    }
+    shutdown.cancel();
+    watchdog.join().unwrap();
+}
