@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c5027d61.js";
+            window.path_to_searchindex_js = "searchindex-720f8c2b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-6871163b.js"></script>
@@ -199,6 +199,20 @@ and unattended containers use plain logs. For interactive Docker or SSH sessions
 while the recorder keeps running. Press <strong>Ctrl+C</strong> to request a graceful server shutdown and
 finalize recordings. Resizing the terminal changes the visible rows. After a hard kill, opening
 a new terminal restores the normal display. On Unix you can also run <code>reset</code> in the affected shell.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Environment</th><th>Default (<code>--tui auto</code>)</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td>Linux, macOS, Windows Terminal / PowerShell foreground TTY</td><td>Dashboard</td><td>Requires interactive stdin, stdout, and stderr (<code>TERM</code> set and not <code>dumb</code> on Unix).</td></tr>
+<tr><td>SSH with TTY (<code>ssh -t</code>) or Docker with TTY (<code>docker run -it</code>)</td><td>Dashboard</td><td>Interactive pseudo-terminals run the dashboard; pass <code>--tui never</code> for plain logs.</td></tr>
+<tr><td>SSH or Docker without TTY, pipes, redirected stdio</td><td>Plain logs</td><td>No terminal escape sequences are emitted; <code>--tui always</code> logs one diagnostic and continues.</td></tr>
+<tr><td><code>keeppeek config ...</code>, <code>--help</code>, <code>--version</code></td><td>Plain output</td><td>Subcommands and help/version never enter alternate screen even with <code>--tui always</code>.</td></tr>
+<tr><td><code>keeppeek-service</code> (Windows) and macOS launch agent</td><td>Plain/service logs</td><td>Service entry points never start the terminal dashboard.</td></tr>
+</tbody>
+</table>
+</div>
 <h2 id="linux-with-docker"><a class="header" href="#linux-with-docker">Linux with Docker</a></h2>
 <p>The published image supports <code>linux/amd64</code> and <code>linux/arm64</code>. It runs KeepPeek directly as the
 non-root user <code>65532</code> and listens on port <code>8081</code>.</p>
