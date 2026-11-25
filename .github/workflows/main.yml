@@ -141,10 +141,9 @@ jobs:
           bun -e "await import('rolldown')"
       - name: Build workspace
         run: cargo build --locked --all
-      - name: Install NSIS
+      - name: Set up NSIS
         if: runner.os == 'Windows'
-        shell: bash
-        run: choco install nsis --no-progress --yes
+        uses: ./.github/actions/setup-nsis
       - name: Build Windows installer
         if: runner.os == 'Windows'
         id: windows-installer

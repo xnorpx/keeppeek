@@ -902,10 +902,7 @@ impl RtspLoop {
                                 &self.storage_label(),
                             ),
                             RecordingFrame {
-                                source_rtp: Some(original_rtp_time(
-                                    epoch,
-                                    packet_timestamp,
-                                )),
+                                source_rtp: Some(original_rtp_time(epoch, packet_timestamp)),
                                 received_at,
                                 timestamp,
                                 frame: MediaFrame::Audio(AudioFrame {

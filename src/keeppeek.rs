@@ -82,6 +82,17 @@ fn resolve_configured_camera_route(
     resolve_camera_route(config.backend, config.transport, is_reolink)
 }
 
+pub(crate) fn powered_reolink_channel(
+    config: &crate::cameras::CameraConfig,
+    is_reolink: bool,
+) -> Option<u8> {
+    matches!(
+        resolve_configured_camera_route(config, is_reolink),
+        Ok(CameraRoute::ReoProto(CameraTransport::Tcp))
+    )
+    .then_some(crate::reolink::CONFIGURED_CHANNEL)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StreamKind {
     Main,
@@ -1149,7 +1160,7 @@ impl KeepPeekLoop {
             camera.config.username.clone(),
             camera.config.password.clone(),
             transport,
-            0,
+            crate::reolink::CONFIGURED_CHANNEL,
             enable_main,
             enable_sub,
             main_video.map_or(0, |video| video.width),
@@ -1234,7 +1245,7 @@ impl KeepPeekLoop {
             camera.config.username.clone(),
             camera.config.password.clone(),
             CameraTransport::Tcp,
-            0,
+            crate::reolink::CONFIGURED_CHANNEL,
             false,
             false,
             0,

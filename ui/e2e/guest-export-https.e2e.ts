@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { gzipSync } from 'node:zlib';
 import {
 	expect,
 	test,
+	type APIResponse,
 	type BrowserContext,
 	type Locator,
 	type Page,
@@ -116,7 +118,7 @@ async function createLink(page: Page, fixture: Fixture) {
 	const url = await dialog.getByLabel('One-time guest link').inputValue();
 	await dialog.getByRole('button', { name: 'Close', exact: true }).click();
 	await page.goto(fixture.origin + '/settings#access');
-	return { url, administratorDownload };
+	return { url, administratorDownload, start };
 }
 
 function observePrivateConsole(page: Page, values: string[]) {
@@ -305,3 +307,106 @@ test('an Administrator shares a completed export over HTTPS and revokes the gues
 		await fixture.close();
 	}
 });
+
+test('a recipient can play the shared export while ordinary recorder surfaces stay signed out', async ({
+	page,
+	browser
+}) => {
+	test.setTimeout(180_000);
+	const fixture = await startAuthenticationFixture(true);
+	const recipient = await browser.newContext({ ignoreHTTPSErrors: true });
+	try {
+		const { url, start, administratorDownload } = await createLink(page, fixture);
+		const viewer = await recipient.newPage();
+		await openGuest(viewer, url);
+		await expect(viewer.getByRole('heading', { name: 'Entrance recording' })).toBeVisible();
+		await playAndSeek(viewer);
+		const mediaUrl = new URL(
+			await viewer.locator('video').evaluate((element: HTMLVideoElement) => element.currentSrc)
+		);
+		expect(mediaUrl.origin).toBe(fixture.origin);
+		expect(mediaUrl.pathname).toBe('/guest/media');
+		const ordinary = await recipient.newPage();
+		const routes = [
+			['Live, snapshots, PTZ and talk', '/?camera=127.0.0.1'],
+			['Camera inventory', '/cameras'],
+			['Another camera', '/camera?camera=127.0.0.2'],
+			['Adjacent recording', `/keep?camera=127.0.0.1&at=${start - 1}`],
+			['Event search', '/events'],
+			['Health', '/system-health'],
+			['Logs', '/settings/logs'],
+			['Users and settings', '/settings#access']
+		] as const;
+		for (const [surface, path] of routes) {
+			await test.step(surface, async () => {
+				await ordinary.goto(fixture.origin + path);
+				await expect(ordinary.getByRole('heading', { name: 'Sign in', exact: true })).toBeVisible();
+				await expect(
+					ordinary.locator(
+						'video, audio, [data-event-card], [data-keep-player], [data-health-metric]'
+					)
+				).toHaveCount(0);
+				await expect(
+					ordinary.getByRole('button', {
+						name: /^(Pan left|Talk(?: to .+)?|Broadcast talkback|Snapshot)$/i
+					})
+				).toHaveCount(0);
+				await expect(ordinary.locator('body')).not.toContainText(
+					/Front Door|guest-range-event|Entrance recording/
+				);
+			});
+		}
+		const headers = { Origin: fixture.origin };
+		const session = await ordinary.request.get(fixture.origin + '/auth/session', { headers });
+		expect(session.status()).toBe(200);
+		expect((await session.json()).identity === null).toBe(true);
+		const adjacent = new URLSearchParams({ start_ms: String(start - 1000), end_ms: String(start) });
+		for (const path of [
+			'/logs/snapshot',
+			'/metrics',
+			'/config/export',
+			`/recording-coverage?${adjacent}`
+		]) {
+			await test.step(new URL(path, fixture.origin).pathname, async () => {
+				await expectSignInRequired(await ordinary.request.get(fixture.origin + path, { headers }));
+			});
+		}
+		await test.step('Ordinary media and control connection', async () => {
+			const offer = await ordinary.evaluate(async () => {
+				const peer = new RTCPeerConnection({ iceServers: [] });
+				try {
+					peer.createDataChannel('control');
+					return await peer.createOffer();
+				} finally {
+					peer.close();
+				}
+			});
+			await expectSignInRequired(
+				await ordinary.request.post(fixture.origin + '/create', {
+					headers: { ...headers, 'Content-Type': 'application/json', 'Content-Encoding': 'gzip' },
+					data: gzipSync(JSON.stringify({ offer }))
+				})
+			);
+		});
+		const names = (await recipient.cookies(fixture.origin)).map(({ name }) => name);
+		expect(names).toContain('__Host-keeppeek-guest');
+		expect(names).not.toContain('__Host-keeppeek-session');
+		const media = await recipient.request.get(mediaUrl.href, { maxRedirects: 0 });
+		expect(media.status()).toBe(200);
+		expect(media.headers()['content-type']).toBe('video/mp4');
+		const bytes = await media.body();
+		expect(bytes.length).toBe(administratorDownload.bytes);
+		expect(createHash('sha256').update(bytes).digest('hex')).toBe(administratorDownload.sha256);
+	} finally {
+		await recipient.close();
+		await fixture.close();
+	}
+});
+
+async function expectSignInRequired(response: APIResponse) {
+	expect(response.status()).toBe(401);
+	expect(await response.json()).toEqual({
+		code: 401,
+		message: expect.stringMatching(/sign.in|access key|authentication/i)
+	});
+}
