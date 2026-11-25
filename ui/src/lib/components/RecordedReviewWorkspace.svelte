@@ -5,11 +5,18 @@
 	import { MAX_EXPORT_DURATION_MS, segmentForExportRange } from '$lib/keep-modes';
 	import { recordedPlaybackRates } from './RecordedPlaybackControls.svelte';
 	import { GridPlaybackSession, maximumReviewCameras } from '$lib/grid-playback-session';
-	import { RecordedReviewRequests, reviewExportRecordings } from '$lib/recorded-review-requests';
+	import {
+		adjacentReviewEvent,
+		RecordedReviewRequests,
+		reviewExportRecordings,
+		reviewGroupPresets,
+		unsupportedCodecStatus
+	} from '$lib/recorded-review-requests';
 	import { useControlClient } from '$lib/control-context';
 	import {
 		browserSupportsRecordedEncoding,
-		selectRecordedStream
+		selectRecordedStream,
+		type RecordedStreamSelection
 	} from '$lib/recorded-playback-policy';
 	import {
 		recordedPreference,
@@ -26,7 +33,7 @@
 	import type { CameraListItem } from '$lib/types';
 	import type { StoredTimelineRange } from '$lib/control-client';
 	import type { RecordedStreamId } from '$lib/recorded-playback-policy';
-	import RecordedReviewTile from './RecordedReviewTile.svelte';
+	import RecordedReviewTile, { type ReviewStepState } from './RecordedReviewTile.svelte';
 
 	let {
 		cameras,
@@ -34,6 +41,8 @@
 		startMs,
 		focusedId,
 		preferences,
+		returnHref = null,
+		eventId = null,
 		updateLink,
 		openExport,
 		single
@@ -43,6 +52,8 @@
 		startMs: number;
 		focusedId: string;
 		preferences: PlaybackPreferenceDocument;
+		returnHref?: string | null;
+		eventId?: string | null;
 		updateLink: (at: number, focus: string, selection: KeepReviewSelection) => void;
 		openExport: (
 			at: number,
@@ -81,6 +92,7 @@
 		...(range ? { range } : {})
 	});
 	let revision = $state(0);
+	let followerRevision = $state(0);
 	let budget = $state(2);
 	let visible = $state<Record<string, number>>({});
 	let foreground = $state(false);
@@ -90,13 +102,31 @@
 	let unavailable = $state(false);
 	let retry = $state(0);
 	let seekInput = $state(untrack(() => new Date(startMs).toISOString().slice(0, 23)));
+	let groupNotice = $state('');
+	let reviewEvents = $state.raw<readonly { startMs: number }[]>([]);
+	let focusedStep = $state<ReviewStepState>({ available: false, busy: false, notice: '' });
+	let tileHandles = $state<Record<string, { stepFrame: (direction: -1 | 1) => void } | undefined>>(
+		{}
+	);
 	const authorized = $derived(cameras.filter((c) => ids.includes(c.id)));
+	const groupPresets = $derived(reviewGroupPresets(cameras));
 	// Refresh halfway through each minute of coverage so a continuing camera stays admitted.
 	const refreshMs = 30_000;
 	const bucket = $derived(Math.floor(epoch / refreshMs) * refreshMs);
+	const utcDay = $derived(Math.floor(epoch / 86_400_000));
 	const moment = () => Math.floor(clock.positionAt(performance.now()));
-	const chosen = $derived.by(() => {
-		const result = new Map<string, { stream: RecordedStreamId; endMs: number }>();
+	const previousEventMs = $derived(adjacentReviewEvent(reviewEvents, epoch, -1));
+	const nextEventMs = $derived(adjacentReviewEvent(reviewEvents, epoch, 1));
+
+	type CameraSelectionEntry = {
+		selection: RecordedStreamSelection;
+		endMs: number;
+		encoding: string | null;
+		fallbackNotice: string;
+	};
+
+	const selections = $derived.by(() => {
+		const result = new Map<string, CameraSelectionEntry>();
 		for (const camera of authorized) {
 			const covering = ranges.filter(
 				(range) => range.sourceId === camera.id && range.startMs <= epoch && epoch < range.endMs
@@ -104,24 +134,35 @@
 			const availableStreams = covering
 				.map((range) => range.streamId)
 				.filter((stream) => stream === 'main' || stream === 'sub');
-			const { selectedStream } = selectRecordedStream(camera, {
+			const picked = selectRecordedStream(camera, {
 				preference: recordedPreference(preferences, camera.id),
 				availableStreams,
 				isEncodingSupported: browserSupportsRecordedEncoding
 			});
-			const range = covering.find((entry) => entry.streamId === selectedStream);
-			if (range && selectedStream)
-				result.set(camera.id, { stream: selectedStream, endMs: range.endMs });
+			const matched = covering.find((entry) => entry.streamId === picked.selectedStream);
+			const profile = camera.profiles.find((entry) => entry.stream === picked.selectedStream);
+			const rejected = picked.rejectedStreams[0];
+			const fallbackNotice =
+				picked.selectedStream && rejected
+					? `Playing ${picked.selectedStream === 'main' ? 'Main' : 'Sub'} (${rejected.stream === 'main' ? 'Main' : 'Sub'} uses ${rejected.encoding})`
+					: '';
+			result.set(camera.id, {
+				selection: picked,
+				endMs: matched?.endMs ?? 0,
+				encoding: profile?.encoding ?? null,
+				fallbackNotice
+			});
 		}
 		return result;
 	});
+
 	const active = $derived(
 		clock.reconcile(
 			ids.map((cameraId) => ({
 				cameraId,
 				visibleFraction: visible[cameraId] ?? 0,
 				focused: cameraId === focus,
-				hasRecording: chosen.has(cameraId)
+				hasRecording: Boolean(selections.get(cameraId)?.selection.selectedStream)
 			})),
 			foreground ? budget : 0
 		).activeCameraIds
@@ -206,6 +247,40 @@
 		return () => controller.abort();
 	});
 
+	$effect(() => {
+		if (!foreground) return;
+		const dayStart = utcDay * 86_400_000;
+		const sources = authorized.map((camera) => camera.id);
+		if (!sources.length || typeof client.searchEventMetadata !== 'function') {
+			reviewEvents = [];
+			return;
+		}
+		const controller = new AbortController();
+		void Promise.allSettled(
+			(['main', 'sub'] as const).map((streamId) =>
+				client.searchEventMetadata({
+					sourceIds: sources,
+					streamId,
+					startMs: dayStart,
+					endMs: dayStart + 86_400_000,
+					pageSize: 64,
+					signal: controller.signal
+				})
+			)
+		).then((results) => {
+			if (controller.signal.aborted) return;
+			const times = new Set<number>();
+			for (const outcome of results) {
+				if (outcome.status !== 'fulfilled') continue;
+				for (const hit of outcome.value.hits) times.add(hit.startMs);
+			}
+			reviewEvents = [...times]
+				.toSorted((left, right) => left - right)
+				.map((startMs) => ({ startMs }));
+		});
+		return () => controller.abort();
+	});
+
 	let exportCheck = $state.raw<AbortController | null>(null);
 	let exportProblem = $state('');
 	onDestroy(() => exportCheck?.abort());
@@ -215,6 +290,10 @@
 		void rangeEnd;
 		exportProblem = '';
 		return () => exportCheck?.abort();
+	});
+	$effect(() => {
+		void focus;
+		focusedStep = { available: false, busy: false, notice: '' };
 	});
 
 	async function exportMarked() {
@@ -265,6 +344,8 @@
 			timestampMs: moment(),
 			streamPreference: recordedPreference(preferences, focus),
 			mode: 'timeline',
+			eventId,
+			returnHref,
 			review: reviewSelection
 		});
 	}
@@ -288,6 +369,16 @@
 		revision++;
 		persist();
 	}
+	function stepFocusedTo(at: number) {
+		const valid = parseMomentTimestamp(String(Math.floor(at)));
+		if (valid === null) return;
+		clock.seek(valid, performance.now());
+		epoch = valid;
+		seekInput = new Date(valid).toISOString().slice(0, 23);
+		// This updates sibling tiles to the stepped timestamp without reopening the focused frame canvas.
+		followerRevision++;
+		persist();
+	}
 	function persistCameraSelection() {
 		const previous = document.activeElement;
 		persist();
@@ -304,7 +395,22 @@
 			!cameras.some((camera) => camera.id === id)
 		)
 			return;
+		groupNotice = '';
 		ids = [...ids, id];
+		persistCameraSelection();
+	}
+	function applyGroupPreset(name: string) {
+		const preset = groupPresets.find((entry) => entry.name === name);
+		if (!preset) return;
+		const nextIds = [...preset.cameraIds];
+		const nextFocus = nextIds.includes(focus) ? focus : nextIds[0]!;
+		focus = nextFocus;
+		if (!nextIds.includes(audio)) audio = nextFocus;
+		ids = nextIds;
+		groupNotice =
+			preset.totalCameras > maximumReviewCameras
+				? `Showing ${maximumReviewCameras} of ${preset.totalCameras} cameras in ${preset.name}.`
+				: '';
 		persistCameraSelection();
 	}
 	function removeCamera(id: string) {
@@ -318,6 +424,7 @@
 			single(moment(), nextFocus);
 			return;
 		}
+		groupNotice = '';
 		focus = nextFocus;
 		if (!remaining.includes(audio)) audio = nextFocus;
 		ids = remaining;
@@ -337,14 +444,28 @@
 		if (!authorized.some((camera) => camera.id === id)) return 'Unavailable camera';
 		if (unavailable) return 'Coverage unavailable';
 		if (loadedWindow !== bucket) return 'Loading footage';
-		if (!chosen.has(id)) return 'No playable footage at this time';
+		const entry = selections.get(id);
+		if (!entry?.selection.selectedStream) {
+			if (entry && entry.selection.rejectedStreams.length > 0) {
+				return unsupportedCodecStatus(entry.selection.rejectedStreams);
+			}
+			return 'No playable footage at this time';
+		}
 		return active.includes(id) ? 'Opening recording' : 'Waiting for a decoder';
 	}
 </script>
 
 <section class="mx-auto flex h-full max-w-[120rem] flex-col gap-3 overflow-y-auto p-3 md:p-5">
 	<header class="flex flex-wrap items-center justify-between gap-3">
-		<h1 class="text-xl font-semibold">Compare recordings</h1>
+		<div class="flex flex-wrap items-center gap-3">
+			{#if returnHref}
+				<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- safeEventReturnHref validates returnHref against the local Events route. -->
+				<a href={returnHref} class="inline-flex min-h-11 items-center px-2 underline"
+					>Back to event</a
+				>
+			{/if}
+			<h1 class="text-xl font-semibold">Compare recordings</h1>
+		</div>
 		<CopyMomentLink getLink={comparisonLink} />
 		<button type="button" class="h-11 px-3 underline" onclick={() => single(moment(), focus)}
 			>Single camera</button
@@ -478,8 +599,63 @@
 						>{/each}</select
 				></label
 			>
+			{#if groupPresets.length > 0}
+				<label
+					>Group <select
+						class="min-h-11 max-w-full min-w-11"
+						aria-label="Camera group"
+						value=""
+						onchange={(event) => {
+							applyGroupPreset(event.currentTarget.value);
+							event.currentTarget.value = '';
+						}}
+					>
+						<option value="">Select group</option>
+						{#each groupPresets as preset (preset.name)}
+							<option value={preset.name}>{preset.name} ({preset.totalCameras})</option>
+						{/each}
+					</select></label
+				>
+			{/if}
+			{#if reviewEvents.length > 0}
+				<button
+					type="button"
+					class="min-h-11 min-w-11 px-2 disabled:opacity-45"
+					disabled={previousEventMs === null}
+					onclick={() => {
+						if (previousEventMs !== null) seekTo(previousEventMs);
+					}}>Previous event</button
+				>
+				<button
+					type="button"
+					class="min-h-11 min-w-11 px-2 disabled:opacity-45"
+					disabled={nextEventMs === null}
+					onclick={() => {
+						if (nextEventMs !== null) seekTo(nextEventMs);
+					}}>Next event</button
+				>
+			{/if}
+			{#if focusedStep.available && !playing}
+				<button
+					type="button"
+					class="min-h-11 min-w-11 px-2 disabled:opacity-45"
+					disabled={focusedStep.busy}
+					aria-label="Previous recorded frame"
+					onclick={() => tileHandles[focus]?.stepFrame(-1)}>Prev frame</button
+				>
+				<button
+					type="button"
+					class="min-h-11 min-w-11 px-2 disabled:opacity-45"
+					disabled={focusedStep.busy}
+					aria-label="Next recorded frame"
+					onclick={() => tileHandles[focus]?.stepFrame(1)}>Next frame</button
+				>
+			{/if}
 		</div>
 	</div>
+	{#if groupNotice}<p role="status" class="text-xs text-text-muted">{groupNotice}</p>{/if}
+	{#if focusedStep.notice}<p role="status" class="text-xs text-text-muted">{focusedStep.notice}</p
+		>{/if}
 	<div
 		id={workspaceId + '-marks'}
 		class="flex-wrap items-center gap-3 {optionsOpen ? 'flex' : 'hidden md:flex'}"
@@ -512,23 +688,35 @@
 		>{/if}
 	<div class="grid grid-cols-1 gap-3 md:grid-cols-2">
 		{#each ids as cameraId (cameraId)}
-			{@const segment = chosen.get(cameraId)}
+			{@const entry = selections.get(cameraId)}
 			<RecordedReviewTile
+				bind:this={tileHandles[cameraId]}
 				onremove={() => removeCamera(cameraId)}
 				onvisibility={(fraction) => {
 					visible[cameraId] = fraction;
 				}}
+				onstep={cameraId === focus ? stepFocusedTo : undefined}
+				onstepstate={cameraId === focus
+					? (state) => {
+							focusedStep = state;
+						}
+					: undefined}
 				{requests}
 				{cameraId}
 				name={label(cameraId)}
-				stream={active.includes(cameraId) ? (segment?.stream ?? null) : null}
-				endMs={segment?.endMs ?? 0}
+				stream={active.includes(cameraId) ? (entry?.selection.selectedStream ?? null) : null}
+				encoding={entry?.encoding ?? null}
+				fallbackNotice={entry?.fallbackNotice ?? ''}
+				endMs={entry?.endMs ?? 0}
 				{epoch}
-				{revision}
+				revision={cameraId === focus ? revision : revision + followerRevision}
 				position={moment}
 				{playing}
 				{rate}
 				muted={muted || cameraId !== audio}
+				isAudioSource={cameraId === audio}
+				audioMuted={muted}
+				focused={cameraId === focus}
 				status={status(cameraId)}
 			/>
 		{/each}

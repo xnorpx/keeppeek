@@ -5027,6 +5027,7 @@ function camerasFromCapabilities(capabilities: ServerCapabilities): CameraListIt
 				imaging: camera.deviceCapabilities?.imaging ?? false,
 				two_way_audio: camera.deviceCapabilities?.twoWayAudio ?? false
 			},
+			...(camera.groupIds.length > 0 ? { group_ids: [...camera.groupIds] } : {}),
 			profiles
 		};
 	});

@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { RecordedReviewRequests, reviewExportRecordings } from './recorded-review-requests';
+import {
+	adjacentReviewEvent,
+	RecordedReviewRequests,
+	reviewAudioStatusLabel,
+	reviewExportRecordings,
+	reviewGroupPresets,
+	unsupportedCodecStatus
+} from './recorded-review-requests';
+import type { CameraListItem } from './types';
 
 describe('comparison recorder admission', () => {
 	it('serializes operations across cameras and skips a withdrawn camera', async () => {
@@ -84,4 +92,81 @@ it('queries only the UTC days touched by the half-open marks and stops after can
 		)
 	).rejects.toThrow();
 	expect(dates).toHaveLength(2);
+});
+
+describe('synchronized review helpers', () => {
+	function camera(id: string, groupIds?: string[]): CameraListItem {
+		return {
+			id,
+			ip: id,
+			name: id,
+			manufacturer: null,
+			model: null,
+			firmware_version: null,
+			is_reolink: false,
+			group_ids: groupIds,
+			profiles: []
+		};
+	}
+
+	it('builds sorted bounded group presets with at least two authorized cameras', () => {
+		const presets = reviewGroupPresets([
+			camera('cam-1', ['Exterior', 'Solo', ' ']),
+			camera('cam-2', ['Exterior', 'Garage']),
+			camera('cam-3', ['Exterior', 'Garage']),
+			camera('cam-4', ['Exterior']),
+			camera('cam-5', ['Exterior'])
+		]);
+		expect(presets).toEqual([
+			{
+				name: 'Exterior',
+				cameraIds: ['cam-1', 'cam-2', 'cam-3', 'cam-4'],
+				totalCameras: 5
+			},
+			{
+				name: 'Garage',
+				cameraIds: ['cam-2', 'cam-3'],
+				totalCameras: 2
+			}
+		]);
+	});
+
+	it('formats codec-specific unsupported recording messages', () => {
+		expect(
+			unsupportedCodecStatus([
+				{ stream: 'main', encoding: 'hevc' },
+				{ stream: 'sub', encoding: 'h265' }
+			])
+		).toBe('This browser cannot decode the available recordings: Main (hevc), Sub (h265).');
+	});
+
+	it('finds nearest previous and next review events across cameras', () => {
+		const events = [
+			{ startMs: 1_000 },
+			{ startMs: 5_000 },
+			{ startMs: 5_000 },
+			{ startMs: 9_000 },
+			{ startMs: Number.NaN }
+		];
+		expect(adjacentReviewEvent(events, 5_000, -1)).toBe(1_000);
+		expect(adjacentReviewEvent(events, 5_000, 1)).toBe(9_000);
+		expect(adjacentReviewEvent(events, 1_000, -1)).toBeNull();
+		expect(adjacentReviewEvent(events, 9_000, 1)).toBeNull();
+	});
+
+	it('describes active, muted, unavailable, and corrected-offset audio states', () => {
+		expect(reviewAudioStatusLabel({ isAudioSource: true, muted: false })).toBe('Audio active');
+		expect(
+			reviewAudioStatusLabel({ isAudioSource: true, muted: false, appliedOffsetMs: 200 })
+		).toBe('Audio active (+200 ms)');
+		expect(
+			reviewAudioStatusLabel({ isAudioSource: true, muted: true, appliedOffsetMs: -150 })
+		).toBe('Audio muted (-150 ms)');
+		expect(reviewAudioStatusLabel({ isAudioSource: true, muted: false, audioPresent: false })).toBe(
+			'Audio unavailable'
+		);
+		expect(reviewAudioStatusLabel({ isAudioSource: false, muted: false, appliedOffsetMs: 0 })).toBe(
+			'Muted'
+		);
+	});
 });

@@ -1,7 +1,76 @@
 import type { ControlClient } from './control-client';
 import type { KeepReviewRange } from './keep-link';
-import type { RecordingSegment } from './types';
+import type { CameraListItem, RecordingSegment } from './types';
 import { maximumReviewCameras } from './grid-playback-session';
+import { formatRecordedAudioOffset } from './recorded-audio';
+import type { RejectedRecordedStream } from './recorded-playback-policy';
+
+export type ReviewGroupPreset = {
+	name: string;
+	cameraIds: readonly string[];
+	totalCameras: number;
+};
+
+export function reviewGroupPresets(cameras: readonly CameraListItem[]): ReviewGroupPreset[] {
+	const groups = new Map<string, string[]>();
+	for (const camera of cameras) {
+		for (const raw of camera.group_ids ?? []) {
+			const name = raw.trim();
+			if (!name) continue;
+			const list = groups.get(name) ?? [];
+			if (!list.includes(camera.id)) list.push(camera.id);
+			groups.set(name, list);
+		}
+	}
+	return [...groups.entries()]
+		.filter(([, ids]) => ids.length >= 2)
+		.toSorted(([left], [right]) => left.localeCompare(right))
+		.map(([name, ids]) => ({
+			name,
+			cameraIds: ids.slice(0, maximumReviewCameras),
+			totalCameras: ids.length
+		}));
+}
+
+export function unsupportedCodecStatus(rejected: readonly RejectedRecordedStream[]): string {
+	const codecs = rejected
+		.map((candidate) => `${candidate.stream === 'main' ? 'Main' : 'Sub'} (${candidate.encoding})`)
+		.join(', ');
+	return `This browser cannot decode the available recordings: ${codecs}.`;
+}
+
+export function adjacentReviewEvent(
+	events: readonly { startMs: number }[],
+	epochMs: number,
+	direction: -1 | 1
+): number | null {
+	let best: number | null = null;
+	for (const event of events) {
+		if (!Number.isFinite(event.startMs)) continue;
+		if (direction < 0 && event.startMs < epochMs && (best === null || event.startMs > best)) {
+			best = event.startMs;
+		}
+		if (direction > 0 && event.startMs > epochMs && (best === null || event.startMs < best)) {
+			best = event.startMs;
+		}
+	}
+	return best;
+}
+
+export function reviewAudioStatusLabel(options: {
+	isAudioSource: boolean;
+	muted: boolean;
+	audioPresent?: boolean | null;
+	appliedOffsetMs?: number | null;
+}): string {
+	if (options.audioPresent === false) return 'Audio unavailable';
+	const offset =
+		options.appliedOffsetMs && options.appliedOffsetMs !== 0
+			? ` (${formatRecordedAudioOffset(options.appliedOffsetMs)})`
+			: '';
+	if (!options.isAudioSource) return `Muted${offset}`;
+	return `${options.muted ? 'Audio muted' : 'Audio active'}${offset}`;
+}
 
 // A control session accepts one background recording operation at a time.
 // Each admitted camera can have an open, playback change or refill in flight.
