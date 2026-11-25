@@ -5,6 +5,7 @@ mod recorded_audio_tests;
 pub(crate) mod reporting;
 pub(crate) mod sharing;
 mod storage_volumes;
+pub mod usage_reporting;
 use crate::{
     access,
     cameras::{
@@ -126,6 +127,9 @@ pub struct Config {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) reporting: Option<reporting::Settings>,
+
+    #[serde(default)]
+    pub usage_reporting: usage_reporting::UsageReportingConfig,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) external_auth: Option<crate::access::external::Config>,
@@ -1160,6 +1164,7 @@ impl Default for Config {
             access: AccessConfig::default(),
             sharing: sharing::SharingConfig::default(),
             reporting: None,
+            usage_reporting: usage_reporting::UsageReportingConfig::default(),
             external_auth: None,
             direct_card: DirectCardConfig::default(),
             desktop: DesktopConfig::default(),
@@ -2095,6 +2100,7 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
     resolve_toml_secret_references(&mut resolved, secrets)?;
     let mut config: Config = resolved.try_into()?;
     config.reporting = reporting;
+    config.usage_reporting.validate()?;
     config.runtime_profiles.validate()?;
     config.sharing.validate()?;
     config.storage.validate_pre_recording_budgets()?;
@@ -2646,6 +2652,7 @@ pub(crate) fn is_reserved_section(namespace: &str) -> bool {
         "access"
             | "sharing"
             | "reporting"
+            | "usage_reporting"
             | "external_auth"
             | "external_identities"
             | "access_credentials"

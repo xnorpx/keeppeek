@@ -1,0 +1,475 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/xnorpx/keeppeek/blob/main/schemas/usage-reporting/v1.schema.json",
+  "title": "KeepPeek usage report v1",
+  "description": "Allowlisted, bounded, pseudonymous usage report sent only after explicit Administrator opt-in. Uncompressed UTF-8 JSON must not exceed 65536 bytes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "disclosure_revision",
+    "report_sequence",
+    "installation_id",
+    "basic"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "disclosure_revision": {
+      "type": "integer",
+      "const": 1
+    },
+    "report_sequence": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "installation_id": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "basic": {
+      "$ref": "#/$defs/basicSystemData"
+    },
+    "camera_compatibility": {
+      "$ref": "#/$defs/cameraCompatibilityData"
+    },
+    "feature_adoption": {
+      "$ref": "#/$defs/featureAdoptionData"
+    }
+  },
+  "$defs": {
+    "basicSystemData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "keeppeek_version",
+        "release_channel",
+        "deployment_type",
+        "os_family",
+        "os_version",
+        "architecture",
+        "cpu_vendor",
+        "cpu_model_family",
+        "logical_cores",
+        "memory_bucket",
+        "video_acceleration"
+      ],
+      "properties": {
+        "keeppeek_version": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 64,
+          "pattern": "^[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}(?:-[0-9A-Za-z.-]{1,32})?$"
+        },
+        "release_channel": {
+          "type": "string",
+          "enum": ["stable", "beta", "alpha", "nightly", "dev", "unknown"]
+        },
+        "deployment_type": {
+          "type": "string",
+          "enum": ["native", "container", "other"]
+        },
+        "os_family": {
+          "type": "string",
+          "enum": ["linux", "macos", "windows", "bsd", "other", "unknown"]
+        },
+        "os_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16,
+          "pattern": "^(?:[0-9]{1,4}(?:\\.[0-9]{1,4})?|rolling|unknown)$"
+        },
+        "architecture": {
+          "type": "string",
+          "enum": ["x86_64", "aarch64", "arm", "riscv64", "other", "unknown"]
+        },
+        "cpu_vendor": {
+          "type": "string",
+          "enum": ["intel", "amd", "apple", "arm", "qualcomm", "ampere", "other", "unknown"]
+        },
+        "cpu_model_family": {
+          "type": "string",
+          "enum": [
+            "intel_core_ultra",
+            "intel_core_i",
+            "intel_xeon",
+            "intel_n_series",
+            "intel_atom_celeron_pentium",
+            "amd_ryzen",
+            "amd_epyc",
+            "amd_threadripper",
+            "amd_athlon",
+            "apple_m1",
+            "apple_m2",
+            "apple_m3",
+            "apple_m4",
+            "apple_m_other",
+            "arm_cortex_a",
+            "arm_neoverse",
+            "qualcomm_snapdragon",
+            "ampere_altra",
+            "unknown"
+          ]
+        },
+        "physical_cores": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1024
+        },
+        "logical_cores": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2048
+        },
+        "memory_bucket": {
+          "type": "string",
+          "enum": [
+            "lt_2gb",
+            "2_4gb",
+            "4_8gb",
+            "8_16gb",
+            "16_32gb",
+            "32_64gb",
+            "64_128gb",
+            "gte_128gb",
+            "unknown"
+          ]
+        },
+        "video_acceleration": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "vaapi",
+              "nvenc",
+              "qsv",
+              "videotoolbox",
+              "v4l2",
+              "d3d11va",
+              "vulkan",
+              "none",
+              "unknown"
+            ]
+          }
+        }
+      }
+    },
+    "cameraCompatibilityData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "configured_cameras",
+        "connected_cameras",
+        "decodable_cameras",
+        "recording_cameras",
+        "groups"
+      ],
+      "properties": {
+        "configured_cameras": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "connected_cameras": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "decodable_cameras": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "recording_cameras": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "groups": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/cameraCompatibilityGroup"
+          }
+        }
+      }
+    },
+    "cameraCompatibilityGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manufacturer",
+        "model",
+        "backend",
+        "transport",
+        "video_codec",
+        "resolution_bucket",
+        "capabilities",
+        "count"
+      ],
+      "properties": {
+        "manufacturer": {
+          "$ref": "#/$defs/cameraManufacturer"
+        },
+        "model": {
+          "$ref": "#/$defs/cameraModel"
+        },
+        "backend": {
+          "type": "string",
+          "enum": ["auto", "retina", "reo_proto", "unknown"]
+        },
+        "transport": {
+          "type": "string",
+          "enum": ["tcp", "udp", "unknown"]
+        },
+        "video_codec": {
+          "type": "string",
+          "enum": ["h264", "h265", "mjpeg", "vp8", "vp9", "av1", "unknown"]
+        },
+        "resolution_bucket": {
+          "type": "string",
+          "enum": ["sd", "hd_720p", "fhd_1080p", "qhd_1440p", "uhd_4k", "above_4k", "unknown"]
+        },
+        "capabilities": {
+          "type": "array",
+          "maxItems": 12,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "ptz",
+              "audio",
+              "events",
+              "recording",
+              "analytics",
+              "imaging",
+              "two_way_audio",
+              "quick_replies",
+              "chimes"
+            ]
+          }
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        }
+      }
+    },
+    "cameraManufacturer": {
+      "type": "string",
+      "enum": [
+        "amcrest",
+        "annke",
+        "aqara",
+        "axis",
+        "bosch",
+        "dahua",
+        "eufy",
+        "ezviz",
+        "foscam",
+        "hanwha",
+        "hikvision",
+        "imou",
+        "lorex",
+        "reolink",
+        "sonoff",
+        "swann",
+        "tapo",
+        "tp_link",
+        "ubiquiti",
+        "uniview",
+        "vivotek",
+        "wyze",
+        "unknown"
+      ]
+    },
+    "cameraModel": {
+      "type": "string",
+      "enum": [
+        "amcrest_ad410",
+        "amcrest_ip4m_1041",
+        "amcrest_ip5m_t1179e",
+        "amcrest_ip8m_2496e",
+        "amcrest_ip8m_t2599e",
+        "annke_c500",
+        "annke_c800",
+        "annke_ncd800",
+        "aqara_g2h_pro",
+        "aqara_g3",
+        "aqara_g4",
+        "axis_m1065_lw",
+        "axis_m2025_le",
+        "axis_p1448_le",
+        "axis_p3245_lv",
+        "bosch_flexidome_ip",
+        "dahua_ipc_hdw2431t",
+        "dahua_ipc_hdw5442t",
+        "dahua_ipc_hfw2831t",
+        "dahua_ipc_t5442t",
+        "dahua_vto2202f",
+        "eufy_indoor_cam_2k",
+        "eufy_indoor_cam_c120",
+        "eufy_s330",
+        "ezviz_c3n",
+        "ezviz_c6n",
+        "ezviz_db1",
+        "foscam_c1",
+        "foscam_fi9821p",
+        "foscam_r2",
+        "hanwha_qno_6012r",
+        "hanwha_xno_6080r",
+        "hikvision_ds_2cd2043g2",
+        "hikvision_ds_2cd2087g2",
+        "hikvision_ds_2cd2143g2",
+        "hikvision_ds_2cd2343g2",
+        "hikvision_ds_2cd2347g2",
+        "hikvision_ds_2cd2387g2",
+        "imou_bullet_2c",
+        "imou_ranger_2",
+        "lorex_e891ab",
+        "lorex_lne8924ab",
+        "reolink_argus_3_pro",
+        "reolink_cx410",
+        "reolink_cx810",
+        "reolink_duo_2_poe",
+        "reolink_duo_3_poe",
+        "reolink_e1_outdoor",
+        "reolink_e1_pro",
+        "reolink_e1_zoom",
+        "reolink_rlc_410",
+        "reolink_rlc_510a",
+        "reolink_rlc_520a",
+        "reolink_rlc_810a",
+        "reolink_rlc_811a",
+        "reolink_rlc_820a",
+        "reolink_rlc_823a",
+        "reolink_rlc_1212a",
+        "reolink_rlc_1224a",
+        "reolink_trackmix_poe",
+        "reolink_video_doorbell_poe",
+        "reolink_video_doorbell_wifi",
+        "sonoff_gk_200mp2_b",
+        "swann_nht_865",
+        "tapo_c110",
+        "tapo_c200",
+        "tapo_c210",
+        "tapo_c310",
+        "tapo_c320ws",
+        "tapo_c520ws",
+        "tp_link_vigi_c340",
+        "tp_link_vigi_c440",
+        "ubiquiti_g3_flex",
+        "ubiquiti_g4_bullet",
+        "ubiquiti_g4_doorbell_pro",
+        "ubiquiti_g4_instant",
+        "ubiquiti_g4_pro",
+        "ubiquiti_g5_bullet",
+        "ubiquiti_g5_dome",
+        "ubiquiti_g5_flex",
+        "uniview_ipc2124lr3",
+        "uniview_ipc3614le",
+        "vivotek_fd9165",
+        "vivotek_ib9365",
+        "wyze_cam_v3",
+        "wyze_cam_v4",
+        "unknown"
+      ]
+    },
+    "featureAdoptionData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recording_modes",
+        "storage_capacity_bucket",
+        "projected_retention_bucket",
+        "enabled_integrations",
+        "event_source_types"
+      ],
+      "properties": {
+        "recording_modes": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["mode", "count"],
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": ["continuous", "event_only", "disabled", "unknown"]
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10000
+              }
+            }
+          }
+        },
+        "storage_capacity_bucket": {
+          "type": "string",
+          "enum": [
+            "lt_250gb",
+            "250gb_1tb",
+            "1tb_4tb",
+            "4tb_16tb",
+            "16tb_64tb",
+            "gte_64tb",
+            "unknown"
+          ]
+        },
+        "projected_retention_bucket": {
+          "type": "string",
+          "enum": ["lt_1d", "1_7d", "7_30d", "30_90d", "90_365d", "gte_365d", "unknown"]
+        },
+        "enabled_integrations": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "mqtt_forwarder",
+              "home_assistant_card",
+              "notifications_pushover",
+              "notifications_webhook",
+              "external_auth_oidc",
+              "external_auth_proxy",
+              "guest_sharing",
+              "local_archive",
+              "named_volumes",
+              "backup_restore",
+              "bug_reporting",
+              "battery_wake",
+              "privacy_schedules",
+              "runtime_profiles"
+            ]
+          }
+        },
+        "event_source_types": {
+          "type": "array",
+          "maxItems": 12,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "onvif_events",
+              "reolink_events",
+              "hikvision_isapi",
+              "generic_motion",
+              "external_api_events",
+              "operational_events"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

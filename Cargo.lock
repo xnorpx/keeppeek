@@ -8088,6 +8088,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "usage-reporting-receiver"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "pollster",
+ "rouille",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "subtle",
+ "tracing",
+ "tracing-subscriber",
+ "turso",
+ "uuid",
+]
+
+[[package]]
 name = "utf16_iter"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

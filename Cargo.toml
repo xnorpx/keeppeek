@@ -23,6 +23,7 @@ members = [
   "crates/test-frame",
   "crates/test-hikvision",
   "crates/tiny-http",
+  "examples/usage_reporting_receiver",
 ]
 
 [workspace.dependencies]
