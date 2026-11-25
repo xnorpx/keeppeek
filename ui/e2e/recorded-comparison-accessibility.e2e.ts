@@ -179,7 +179,9 @@ test.describe('portrait comparison', () => {
 						viewport: window.innerWidth,
 						section: section.scrollWidth,
 						available: section.clientWidth,
-						targets: Array.from(section.querySelectorAll<HTMLElement>('button,select,input'))
+						targets: Array.from(
+							section.querySelectorAll<HTMLElement>('button,select,input,summary,a')
+						)
 							.filter((el) => !el.hasAttribute('disabled') && el.getClientRects().length > 0)
 							.map((el) => {
 								const r = el.getBoundingClientRect();

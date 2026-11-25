@@ -39,6 +39,7 @@ const clientState = vi.hoisted(() => ({
 		endMs: number;
 	}>,
 	events: [] as Array<{ startMs: number }>,
+	eventsTruncated: false,
 	opened: [] as MockCursor[],
 	openCalls: [] as Array<{ sourceId: string; streamId: string; timestampMs: number }>,
 	stepResultNs: 1_700_000_010_040_000_000n,
@@ -96,15 +97,20 @@ vi.mock('$lib/control-context', () => ({
 	useControlClient: () => ({
 		onAccessState: () => () => undefined,
 		queryStoredTimeline: async () => ({ ranges: clientState.ranges }),
-		searchEventMetadata: async (options: { streamId: string }) => ({
+		searchEventMetadata: async (options: { streamId: string; pageToken?: string }) => ({
 			hits:
 				options.streamId === 'main'
 					? clientState.events.map((event, index) => ({
-							eventId: `event-${index}`,
+							eventId: `event-${options.pageToken ?? 'p1'}-${index}`,
 							sourceId: 'cam-1',
 							startMs: event.startMs
 						}))
-					: []
+					: [],
+			nextPageToken:
+				options.streamId === 'main' && clientState.eventsTruncated
+					? `next-${options.pageToken ?? '1'}`
+					: '',
+			candidatesTruncated: false
 		}),
 		openStoredMedia: async (options: {
 			sourceId: string;
@@ -155,6 +161,7 @@ function camera(
 beforeEach(() => {
 	clientState.ranges = [];
 	clientState.events = [];
+	clientState.eventsTruncated = false;
 	clientState.opened = [];
 	clientState.openCalls = [];
 	clientState.audioBySource = {};
@@ -211,7 +218,7 @@ describe('RecordedReviewWorkspace', () => {
 			await expect.element(page.getByRole('link', { name: 'Back to event' })).toBeVisible();
 			await expect
 				.element(
-					page.getByText('This browser cannot decode the available recordings: Main (hevc).')
+					page.getByText('This browser cannot decode the available recordings: Main (HEVC).')
 				)
 				.toBeVisible();
 			await expect
@@ -222,7 +229,7 @@ describe('RecordedReviewWorkspace', () => {
 				.toBe('Sub · H264');
 			await expect
 				.poll(() => document.querySelector('[data-review-fallback]')?.textContent?.trim())
-				.toBe('Playing Sub (Main uses hevc)');
+				.toBe('Playing Sub (Main uses HEVC)');
 			await expect
 				.poll(() => document.querySelector('[data-review-audio-state]')?.textContent?.trim())
 				.toBe('Audio active (+200 ms)');
@@ -236,10 +243,11 @@ describe('RecordedReviewWorkspace', () => {
 		}
 	});
 
-	it('applies bounded group presets and jumps to previous and next events', async () => {
+	it('applies bounded group presets, jumps to events, and announces truncated UTC-day results', async () => {
 		const startMs = 1_700_000_010_000;
 		const updateLink = vi.fn();
 		clientState.events = [{ startMs: startMs - 4_000 }, { startMs: startMs + 7_000 }];
+		clientState.eventsTruncated = true;
 		const cameras = [
 			camera('cam-1', 'Cam 1', [profile('sub', 'h264')], ['Exterior']),
 			camera('cam-2', 'Cam 2', [profile('sub', 'h264')], ['Exterior']),
@@ -259,6 +267,10 @@ describe('RecordedReviewWorkspace', () => {
 				single: vi.fn()
 			}
 		});
+
+		await expect
+			.element(page.getByText('Event jumps use the first 2 events of this UTC day.'))
+			.toBeVisible();
 
 		const groupSelect = page.getByRole('combobox', { name: 'Camera group' });
 		await expect.element(groupSelect).toBeVisible();
@@ -350,6 +362,14 @@ describe('RecordedReviewWorkspace', () => {
 				'canvas[aria-label="Selected recorded picture for Cam 1"]'
 			);
 			expect(canvas?.hasAttribute('hidden')).toBe(false);
+			// Changing focus after a frame step must not reopen either camera cursor.
+			const opensAfterStep = clientState.openCalls.length;
+			await userEvent.selectOptions(
+				page.getByRole('combobox', { name: 'Focused camera' }),
+				'cam-2'
+			);
+			await expect.poll(() => updateLink.mock.calls.at(-1)?.[1]).toBe('cam-2');
+			expect(clientState.openCalls.length).toBe(opensAfterStep);
 		} finally {
 			Object.assign(globalThis, { VideoFrame: NativeVideoFrame });
 		}

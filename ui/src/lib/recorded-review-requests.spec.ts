@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
 	adjacentReviewEvent,
+	loadReviewDayEvents,
+	maximumReviewEventPages,
 	RecordedReviewRequests,
 	reviewAudioStatusLabel,
 	reviewExportRecordings,
@@ -137,7 +139,47 @@ describe('synchronized review helpers', () => {
 				{ stream: 'main', encoding: 'hevc' },
 				{ stream: 'sub', encoding: 'h265' }
 			])
-		).toBe('This browser cannot decode the available recordings: Main (hevc), Sub (h265).');
+		).toBe('This browser cannot decode the available recordings: Main (HEVC), Sub (H265).');
+	});
+
+	it('paginates UTC-day events up to the page bound and flags truncation or total failure', async () => {
+		let mainPages = 0;
+		const client = {
+			searchEventMetadata: async (options: { streamId: string; pageToken?: string }) => {
+				if (options.streamId === 'main') {
+					mainPages++;
+					return {
+						hits: [{ startMs: 1_000 + mainPages * 100 }],
+						nextPageToken: `page-${mainPages + 1}`,
+						candidatesTruncated: false
+					};
+				}
+				return { hits: [], nextPageToken: '', candidatesTruncated: false };
+			}
+		};
+		const bounded = await loadReviewDayEvents(
+			client as unknown as Parameters<typeof loadReviewDayEvents>[0],
+			['cam-1'],
+			0,
+			new AbortController().signal
+		);
+		expect(mainPages).toBe(maximumReviewEventPages);
+		expect(bounded.truncated).toBe(true);
+		expect(bounded.failed).toBe(false);
+		expect(bounded.events).toHaveLength(maximumReviewEventPages);
+
+		const failingClient = {
+			searchEventMetadata: async () => {
+				throw new Error('Event search unavailable');
+			}
+		};
+		const failed = await loadReviewDayEvents(
+			failingClient as unknown as Parameters<typeof loadReviewDayEvents>[0],
+			['cam-1'],
+			0,
+			new AbortController().signal
+		);
+		expect(failed).toEqual({ events: [], truncated: false, failed: true });
 	});
 
 	it('finds nearest previous and next review events across cameras', () => {

@@ -11,6 +11,15 @@ export type ReviewGroupPreset = {
 	totalCameras: number;
 };
 
+export const maximumReviewEventPages = 4;
+export const reviewEventPageSize = 64;
+
+export type ReviewDayEventsResult = {
+	events: readonly { startMs: number }[];
+	truncated: boolean;
+	failed: boolean;
+};
+
 export function reviewGroupPresets(cameras: readonly CameraListItem[]): ReviewGroupPreset[] {
 	const groups = new Map<string, string[]>();
 	for (const camera of cameras) {
@@ -32,11 +41,69 @@ export function reviewGroupPresets(cameras: readonly CameraListItem[]): ReviewGr
 		}));
 }
 
+export function formatCodecLabel(encoding: string): string {
+	return encoding.trim().toUpperCase();
+}
+
 export function unsupportedCodecStatus(rejected: readonly RejectedRecordedStream[]): string {
 	const codecs = rejected
-		.map((candidate) => `${candidate.stream === 'main' ? 'Main' : 'Sub'} (${candidate.encoding})`)
+		.map(
+			(candidate) =>
+				`${candidate.stream === 'main' ? 'Main' : 'Sub'} (${formatCodecLabel(candidate.encoding)})`
+		)
 		.join(', ');
 	return `This browser cannot decode the available recordings: ${codecs}.`;
+}
+
+export async function loadReviewDayEvents(
+	client: Pick<ControlClient, 'searchEventMetadata'>,
+	sourceIds: readonly string[],
+	dayStartMs: number,
+	signal: AbortSignal
+): Promise<ReviewDayEventsResult> {
+	const streams = ['main', 'sub'] as const;
+	const outcomes = await Promise.allSettled(
+		streams.map(async (streamId) => {
+			const startTimes: number[] = [];
+			let pageToken: string | undefined;
+			let truncated = false;
+			for (let page = 0; page < maximumReviewEventPages; page++) {
+				signal.throwIfAborted();
+				const result = await client.searchEventMetadata({
+					sourceIds,
+					streamId,
+					startMs: dayStartMs,
+					endMs: dayStartMs + 86_400_000,
+					pageSize: reviewEventPageSize,
+					...(pageToken ? { pageToken } : {}),
+					signal
+				});
+				for (const hit of result.hits) startTimes.push(hit.startMs);
+				if (result.candidatesTruncated) truncated = true;
+				if (!result.nextPageToken) break;
+				if (page + 1 === maximumReviewEventPages) {
+					truncated = true;
+					break;
+				}
+				pageToken = result.nextPageToken;
+			}
+			return { startTimes, truncated };
+		})
+	);
+	const times = new Set<number>();
+	let truncated = false;
+	let succeeded = 0;
+	for (const outcome of outcomes) {
+		if (outcome.status !== 'fulfilled') continue;
+		succeeded++;
+		if (outcome.value.truncated) truncated = true;
+		for (const startMs of outcome.value.startTimes) times.add(startMs);
+	}
+	return {
+		events: [...times].toSorted((left, right) => left - right).map((startMs) => ({ startMs })),
+		truncated,
+		failed: succeeded === 0
+	};
 }
 
 export function adjacentReviewEvent(
@@ -64,10 +131,9 @@ export function reviewAudioStatusLabel(options: {
 	appliedOffsetMs?: number | null;
 }): string {
 	if (options.audioPresent === false) return 'Audio unavailable';
-	const offset =
-		options.appliedOffsetMs && options.appliedOffsetMs !== 0
-			? ` (${formatRecordedAudioOffset(options.appliedOffsetMs)})`
-			: '';
+	const offset = options.appliedOffsetMs
+		? ` (${formatRecordedAudioOffset(options.appliedOffsetMs)})`
+		: '';
 	if (!options.isAudioSource) return `Muted${offset}`;
 	return `${options.muted ? 'Audio muted' : 'Audio active'}${offset}`;
 }

@@ -49,8 +49,9 @@ Use **Add camera** or **Group** to compare up to four selected cameras; larger g
 first four authorized cameras with an explicit notice. **Remove** drops a camera from the
 comparison. Removing one of the last two opens the remaining camera at the shared time. **Play**,
 **Pause**, **Speed**, **Previous event**, **Next event** and the five-second seek buttons act on
-one UTC playhead. Enter a date and time under **Seek to UTC** and choose **Go to time** to move
-directly to that instant. When paused on a focused camera that supports exact frame stepping, use
+one UTC playhead. **Previous event** and **Next event** jump across events in the current UTC day
+(up to 256 events per stream, showing a status notice when truncated). Enter a date and time under
+**Seek to UTC** and choose **Go to time** to move directly to that instant. When paused on a focused camera that supports exact frame stepping, use
 **Prev frame** or **Next frame** to step that camera's verified picture; sibling cameras seek to
 the stepped UTC timestamp without claiming identical frame boundaries.
 

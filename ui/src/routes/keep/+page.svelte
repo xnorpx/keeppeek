@@ -108,6 +108,7 @@
 	let selectedWorkflowEvent = $state.raw<RecordingEvent | null>(null);
 
 	let cameras: CameraListItem[] = $state([]);
+	let reviewGroups = $derived(reviewGroupPresets(cameras));
 	let mode = $state<KeepMode>('timeline');
 	let cameraId = $state('');
 	let stream = $state<'main' | 'sub'>('main');
@@ -2793,7 +2794,7 @@
 				: playheadMs;
 		if (selectionValue.startsWith('group:')) {
 			const groupName = selectionValue.slice('group:'.length);
-			const preset = reviewGroupPresets(cameras).find((entry) => entry.name === groupName);
+			const preset = reviewGroups.find((entry) => entry.name === groupName);
 			if (!preset) return;
 			const focus = preset.cameraIds.includes(cameraId) ? cameraId : preset.cameraIds[0]!;
 			navigateReview(at, focus, { cameraIds: preset.cameraIds, audioCameraId: focus });
@@ -2988,9 +2989,9 @@
 						{#each cameras.filter((camera) => camera.id !== cameraId) as camera (camera.id)}
 							<option value={camera.id}>{camera.name || camera.id}</option>
 						{/each}
-						{#if reviewGroupPresets(cameras).length > 0}
+						{#if reviewGroups.length > 0}
 							<optgroup label="Camera groups">
-								{#each reviewGroupPresets(cameras) as preset (preset.name)}
+								{#each reviewGroups as preset (preset.name)}
 									<option value={'group:' + preset.name}
 										>{preset.name} ({preset.totalCameras})</option
 									>

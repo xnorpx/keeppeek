@@ -2,7 +2,7 @@
 	import { untrack } from 'svelte';
 	import { useControlClient } from '$lib/control-context';
 	import type { RecordedReviewRequests } from '$lib/recorded-review-requests';
-	import { reviewAudioStatusLabel } from '$lib/recorded-review-requests';
+	import { formatCodecLabel, reviewAudioStatusLabel } from '$lib/recorded-review-requests';
 	import type { StoredMediaPlayback } from '$lib/control-client';
 	import type { RecordedAudioTiming } from '$lib/proto/webrtc_pb';
 	import { RecordedFramePlayer } from '$lib/recorded-frame-player.svelte';
@@ -20,7 +20,6 @@
 		onremove,
 		onvisibility,
 		onstep,
-		onstepstate,
 		requests,
 		cameraId,
 		name,
@@ -42,7 +41,6 @@
 		onremove: () => void;
 		onvisibility: (fraction: number) => void;
 		onstep?: (timestampMs: number) => void;
-		onstepstate?: (state: ReviewStepState) => void;
 		requests: RecordedReviewRequests;
 		cameraId: string;
 		name: string;
@@ -86,8 +84,8 @@
 	const variantLabel = $derived.by(() => {
 		if (!stream) return '';
 		const streamName = stream === 'main' ? 'Main' : 'Sub';
-		const codec = encoding?.trim();
-		return codec ? `${streamName} · ${codec.toUpperCase()}` : streamName;
+		const codec = encoding ? formatCodecLabel(encoding) : '';
+		return codec ? `${streamName} · ${codec}` : streamName;
 	});
 	const audioStatus = $derived(
 		reviewAudioStatusLabel({
@@ -133,15 +131,14 @@
 		onstep?.(Math.floor(steppedMs));
 	}
 
-	$effect(() => {
-		if (!focused) return;
-		onstepstate?.({
+	export function stepState(): ReviewStepState {
+		return {
 			available: canStep,
 			busy: frames.busy,
 			notice: frames.notice,
 			timeNs: frames.selection?.storedTimeNs
-		});
-	});
+		};
+	}
 
 	$effect.pre(() => {
 		const element = video;
@@ -440,7 +437,9 @@
 			{#if fallbackNotice}<span data-review-fallback>{fallbackNotice}</span>{/if}
 			{#if showAudioBadge}<span data-review-audio-state>{audioStatus}</span>{/if}
 			<details class="ml-auto">
-				<summary class="cursor-pointer py-1 underline">Diagnostics</summary>
+				<summary class="inline-flex min-h-11 min-w-11 cursor-pointer items-center px-2 underline"
+					>Diagnostics</summary
+				>
 				<dl class="mt-1 flex flex-wrap gap-x-4 gap-y-1 font-mono" data-review-diagnostics>
 					<div
 						><dt class="inline">Variant: </dt><dd class="inline">{variantLabel || 'None'}</dd></div

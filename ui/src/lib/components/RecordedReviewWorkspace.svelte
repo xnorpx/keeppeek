@@ -7,6 +7,8 @@
 	import { GridPlaybackSession, maximumReviewCameras } from '$lib/grid-playback-session';
 	import {
 		adjacentReviewEvent,
+		formatCodecLabel,
+		loadReviewDayEvents,
 		RecordedReviewRequests,
 		reviewExportRecordings,
 		reviewGroupPresets,
@@ -92,7 +94,7 @@
 		...(range ? { range } : {})
 	});
 	let revision = $state(0);
-	let followerRevision = $state(0);
+	let stepRevisionById = $state<Record<string, number>>({});
 	let budget = $state(2);
 	let visible = $state<Record<string, number>>({});
 	let foreground = $state(false);
@@ -104,10 +106,15 @@
 	let seekInput = $state(untrack(() => new Date(startMs).toISOString().slice(0, 23)));
 	let groupNotice = $state('');
 	let reviewEvents = $state.raw<readonly { startMs: number }[]>([]);
-	let focusedStep = $state<ReviewStepState>({ available: false, busy: false, notice: '' });
-	let tileHandles = $state<Record<string, { stepFrame: (direction: -1 | 1) => void } | undefined>>(
-		{}
-	);
+	let eventNotice = $state('');
+	const idleStep: ReviewStepState = { available: false, busy: false, notice: '' };
+	let tileHandles = $state<
+		Record<
+			string,
+			{ stepFrame: (direction: -1 | 1) => void; stepState: () => ReviewStepState } | undefined
+		>
+	>({});
+	const focusedStep = $derived(tileHandles[focus]?.stepState() ?? idleStep);
 	const authorized = $derived(cameras.filter((c) => ids.includes(c.id)));
 	const groupPresets = $derived(reviewGroupPresets(cameras));
 	// Refresh halfway through each minute of coverage so a continuing camera stays admitted.
@@ -144,7 +151,7 @@
 			const rejected = picked.rejectedStreams[0];
 			const fallbackNotice =
 				picked.selectedStream && rejected
-					? `Playing ${picked.selectedStream === 'main' ? 'Main' : 'Sub'} (${rejected.stream === 'main' ? 'Main' : 'Sub'} uses ${rejected.encoding})`
+					? `Playing ${picked.selectedStream === 'main' ? 'Main' : 'Sub'} (${rejected.stream === 'main' ? 'Main' : 'Sub'} uses ${formatCodecLabel(rejected.encoding)})`
 					: '';
 			result.set(camera.id, {
 				selection: picked,
@@ -251,32 +258,23 @@
 		if (!foreground) return;
 		const dayStart = utcDay * 86_400_000;
 		const sources = authorized.map((camera) => camera.id);
-		if (!sources.length || typeof client.searchEventMetadata !== 'function') {
+		if (!sources.length) {
 			reviewEvents = [];
+			eventNotice = '';
 			return;
 		}
 		const controller = new AbortController();
-		void Promise.allSettled(
-			(['main', 'sub'] as const).map((streamId) =>
-				client.searchEventMetadata({
-					sourceIds: sources,
-					streamId,
-					startMs: dayStart,
-					endMs: dayStart + 86_400_000,
-					pageSize: 64,
-					signal: controller.signal
-				})
-			)
-		).then((results) => {
+		eventNotice = '';
+		void loadReviewDayEvents(client, sources, dayStart, controller.signal).then((result) => {
 			if (controller.signal.aborted) return;
-			const times = new Set<number>();
-			for (const outcome of results) {
-				if (outcome.status !== 'fulfilled') continue;
-				for (const hit of outcome.value.hits) times.add(hit.startMs);
+			reviewEvents = result.events;
+			if (result.truncated) {
+				eventNotice = `Event jumps use the first ${result.events.length} events of this UTC day.`;
+			} else if (result.failed) {
+				eventNotice = 'Events for this UTC day could not be loaded.';
+			} else {
+				eventNotice = '';
 			}
-			reviewEvents = [...times]
-				.toSorted((left, right) => left - right)
-				.map((startMs) => ({ startMs }));
 		});
 		return () => controller.abort();
 	});
@@ -290,10 +288,6 @@
 		void rangeEnd;
 		exportProblem = '';
 		return () => exportCheck?.abort();
-	});
-	$effect(() => {
-		void focus;
-		focusedStep = { available: false, busy: false, notice: '' };
 	});
 
 	async function exportMarked() {
@@ -376,7 +370,11 @@
 		epoch = valid;
 		seekInput = new Date(valid).toISOString().slice(0, 23);
 		// This updates sibling tiles to the stepped timestamp without reopening the focused frame canvas.
-		followerRevision++;
+		const next = { ...stepRevisionById };
+		for (const id of ids) {
+			if (id !== focus) next[id] = (next[id] ?? 0) + 1;
+		}
+		stepRevisionById = next;
 		persist();
 	}
 	function persistCameraSelection() {
@@ -654,6 +652,7 @@
 		</div>
 	</div>
 	{#if groupNotice}<p role="status" class="text-xs text-text-muted">{groupNotice}</p>{/if}
+	{#if eventNotice}<p role="status" class="text-xs text-text-muted">{eventNotice}</p>{/if}
 	{#if focusedStep.notice}<p role="status" class="text-xs text-text-muted">{focusedStep.notice}</p
 		>{/if}
 	<div
@@ -696,11 +695,6 @@
 					visible[cameraId] = fraction;
 				}}
 				onstep={cameraId === focus ? stepFocusedTo : undefined}
-				onstepstate={cameraId === focus
-					? (state) => {
-							focusedStep = state;
-						}
-					: undefined}
 				{requests}
 				{cameraId}
 				name={label(cameraId)}
@@ -709,7 +703,7 @@
 				fallbackNotice={entry?.fallbackNotice ?? ''}
 				endMs={entry?.endMs ?? 0}
 				{epoch}
-				revision={cameraId === focus ? revision : revision + followerRevision}
+				revision={revision + (stepRevisionById[cameraId] ?? 0)}
 				position={moment}
 				{playing}
 				{rate}
