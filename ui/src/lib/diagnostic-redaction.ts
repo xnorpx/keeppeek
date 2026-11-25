@@ -1,6 +1,6 @@
 const REDACTED = '[REDACTED]';
 const sensitiveKey =
-	/password|passwd|secret|token|authorization|credential|api[_-]?key|cookie|access[_-]?key|private[_-]?key|session[_-]?id/i;
+	/password|passwd|secret|token|grant|authorization|credential|api[_-]?key|cookie|access[_-]?key|private[_-]?key|session[_-]?id/i;
 const privateKey =
 	/(^|_)(ip|host|hostname|host_name|serial_number|hardware_id|mac_address|mount_point|working_directory|executable|path|file|directory|url|uri|origin|uid)($|_)/i;
 
@@ -27,7 +27,7 @@ export function createDiagnosticRedactor(
 		return redacted
 			.replace(/\b([a-z][a-z0-9+.-]*:\/\/)(?:[^@\s/]+@)?[^/\s?#]+/gi, '$1[REDACTED_HOST]')
 			.replace(
-				/\b(password|passwd|secret|token|authorization|credential|api[_-]?key|cookie|access[_-]?key|private[_-]?key|session[_-]?id)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi,
+				/\b(password|passwd|secret|token|grant|authorization|credential|api[_-]?key|cookie|access[_-]?key|private[_-]?key|session[_-]?id)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi,
 				'$1=[REDACTED]'
 			)
 			.replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/-]+=*/gi, '$1 [REDACTED]')

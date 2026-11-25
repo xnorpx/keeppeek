@@ -21,6 +21,7 @@
 	import { setPeekViewState } from '$lib/peek-view-context.svelte';
 	import { browserLogStore, initializeBrowserLogging } from '$lib/browser-logs';
 	import { createReportSession } from '$lib/report-session.svelte';
+	import { createRemoteReportTransport } from '$lib/report-transport';
 	import { provideReportContext } from '$lib/report-context';
 	import ReportBugWorkflow from '$lib/components/ReportBugWorkflow.svelte';
 	import KeyboardOverlay from '$lib/components/KeyboardOverlay.svelte';
@@ -37,7 +38,7 @@
 		type KeyboardOverlayMode
 	} from '$lib/keyboard-shortcuts';
 	import { workspaceAccessChanged, type AccessConnectionState } from '$lib/access';
-	import type { ServerHealthResponse } from '$lib/types';
+	import type { ReportingAuditPayload, ReportingStatus, ServerHealthResponse } from '$lib/types';
 	import { setShellHealthPublisher } from '$lib/shell-health-context';
 
 	const verificationWindow =
@@ -64,8 +65,55 @@
 	});
 	let workspaceRevision = $state(0);
 	let recovering = $derived(accessState.status === 'checking' && accessState.session !== null);
-	const reportSession = createReportSession(controlClient, browserLogStore);
+	function sendReportAudit(payload: ReportingAuditPayload): void {
+		if (accessState.status !== 'authenticated' || accessState.session?.role !== 'administrator') {
+			return;
+		}
+		void controlClient.recordReportingAudit(payload).catch(() => undefined);
+	}
+	const reportSession = createReportSession(controlClient, browserLogStore, sendReportAudit);
 	let reportOpen = $state(false);
+	let reportingStatus = $state.raw<ReportingStatus | null>(null);
+	let reportingConfig = $derived.by(() => {
+		if (
+			!reportingStatus?.configured ||
+			!reportingStatus.origin ||
+			!reportingStatus.retention_days
+		) {
+			return undefined;
+		}
+		try {
+			return {
+				transport: createRemoteReportTransport(
+					reportingStatus.origin,
+					(manifest, idempotencyKey, signal) =>
+						controlClient.createReportingGrant(idempotencyKey, manifest, signal)
+				),
+				retentionDays: reportingStatus.retention_days
+			};
+		} catch {
+			return undefined;
+		}
+	});
+	$effect(() => {
+		if (
+			!reportOpen ||
+			accessState.status !== 'authenticated' ||
+			accessState.session?.role !== 'administrator'
+		) {
+			return;
+		}
+		const controller = new AbortController();
+		void controlClient
+			.getReportingStatus(controller.signal)
+			.then((status) => {
+				if (!controller.signal.aborted) reportingStatus = status;
+			})
+			.catch(() => {
+				if (!controller.signal.aborted) reportingStatus = null;
+			});
+		return () => controller.abort();
+	});
 	provideReportContext({
 		session: reportSession,
 		show: () => {
@@ -213,6 +261,7 @@
 			) {
 				reportSession.cancel();
 				reportOpen = false;
+				reportingStatus = null;
 			}
 			const authenticated = state.status === 'authenticated';
 			if (
@@ -527,7 +576,12 @@
 		</p>
 	{/if}
 	{#if administrator}
-		<ReportBugWorkflow session={reportSession} bind:open={reportOpen} />
+		<ReportBugWorkflow
+			session={reportSession}
+			bind:open={reportOpen}
+			reporting={reportingConfig}
+			onaudit={sendReportAudit}
+		/>
 	{/if}
 	<Tooltip.Provider delayDuration={0}>
 		<div

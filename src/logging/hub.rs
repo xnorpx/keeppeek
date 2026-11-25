@@ -17,6 +17,7 @@ const MAX_ENTRY_BYTES: usize = 64 * 1024;
 const MAX_MESSAGE_CHARS: usize = 16 * 1024;
 const MAX_FIELD_CHARS: usize = 8 * 1024;
 const MAX_FIELDS: usize = 64;
+const MAX_DYNAMIC_SENSITIVE_VALUES: usize = 256;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -72,6 +73,8 @@ pub struct LogSnapshot {
     pub newest_sequence: Option<u64>,
     pub truncated: bool,
     pub stats: LogBufferStats,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -100,6 +103,7 @@ pub struct LogHub {
 }
 
 struct HubState {
+    generation: String,
     entries: VecDeque<BufferedEntry>,
     byte_count: usize,
     evicted_entries: u64,
@@ -107,6 +111,7 @@ struct HubState {
     next_subscriber_id: u64,
     subscribers: HashMap<u64, Subscriber>,
     sensitive_values: Vec<String>,
+    dynamic_sensitive_values: VecDeque<String>,
     closed: bool,
 }
 
@@ -156,6 +161,7 @@ impl LogHub {
         };
         Self {
             inner: Arc::new(Mutex::new(HubState {
+                generation: uuid::Uuid::new_v4().hyphenated().to_string(),
                 entries: VecDeque::new(),
                 byte_count: 0,
                 evicted_entries: 0,
@@ -163,23 +169,58 @@ impl LogHub {
                 next_subscriber_id: 1,
                 subscribers: HashMap::new(),
                 sensitive_values: Vec::new(),
+                dynamic_sensitive_values: VecDeque::new(),
                 closed: false,
             })),
             limits,
         }
     }
 
-    pub fn set_sensitive_values(&self, values: impl IntoIterator<Item = String>) {
-        let mut values = values
-            .into_iter()
-            .filter(|value| !value.is_empty())
-            .collect::<Vec<_>>();
-        values.sort_unstable_by_key(|value| std::cmp::Reverse(value.len()));
-        values.dedup();
+    pub fn generation(&self) -> String {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .sensitive_values = values;
+            .generation
+            .clone()
+    }
+
+    pub fn set_sensitive_values(&self, values: impl IntoIterator<Item = String>) {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut combined = values
+            .into_iter()
+            .chain(state.dynamic_sensitive_values.iter().cloned())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        combined.sort_unstable_by_key(|value| std::cmp::Reverse(value.len()));
+        combined.dedup();
+        state.sensitive_values = combined;
+    }
+
+    pub fn add_sensitive_value(&self, value: String) {
+        if value.is_empty() {
+            return;
+        }
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.dynamic_sensitive_values.contains(&value) {
+            return;
+        }
+        if state.dynamic_sensitive_values.len() >= MAX_DYNAMIC_SENSITIVE_VALUES
+            && let Some(removed) = state.dynamic_sensitive_values.pop_front()
+        {
+            state.sensitive_values.retain(|entry| entry != &removed);
+        }
+        state.dynamic_sensitive_values.push_back(value.clone());
+        state.sensitive_values.push(value);
+        state
+            .sensitive_values
+            .sort_unstable_by_key(|entry| std::cmp::Reverse(entry.len()));
+        state.sensitive_values.dedup();
     }
 
     pub(crate) fn redact_output(&self, text: &str) -> String {
@@ -292,6 +333,7 @@ impl LogHub {
             newest_sequence,
             truncated: state.evicted_entries > 0 || missing_before_buffer || over_limit,
             stats: self.stats_from_state(&state),
+            generation: Some(state.generation.clone()),
         }
     }
 
@@ -487,6 +529,7 @@ fn is_sensitive_name(name: &str) -> bool {
         "passwd",
         "secret",
         "token",
+        "grant",
         "authorization",
         "credential",
         "api_key",
@@ -510,6 +553,7 @@ fn redact_text(text: &str, sensitive_values: &[String]) -> String {
         "passwd=",
         "secret=",
         "token=",
+        "grant=",
         "authorization=",
         "api_key=",
         "apikey=",

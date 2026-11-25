@@ -286,6 +286,10 @@ impl LoggingService {
         self.hub.clone()
     }
 
+    pub(crate) fn redact_secret(&self, value: &str) {
+        self.hub.add_sensitive_value(value.to_owned());
+    }
+
     pub fn settings(&self) -> LoggingSettings {
         LoggingSettings {
             active_filter: self.active_filter(),

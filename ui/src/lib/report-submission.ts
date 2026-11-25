@@ -91,7 +91,12 @@ export class ReportSubmission {
 	#cancelled = false;
 	#finalizationStarted = false;
 	#grant: ReportGrant | undefined;
+	#reportId: string | undefined;
 	#completed: Extract<ReportState, { state: 'complete' }> | undefined;
+
+	get reportId(): string | undefined {
+		return this.#reportId;
+	}
 
 	constructor(
 		private readonly transport: ReportTransport,
@@ -165,6 +170,7 @@ export class ReportSubmission {
 			signal.throwIfAborted();
 		}
 		this.#grant = grant;
+		this.#reportId = grant.id;
 		const status = await this.transport.status(grant, signal);
 		signal.throwIfAborted();
 		if (status.state !== 'pending') return this.finish(status);

@@ -8,7 +8,7 @@ import {
 	type ReportLogCheckpoint,
 	type ReportLogWindow
 } from './report-log-window';
-import type { BrowserLogEntry, LogSnapshot } from './types';
+import type { BrowserLogEntry, LogSnapshot, ReportingAuditPayload } from './types';
 
 type Capture = Awaited<ReturnType<typeof startReportCapture>>;
 type Position = { cursor: ReportLogCheckpoint; server: LogSnapshot | null; warnings?: string[] };
@@ -35,15 +35,18 @@ type Dependencies = {
 	): Promise<ReportDiagnostics>;
 	capture: typeof startReportCapture;
 	now(): number;
+	audit?: (event: ReportingAuditPayload) => void;
 };
 
 export function createReportSession(
 	control: ControlClient,
-	browser: BrowserLogStore
+	browser: BrowserLogStore,
+	audit?: (event: ReportingAuditPayload) => void
 ): ReportSession {
 	return new ReportSession({
 		now: Date.now,
 		capture: startReportCapture,
+		audit,
 		browserEntries: () => browser.snapshot(),
 		latestBrowserSequence: () => browser.latestSequence,
 		package: (snapshot, window, signal) =>
@@ -63,6 +66,7 @@ export function createReportSession(
 					server: server
 						? {
 								sequence: server.newest_sequence ?? 0,
+								generation: server.generation,
 								filter: settings.status === 'fulfilled' ? settings.value.active_filter : undefined
 							}
 						: null
@@ -98,6 +102,7 @@ export class ReportSession {
 
 	start(withDisplay: boolean): void {
 		if (this.phase !== 'idle') return;
+		this.deps.audit?.({ event: 'start', mode: withDisplay ? 'screen' : 'logs_only' });
 		this.startedAt = this.deps.now();
 		this.phase = 'recording';
 		this.mediaState = withDisplay ? 'requesting' : 'logs-only';
@@ -215,6 +220,7 @@ export class ReportSession {
 	}
 
 	cancel(): void {
+		const hadActiveSession = this.phase !== 'idle';
 		if (this.#session) {
 			clearTimeout(this.#session.timer);
 			this.#session.media.abort();
@@ -226,5 +232,6 @@ export class ReportSession {
 		this.startedAt = 0;
 		this.mediaState = 'logs-only';
 		this.phase = 'idle';
+		if (hadActiveSession) this.deps.audit?.({ event: 'cancel' });
 	}
 }

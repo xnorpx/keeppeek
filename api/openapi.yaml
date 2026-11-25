@@ -585,6 +585,158 @@ paths:
           $ref: "#/components/responses/RateLimited"
         "503":
           $ref: "#/components/responses/Unavailable"
+  /reporting/status:
+    get:
+      operationId: reportingStatus
+      summary: Read optional bug reporting service availability
+      description: >-
+        Returns whether a remote bug reporting service is configured on the
+        recorder along with its canonical HTTPS origin and retention limit.
+        Credentials and secret references are never returned. Requires
+        Administrator authorization and secure remote transport.
+      responses:
+        "200":
+          description: Current bug reporting service availability.
+          headers:
+            Cache-Control:
+              description: Reporting status must not be cached.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReportingStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "426":
+          $ref: "#/components/responses/UpgradeRequired"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /reporting/grants:
+    post:
+      operationId: createReportingGrant
+      summary: Issue a single-report upload grant through the configured reporting service
+      description: >-
+        Validates the reviewed v1 bug report manifest and forwards grant
+        creation to the configured HTTPS reporting service using any
+        server-held credential reference. Returns only the short-lived,
+        single-report upload grant and records a non-sensitive audit entry.
+        Requires Administrator authorization, secure remote transport, and
+        same-origin CSRF binding for browser sessions.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReportingGrantRequest"
+      responses:
+        "200":
+          description: Short-lived upload grant scoped to one report.
+          headers:
+            Cache-Control:
+              description: Upload grants must not be cached.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReportingGrantResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: The idempotency key conflicts with a different report manifest.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+        "413":
+          description: The request body exceeds the 128 KiB limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+        "415":
+          description: The request body must use application/json.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+        "426":
+          $ref: "#/components/responses/UpgradeRequired"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "502":
+          description: The configured reporting service rejected or failed the request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "504":
+          description: The configured reporting service timed out.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+  /reporting/audit:
+    post:
+      operationId: recordReportingAudit
+      summary: Record a non-sensitive bug report lifecycle audit event
+      description: >-
+        Records a closed-enum bug reporting lifecycle event in the access audit
+        log without storing issue text, logs, media, grants, or artifact URLs.
+        Requires Administrator authorization, secure remote transport, and
+        same-origin CSRF binding for browser sessions.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReportingAuditRequest"
+      responses:
+        "204":
+          description: Audit event recorded.
+          headers:
+            Cache-Control:
+              description: Audit responses must not be cached.
+              schema:
+                type: string
+                const: no-store
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          description: The request body exceeds the 512-byte limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+        "415":
+          description: The request body must use application/json.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+        "426":
+          $ref: "#/components/responses/UpgradeRequired"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/Unavailable"
 components:
   parameters:
     GuestSession:
@@ -1050,6 +1202,170 @@ components:
           type: boolean
         stats:
           $ref: "#/components/schemas/LogBufferStats"
+        generation:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: >-
+            Opaque process-unique identifier for this retained log sequence
+            epoch. Changes when KeepPeek restarts so clients can detect
+            sequence reuse.
+    ReportingStatus:
+      type: object
+      additionalProperties: false
+      required:
+        - configured
+      properties:
+        configured:
+          type: boolean
+        origin:
+          type: string
+          maxLength: 512
+        retention_days:
+          type: integer
+          minimum: 1
+          maximum: 30
+    ReportingArtifact:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - bytes
+      properties:
+        type:
+          type: string
+          enum:
+            - application/gzip
+            - video/webm
+            - video/mp4
+        bytes:
+          type: integer
+          minimum: 1
+          maximum: 104857600
+    ReportingManifest:
+      type: object
+      additionalProperties: false
+      required:
+        - version
+        - title
+        - description
+        - reproduction
+        - expected
+        - actual
+        - evidenceWarnings
+        - artifacts
+      properties:
+        version:
+          type: integer
+          const: 1
+        title:
+          type: string
+          minLength: 1
+          maxLength: 120
+        description:
+          type: string
+          minLength: 1
+          maxLength: 4000
+        reproduction:
+          type: string
+          minLength: 1
+          maxLength: 4000
+        expected:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        actual:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        evidenceWarnings:
+          type: array
+          maxItems: 16
+          uniqueItems: true
+          items:
+            type: string
+            enum:
+              - browser-log-window-incomplete
+              - server-log-window-incomplete
+              - server-log-filter-active
+              - server-log-stream-gap
+              - server-log-generation-changed
+              - server-log-generation-unverified
+              - server-logs-unavailable
+              - diagnostics-logging-settings-unavailable
+              - diagnostics-health-unavailable
+              - diagnostics-runtime-config-unavailable
+              - diagnostics-cameras-unavailable
+              - diagnostics-metrics-unavailable
+              - diagnostics-package-unavailable
+        artifacts:
+          type: object
+          additionalProperties: false
+          required:
+            - diagnostics
+          properties:
+            diagnostics:
+              $ref: "#/components/schemas/ReportingArtifact"
+            screen:
+              $ref: "#/components/schemas/ReportingArtifact"
+    ReportingGrantRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - idempotencyKey
+        - manifest
+      properties:
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: "^[a-zA-Z0-9-]{1,64}$"
+        manifest:
+          $ref: "#/components/schemas/ReportingManifest"
+    ReportingGrantResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - grant
+        - expires
+      properties:
+        id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: "^[A-Za-z0-9_-]{1,128}$"
+        grant:
+          type: string
+          minLength: 1
+          maxLength: 4096
+        expires:
+          type: integer
+          format: int64
+    ReportingAuditRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - event
+      properties:
+        event:
+          type: string
+          enum:
+            - start
+            - cancel
+            - local_download
+            - complete
+            - failed
+        mode:
+          type: string
+          enum:
+            - logs_only
+            - screen
+        report_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: "^[A-Za-z0-9_-]{1,128}$"
     Status:
       type: object
       additionalProperties: false
