@@ -373,7 +373,7 @@ pub fn run_with_dashboard(
         .recv()
         .err()
         .map(|_| anyhow::anyhow!("HTTP server stopped before reporting readiness"));
-    let _dashboard = startup_error
+    let dashboard = startup_error
         .is_none()
         .then(|| {
             crate::tui::Dashboard::start(
@@ -446,6 +446,8 @@ pub fn run_with_dashboard(
         router.wait_and_drain(Some(std::time::Duration::from_millis(100)))?;
     }
     shutdown.cancel();
+    // Restore terminal modes and console logs before recording finalization or process restart.
+    drop(dashboard);
     webrtc.shutdown();
 
     match server_handle.join() {

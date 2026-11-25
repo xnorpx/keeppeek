@@ -295,7 +295,10 @@ fn render_until_closed(
                 for command in std::iter::once(first).chain(receiver.try_iter().take(31)) {
                     match command {
                         Input::Rows(n) => nav.step(n, rows),
-                        Input::Pages(n) => nav.step(n * nav.page as isize, rows),
+                        Input::Pages(n) => {
+                            let step = isize::try_from(nav.page.max(1)).unwrap_or(isize::MAX);
+                            nav.step(n.saturating_mul(step), rows);
+                        }
                         Input::Resize => {}
                     }
                 }

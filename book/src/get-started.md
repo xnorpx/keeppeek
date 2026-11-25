@@ -30,6 +30,14 @@ while the recorder keeps running. Press **Ctrl+C** to request a graceful server 
 finalize recordings. Resizing the terminal changes the visible rows. After a hard kill, opening
 a new terminal restores the normal display. On Unix you can also run `reset` in the affected shell.
 
+| Environment                                                   | Default (`--tui auto`) | Notes                                                                                       |
+| ------------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------- |
+| Linux, macOS, Windows Terminal / PowerShell foreground TTY    | Dashboard              | Requires interactive stdin, stdout, and stderr (`TERM` set and not `dumb` on Unix).         |
+| SSH with TTY (`ssh -t`) or Docker with TTY (`docker run -it`) | Dashboard              | Interactive pseudo-terminals run the dashboard; pass `--tui never` for plain logs.          |
+| SSH or Docker without TTY, pipes, redirected stdio            | Plain logs             | No terminal escape sequences are emitted; `--tui always` logs one diagnostic and continues. |
+| `keeppeek config ...`, `--help`, `--version`                  | Plain output           | Subcommands and help/version never enter alternate screen even with `--tui always`.         |
+| `keeppeek-service` (Windows) and macOS launch agent           | Plain/service logs     | Service entry points never start the terminal dashboard.                                    |
+
 ## Linux with Docker
 
 The published image supports `linux/amd64` and `linux/arm64`. It runs KeepPeek directly as the

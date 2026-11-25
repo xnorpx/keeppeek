@@ -121,7 +121,10 @@ const fn terminal_size(cols: u16, rows: u16) -> PtySize {
     }
 }
 
-fn start_recorder(slave: &dyn portable_pty::SlavePty) -> Result<(Recorder, u16)> {
+fn start_recorder_with_args(
+    slave: &dyn portable_pty::SlavePty,
+    extra_args: &[&str],
+) -> Result<(Recorder, u16)> {
     let port = TcpListener::bind(("127.0.0.1", 0))?.local_addr()?.port();
     let directory = std::env::temp_dir().join(format!("keeppeek-tui-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&directory)?;
@@ -132,6 +135,7 @@ fn start_recorder(slave: &dyn portable_pty::SlavePty) -> Result<(Recorder, u16)>
     let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_keeppeek"));
     cmd.cwd(&directory);
     cmd.args(["--config", "config.toml"]);
+    cmd.args(extra_args);
     // Storage and credentials have OS-specific defaults even with an explicit --config.
     cmd.env("APPDATA", &directory);
     cmd.env("HOME", &directory);
@@ -143,6 +147,10 @@ fn start_recorder(slave: &dyn portable_pty::SlavePty) -> Result<(Recorder, u16)>
         directory,
     };
     Ok((recorder, port))
+}
+
+fn start_recorder(slave: &dyn portable_pty::SlavePty) -> Result<(Recorder, u16)> {
+    start_recorder_with_args(slave, &[])
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -255,4 +263,61 @@ fn raw_terminal_ctrl_c_restores_the_screen_and_stops_the_server() -> Result<()> 
 #[test]
 fn ctrl_c_stops_the_recorder_while_the_pty_cannot_transmit_output() -> Result<()> {
     foreground_lifecycle(Exit::BlockedOutput)
+}
+
+#[test]
+fn explicit_never_mode_keeps_plain_logs_in_an_interactive_terminal() -> Result<()> {
+    let pair = native_pty_system().openpty(terminal_size(100, 30))?;
+    let mut output = TerminalOutput::new(pair.master.as_ref())?;
+    let (mut recorder, port) = start_recorder_with_args(pair.slave.as_ref(), &["--tui", "never"])?;
+    drop(pair.slave);
+
+    let client = keeppeek::client::KeepPeekClient::new(&format!("http://127.0.0.1:{port}"));
+    let deadline = Instant::now() + TIMEOUT;
+    let mut captured = Vec::new();
+    loop {
+        while let Ok(chunk) = output.chunks.try_recv() {
+            output.handle_chunk(&chunk)?;
+            captured.extend_from_slice(&chunk);
+            output.pending.clear();
+        }
+        if let Ok(health) = client.health()
+            && health.status == "ok"
+        {
+            break;
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "recorder with --tui never did not become healthy"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+    thread::sleep(Duration::from_millis(200));
+    while let Ok(chunk) = output.chunks.try_recv() {
+        output.handle_chunk(&chunk)?;
+        captured.extend_from_slice(&chunk);
+        output.pending.clear();
+    }
+    ensure!(
+        !captured.windows(8).any(|part| part == b"\x1b[?1049h"),
+        "--tui never entered the alternate screen"
+    );
+    output.input.write_all(b"\x03")?;
+    output.input.flush()?;
+    let stop_deadline = Instant::now() + TIMEOUT;
+    loop {
+        output.drain()?;
+        if let Some(status) = recorder.child.try_wait()? {
+            ensure!(
+                status.success(),
+                "recorder with --tui never did not finish cleanly: {status}"
+            );
+            return Ok(());
+        }
+        ensure!(
+            Instant::now() < stop_deadline,
+            "Ctrl+C did not stop the recorder in --tui never mode"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
 }
