@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-720f8c2b.js";
+            window.path_to_searchindex_js = "searchindex-d9ec3327.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-6871163b.js"></script>
@@ -401,8 +401,11 @@ snapshot and is not folded into the video decodability or recording totals.</p>
 <code>Not healthy</code> filter counts every state except <code>healthy</code>.</p>
 <h2 id="api-and-metrics"><a class="header" href="#api-and-metrics">API and metrics</a></h2>
 <p><code>HealthCommand</code> returns the versioned protobuf health snapshot. Version 1 includes the canonical
-<code>state</code>, stable reasons, camera and stream dimensions, media progress timestamps, and explicit fleet
-counts. Unknown future state or reason strings are presented as <code>unknown</code>.</p>
+<code>state</code>, stable reasons, camera and stream dimensions, media progress timestamps, explicit fleet
+counts, and per-source WebRTC live-audio timing occupancy and drop counters (<code>WebRtcSourceHealthSnapshot.live_audio</code>).
+Unknown future state or reason strings are presented as <code>unknown</code>. See
+<a href="./recording-and-evidence.html#calibrating-live-audio">Calibrating live audio</a> for live timing
+bounds and queue drop semantics.</p>
 <p><code>GET /metrics</code> exposes the same projection. Important gauges include:</p>
 <ul>
 <li><code>keeppeek_cameras_connected</code>, <code>keeppeek_cameras_fresh</code>,
