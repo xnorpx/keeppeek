@@ -71,18 +71,59 @@ trait BaichuanTransport {
 
 struct TcpBaichuanTransport {
     socket: TcpStream,
+    closed: bool,
 }
 
 impl TcpBaichuanTransport {
     fn connect(addr: SocketAddr) -> anyhow::Result<Self> {
         let socket = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT)?;
         socket.set_nodelay(true)?;
-        Ok(Self { socket })
+        Ok(Self {
+            socket,
+            closed: false,
+        })
+    }
+
+    fn fail_closed(&mut self) {
+        self.closed = true;
+        let _ = self.socket.shutdown(std::net::Shutdown::Both);
+    }
+
+    fn finish_speaker_write(
+        &mut self,
+        len: usize,
+        written: std::io::Result<usize>,
+    ) -> anyhow::Result<bool> {
+        match written {
+            Ok(n) if n == len => {
+                self.socket.set_nonblocking(false)?;
+                Ok(true)
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                self.socket.set_nonblocking(false)?;
+                Ok(false)
+            }
+            // Close before returning so callers cannot send another command behind a partial packet.
+            Ok(_) => {
+                self.fail_closed();
+                anyhow::bail!("incomplete Reolink speaker packet at TCP handoff");
+            }
+            Err(error) => {
+                self.fail_closed();
+                Err(error.into())
+            }
+        }
     }
 }
 
 impl BaichuanTransport for TcpBaichuanTransport {
     fn receive(&mut self, deadline: Instant, buf: &mut [u8]) -> anyhow::Result<Option<usize>> {
+        anyhow::ensure!(!self.closed, "TCP transport closed");
         let timeout = deadline
             .saturating_duration_since(Instant::now())
             .min(Duration::from_millis(250))
@@ -104,32 +145,21 @@ impl BaichuanTransport for TcpBaichuanTransport {
     }
 
     fn send(&mut self, data: &[u8]) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.closed, "TCP transport closed");
         self.socket.write_all(data)?;
         self.socket.flush()?;
         Ok(())
     }
 
     fn offer_speaker_packet(&mut self, data: &[u8]) -> anyhow::Result<bool> {
+        anyhow::ensure!(!self.closed, "TCP transport closed");
         self.socket.set_nonblocking(true)?;
         let written = self.socket.write(data);
-        self.socket.set_nonblocking(false)?;
-        match written {
-            Ok(n) if n == data.len() => Ok(true),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
-                ) =>
-            {
-                Ok(false)
-            }
-            // A partial Baichuan packet cannot be discarded in the middle of a TCP stream.
-            Ok(_) => anyhow::bail!("incomplete Reolink speaker packet at TCP handoff"),
-            Err(error) => Err(error.into()),
-        }
+        self.finish_speaker_write(data.len(), written)
     }
 
     fn close(&mut self) -> anyhow::Result<()> {
+        self.fail_closed();
         Ok(())
     }
 }
@@ -815,7 +845,9 @@ impl ReolinkLoop {
                                 "subscribed stream",
                             );
                         }
-                        Event::Talk(event) => speaker.observe(event, &mut session)?,
+                        Event::Talk(event) => {
+                            speaker.observe(event, &mut session, self.live.as_ref(), &camera_id)?;
+                        }
                         Event::LoginFailed(status) => {
                             return Err(anyhow::anyhow!(
                                 "baichuan login failed (status 0x{status:X})"
@@ -1192,6 +1224,26 @@ impl ReolinkLoop {
                             anyhow::bail!(
                                 "camera rejected keepalive request {msg_num} with status {status}"
                             );
+                        }
+                        Event::CommandFailed {
+                            msg_id,
+                            msg_num,
+                            status,
+                        } if matches!(
+                            msg_id,
+                            reo_proto::COMMAND_TALK_CAPABILITIES
+                                | reo_proto::COMMAND_TALK_CONFIG
+                                | reo_proto::COMMAND_TALK
+                        ) && speaker.has_active_route() =>
+                        {
+                            tracing::warn!(
+                                ip = %self.camera_ip,
+                                msg_id,
+                                msg_num,
+                                status,
+                                "camera rejected Reolink talkback command",
+                            );
+                            speaker.fail(&mut session, self.live.as_ref(), &camera_id)?;
                         }
                         Event::SessionTimeout => {
                             anyhow::bail!(

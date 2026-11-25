@@ -197,6 +197,8 @@ pub(crate) trait ControlRequestHandler: Send + Sync {
 
     fn session_closed(&self, _session_id: SessionId) {}
 
+    fn talkback_source_failed(&self, _source_id: &str, _owner: SessionId) {}
+
     fn resolve_media_subscription(
         &self,
         _request: &crate::api::proto::SubscribeMedia,
@@ -2372,6 +2374,37 @@ impl Publisher {
         }
     }
 
+    pub(crate) fn fail_talkback_route(&self, source_id: &str, route: &TalkbackRoute) {
+        let owner = {
+            let mut sinks = self
+                .inner
+                .talkback_sinks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if sinks
+                .get(source_id)
+                .is_some_and(|sink| sink.route.matches(route))
+            {
+                sinks.remove(source_id).map(|sink| sink.owner)
+            } else {
+                None
+            }
+        };
+        let Some(owner) = owner else {
+            return;
+        };
+        let handler = self
+            .inner
+            .control_handler
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(Weak::upgrade);
+        if let Some(handler) = handler {
+            handler.talkback_source_failed(source_id, owner);
+        }
+    }
+
     /// Serialize one nonblocking local transport handoff with removal of its source lease.
     pub(crate) fn offer_talkback_packet(
         &self,
@@ -2404,6 +2437,11 @@ impl Publisher {
         for sink in sinks.values_mut().filter(|sink| sink.owner == session_id) {
             sink.audio.push(frame.clone(), now);
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn route_test_talkback_audio(&self, session_id: SessionId, frame: WebRtcAudioFrame) {
+        self.route_talkback_audio(session_id, frame);
     }
 
     pub(crate) fn talkback_route_is_current(&self, source_id: &str, route: &TalkbackRoute) -> bool {

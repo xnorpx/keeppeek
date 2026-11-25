@@ -62,6 +62,8 @@ impl Talkback {
         &mut self,
         event: TalkEvent,
         session: &mut BcSession,
+        live: Option<&Publisher>,
+        source: &str,
     ) -> Result<(), reo_proto::BcError> {
         match event {
             TalkEvent::Ability(ability) if self.stream_id.is_some() => {
@@ -74,6 +76,7 @@ impl Talkback {
                     }
                     Err(error) => {
                         tracing::warn!(channel = self.channel, %error, "no compatible Reolink speaker profile");
+                        self.fail(session, live, source)?;
                     }
                 }
             }
@@ -83,6 +86,22 @@ impl Talkback {
             TalkEvent::Reset | TalkEvent::Ability(_) => {}
         }
         Ok(())
+    }
+
+    pub(super) const fn has_active_route(&self) -> bool {
+        self.route.is_some() || self.stream_id.is_some()
+    }
+
+    pub(super) fn fail(
+        &mut self,
+        session: &mut BcSession,
+        live: Option<&Publisher>,
+        source: &str,
+    ) -> Result<(), reo_proto::BcError> {
+        if let (Some(route), Some(live)) = (self.route.as_ref(), live) {
+            live.fail_talkback_route(source, route);
+        }
+        self.close(session)
     }
 
     pub(super) fn close(&mut self, session: &mut BcSession) -> Result<(), reo_proto::BcError> {
@@ -320,6 +339,97 @@ mod tests {
         assert_eq!(&bytes, b"encoded speaker control");
     }
 
+    #[test]
+    fn partial_speaker_write_closes_tcp_transport_against_reuse() {
+        use crate::reolink::{BaichuanTransport, TcpBaichuanTransport};
+        use std::{io::Read as _, net::TcpListener};
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut wire = TcpBaichuanTransport::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut camera, _) = listener.accept().unwrap();
+        camera
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+
+        assert!(wire.finish_speaker_write(16, Ok(4)).is_err());
+        assert!(wire.send(b"after-partial").is_err());
+        assert!(wire.offer_speaker_packet(b"after-partial").is_err());
+        let mut buf = [0_u8; 16];
+        assert!(
+            wire.receive(Instant::now() + Duration::from_millis(50), &mut buf)
+                .is_err()
+        );
+        assert_eq!(camera.read(&mut buf).unwrap(), 0);
+    }
+
+    #[test]
+    fn failed_live_talkback_ability_closes_stream_and_notifies_owner() {
+        use crate::webrtc::{ControlDispatch, ControlRequestHandler, SessionId, WebRtc};
+        use reo_proto::session::{BcSessionConfig, Event, Output};
+        use std::sync::{Arc, Mutex};
+
+        struct FailureHandler {
+            failed: Mutex<Vec<(String, SessionId)>>,
+        }
+
+        impl ControlRequestHandler for FailureHandler {
+            fn handle(&self, _request: crate::api::proto::Request) -> ControlDispatch {
+                unreachable!("unused in talkback failure test")
+            }
+
+            fn talkback_source_failed(&self, source_id: &str, owner: SessionId) {
+                self.failed
+                    .lock()
+                    .unwrap()
+                    .push((source_id.to_owned(), owner));
+            }
+        }
+
+        let now = Instant::now();
+        let webrtc = WebRtc::new();
+        let handler = Arc::new(FailureHandler {
+            failed: Mutex::new(Vec::new()),
+        });
+        let trait_handler: Arc<dyn ControlRequestHandler> = handler.clone();
+        webrtc.set_control_handler(Arc::downgrade(&trait_handler));
+        let owner = SessionId::from_u64(42);
+        let live = webrtc.live();
+        assert!(live.arm_talkback(owner, &["cam-1".to_owned()]));
+        assert!(live.talkback_is_armed("cam-1"));
+
+        let mut session = BcSession::new(BcSessionConfig::default_client(), now);
+        let mut transport_output = vec![0; reo_proto::DEFAULT_MEDIA_OUTPUT_BUFFER_SIZE];
+        let mut talkback = Talkback::new(2);
+        live.route_test_talkback_audio(owner, packet(&[1, 2], now));
+        talkback.drive(&mut session, &live, "cam-1", now).unwrap();
+        let stream_id = loop {
+            match session.poll_output(&mut transport_output).unwrap() {
+                Output::Event(Event::StreamSubscribed { stream_id, .. }) => break stream_id,
+                Output::TcpSend { .. } => {}
+                _ => panic!("expected external speaker subscription"),
+            }
+        };
+        talkback.subscribed(stream_id, &mut session).unwrap();
+
+        talkback
+            .observe(
+                TalkEvent::Ability(Box::default()),
+                &mut session,
+                Some(&live),
+                "cam-1",
+            )
+            .unwrap();
+
+        assert!(talkback.route.is_none());
+        assert_eq!(talkback.stream_id, None);
+        assert!(!talkback.ready);
+        assert!(!live.talkback_is_armed("cam-1"));
+        assert_eq!(
+            handler.failed.lock().unwrap().as_slice(),
+            &[("cam-1".to_owned(), owner)]
+        );
+    }
+
     fn speaker(rate: u32, len: u32) -> SpeakerBlocks {
         SpeakerBlocks::new(&TalkConfig {
             channel: 0,
@@ -403,7 +513,9 @@ mod tests {
         talkback.sequence = 9;
         talkback.ready = true;
 
-        talkback.observe(TalkEvent::Reset, &mut session).unwrap();
+        talkback
+            .observe(TalkEvent::Reset, &mut session, None, "cam-1")
+            .unwrap();
 
         assert!(talkback.ready);
         assert_eq!(talkback.stream_id, Some(2));

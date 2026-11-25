@@ -745,6 +745,12 @@ impl ControlRequestHandler for ServerControlHandler {
         }
     }
 
+    fn talkback_source_failed(&self, source_id: &str, owner: SessionId) {
+        self.state
+            .talkback
+            .retire_source_for_owner(source_id, owner, &self.state.webrtc);
+    }
+
     fn handle_for_session(
         &self,
         session_id: SessionId,
