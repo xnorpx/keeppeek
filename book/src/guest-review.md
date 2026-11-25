@@ -104,9 +104,9 @@ that suspension. Restart ends sessions and transfers while preserving grants, re
 committed counts. Starting again requires the original valid link and remaining usage allowance.
 
 Limits are 256 active grants, 32 per creator, eight media sessions globally and two per grant.
-Per-address request and egress budgets use the classified transport peer from `[access].trusted_proxies`
-when traffic arrives through a trusted reverse proxy, and otherwise use the immediate transport peer
-address without trusting forwarded headers.
+When a request comes through a proxy in `[access].trusted_proxies`, the per-address request and
+egress budgets use the client address from `X-Forwarded-For`. For all other requests, the budgets
+use the connection address and ignore forwarding headers.
 KeepPeek retains at most 4,096 grant records and rejects creation when the history is full.
 Expired or revoked grants disappear from lists 30 days after the earlier of expiry and revocation.
 The running server deletes overdue records in batches of 256. When the server restarts after

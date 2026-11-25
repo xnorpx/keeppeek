@@ -144,6 +144,7 @@ fn deterministic_range_fuzz_never_panics_or_exceeds_artifact_bounds() {
         crate::shares::MAX_MEDIA_BYTES,
         u64::MAX,
     ];
+    let mut accepted = 0_usize;
     for case in 0..2_500 {
         let header = fuzzed_range_header(&mut seed);
         let bytes = sizes[case % sizes.len()];
@@ -151,6 +152,7 @@ fn deterministic_range_fuzz_never_panics_or_exceeds_artifact_bounds() {
             || header.contains(',')
             || header.bytes().any(|byte| byte.is_ascii_control());
         if let Ok(range) = parse(Some(&header), bytes) {
+            accepted += 1;
             assert!(!forbidden, "accepted forbidden header {header:?}");
             assert!(bytes > 0);
             assert!(range.partial);
@@ -158,4 +160,12 @@ fn deterministic_range_fuzz_never_panics_or_exceeds_artifact_bounds() {
             assert!(range.end <= bytes, "{header:?} for {bytes}");
         }
     }
+    assert!(
+        accepted >= 200,
+        "range fuzz accepted too few valid headers: {accepted}"
+    );
+    assert!(
+        accepted < 2_500,
+        "range fuzz rejected no malformed headers: {accepted}"
+    );
 }

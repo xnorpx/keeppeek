@@ -144,10 +144,11 @@ fn sustained_high_cardinality_flood_bounds_memory_and_recovers_after_window() {
         }
     }
     assert_eq!(budget.addresses.len(), MAX_ADDRESSES);
-    assert_eq!(admitted[0], 120);
-    assert_eq!(admitted[1], 128);
-    assert_eq!(admitted[2], 128);
-    assert_eq!(admitted[3], 48);
+    let max_addresses = u32::try_from(MAX_ADDRESSES).unwrap();
+    for action in actions {
+        let (slot, _, global_limit) = action.limits();
+        assert_eq!(admitted[slot], global_limit.min(max_addresses));
+    }
 
     let after = now + WINDOW;
     budget.admit(peer(200), Action::Exchange, after).unwrap();
@@ -155,7 +156,7 @@ fn sustained_high_cardinality_flood_bounds_memory_and_recovers_after_window() {
 }
 
 #[test]
-fn concurrent_eight_peer_egress_load_enforces_global_and_per_peer_ceilings() {
+fn simultaneous_eight_peer_egress_load_enforces_global_and_per_peer_ceilings() {
     let start = Instant::now();
     let mut budget = Budget::new(start);
     let peers: Vec<_> = (1..=8).map(peer).collect();

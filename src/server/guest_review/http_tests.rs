@@ -265,7 +265,10 @@ fn classified_peer_isolates_trusted_proxy_clients_and_blocks_forged_headers() {
         "/guest/session",
         vec![("X-Forwarded-For", "198.51.100.42")],
     );
-    assert_eq!(classified_peer(&spoofed, &direct), ip("127.0.0.1"));
+    assert_eq!(
+        classify_peer(&spoofed, &direct).effective_address,
+        ip("127.0.0.1")
+    );
 
     let mut proxied = ServerState::empty();
     proxied.network_access = NetworkAccessPolicy::new(
@@ -282,7 +285,7 @@ fn classified_peer_isolates_trusted_proxy_clients_and_blocks_forged_headers() {
     ] {
         let headers = forwarded.map_or_else(Vec::new, |v| vec![("X-Forwarded-For", v)]);
         assert_eq!(
-            classified_peer(&request("POST", "/guest/session", headers), &proxied),
+            classify_peer(&request("POST", "/guest/session", headers), &proxied).effective_address,
             ip(expected),
             "{forwarded:?}"
         );
@@ -302,7 +305,11 @@ fn trusted_proxy_rate_limit_isolates_distinct_clients_while_blocking_spoofing() 
         let header = format!("198.51.100.{octet}");
         let req = request("POST", "/guest/session", vec![("X-Forwarded-For", &header)]);
         direct_budget
-            .admit(classified_peer(&req, &direct), Action::Exchange, now)
+            .admit(
+                classify_peer(&req, &direct).effective_address,
+                Action::Exchange,
+                now,
+            )
             .unwrap();
     }
     let extra = request(
@@ -311,7 +318,11 @@ fn trusted_proxy_rate_limit_isolates_distinct_clients_while_blocking_spoofing() 
         vec![("X-Forwarded-For", "198.51.100.99")],
     );
     assert_eq!(
-        direct_budget.admit(classified_peer(&extra, &direct), Action::Exchange, now),
+        direct_budget.admit(
+            classify_peer(&extra, &direct).effective_address,
+            Action::Exchange,
+            now
+        ),
         Err(Limited)
     );
 
@@ -328,7 +339,11 @@ fn trusted_proxy_rate_limit_isolates_distinct_clients_while_blocking_spoofing() 
     );
     for _ in 0..20 {
         proxied_budget
-            .admit(classified_peer(&first, &proxied), Action::Exchange, now)
+            .admit(
+                classify_peer(&first, &proxied).effective_address,
+                Action::Exchange,
+                now,
+            )
             .unwrap();
     }
     let spoofed_first = request(
@@ -338,7 +353,7 @@ fn trusted_proxy_rate_limit_isolates_distinct_clients_while_blocking_spoofing() 
     );
     assert_eq!(
         proxied_budget.admit(
-            classified_peer(&spoofed_first, &proxied),
+            classify_peer(&spoofed_first, &proxied).effective_address,
             Action::Exchange,
             now
         ),
@@ -350,26 +365,47 @@ fn trusted_proxy_rate_limit_isolates_distinct_clients_while_blocking_spoofing() 
         vec![("X-Forwarded-For", "192.0.2.3")],
     );
     proxied_budget
-        .admit(classified_peer(&second, &proxied), Action::Exchange, now)
+        .admit(
+            classify_peer(&second, &proxied).effective_address,
+            Action::Exchange,
+            now,
+        )
         .unwrap();
 }
 
 #[test]
-fn guest_cookie_never_routes_or_authorizes_ordinary_protected_http_paths() {
+fn guest_cookie_is_rejected_by_ordinary_protected_http_routes() {
     let state = ServerState::empty();
+    let (_router, router_tx) = crate::runtime::Router::new().unwrap();
     let cookie = format!("{COOKIE}={}", "A".repeat(43));
-    for (method, path) in [
+    for (index, (method, path)) in [
+        ("GET", "/logs"),
         ("GET", "/logs/snapshot"),
         ("GET", "/metrics"),
         ("GET", "/config/export"),
         ("GET", "/recording-coverage?start_ms=0&end_ms=1000"),
         ("POST", "/create"),
-    ] {
-        let req = request(method, path, vec![("Cookie", &cookie)]);
-        assert!(handle(&req, &state).is_none(), "{method} {path}");
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let remote =
+            std::net::SocketAddr::from(([203, 0, 113, 10 + u8::try_from(index).unwrap()], 4567));
+        let req = Request::fake_https_from(
+            remote,
+            method,
+            path,
+            vec![
+                ("Host".into(), "keeppeek.example".into()),
+                ("Origin".into(), "https://keeppeek.example".into()),
+                ("Cookie".into(), cookie.clone()),
+            ],
+            Vec::new(),
+        );
+        let response = super::super::super::handle_request(&req, &router_tx, &state);
         assert_eq!(
-            authentication::cookie(&req, "__Host-keeppeek-session").unwrap(),
-            None
+            response.status_code, 401,
+            "guest cookie must not authorize {method} {path}"
         );
     }
 }
