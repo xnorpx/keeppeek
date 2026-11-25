@@ -28,6 +28,7 @@ pub struct Page {
     pub volume: String,
     pub after: Option<Object>,
     pub limit: u16,
+    pub archive_copy_candidates_only: bool,
 }
 
 impl Page {
@@ -54,8 +55,15 @@ pub(super) async fn page(
          WHERE volume_id = ?1 AND state = 'published' AND (kind, object_id) > (?2, ?3)
          AND NOT EXISTS (SELECT 1 FROM storage_volume_moves m WHERE m.source_operation = a.operation
              AND m.phase IN ('published','retiring','complete'))
+         AND (?5=0 OR EXISTS (SELECT 1 FROM archive_copy_sources e WHERE e.operation=a.operation))
          ORDER BY kind, object_id LIMIT ?4",
-            turso::params![page.volume.clone(), kind, id, i64::from(page.limit)],
+            turso::params![
+                page.volume.clone(),
+                kind,
+                id,
+                i64::from(page.limit),
+                i64::from(page.archive_copy_candidates_only)
+            ],
         )
         .await?;
     let mut objects = Vec::with_capacity(usize::from(page.limit));

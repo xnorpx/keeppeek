@@ -317,6 +317,7 @@ fn objects(
             volume: request.volume_id,
             after,
             limit: 64,
+            archive_copy_candidates_only: request.archive_copy_candidates_only,
         }),
     )?
     else {

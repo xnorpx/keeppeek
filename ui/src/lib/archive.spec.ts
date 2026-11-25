@@ -49,6 +49,22 @@ describe('local archive workflow', () => {
 		draft.sourceIds = 'same\nsame';
 		expect(() => encodeArchiveDraft(draft)).toThrow('unique');
 	});
+	it('keeps retention indefinite until a positive age is supplied', () => {
+		const draft = archiveDraft();
+		draft.root = '/archive';
+		expect(encodeArchiveDraft(draft).retentionDays).toBeUndefined();
+		draft.retentionDays = '30';
+		expect(archiveDraft(encodeArchiveDraft(draft)).retentionDays).toBe('30');
+		const previous = encodeArchiveDraft(draft);
+		expect(encodeArchiveDraft({ ...draft, retentionDays: '' }, previous).clearRetentionDays).toBe(
+			true
+		);
+		for (const invalid of ['0', '-1', '0.5', '4294967296']) {
+			expect(() => encodeArchiveDraft({ ...draft, retentionDays: invalid })).toThrow(
+				'Retention days'
+			);
+		}
+	});
 	it('reconciles a lost copy acknowledgment using the original durable job identity', async () => {
 		const jobId = archiveJobId({ getRandomValues: (bytes) => bytes.fill(1) });
 		const archive = vi

@@ -58,7 +58,13 @@ async function presentedFrame(video: Locator, previousSource = '') {
 export async function measureArchivePlayback(
 	page: Page,
 	moment: number,
-	storage: 'local' | 'archive-initial' | 'archive-repeat' | 'local-restored'
+	storage:
+		| 'local'
+		| 'archive-initial'
+		| 'archive-repeat'
+		| 'local-restored'
+		| 'local-after-archive-deletion'
+		| 'local-after-blocked-deletion'
 ) {
 	await page.goto(
 		`/keep?camera=${encodeURIComponent(cardSourceIds[0])}&stream=sub&at=${moment}&date=${new Date(moment).toISOString().slice(0, 10)}`
@@ -95,12 +101,13 @@ export async function measureArchivePlayback(
 	};
 }
 
-export async function liveFrames(page: Page) {
-	return page
-		.locator(`[data-camera-id="${cardSourceIds[1]}"] video`)
-		.first()
-		.evaluate((element) => {
-			if (!(element instanceof HTMLVideoElement)) throw new Error('Expected the live video.');
-			return element.getVideoPlaybackQuality().totalVideoFrames;
-		});
+export async function archiveLiveFrame(page: Page) {
+	return page.locator(`[data-camera-id="${cardSourceIds[1]}"]`).evaluateAll((tiles) => {
+		const tile = tiles[0];
+		const video = tile?.querySelector('video');
+		const sessionId = tile?.getAttribute('data-session-id');
+		if (!sessionId || tile.getAttribute('data-status') !== 'live' || !video?.videoWidth)
+			return null;
+		return { sessionId, frames: video.getVideoPlaybackQuality().totalVideoFrames };
+	});
 }

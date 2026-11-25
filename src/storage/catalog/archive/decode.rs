@@ -52,6 +52,16 @@ pub(super) fn job(row: &turso::Row) -> anyhow::Result<Job> {
         cleanup_acknowledged: row.get::<i64>(38)? != 0,
         export_job_id: row.get(39)?,
         export_metadata: row.get(40)?,
+        deletion: if let Some(operation) = row.get::<Option<String>>(41)? {
+            Some(deletion::WorkItem {
+                operation,
+                phase: row.get(42)?,
+                attempts: u32::try_from(row.get::<i64>(43)?)?,
+            })
+        } else {
+            None
+        },
+        verified_ms: row.get(44)?,
     })
 }
 

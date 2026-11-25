@@ -2187,7 +2187,7 @@ async fn legacy_recordings_without_keyframes(
              FROM recording_files AS r
              WHERE NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = r.id AND active = 1)
                AND NOT EXISTS (SELECT 1 FROM legacy_recording_relocations m WHERE m.id=r.id)
-               AND NOT EXISTS (SELECT 1 FROM archive_replicas a WHERE a.kind='recording' AND a.recording_id=r.id AND (a.state='ready' OR a.local_evicted!=0))
+               AND NOT EXISTS (SELECT 1 FROM archive_replicas a WHERE a.kind='recording' AND a.recording_id=r.id AND (a.state IN('ready','deleting') OR a.local_evicted!=0))
                AND NOT EXISTS (SELECT 1 FROM storage_volume_allocations
                    WHERE kind = 'recording' AND object_id = r.id AND state != 'cancelled')
              ORDER BY r.started_at_ms, r.id",
@@ -2659,7 +2659,7 @@ async fn find_cleanup_candidate(
                    AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims
                                    WHERE recording_id = recording_files.id AND active = 1)
                    AND NOT EXISTS (SELECT 1 FROM archive_replicas a
-                                   WHERE a.kind='recording' AND a.recording_id=recording_files.id AND (a.state='ready' OR a.local_evicted!=0))
+                                   WHERE a.kind='recording' AND a.recording_id=recording_files.id AND (a.state IN('ready','deleting') OR a.local_evicted!=0))
                  {} ORDER BY cleanup_pending DESC, started_at_ms, id
                  LIMIT 1",if filter.recording_id.is_some(){"AND id=?3"} else {"AND ?3 IS NULL"}),
                 turso::params![retention::now_ms()?,root.as_deref(),filter.recording_id.as_deref(),source.as_deref(),legacy_tail],
@@ -2692,7 +2692,7 @@ async fn pending_cleanup_candidate(
              FROM recording_files
              WHERE finalized = 1 AND protected = 0 AND cleanup_pending = 1
                AND NOT EXISTS (SELECT 1 FROM archive_replicas a
-                               WHERE a.kind='recording' AND a.recording_id=recording_files.id AND (a.state='ready' OR a.local_evicted!=0))
+                               WHERE a.kind='recording' AND a.recording_id=recording_files.id AND (a.state IN('ready','deleting') OR a.local_evicted!=0))
                AND NOT EXISTS (SELECT 1 FROM storage_volume_allocations a WHERE a.kind='recording' AND a.state!='cancelled'
                    AND (a.object_id=recording_files.id OR a.destination_path=replace(recording_files.path,char(92),'/') COLLATE NOCASE))
              ORDER BY started_at_ms, id

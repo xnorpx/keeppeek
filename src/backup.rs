@@ -31,7 +31,10 @@ pub use restore::{
     plan_restore, recover_pending_restore, request_restore_rollback, stage_restore,
     target_revision,
 };
-pub(crate) use restore::{inspect_configuration_candidate, stage_restore_with_configuration};
+pub(crate) use restore::{
+    archive_deletion::check_staged_archive_deletion, inspect_configuration_candidate,
+    stage_restore_with_configuration,
+};
 
 /// A native restore candidate resolved against the archive's secrets.
 pub(crate) struct NativeConfigurationCandidate {

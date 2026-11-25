@@ -263,7 +263,7 @@ stream, and is intended for the scrubbed diagnostics-package workflow rather tha
 ## Local archive
 
 Local fourth-tier archive configuration and background copy, probe, retry, cancel,
-restore, and primary eviction use the Administrator-only WebRTC
+restore, primary eviction, and archive deletion preview and confirmation use the Administrator-only WebRTC
 [`ArchiveCommand` contract](webrtc.md#local-fourth-tier-archive). Archived recording
 playback uses the existing stored-media commands and reports `StoredMediaState.archive`.
 

@@ -26,6 +26,13 @@ export const serverCapabilityCatalog = {
 		failureGuarantee:
 			'Unverified replicas cannot retire primary media; failed jobs remain visible and retryable'
 	},
+	'keeppeek.local-archive-retention.v1': {
+		delivery: 'ships',
+		serverOwns: 'Verified archive age, primary-copy checks and confirmed deletion receipts',
+		unlocks: 'Administrator archive retention and per-batch deletion previews',
+		whenMissing: 'Hide archive retention and deletion controls',
+		failureGuarantee: 'A changed or unavailable primary blocks archive deletion'
+	},
 	'keeppeek.recording.pre-roll.v1': {
 		delivery: 'ships',
 		serverOwns:

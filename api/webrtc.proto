@@ -1463,7 +1463,7 @@ enum StorageObjectKind {
   STORAGE_OBJECT_KIND_THUMBNAIL = 3;
 }
 message StorageObject { StorageObjectKind kind = 1; string id = 2; }
-message ListStorageObjects { string volume_id = 1; StorageObject after = 2; }
+message ListStorageObjects { string volume_id = 1; StorageObject after = 2; bool archive_copy_candidates_only = 3; }
 message PreviewStorageMove {
   StorageObject object = 1;
   string destination_volume_id = 2;
@@ -4271,6 +4271,10 @@ message ArchiveSettings {
   uint64 maximum_pending_bytes = 10;
   uint64 operation_timeout_secs = 11;
   uint32 maximum_attempts = 12;
+  // Positive days since durable verification. Omission preserves the current setting.
+  optional uint32 retention_days = 13;
+  // Update-only: explicitly return to indefinite retention. Mutually exclusive with retention_days.
+  bool clear_retention_days = 14;
 }
 
 // Administrator-only archive operations. Configuration uses RuntimeConfigurationCommand.
@@ -4285,6 +4289,8 @@ message ArchiveCommand {
     RetryArchiveJob retry = 6;
     RestoreArchiveObject restore = 7;
     EvictArchiveSource evict = 8;
+    PreviewArchiveDeletion preview_deletion = 9;
+    ConfirmArchiveDeletion confirm_deletion = 10;
   }
 }
 message ProbeArchive {}
@@ -4299,6 +4305,39 @@ message CancelArchiveJob { string job_id = 1; }
 message RetryArchiveJob { string job_id = 1; }
 message RestoreArchiveObject { string job_id = 1; }
 message EvictArchiveSource { string job_id = 1; }
+message PreviewArchiveDeletion {
+  // A single explicit job, or one bounded page evaluated against retention_days.
+  oneof selection {
+    string job_id = 1;
+    ListArchiveJobs retention_page = 2;
+  }
+}
+message ConfirmArchiveDeletion {
+  string plan_id = 1;
+  string confirmation_nonce = 2;
+  string expected_revision = 3;
+}
+message ArchiveDeletionItem {
+  string job_id = 1;
+  string object_id = 2;
+  StorageObjectKind kind = 3;
+  uint64 bytes = 4;
+  optional int64 verified_at_ms = 5;
+  // Eligible, queued, deleted, or a safe reason that preserves the replica.
+  string state = 6;
+}
+message ArchiveDeletionPreview {
+  string plan_id = 1;
+  string revision = 2;
+  string confirmation_nonce = 3;
+  int64 expires_at_ms = 4;
+  string target_id = 5;
+  repeated ArchiveDeletionItem items = 6;
+  string next_after_job_id = 7;
+  uint32 selected_count = 8;
+  uint64 selected_bytes = 9;
+  bool confirmed = 10;
+}
 message ArchiveStatus {
   bool runtime_available = 1;
   bool online = 2;
@@ -4334,6 +4373,7 @@ message ArchiveResult {
     ArchiveStatus status = 1;
     ArchiveJob job = 2;
     ArchiveJobList jobs = 3;
+    ArchiveDeletionPreview deletion_preview = 4;
   }
 }
 

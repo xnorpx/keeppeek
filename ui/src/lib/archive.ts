@@ -32,6 +32,7 @@ export type ArchiveDraft = Record<NumberKey, string> & {
 	automatic: boolean;
 	evictAfterArchive: boolean;
 	sourceIds: string;
+	retentionDays: string;
 };
 
 export function archiveDraft(value?: ArchiveSettings): ArchiveDraft {
@@ -52,6 +53,7 @@ export function archiveDraft(value?: ArchiveSettings): ArchiveDraft {
 		automatic: settings.automatic,
 		evictAfterArchive: settings.evictAfterArchive,
 		sourceIds: settings.sourceIds.join('\n'),
+		retentionDays: settings.retentionDays?.toString() ?? '',
 		minimumAgeSecs: settings.minimumAgeSecs.toString(),
 		maximumObjectBytes: settings.maximumObjectBytes.toString(),
 		maximumPendingCount: settings.maximumPendingCount.toString(),
@@ -61,7 +63,10 @@ export function archiveDraft(value?: ArchiveSettings): ArchiveDraft {
 	};
 }
 
-export function encodeArchiveDraft(draft: ArchiveDraft): ArchiveSettings {
+export function encodeArchiveDraft(
+	draft: ArchiveDraft,
+	previous?: ArchiveSettings
+): ArchiveSettings {
 	if (!draft.targetId.trim() || !draft.root.trim())
 		throw new Error('Target ID and archive root are required.');
 	const values = {} as Record<NumberKey, bigint>;
@@ -75,6 +80,12 @@ export function encodeArchiveDraft(draft: ArchiveDraft): ArchiveSettings {
 	}
 	if (values.maximumObjectBytes > values.maximumPendingBytes)
 		throw new Error('Maximum object bytes must fit the pending byte budget.');
+	const retentionDays = draft.retentionDays === '' ? undefined : Number(draft.retentionDays);
+	if (
+		retentionDays !== undefined &&
+		(!/^\d{1,10}$/.test(draft.retentionDays) || retentionDays < 1 || retentionDays > 4_294_967_295)
+	)
+		throw new Error('Retention days must be a positive whole number or blank.');
 	const sourceIds =
 		draft.sourceIds === '' ? [] : draft.sourceIds.split('\n').map((value) => value.trim());
 	if (
@@ -94,6 +105,8 @@ export function encodeArchiveDraft(draft: ArchiveDraft): ArchiveSettings {
 		enabled: draft.enabled,
 		automatic: draft.automatic,
 		evictAfterArchive: draft.evictAfterArchive,
+		retentionDays,
+		clearRetentionDays: retentionDays === undefined && previous?.retentionDays !== undefined,
 		sourceIds
 	});
 }

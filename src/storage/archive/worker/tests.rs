@@ -17,6 +17,7 @@ use std::{
     path::PathBuf,
 };
 
+mod deletion;
 mod lifecycle;
 mod probes;
 
@@ -53,6 +54,7 @@ impl Fixture {
             source_ids: vec![],
             minimum_age_secs: 0,
             evict_after_archive: false,
+            retention_days: None,
             maximum_object_bytes: 4 * 1024 * 1024 * 1024,
             maximum_pending_count: 256,
             maximum_pending_bytes: 64 * 1024 * 1024 * 1024,
@@ -93,6 +95,7 @@ impl Fixture {
 
     fn context(&self) -> Context {
         Context {
+            saved_configuration: None,
             settings: Arc::new(self.settings.clone()),
             catalog: self.catalog.handle(),
             shared: Arc::new(Shared {

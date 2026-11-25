@@ -9,6 +9,7 @@ use std::{
 };
 
 mod decode;
+pub mod deletion;
 mod dispatch;
 pub mod exports;
 use dispatch::dispatch;
@@ -56,6 +57,40 @@ pub struct Job {
     pub cleanup_acknowledged: bool,
     pub export_job_id: Option<String>,
     pub export_metadata: Option<String>,
+    pub deletion: Option<deletion::WorkItem>,
+    pub verified_ms: Option<i64>,
+}
+
+const BLOCKED_DELETION: &str = "Archive deletion blocked; check the primary and preview again";
+const REVERIFICATION_FAILURE: &str = "Archive reverification failed; check the target";
+
+impl Job {
+    pub(crate) fn error_code(&self) -> &'static str {
+        match self.error.as_deref() {
+            None => "",
+            Some(BLOCKED_DELETION) if self.state == "ready" => "archive_deletion_blocked",
+            Some("archive_primary_write_protection_required") => {
+                "archive_primary_write_protection_required"
+            }
+            Some(_) if self.reverification_failed() => "archive_reverification_failed",
+            Some(_) => "archive_operation_failed",
+        }
+    }
+
+    pub(crate) fn reverification_failed(&self) -> bool {
+        self.state == "ready"
+            && self.kind != "probe"
+            && self.action.is_empty()
+            && self.verified_ms.is_none()
+            && self.pending_deletion().is_none()
+            && self.error.as_deref() == Some(REVERIFICATION_FAILURE)
+    }
+
+    pub(crate) fn pending_deletion(&self) -> Option<&deletion::WorkItem> {
+        self.deletion
+            .as_ref()
+            .filter(|d| matches!(d.phase.as_str(), "queued" | "claimed" | "retired"))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +108,7 @@ pub struct Admission {
 
 #[derive(Debug)]
 pub enum Request {
+    Deletion(deletion::Request),
     Bind(Binding),
     Enqueue(Admission),
     Get(String),
@@ -170,6 +206,7 @@ pub enum Request {
 #[derive(Debug)]
 pub enum Reply {
     Done,
+    Deletion(Box<deletion::Plan>),
     Job(Option<Box<Job>>),
     Jobs(Vec<Job>),
     ExportDescriptions(Vec<exports::Description>),
@@ -191,6 +228,26 @@ impl RecordingCatalogHandle {
         response
             .recv_timeout(super::BUSY_TIMEOUT)
             .map_err(|_| anyhow::anyhow!("archive catalog reply timed out; reconcile by job ID"))?
+    }
+
+    pub(crate) fn ensure_archive_recovery_binding(
+        &self,
+        next: Option<&crate::storage::archive::settings::Settings>,
+    ) -> anyhow::Result<()> {
+        let binding = next
+            .filter(|settings| settings.enabled)
+            .map(|settings| -> anyhow::Result<_> {
+                let root = settings
+                    .root
+                    .to_str()
+                    .ok_or_else(|| anyhow::anyhow!("invalid archive root encoding"))?;
+                Ok((settings.target_id.clone(), root.to_owned()))
+            })
+            .transpose()?;
+        self.archive(Request::Deletion(deletion::Request::EnsureRecoveryBinding(
+            binding,
+        )))?;
+        Ok(())
     }
 
     pub(crate) fn archive_job(&self, id: &str) -> anyhow::Result<Job> {
@@ -392,14 +449,10 @@ async fn admission_source(
             operation: String::new(),
         });
     }
-    if value.kind == "recording" {
-        ensure_source_active(connection, &value.recording_id).await?;
-    }
     let mut rows = connection.query("SELECT a.destination_path,a.file_identity,a.bytes,a.digest,b.root,b.filesystem,b.root_identity,a.relative_key,a.operation
         FROM storage_volume_allocations a JOIN storage_volume_bindings b ON b.id=a.volume_id AND b.generation=a.generation
-        WHERE a.kind=?1 AND a.object_id=?2 AND a.state='published'
-        AND NOT EXISTS(SELECT 1 FROM storage_volume_moves m WHERE m.object_id=a.object_id AND m.kind=a.kind
-            AND (m.phase NOT IN('complete','cancelled') OR m.receipt_acknowledged=0))",
+        JOIN archive_copy_sources eligible ON eligible.operation=a.operation
+        WHERE a.kind=?1 AND a.object_id=?2",
         (value.kind.as_str(),value.recording_id.as_str())).await?;
     let row = rows
         .next()
@@ -446,10 +499,9 @@ async fn check_capacity(
 }
 
 async fn ensure_source_active(connection: &turso::Connection, id: &str) -> anyhow::Result<()> {
-    let mut rows=connection.query("SELECT 1 FROM recording_files r WHERE r.id=?1 AND r.finalized=1 AND r.cleanup_pending=0
-        AND NOT EXISTS(SELECT 1 FROM recording_maintenance_claims c WHERE c.recording_id=r.id AND c.active=1)
-        AND NOT EXISTS(SELECT 1 FROM storage_recording_retirements q WHERE q.recording_id=r.id AND q.complete=0)
-        AND NOT EXISTS(SELECT 1 FROM storage_recording_recovery q WHERE q.recording_id=r.id AND q.complete=0)", [id]).await?;
+    let mut rows = connection
+        .query("SELECT 1 FROM archive_active_recordings WHERE id=?1", [id])
+        .await?;
     anyhow::ensure!(
         rows.next().await?.is_some(),
         "recording is active, retiring or unavailable"
@@ -537,8 +589,27 @@ async fn ready(
         validate_source_location(connection, &job, "published").await?;
     }
     connection.execute("UPDATE archive_replicas SET state='ready',version=?2,chunk_hashes=?3,error=NULL,target_reserved_bytes=0,target_materialized_bytes=0 WHERE job_id=?1",turso::params![id,version.token.clone(),chunk_hashes.to_vec()]).await?;
+    if job.kind != "probe" {
+        record_verification(connection, id, &version.token).await?;
+    }
     super::locations::bump_revision(connection).await?;
     Ok(Reply::Job(load(connection, id).await?.map(Box::new)))
+}
+
+async fn record_verification(
+    connection: &turso::Connection,
+    id: &str,
+    version: &str,
+) -> anyhow::Result<()> {
+    connection
+        .execute(
+            "INSERT INTO archive_verified_at(job_id,version,verified_ms) VALUES(?1,?2,?3)
+        ON CONFLICT(job_id) DO UPDATE SET version=excluded.version,verified_ms=excluded.verified_ms
+        WHERE archive_verified_at.version<>excluded.version",
+            turso::params![id, version, super::current_unix_time_ms()],
+        )
+        .await?;
+    Ok(())
 }
 
 async fn update_state(
@@ -557,6 +628,37 @@ async fn update_state(
 
 async fn retry(connection: &turso::Connection, id: &str) -> anyhow::Result<Reply> {
     let job = required(connection, id).await?;
+    if job
+        .deletion
+        .as_ref()
+        .is_some_and(|item| matches!(item.phase.as_str(), "claimed" | "retired"))
+    {
+        connection
+            .execute(
+                "UPDATE archive_deletion_items SET attempts=0 WHERE job_id=?1",
+                [id],
+            )
+            .await?;
+        connection
+            .execute(
+                "UPDATE archive_replicas SET error=NULL WHERE job_id=?1",
+                [id],
+            )
+            .await?;
+        return Ok(Reply::Job(load(connection, id).await?.map(Box::new)));
+    }
+    if job.reverification_failed() {
+        // A zeroed row is the durable Administrator request, including when retention is indefinite.
+        connection.execute("INSERT INTO archive_reverification_retries(job_id,attempts,retry_after_ms) VALUES(?1,0,0)
+             ON CONFLICT(job_id) DO UPDATE SET attempts=0,retry_after_ms=0", [id]).await?;
+        connection
+            .execute(
+                "UPDATE archive_replicas SET error=NULL WHERE job_id=?1",
+                [id],
+            )
+            .await?;
+        return Ok(Reply::Job(load(connection, id).await?.map(Box::new)));
+    }
     if job.cancelled {
         if !job.cleanup_acknowledged {
             connection
@@ -603,6 +705,9 @@ async fn retry(connection: &turso::Connection, id: &str) -> anyhow::Result<Reply
 
 async fn cancel(connection: &turso::Connection, id: &str) -> anyhow::Result<Reply> {
     let job = required(connection, id).await?;
+    if job.pending_deletion().is_some() {
+        return deletion::withdraw_queued(connection, id).await;
+    }
     if job.state == "ready" {
         anyhow::ensure!(
             !job.action.is_empty(),
@@ -734,14 +839,20 @@ async fn candidates(
     Ok(Reply::Candidates(values))
 }
 
-async fn page(connection: &turso::Connection, after: &str, limit: u16) -> anyhow::Result<Reply> {
+async fn page(
+    connection: &turso::Connection,
+    after: &str,
+    limit: u16,
+    pending_deletions_only: bool,
+) -> anyhow::Result<Reply> {
     anyhow::ensure!((1..=64).contains(&limit), "invalid archive job page size");
-    let mut rows = connection
-        .query(
-            "SELECT job_id FROM archive_replicas WHERE job_id>?1 ORDER BY job_id LIMIT ?2",
-            (after, i64::from(limit)),
-        )
-        .await?;
+    let query = if pending_deletions_only {
+        "SELECT job_id FROM archive_deletion_items WHERE phase IN('queued','claimed','retired')
+         AND job_id>?1 ORDER BY job_id LIMIT ?2"
+    } else {
+        "SELECT job_id FROM archive_replicas WHERE job_id>?1 ORDER BY job_id LIMIT ?2"
+    };
+    let mut rows = connection.query(query, (after, i64::from(limit))).await?;
     let mut ids = Vec::with_capacity(usize::from(limit));
     while let Some(row) = rows.next().await? {
         ids.push(row.get::<String>(0)?);
@@ -763,7 +874,11 @@ async fn pending(connection: &turso::Connection, after: &str, limit: u16) -> any
         (1..=64).contains(&limit),
         "invalid archive pending page size"
     );
-    let mut rows=connection.query("SELECT job_id FROM archive_replicas WHERE job_id>?1 AND ((state IN('queued','copying','failed') AND cancelled=0) OR (kind='probe' AND (state='ready' OR (state='deleted' AND probe_acknowledged=0))) OR (state='ready' AND action!='') OR (state='cancelled' AND cleanup_acknowledged=0)) ORDER BY job_id LIMIT ?2",(after,i64::from(limit))).await?;
+    let mut rows=connection.query("SELECT a.job_id FROM archive_replicas a WHERE a.job_id>?1 AND ((a.state IN('queued','copying','failed') AND a.cancelled=0)
+        OR (a.kind='probe' AND (a.state='ready' OR (a.state='deleted' AND a.probe_acknowledged=0)))
+        OR (a.state='ready' AND a.action!='') OR (a.state='cancelled' AND a.cleanup_acknowledged=0)
+        OR EXISTS(SELECT 1 FROM archive_deletion_items d WHERE d.job_id=a.job_id AND d.phase IN('queued','claimed','retired')))
+        ORDER BY a.job_id LIMIT ?2",turso::params![after,i64::from(limit)]).await?;
     let mut ids = Vec::with_capacity(usize::from(limit));
     while let Some(row) = rows.next().await? {
         ids.push(row.get::<String>(0)?);
@@ -795,8 +910,12 @@ async fn load_internal(
         a.source_root,a.source_filesystem,a.source_root_identity,a.source_relative_key,a.source_operation,a.stage_identity,a.stage_bytes,
         a.version,a.state,a.attempts,a.cancelled,a.local_evicted,a.error,b.root,b.filesystem,b.root_identity,CASE WHEN ?2=1 THEN a.chunk_hashes ELSE X'' END,
         a.action,a.action_attempts,a.source_retirement_operation,a.restore_operation,a.restore_identity,a.restore_bytes,a.probe_acknowledged,
-        a.cleanup_identity,a.cleanup_bytes,a.cleanup_digest,a.cleanup_key,a.cleanup_complete,a.cleanup_acknowledged,a.export_job_id,a.export_metadata
-        FROM archive_replicas a JOIN archive_bindings b ON b.id=a.target_id WHERE a.job_id=?1",(id,i64::from(integrity))).await?;
+        a.cleanup_identity,a.cleanup_bytes,a.cleanup_digest,a.cleanup_key,a.cleanup_complete,a.cleanup_acknowledged,a.export_job_id,a.export_metadata,
+        d.operation,d.phase,d.attempts,v.verified_ms
+        FROM archive_replicas a JOIN archive_bindings b ON b.id=a.target_id
+        LEFT JOIN archive_deletion_items d ON d.job_id=a.job_id
+        LEFT JOIN archive_verified_at v ON v.job_id=a.job_id AND v.version=a.version
+        WHERE a.job_id=?1",(id,i64::from(integrity))).await?;
     let Some(row) = rows.next().await? else {
         return Ok(None);
     };
@@ -812,6 +931,10 @@ async fn action(connection: &turso::Connection, id: &str, action: &str) -> anyho
     anyhow::ensure!(
         job.action.is_empty() || job.action == action,
         "another archive action is pending"
+    );
+    anyhow::ensure!(
+        !job.deletion.as_ref().is_some_and(|d| d.phase == "queued"),
+        "archive deletion is pending"
     );
     anyhow::ensure!(
         if action == "evict" {
@@ -857,7 +980,6 @@ fn restore_object(key: &str) -> anyhow::Result<crate::storage::archive::target::
 }
 
 #[cfg(test)]
-#[path = "archive/tests.rs"]
 mod tests;
 
 async fn begin_restore(

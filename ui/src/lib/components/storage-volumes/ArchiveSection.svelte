@@ -14,15 +14,18 @@
 	import ArchiveDraftEditor from './ArchiveDraftEditor.svelte';
 	import ArchiveCopy from './ArchiveCopy.svelte';
 	import ArchiveActionDialog from './ArchiveActionDialog.svelte';
+	import ArchiveDeletionDialog from './ArchiveDeletionDialog.svelte';
 	let {
 		config,
 		controller,
 		onsaved,
+		retentionAvailable = false,
 		disabled = false
 	}: {
 		config: SanitizedConfig;
 		controller: ArchiveController;
 		onsaved: (result: SettingsConfigUpdateResponse) => void;
+		retentionAvailable?: boolean;
 		disabled?: boolean;
 	} = $props();
 	let jobs = $state<ArchiveJob[]>([]);
@@ -33,6 +36,7 @@
 	let error = $state('');
 	let message = $state('');
 	let confirmation = $state<{ kind: 'evict' | 'restore'; job: ArchiveJob } | null>(null);
+	let deletion = $state<{ jobId: string } | { after: string } | null>(null);
 	let alive = true;
 	onMount(() => {
 		void refresh();
@@ -79,6 +83,15 @@
 		jobs = [job, ...jobs.filter((current) => current.jobId !== job.jobId)].slice(0, 16);
 		message = 'Archive request accepted. Refresh archive jobs for progress.';
 	}
+	function jobStatus(job: ArchiveJob): string {
+		if (job.action === 'delete' && job.state === 'ready') return 'Archive deletion queued';
+		if (job.state === 'deleted') {
+			if (job.action === 'delete') return 'Deletion acknowledgement pending';
+			if (!job.action) return 'Deletion acknowledged';
+		}
+		return job.action ? `${job.state} · ${job.action}` : job.state;
+	}
+
 	async function action(kind: 'cancel' | 'retry' | 'restore' | 'evict', job: ArchiveJob) {
 		if (busy || disabled) return;
 		busy = true;
@@ -150,10 +163,23 @@
 		disabled={disabled || busy || !status?.runtimeAvailable || status?.probePending}
 		onclick={probe}>Test archive destination</Button
 	>
+	{#if retentionAvailable && config.storage.archive?.retentionDays}
+		<Button
+			type="button"
+			size="sm"
+			variant="outline"
+			class="min-h-11 sm:min-h-0"
+			disabled={disabled || busy || editing || !status?.runtimeAvailable}
+			onclick={() => (deletion = { after: '' })}
+		>
+			Preview expired archive copies
+		</Button>
+	{/if}
 	{#if message}<p role="status" class="text-sm break-words">{message}</p>{/if}
 	{#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
 	{#if editing}<ArchiveDraftEditor
 			{config}
+			{retentionAvailable}
 			{controller}
 			oncancel={() => {
 				editing = false;
@@ -172,14 +198,13 @@
 	<div class="space-y-3" aria-label="Archive jobs">
 		{#if !jobs.length}<p class="text-sm text-text-muted">No archive jobs on this page.</p>{/if}
 		{#each jobs as job (job.jobId)}
+			{@const queuedDeletion = job.state === 'ready' && job.action === 'delete'}
 			<article
 				class="min-w-0 space-y-2 rounded-sm border border-hairline p-3 text-sm"
 				aria-label={`Archive job ${job.jobId}`}
 			>
 				<p class="font-medium break-all">
-					{job.kind === StorageObjectKind.EXPORT ? 'Export' : 'Recording'} · {job.state}{job.action
-						? ` · ${job.action}`
-						: ''}
+					{job.kind === StorageObjectKind.EXPORT ? 'Export' : 'Recording'} · {jobStatus(job)}
 				</p>
 				<p class="text-xs break-all text-text-muted">
 					Target {job.targetId} · {job.bytes.toString()} bytes · Attempt {job.attempts}{job.action
@@ -202,28 +227,39 @@
 					</dl>
 				</details>
 				<p class="text-xs text-text-muted">
-					{job.primaryCopy === ArchivePrimaryCopyState.EVICTED
-						? 'Primary evicted; archive retained.'
-						: job.primaryCopy === ArchivePrimaryCopyState.EVICTING
-							? 'Primary eviction is reconciling. Cancellation is unavailable.'
-							: 'Primary copy retained.'}
+					{job.kind === StorageObjectKind.EXPORT
+						? 'Deletion checks the retained primary export.'
+						: job.primaryCopy === ArchivePrimaryCopyState.EVICTED
+							? 'Primary evicted; archive retained.'
+							: job.primaryCopy === ArchivePrimaryCopyState.EVICTING
+								? 'Primary eviction is reconciling. Cancellation is unavailable.'
+								: 'Primary copy retained.'}
 				</p>
 				{#if job.errorCode}<p role="alert" class="text-sm text-destructive">
-						{job.action === 'restore'
-							? 'Restore failed. Check the primary disk and retry. The archive copy is retained.'
-							: 'Archive operation failed. Refresh the job and destination status before retrying.'}
+						{job.errorCode === 'archive_reverification_failed'
+							? 'Archive verification failed. Check that the target is available, then retry verification.'
+							: job.errorCode === 'archive_deletion_blocked'
+								? 'Archive retained. Check that the primary copy is present and verified, resolve the blocking condition, then preview archive deletion again.'
+								: job.errorCode === 'archive_primary_write_protection_required'
+									? 'Archive retained. The primary needs filesystem-enforced write protection before this archive copy can be removed. On Linux, the primary must have fs-verity and the immutable flag.'
+									: job.action === 'restore'
+										? 'Restore failed. Check the primary disk and retry. The archive copy is retained.'
+										: 'Archive operation failed. Refresh the job and destination status before retrying.'}
 					</p>{/if}
 				<div class="flex flex-wrap gap-2">
-					{#if (job.state === 'queued' || job.state === 'copying' || job.action) && job.primaryCopy !== ArchivePrimaryCopyState.EVICTING}<Button
+					{#if queuedDeletion || ((job.state === 'queued' || job.state === 'copying' || job.action) && job.action !== 'delete' && job.primaryCopy !== ArchivePrimaryCopyState.EVICTING)}<Button
 							class="min-h-11 sm:min-h-0"
 							type="button"
 							size="sm"
 							variant="outline"
 							disabled={disabled || busy}
-							aria-label={`Cancel archive job ${job.jobId}`}
-							onclick={() => action('cancel', job)}>Cancel</Button
+							aria-label={queuedDeletion
+								? `Cancel queued archive deletion ${job.objectId}`
+								: `Cancel archive job ${job.jobId}`}
+							onclick={() => action('cancel', job)}
+							>{queuedDeletion ? 'Cancel queued archive deletion' : 'Cancel'}</Button
 						>{/if}
-					{#if job.state === 'failed' || job.state === 'cancelled' || (job.errorCode && job.action)}<Button
+					{#if status?.runtimeAvailable && (job.state === 'failed' || job.state === 'cancelled' || (job.errorCode && job.action) || job.errorCode === 'archive_reverification_failed')}<Button
 							class="min-h-11 sm:min-h-0"
 							type="button"
 							size="sm"
@@ -233,8 +269,17 @@
 							onclick={() => action('retry', job)}
 							>{job.state === 'cancelled' ? 'Retry / finish cleanup' : 'Retry'}</Button
 						>{/if}
-					{#if job.state === 'ready' && !job.action}
-						{#if job.primaryCopy === ArchivePrimaryCopyState.EVICTED}<Button
+					{#if status?.runtimeAvailable && job.state === 'ready' && !job.action}
+						{#if retentionAvailable}<Button
+								type="button"
+								size="sm"
+								variant="outline"
+								class="min-h-11 sm:min-h-0"
+								disabled={disabled || busy || !status?.runtimeAvailable}
+								aria-label={`Preview archive deletion ${job.objectId}`}
+								onclick={() => (deletion = { jobId: job.jobId })}>Preview archive deletion</Button
+							>{/if}
+						{#if job.kind === StorageObjectKind.RECORDING && job.primaryCopy === ArchivePrimaryCopyState.EVICTED}<Button
 								class="min-h-11 sm:min-h-0"
 								type="button"
 								size="sm"
@@ -245,7 +290,7 @@
 									error = '';
 									confirmation = { kind: 'restore', job };
 								}}>Restore primary</Button
-							>{:else if job.primaryCopy === ArchivePrimaryCopyState.PRESENT}<Button
+							>{:else if job.kind === StorageObjectKind.RECORDING && job.primaryCopy === ArchivePrimaryCopyState.PRESENT}<Button
 								class="min-h-11 sm:min-h-0"
 								type="button"
 								size="sm"
@@ -273,6 +318,17 @@
 			onclick={() => refresh(next)}>Next archive page</Button
 		>{/if}
 </section>
+{#if deletion}
+	<ArchiveDeletionDialog
+		{controller}
+		selection={deletion}
+		{disabled}
+		onclose={() => {
+			deletion = null;
+			void refresh();
+		}}
+	/>
+{/if}
 <ArchiveActionDialog
 	request={confirmation}
 	busy={busy || disabled}

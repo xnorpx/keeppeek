@@ -1668,6 +1668,62 @@ access and seeking may be slower. Timeline metadata remains indexed after primar
 eviction, and direct local archive playback does not require a full restore first.
 Existing waiting, error, seek-generation, and cancellation behavior still applies.
 
+### Archive expiry and confirmed deletion
+
+`keeppeek.local-archive-retention.v1` advertises these additional controls.
+
+`ArchiveSettings.retention_days` (13) is an optional positive number of days
+since durable verification. A new configuration defaults to indefinite retention.
+An update that omits this field preserves the existing policy. Send
+`clear_retention_days` (14) to return to indefinite retention. Setting both
+fields is invalid. A legacy ready replica without a timestamp stays ineligible
+for age-based removal until the local worker completes a fresh verified readback.
+
+`ArchiveCommand.preview_deletion` (9) accepts a single explicit `job_id`, or
+`retention_page` with an exclusive job cursor and a limit of 1–16 (default 16).
+The age-based selection requires a configured retention period. Each page is
+independent. `ArchiveResult.deletion_preview` (4) reports the target alias,
+job and object IDs, byte counts, known verification times and eligibility.
+The result includes the selected count and bytes and the next cursor. A retention
+page with no eligible objects has an empty plan ID, revision and nonce. The client
+can continue browsing with the cursor without consuming an outstanding plan.
+An explicit job selection is available with indefinite retention.
+
+`ArchiveCommand.confirm_deletion` (10) requires the same Administrator,
+plan ID, revision and confirmation nonce within ten minutes. The server
+rechecks the selected versions, primary catalog ownership, retention policy
+and active readers. A matching repeat confirmation returns the existing batch
+for the reconciliation period of 30 days. Clients can retry a lost response
+with exactly the same values. Confirmation queues work for the archive
+worker. The worker opens the pinned primary, checks its full SHA-256, fences
+retirement and removes only the authorized archive version using a durable receipt.
+
+Item states include `eligible`, `retained`, `verification_date_unknown`,
+`restore_required`, `primary_unavailable`, `active_reader`, `preservation_hold`
+and `busy`. Confirmed items progress through `queued`, `claimed`, `retired`
+and `acknowledged`. Before the worker claims an item, an Administrator can withdraw its
+queued deletion with `ArchiveCommand.cancel`. Withdrawal keeps both copies and returns
+the item to `blocked`. Deleting it later requires a new preview and confirmation.
+Disabling or replacing the target requires each queued deletion to be withdrawn or processed.
+A claimed or retired item keeps its target until its durable receipt is acknowledged.
+An item blocked before claiming also requires a new preview.
+Each batch requires an explicit Administrator confirmation. A recording with
+an evicted primary requires successful restore first. A completed export with
+an expired or unavailable primary retains its archive copy.
+Windows holds a read handle that excludes writers through archive removal. On Linux,
+the surviving primary requires fs-verity and the immutable inode flag. An ordinary mutable Linux file,
+macOS and other server platforms retain both copies. After the job reaches `acknowledged`, a Linux
+filesystem administrator can verify the surviving primary's catalog identity and digest, then clear
+its immutable flag with `chattr -i -- /absolute/path/to/the/verified-primary.mp4` if normal moves or
+retention must resume. The file's fs-verity content protection persists. Leave the flag set while
+the job is queued, claimed or awaiting acknowledgement. The job reports
+`archive_primary_write_protection_required` when this prevents removal.
+The catalog retains an acknowledged deletion tombstone for that recording or export.
+Both automatic admission and the manual copy picker exclude its object identity.
+The picker sets `ListStorageObjects.archive_copy_candidates_only` (field 3). The
+catalog applies archive source eligibility before sorting and limiting the page.
+The default volume inventory continues to include retained primary objects.
+
 ## Guest evidence review
 
 `keeppeek.guest-review.v1` advertises `ShareCommand` (request tag 31) and

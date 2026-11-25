@@ -57,7 +57,10 @@
 		try {
 			const response = await controller.storageVolumes(
 				create(StorageVolumeCommandSchema, {
-					action: { case: 'objects', value: { volumeId: source, after } }
+					action: {
+						case: 'objects',
+						value: { volumeId: source, after, archiveCopyCandidatesOnly: true }
+					}
 				})
 			);
 			if (!alive) return;

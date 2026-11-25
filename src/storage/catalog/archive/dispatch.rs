@@ -8,6 +8,7 @@ pub(super) async fn dispatch(
     request: Request,
 ) -> anyhow::Result<Reply> {
     match request {
+        Request::Deletion(request) => deletion::dispatch(connection, registry, request).await,
         Request::Bind(binding) => bind(connection, &binding).await,
         Request::Enqueue(admission) => enqueue(connection, &admission).await,
         Request::Get(id) => Ok(Reply::Job(load(connection, &id).await?.map(Box::new))),
@@ -20,7 +21,7 @@ pub(super) async fn dispatch(
             requester,
             retained,
         } => exports::list(connection, &requester, &retained).await,
-        Request::List { after, limit } => page(connection, &after, limit).await,
+        Request::List { after, limit } => page(connection, &after, limit, false).await,
         Request::Pending { after, limit } => pending(connection, &after, limit).await,
         Request::Candidates {
             after,
