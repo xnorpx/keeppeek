@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,9 +15,84 @@ permissions:
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 jobs:
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      ui: ${{ steps.filter.outputs.ui }}
+      ui_e2e: ${{ steps.filter.outputs.ui_e2e }}
+      docs: ${{ steps.filter.outputs.docs }}
+      python: ${{ steps.filter.outputs.python }}
+      container: ${{ steps.filter.outputs.container }}
+      home_assistant: ${{ steps.filter.outputs.home_assistant }}
+    steps:
+      - name: Checkout repository
+        if: github.event_name != 'push'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Classify changed paths
+        id: filter
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: |
+          emit_all_true() {
+            {
+              echo "rust=true"
+              echo "ui=true"
+              echo "ui_e2e=true"
+              echo "docs=true"
+              echo "python=true"
+              echo "container=true"
+              echo "home_assistant=true"
+            } >> "$GITHUB_OUTPUT"
+          }
+          if [[ "$EVENT_NAME" == "push" || -z "$BASE_SHA" ]]; then
+            emit_all_true
+            exit 0
+          fi
+          if ! git fetch --no-tags --depth=1 origin "$BASE_SHA" 2>/dev/null; then
+            emit_all_true
+            exit 0
+          fi
+          changed="$(git diff --name-only "$BASE_SHA" HEAD || true)"
+          if [[ -z "$changed" ]]; then
+            emit_all_true
+            exit 0
+          fi
+          echo "Changed files:"
+          printf '  %s\n' "$changed"
+          has_match() {
+            printf '%s\n' "$changed" | grep -Eq "$1" && echo "true" || echo "false"
+          }
+          rust="$(has_match '^(Cargo\.(toml|lock)|\.cargo/|build\.rs|src/|crates/|tests/|api/|installer/|\.github/workflows/ci\.yml|\.github/actions/)')"
+          ui="$(has_match '^(ui/|api/|\.npmrc|\.github/workflows/ci\.yml)')"
+          docs="$(has_match '^(book/|docs/|README\.md|ui/scripts/.*wiki.*|\.github/workflows/ci\.yml)')"
+          python="$(has_match '^(examples/object_detection_service/|api/|\.github/workflows/ci\.yml)')"
+          container="$(has_match '^(Dockerfile|\.dockerignore)')"
+          home_assistant="$(has_match '^(ui/home-assistant|ui/vite\.home-assistant|ui/playwright\.home-assistant|ui/scripts/.*home-assistant.*)')"
+          if [[ "$rust" == "true" || "$ui" == "true" || "$python" == "true" || "$home_assistant" == "true" ]]; then
+            ui_e2e="true"
+          else
+            ui_e2e="false"
+          fi
+          {
+            echo "rust=$rust"
+            echo "ui=$ui"
+            echo "ui_e2e=$ui_e2e"
+            echo "docs=$docs"
+            echo "python=$python"
+            echo "container=$container"
+            echo "home_assistant=$home_assistant"
+          } >> "$GITHUB_OUTPUT"
+
   fmt:
     name: Format
     runs-on: ubuntu-latest
@@ -38,6 +114,8 @@ jobs:
 
   book:
     name: Book
+    needs: [changes]
+    if: github.event_name == 'push' || needs.changes.outputs.docs == 'true' || needs.changes.outputs.ui == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -89,25 +167,37 @@ jobs:
 
   clippy:
     name: Clippy
+    needs: [changes]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Skip Clippy without Rust changes
+        if: github.event_name != 'push' && needs.changes.outputs.rust != 'true'
+        run: echo "Skipping Clippy because no Rust files changed."
+      - if: github.event_name == 'push' || needs.changes.outputs.rust == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - if: github.event_name == 'push' || needs.changes.outputs.rust == 'true'
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - if: github.event_name == 'push' || needs.changes.outputs.rust == 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - if: github.event_name == 'push' || needs.changes.outputs.rust == 'true'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version-file: ui/.bun-version
-      - working-directory: ui
+      - if: github.event_name == 'push' || needs.changes.outputs.rust == 'true'
+        working-directory: ui
         run: bun install --no-save --registry=https://registry.npmjs.org/
-      - run: cargo clippy --locked --all --all-targets -- -D warnings
+      - if: github.event_name == 'push' || needs.changes.outputs.rust == 'true'
+        run: cargo clippy --locked --all --all-targets -- -D warnings
 
   machete:
     name: Unused Dependencies
+    needs: [changes]
+    if: github.event_name == 'push' || needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -122,6 +212,8 @@ jobs:
 
   doctest:
     name: Rust Doctests
+    needs: [changes]
+    if: github.event_name == 'push' || needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -139,6 +231,8 @@ jobs:
 
   object-detection-example:
     name: Object Detection Example (${{ matrix.os }})
+    needs: [changes]
+    if: github.event_name == 'push' || needs.changes.outputs.python == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.os == 'ubuntu-latest' && 25 || 15 }}
     strategy:
@@ -181,6 +275,8 @@ jobs:
 
   object-detection-integration:
     name: Object Detection Integration
+    needs: [changes]
+    if: github.event_name == 'push' || needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -237,6 +333,8 @@ jobs:
 
   rust-build:
     name: Rust Build (${{ matrix.os }})
+    needs: [changes]
+    if: github.event_name == 'push' || needs.changes.outputs.rust == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -307,9 +405,10 @@ jobs:
 
   rust-test:
     name: Rust Test (${{ matrix.os }}, ${{ matrix.suite }})
+    needs: [changes]
+    if: github.event_name == 'push' || needs.changes.outputs.rust == 'true'
     runs-on: ${{ matrix.os }}
-    # ponytail: The core suite uses a 45-minute limit for cold builds and integration tests.
-    # Split the core suite into shards if a runner approaches 45 minutes.
+    # ponytail: Keep a 45-minute core timeout for full push-to-main suites and cold builds.
     timeout-minutes: ${{ matrix.suite == 'core' && 45 || 30 }}
     strategy:
       fail-fast: true
@@ -324,6 +423,10 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          tool: nextest
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version-file: ui/.bun-version
@@ -342,10 +445,10 @@ jobs:
           features=()
           threads=()
           post_merge_tests=()
-          # The full Windows suites still run on every push to main.
-          # Linux and macOS retain the full core suite in pull-request CI.
-          if [[ "$RUNNER_OS" == "Windows" \
-            && "$CI_EVENT_NAME" == "pull_request" \
+          # Full Windows and macOS suites run on every push to main.
+          # Pull requests and merge groups run full Linux tests via nextest plus OS-targeted macOS and Windows tests.
+          if [[ "$RUNNER_OS" != "Linux" \
+            && "$CI_EVENT_NAME" != "push" \
             && "${{ matrix.suite }}" == "durable-state" ]]; then
             for test_filter in \
               'storage::volumes::runtime::' \
@@ -355,29 +458,40 @@ jobs:
               'server::state_store_durable::qualification::' \
               'server::state_store_durable::tests::continuous_churn_reuses_disk_without_restart' \
               'server::state_store_durable::tests::churn_holds_a_steady_disk_ceiling_and_reclaims_quota'; do
-              echo "Windows post-merge qualification: $test_filter"
+              echo "Post-merge qualification: $test_filter"
               post_merge_tests+=(--skip "$test_filter")
             done
           fi
           if [[ "$RUNNER_OS" == "macOS" ]]; then
             features=(--features macos-test-aws-crypto)
           fi
-          if [[ "${{ matrix.suite }}" == "durable-state" ]]; then
-            if [[ "$RUNNER_OS" != "Linux" ]]; then
-              threads=(--test-threads=2)
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            if [[ "${{ matrix.suite }}" == "durable-state" ]]; then
+              cargo nextest run --locked -p keeppeek --lib -E 'test(/server::state_store_durable::/)' 2>&1 | tee rust-test-results.log
+            else
+              cargo nextest run --locked --workspace --lib --bins --tests -E 'not test(/server::state_store_durable::/)' 2>&1 | tee rust-test-results.log
             fi
+          elif [[ "${{ matrix.suite }}" == "durable-state" ]]; then
+            threads=(--test-threads=2)
             cargo test --locked -p keeppeek --lib "${features[@]}" "$DURABLE_STATE_TESTS" -- "${threads[@]}" "${post_merge_tests[@]}" 2>&1 | tee rust-test-results.log
           else
-            if [[ "$RUNNER_OS" != "Linux" ]]; then
-              threads=(--test-threads=1)
-            fi
-            if [[ "$RUNNER_OS" == "Windows" && "$CI_EVENT_NAME" == "pull_request" ]]; then
+            threads=(--test-threads=1)
+            if [[ "$RUNNER_OS" == "Windows" && "$CI_EVENT_NAME" != "push" ]]; then
               cargo test --locked -p keeppeek --lib "${features[@]}" runtime_profile_ \
                 -- "${threads[@]}" 2>&1 | tee rust-test-results.log
               cargo test --locked -p keeppeek --lib "${features[@]}" \
                 -- "${threads[@]}" volume_roots_reject_windows_devices_and_ambiguous_paths \
                 acknowledged_retirement_cleans_receipts_and_retries_without_media_deletion 2>&1 | tee -a rust-test-results.log
               cargo test --locked -p keeppeek --test tui_terminal -- "${threads[@]}" 2>&1 | tee -a rust-test-results.log
+            elif [[ "$RUNNER_OS" == "macOS" && "$CI_EVENT_NAME" != "push" ]]; then
+              cargo test --locked -p keeppeek --lib "${features[@]}" runtime_profile_ \
+                -- "${threads[@]}" 2>&1 | tee rust-test-results.log
+              cargo test --locked -p keeppeek --lib "${features[@]}" webrtc:: \
+                -- "${threads[@]}" 2>&1 | tee -a rust-test-results.log
+              cargo test --locked -p keeppeek --lib "${features[@]}" config::tests:: \
+                -- "${threads[@]}" 2>&1 | tee -a rust-test-results.log
+              cargo test --locked -p keeppeek --test tui_terminal "${features[@]}" \
+                -- "${threads[@]}" 2>&1 | tee -a rust-test-results.log
             else
               cargo test --locked --all --lib --bins --tests "${features[@]}" -- --skip "$DURABLE_STATE_TESTS" "${threads[@]}" "${post_merge_tests[@]}" 2>&1 | tee rust-test-results.log
             fi
@@ -394,7 +508,7 @@ jobs:
   rust-compatibility-gate:
     name: Build & Test (${{ matrix.os }})
     if: always()
-    needs: [rust-build, rust-test]
+    needs: [changes, rust-build, rust-test]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     strategy:
@@ -404,11 +518,18 @@ jobs:
     steps:
       - name: Require separate Rust build and test jobs
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          RUST_CHANGED: ${{ needs.changes.outputs.rust }}
           RUST_BUILD_RESULT: ${{ needs.rust-build.result }}
           RUST_TEST_RESULT: ${{ needs.rust-test.result }}
         run: |
-          test "$RUST_BUILD_RESULT" = success
-          test "$RUST_TEST_RESULT" = success
+          if [[ "$EVENT_NAME" == "push" || "$RUST_CHANGED" == "true" ]]; then
+            test "$RUST_BUILD_RESULT" = success
+            test "$RUST_TEST_RESULT" = success
+          else
+            test "$RUST_BUILD_RESULT" = success -o "$RUST_BUILD_RESULT" = skipped
+            test "$RUST_TEST_RESULT" = success -o "$RUST_TEST_RESULT" = skipped
+          fi
 
   windows-signing:
     name: Windows Signing
@@ -516,42 +637,60 @@ jobs:
 
   ui-static:
     name: UI (ubuntu-latest)
+    needs: [changes]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
       run:
         working-directory: ui
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - name: Skip UI static checks without UI changes
+        if: github.event_name != 'push' && needs.changes.outputs.ui != 'true'
+        run: echo "Skipping UI static checks because no UI files changed."
+      - if: github.event_name == 'push' || needs.changes.outputs.ui == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - if: github.event_name == 'push' || needs.changes.outputs.ui == 'true'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version-file: ui/.bun-version
       - name: Install UI dependencies
+        if: github.event_name == 'push' || needs.changes.outputs.ui == 'true'
         run: bun install --no-save --registry=https://registry.npmjs.org/
       - name: Build Home Assistant card from clean checkout
+        if: github.event_name == 'push' || needs.changes.outputs.ui == 'true'
         run: |
           test ! -e .svelte-kit
           bun run build:home-assistant
       - name: Run static UI quality checks
+        if: github.event_name == 'push' || needs.changes.outputs.ui == 'true'
         run: bun run quality:static
       - name: Build production UI
+        if: github.event_name == 'push' || needs.changes.outputs.ui == 'true'
         run: bun run build
 
   ui-unit-bun:
     name: UI (macos-latest)
+    needs: [changes]
     runs-on: macos-latest
     timeout-minutes: 15
     defaults:
       run:
         working-directory: ui
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - name: Skip UI Bun unit tests without UI changes
+        if: github.event_name != 'push' && needs.changes.outputs.ui != 'true'
+        run: echo "Skipping UI Bun unit tests because no UI files changed."
+      - if: github.event_name == 'push' || needs.changes.outputs.ui == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - if: github.event_name == 'push' || needs.changes.outputs.ui == 'true'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version-file: ui/.bun-version
       - name: Install UI dependencies
+        if: github.event_name == 'push' || needs.changes.outputs.ui == 'true'
         run: bun install --no-save --registry=https://registry.npmjs.org/
       - name: Install FFmpeg
+        if: github.event_name == 'push' || needs.changes.outputs.ui == 'true'
         run: |
           if ! command -v ffmpeg >/dev/null 2>&1; then
             brew install ffmpeg
@@ -559,12 +698,15 @@ jobs:
           ffmpeg -version
           ffprobe -version
       - name: Run Bun-compatible unit tests
+        if: github.event_name == 'push' || needs.changes.outputs.ui == 'true'
         run: bun run test:unit:bun
 
   ui-e2e-build:
     name: UI E2E Build
+    needs: [changes]
+    if: github.event_name == 'push' || needs.changes.outputs.ui_e2e == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: ui
@@ -581,38 +723,8 @@ jobs:
         run: bun install --no-save --registry=https://registry.npmjs.org/
       - name: Build shared Playwright binaries and fixtures
         run: bun run test:e2e:prepare
-      - name: Upload shared Playwright binaries and fixtures
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: ui-e2e-linux
-          path: |
-            target/release/keeppeek
-            target/release/test_camera
-            target/e2e-mixed-codec
-            target/home-assistant-card/dist
-          if-no-files-found: error
-          retention-days: 1
-
-  ui-authentication-e2e-build:
-    name: UI Authentication E2E Build
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: ui
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          submodules: recursive
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version-file: ui/.bun-version
-      - name: Install UI dependencies
-        run: bun install --no-save --registry=https://registry.npmjs.org/
       - name: Build shared authentication browser fixture
-        # ponytail: Reuse the test executable so shards need no Rust build.
+        # ponytail: Build in the same job while target/release is hot so shards need no Rust build.
         working-directory: .
         shell: bash
         run: |
@@ -640,17 +752,23 @@ jobs:
           test -f "$executable"
           test -x "$executable"
           cp -- "$executable" target/e2e-authentication/keeppeek-authentication-fixture
-      - name: Upload shared authentication browser fixture
+      - name: Upload shared Playwright binaries and fixtures
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: ui-authentication-e2e-linux
-          path: target/e2e-authentication/keeppeek-authentication-fixture
+          name: ui-e2e-linux
+          path: |
+            target/release/keeppeek
+            target/release/test_camera
+            target/e2e-mixed-codec
+            target/home-assistant-card/dist
+            target/e2e-authentication/keeppeek-authentication-fixture
           if-no-files-found: error
           retention-days: 1
 
   ui-e2e:
     name: UI E2E (${{ matrix.shard }}/4)
-    needs: [ui-e2e-build, ui-authentication-e2e-build]
+    if: always() && (github.event_name == 'push' || needs.changes.outputs.ui_e2e == 'true') && needs.ui-e2e-build.result == 'success'
+    needs: [changes, ui-e2e-build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -678,11 +796,6 @@ jobs:
         with:
           name: ui-e2e-linux
           path: target
-      - name: Download shared authentication browser fixture
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: ui-authentication-e2e-linux
-          path: target/e2e-authentication
       - name: Restore executable permissions
         working-directory: .
         run: chmod +x target/release/keeppeek target/release/test_camera target/e2e-authentication/keeppeek-authentication-fixture
@@ -704,7 +817,8 @@ jobs:
 
   home-assistant-container:
     name: Home Assistant Container
-    needs: ui-e2e-build
+    if: always() && (github.event_name == 'push' || needs.changes.outputs.home_assistant == 'true') && needs.ui-e2e-build.result == 'success'
+    needs: [changes, ui-e2e-build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -757,7 +871,8 @@ jobs:
 
   external-analysis-conformance:
     name: External Analysis Conformance
-    needs: ui-e2e-build
+    if: always() && (github.event_name == 'push' || needs.changes.outputs.python == 'true') && needs.ui-e2e-build.result == 'success'
+    needs: [changes, ui-e2e-build]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -814,6 +929,8 @@ jobs:
 
   ui-windows-build:
     name: UI Windows Build
+    needs: [changes]
+    if: github.event_name == 'push' || needs.changes.outputs.ui == 'true'
     runs-on: windows-latest
     timeout-minutes: 15
     defaults:
@@ -832,44 +949,70 @@ jobs:
   ui-gate:
     name: UI (windows-latest)
     if: always()
-    needs: [ui-e2e-build, ui-e2e, ui-windows-build, home-assistant-container]
+    needs: [changes, ui-e2e-build, ui-e2e, ui-windows-build, home-assistant-container]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Require every UI integration job
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          UI_CHANGED: ${{ needs.changes.outputs.ui }}
+          UI_E2E_CHANGED: ${{ needs.changes.outputs.ui_e2e }}
+          HA_CHANGED: ${{ needs.changes.outputs.home_assistant }}
           E2E_BUILD_RESULT: ${{ needs.ui-e2e-build.result }}
           E2E_RESULT: ${{ needs.ui-e2e.result }}
           WINDOWS_BUILD_RESULT: ${{ needs.ui-windows-build.result }}
           HOME_ASSISTANT_RESULT: ${{ needs.home-assistant-container.result }}
         run: |
-          test "$E2E_BUILD_RESULT" = success
-          test "$E2E_RESULT" = success
-          test "$WINDOWS_BUILD_RESULT" = success
-          test "$HOME_ASSISTANT_RESULT" = success
+          if [[ "$EVENT_NAME" == "push" || "$UI_E2E_CHANGED" == "true" ]]; then
+            test "$E2E_BUILD_RESULT" = success
+            test "$E2E_RESULT" = success
+          else
+            test "$E2E_BUILD_RESULT" = success -o "$E2E_BUILD_RESULT" = skipped
+            test "$E2E_RESULT" = success -o "$E2E_RESULT" = skipped
+          fi
+          if [[ "$EVENT_NAME" == "push" || "$UI_CHANGED" == "true" ]]; then
+            test "$WINDOWS_BUILD_RESULT" = success
+          else
+            test "$WINDOWS_BUILD_RESULT" = success -o "$WINDOWS_BUILD_RESULT" = skipped
+          fi
+          if [[ "$EVENT_NAME" == "push" || "$HA_CHANGED" == "true" ]]; then
+            test "$HOME_ASSISTANT_RESULT" = success
+          else
+            test "$HOME_ASSISTANT_RESULT" = success -o "$HOME_ASSISTANT_RESULT" = skipped
+          fi
 
   coverage:
     name: Coverage (Rust + UI)
+    needs: [changes]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - name: Skip UI coverage without UI changes
+        if: github.event_name != 'push' && needs.changes.outputs.ui != 'true'
+        run: echo "Skipping UI coverage because no UI files changed."
+      - if: github.event_name == 'push' || needs.changes.outputs.ui == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - if: github.event_name == 'push' || needs.changes.outputs.ui == 'true'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version-file: ui/.bun-version
       - name: Install UI dependencies
+        if: github.event_name == 'push' || needs.changes.outputs.ui == 'true'
         working-directory: ui
         run: bun install --no-save --registry=https://registry.npmjs.org/
       - name: Install Chromium for Vitest browser tests
+        if: github.event_name == 'push' || needs.changes.outputs.ui == 'true'
         working-directory: ui
         run: bunx playwright install --with-deps chromium
       - name: Generate Svelte and TypeScript coverage
+        if: github.event_name == 'push' || needs.changes.outputs.ui == 'true'
         id: ui-coverage
         working-directory: ui
         continue-on-error: true
         run: bun run test:unit:coverage:ci
       - name: Write coverage summary
-        if: always()
+        if: always() && (github.event_name == 'push' || needs.changes.outputs.ui == 'true')
         shell: bash
         env:
           UI_COVERAGE_OUTCOME: ${{ steps.ui-coverage.outcome }}
@@ -894,7 +1037,7 @@ jobs:
             echo 'Bun-compatible tests run once in their own required job. Rust coverage runs in the extended Main workflow.'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload coverage reports
-        if: always()
+        if: always() && (github.event_name == 'push' || needs.changes.outputs.ui == 'true')
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: coverage-reports
@@ -902,11 +1045,13 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
       - name: Fail when coverage generation fails
-        if: always() && steps.ui-coverage.outcome != 'success'
+        if: always() && (github.event_name == 'push' || needs.changes.outputs.ui == 'true') && steps.ui-coverage.outcome != 'success'
         run: exit 1
 
   dependency-audit:
     name: Dependency Audit
+    needs: [changes]
+    if: github.event_name == 'push' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' || needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -966,6 +1111,8 @@ jobs:
 
   container:
     name: Container Build & Smoke Test
+    needs: [changes]
+    if: github.event_name == 'push' || needs.changes.outputs.container == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -979,6 +1126,8 @@ jobs:
           load: true
           push: false
           tags: keeppeek-ci:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
       - name: Start and probe the container
         env:
           IMAGE: keeppeek-ci:${{ github.sha }}
@@ -1034,14 +1183,10 @@ jobs:
         ui-static,
         ui-unit-bun,
         ui-e2e-build,
-        ui-authentication-e2e-build,
         ui-e2e,
         ui-windows-build,
         ui-gate,
-        external-analysis-conformance,
         coverage,
-        dependency-audit,
-        container,
       ]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1075,26 +1220,25 @@ jobs:
               'Unused Dependencies',
               'Rust Build (macos-latest)',
               'Rust Build (windows-latest)',
-              'Rust Test (ubuntu-latest)',
-              'Rust Test (macos-latest)',
-              'Rust Test (windows-latest)',
+              'Rust Test (ubuntu-latest, core)',
+              'Rust Test (ubuntu-latest, durable-state)',
+              'Rust Test (macos-latest, core)',
+              'Rust Test (macos-latest, durable-state)',
+              'Rust Test (windows-latest, core)',
+              'Rust Test (windows-latest, durable-state)',
               'Build & Test (ubuntu-latest)',
               'Build & Test (macos-latest)',
               'Build & Test (windows-latest)',
               'UI (ubuntu-latest)',
               'UI (macos-latest)',
               'UI E2E Build',
-              'UI Authentication E2E Build',
               'UI E2E (1/4)',
               'UI E2E (2/4)',
               'UI E2E (3/4)',
               'UI E2E (4/4)',
               'UI Windows Build',
               'UI (windows-latest)',
-              'External Analysis Conformance',
-              'Coverage (Rust + UI)',
-              'Dependency Audit',
-              'Container Build & Smoke Test'
+              'Coverage (Rust + UI)'
             ];
 
             const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
