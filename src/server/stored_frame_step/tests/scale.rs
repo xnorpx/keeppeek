@@ -20,7 +20,6 @@ pub(in crate::server::stored_frame_step) fn observe_range(bytes: u64) {
             bytes: counts.bytes + bytes,
         }));
     });
-    });
 }
 
 fn measured<T>(run: impl FnOnce() -> T) -> (T, Reads) {

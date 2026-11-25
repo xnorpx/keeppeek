@@ -20,6 +20,7 @@ import {
 	CameraStreamVerificationSchema,
 	CameraDeviceCapabilitiesSchema,
 	CameraInfoSchema,
+	CameraUpdatedSchema,
 	CameraConfigurationResultSchema,
 	CameraSettingsSchema,
 	CameraHealthSnapshotSchema,
@@ -2473,6 +2474,62 @@ describe('ControlClient', () => {
 			'clearScope',
 			'saveDraft'
 		]);
+		await client.close();
+	});
+
+	it('applies a camera update only to the current session and its existing inventory', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'camera-inventory',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const client = new ControlClient();
+		const original = await client.getServerCapabilities();
+		const stateReconnect = vi.spyOn(client.stateStore, 'handleConnectionOpened');
+		const profileReconnect = vi.spyOn(client.runtimeProfiles, 'handleConnectionOpened');
+		const access = vi.fn();
+		const contracts = vi.fn();
+		client.onAccessState(access);
+		client.onCapabilities(contracts);
+		const receive = FakePeerConnection.latest!.channels[0].onmessage!;
+		function update(sourceId: string, cameraId: string) {
+			const value = create(CameraUpdatedSchema, {
+				sourceId,
+				camera: {
+					sourceId: cameraId,
+					displayName: 'Updated',
+					deviceCapabilities: { twoWayAudio: true }
+				}
+			});
+			const envelope = create(ControlEnvelopeSchema, {
+				message: { case: 'notification', value: { event: { case: 'cameraUpdated', value } } }
+			});
+			receive({ data: toBinary(ControlEnvelopeSchema, envelope).buffer } as MessageEvent);
+		}
+		update('front-door', 'garage');
+		update('unknown', 'unknown');
+		expect(await client.getServerCapabilities()).toBe(original);
+		update('front-door', 'front-door');
+		const current = await client.getServerCapabilities();
+		expect(current.cameras[0].displayName).toBe('Updated');
+		expect(current.cameras[1]).toBe(original.cameras[1]);
+		expect(current.accessSession).toBe(original.accessSession);
+		expect(current.sourceSessions).toBe(original.sourceSessions);
+		expect(current.storedMediaSources).toBe(original.storedMediaSources);
+		expect((await client.getCameras())[0]).toMatchObject({
+			id: 'front-door',
+			capabilities: { two_way_audio: true }
+		});
+		expect(access).toHaveBeenCalledTimes(1);
+		expect(contracts).toHaveBeenCalledTimes(1);
+		expect(stateReconnect).not.toHaveBeenCalled();
+		expect(profileReconnect).not.toHaveBeenCalled();
+		await client.close();
+		const replacement = await client.getServerCapabilities();
+		update('front-door', 'front-door');
+		expect(await client.getServerCapabilities()).toBe(replacement);
+		expect(replacement.cameras[0].displayName).toBe('Front Door');
 		await client.close();
 	});
 

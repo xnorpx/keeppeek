@@ -1,14 +1,15 @@
+use super::audio::ObservedAudio;
 use crate::{
-    cameras::{AudioEncoding, SessionTimestampNormalizer, VideoEncoding},
-    keeppeek::{AudioMeta, KeepPeekEvent, StreamKind, VideoMeta},
+    cameras::{SessionTimestampNormalizer, VideoEncoding},
+    keeppeek::{KeepPeekEvent, StreamKind, VideoMeta},
     shutdown::Shutdown,
     stats::{
         CameraReport, HealthRegistry, IngressSnapshot, IngressStats, REPORT_INTERVAL, audio_report,
         log_camera_report, video_report,
     },
     storage::{
-        AudioCodec, AudioFrame, MediaFrame, RecordingFrame, RecordingStreamIdentity, StorageHandle,
-        VideoCodec, VideoFrame,
+        AudioFrame, MediaFrame, RecordingFrame, RecordingStreamIdentity, StorageHandle, VideoCodec,
+        VideoFrame,
     },
     webrtc::{
         Publisher, Source,
@@ -586,7 +587,6 @@ pub struct RtspLoop {
     pub password: String,
     pub transport: RtspTransport,
     pub video_meta: VideoMeta,
-    pub audio_meta: Option<AudioMeta>,
     pub storage: Option<StorageHandle>,
     pub live: Option<Publisher>,
     pub health: HealthRegistry,
@@ -692,27 +692,8 @@ impl RtspLoop {
             }
         }
 
-        driver.setup(0, self.transport)?;
-        for (index, stream) in driver.streams().iter().enumerate() {
-            tracing::debug!(
-                ip = %self.camera_ip,
-                stream = %self.stream,
-                track = index,
-                params = ?stream.parameters(),
-                "rtsp track",
-            );
-        }
-        for index in 1..driver.streams().len() {
-            if let Err(error) = driver.setup(index, self.transport) {
-                tracing::debug!(
-                    ip = %self.camera_ip,
-                    stream = %self.stream,
-                    track = index,
-                    %error,
-                    "skipping RTSP track",
-                );
-            }
-        }
+        let audio_track =
+            setup_described_tracks(&mut driver, self.transport, self.camera_ip, self.stream)?;
         let session = uuid::Uuid::new_v4();
         driver.play_reporting_failure(|tracks| {
             self.report_source_timing(tracks, session, "play_failed");
@@ -748,6 +729,7 @@ impl RtspLoop {
             .map(|_| source_epoch(session))
             .collect();
         let mut video_deadline = Instant::now() + MEDIA_IDLE_TIMEOUT;
+        let mut reported_unsupported_recording_audio = false;
         let mut pending_talkback = None;
         let mut talkback_session: Option<IsapiTalk> = None;
         let mut talkback_speaker: Option<IsapiSpeaker> = None;
@@ -766,7 +748,14 @@ impl RtspLoop {
                 Ok(None) => break Ok(()),
                 Err(error) => break Err(error),
             };
-            self.report_if_due(stats, previous, last_report, driver.streams(), session);
+            self.report_if_due(
+                stats,
+                previous,
+                last_report,
+                driver.streams(),
+                audio_track,
+                session,
+            );
             match item {
                 CodecItem::VideoFrame(frame) => {
                     video_deadline = Instant::now() + MEDIA_IDLE_TIMEOUT;
@@ -833,77 +822,78 @@ impl RtspLoop {
                     }
                 }
                 CodecItem::AudioFrame(frame) => {
-                    if let Some(audio_meta) = &self.audio_meta {
-                        let packet_timestamp = frame.packet_timestamp();
-                        let epoch = &mut source_epochs[frame.stream_id()];
-                        if frame.loss() > 0 {
-                            *epoch = source_epoch(session);
-                        }
-                        let timestamp = frame.timestamp().elapsed_duration();
-                        let duration = frame.duration();
-                        let data = frame.data().to_vec();
-                        stats.on_audio_frame(data.len());
-                        let frame_codec = match audio_meta.encoding {
-                            AudioEncoding::AAC => Some(AudioCodec::Aac),
-                            AudioEncoding::G711 => Some(AudioCodec::G711Alaw),
-                            _ => None,
-                        };
-                        if let Some(codec) = frame_codec {
-                            let sample_rate = audio_meta
-                                .sample_rate
-                                .unwrap_or_else(|| codec.default_sample_rate());
-                            let web_codec = match codec {
-                                AudioCodec::Aac => Some(WebRtcAudioCodec::Aac),
-                                AudioCodec::G711Alaw => Some(WebRtcAudioCodec::G711Alaw),
-                                AudioCodec::G711Ulaw => Some(WebRtcAudioCodec::G711Ulaw),
-                                AudioCodec::Adpcm => None,
-                            };
-                            if let Some(live) = &self.live
-                                && let Some(web_codec) = web_codec
-                            {
-                                live.publish_audio(
-                                    Source {
-                                        camera_ip: self.camera_ip,
-                                        stream: self.stream,
-                                    },
-                                    WebRtcAudioFrame {
-                                        codec: web_codec,
-                                        sample_rate_hz: sample_rate,
-                                        channel_count: 1,
-                                        duration: Some(duration),
-                                        timestamp,
-                                        received_at: Instant::now(),
-                                        data: Bytes::from(data.clone()),
-                                    },
-                                );
+                    let track_id = frame.stream_id();
+                    if audio_track != Some(track_id) {
+                        continue;
+                    }
+                    let Some(audio) = driver
+                        .streams()
+                        .get(track_id)
+                        .and_then(ObservedAudio::from_track)
+                    else {
+                        continue;
+                    };
+                    let packet_timestamp = frame.packet_timestamp();
+                    let epoch = &mut source_epochs[track_id];
+                    if frame.loss() > 0 {
+                        *epoch = source_epoch(session);
+                    }
+                    let timestamp = frame.timestamp().elapsed_duration();
+                    let duration = frame.duration();
+                    let data = Bytes::copy_from_slice(frame.data());
+                    stats.on_audio_frame(data.len());
+                    let received_at = Instant::now();
+                    if let Some(live) = &self.live {
+                        live.publish_audio_with_config(
+                            Source {
+                                camera_ip: self.camera_ip,
+                                stream: self.stream,
+                            },
+                            WebRtcAudioFrame {
+                                codec: audio.live_codec,
+                                sample_rate_hz: audio.sample_rate,
+                                channel_count: audio.channels,
+                                duration: Some(duration),
+                                timestamp,
+                                received_at,
+                                data: data.clone(),
+                            },
+                            audio.decoder_config,
+                        );
+                    }
+                    if let Some(storage) = &self.storage {
+                        let raw_aac_config = audio.recording_aac_config();
+                        if audio.storage_codec == crate::storage::AudioCodec::Aac
+                            && raw_aac_config.is_none()
+                        {
+                            if !reported_unsupported_recording_audio {
+                                tracing::warn!(stream = %self.stream, sample_rate = audio.sample_rate, channels = audio.channels,
+                                    "RTSP AAC recording unavailable for this decoder configuration");
+                                reported_unsupported_recording_audio = true;
                             }
-                            let frame = MediaFrame::Audio(AudioFrame {
-                                codec,
-                                sample_rate,
-                                duration,
-                                data: data.into(),
-                            });
-                            if let Some(storage) = &self.storage {
-                                let timestamp = timestamp
-                                    .map(|timestamp| audio_timestamps.normalize(timestamp));
-                                storage.ingest_stream(
-                                    RecordingStreamIdentity::new(
-                                        self.camera_ip.to_string(),
-                                        self.stream.to_string(),
-                                        &self.storage_label(),
-                                    ),
-                                    RecordingFrame {
-                                        source_rtp: Some(original_rtp_time(
-                                            epoch,
-                                            packet_timestamp,
-                                        )),
-                                        received_at: Instant::now(),
-                                        timestamp,
-                                        frame,
-                                    },
-                                );
-                            }
+                            continue;
                         }
+                        let timestamp =
+                            timestamp.map(|timestamp| audio_timestamps.normalize(timestamp));
+                        storage.ingest_stream(
+                            RecordingStreamIdentity::new(
+                                self.camera_ip.to_string(),
+                                self.stream.to_string(),
+                                &self.storage_label(),
+                            ),
+                            RecordingFrame {
+                                source_rtp: Some(original_rtp_time(epoch, packet_timestamp)),
+                                received_at,
+                                timestamp,
+                                frame: MediaFrame::Audio(AudioFrame {
+                                    codec: audio.storage_codec,
+                                    sample_rate: audio.sample_rate,
+                                    raw_aac_config,
+                                    duration,
+                                    data,
+                                }),
+                            },
+                        );
                     }
                 }
                 CodecItem::MessageFrame(frame) => {
@@ -1039,6 +1029,7 @@ impl RtspLoop {
         previous: &mut IngressSnapshot,
         last_report: &mut Instant,
         tracks: &[retina::client::Stream],
+        audio_track: Option<usize>,
         session: uuid::Uuid,
     ) {
         if last_report.elapsed() < REPORT_INTERVAL {
@@ -1062,9 +1053,10 @@ impl RtspLoop {
         if let Some(audio) = audio_report(
             &snapshot,
             &rates,
-            self.audio_meta
-                .as_ref()
-                .map(|audio| audio.encoding.to_string())
+            audio_track
+                .and_then(|index| tracks.get(index))
+                .and_then(ObservedAudio::from_track)
+                .map(|audio| audio.storage_codec.to_string())
                 .as_deref(),
         ) {
             streams.push(audio);
@@ -1093,9 +1085,54 @@ impl RtspLoop {
     }
 }
 
+fn setup_described_tracks(
+    driver: &mut BlockingRtsp,
+    transport: RtspTransport,
+    camera_ip: IpAddr,
+    stream_kind: StreamKind,
+) -> anyhow::Result<Option<usize>> {
+    driver.setup(0, transport)?;
+    for (index, stream) in driver.streams().iter().enumerate() {
+        tracing::debug!(
+            ip = %camera_ip,
+            stream = %stream_kind,
+            track = index,
+            params = ?stream.parameters(),
+            "rtsp track",
+        );
+    }
+    let mut audio_track = ObservedAudio::from_track(&driver.streams()[0]).map(|_| 0);
+    for index in 1..driver.streams().len() {
+        let stream = &driver.streams()[index];
+        let is_audio = stream.media().eq_ignore_ascii_case("audio");
+        if is_audio && (audio_track.is_some() || ObservedAudio::from_track(stream).is_none()) {
+            continue;
+        }
+        match driver.setup(index, transport) {
+            Ok(()) if is_audio => audio_track = Some(index),
+            Ok(()) => {}
+            Err(error) => {
+                tracing::debug!(
+                    ip = %camera_ip,
+                    stream = %stream_kind,
+                    track = index,
+                    %error,
+                    "skipping RTSP track",
+                );
+            }
+        }
+    }
+    Ok(audio_track)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{BlockingRtsp, RtspTransport, VideoContinuity, probe_rtsp_video};
+    mod audio;
+
+    use super::{
+        BlockingRtsp, RtspTransport, StreamKind, VideoContinuity, probe_rtsp_video,
+        setup_described_tracks,
+    };
     use crate::shutdown::Shutdown;
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use bytes::Bytes;

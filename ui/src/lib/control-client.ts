@@ -52,6 +52,7 @@ import type {
 } from './access';
 import { workspaceAccessChanged } from './access';
 import { NotificationControlClient } from './control-client-notifications';
+import { replaceKnownCamera } from './camera-inventory';
 import { SystemControlClient, healthProfile, numeric } from './control-client-system';
 import { ConfigurationControlClient } from './control-client-configuration';
 import { ControlClientStateStore } from './control-client-state-store';
@@ -2681,6 +2682,14 @@ export class ControlClient {
 			return;
 		}
 		if (envelope.message.case === 'notification') {
+			if (envelope.message.value.event.case === 'cameraUpdated') {
+				const updated = replaceKnownCamera(
+					this.#serverCapabilities,
+					envelope.message.value.event.value
+				);
+				if (updated) this.#serverCapabilities = updated;
+				return;
+			}
 			if (envelope.message.value.event.case === 'initialCapabilities') {
 				const capabilities = envelope.message.value.event.value;
 				if (

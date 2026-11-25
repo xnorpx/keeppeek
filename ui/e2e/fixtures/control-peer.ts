@@ -13,7 +13,13 @@ import {
 	ExternalIdentityListSchema,
 	BrowserSessionListSchema
 } from '../../src/lib/proto/webrtc_pb';
-import { create, fromBinary, toBinary, type JsonObject } from '@bufbuild/protobuf';
+import {
+	create,
+	fromBinary,
+	toBinary,
+	type JsonObject,
+	type MessageInitShape
+} from '@bufbuild/protobuf';
 import { AnySchema, durationFromMs, timestampFromDate } from '@bufbuild/protobuf/wkt';
 import type { Page } from '@playwright/test';
 import {
@@ -336,7 +342,14 @@ export type EventSearchControlRequest = {
 	includePreviewKeyframes: boolean;
 };
 
+type FixtureCamera = CameraListItem & {
+	groupIds?: string[];
+	sounds?: Pick<MessageInitShape<typeof CameraDeviceCapabilitiesSchema>, 'quickReplies' | 'chimes'>;
+};
+
 export type ControlRequests = {
+	doorbellSounds: { action: 'playQuickReply' | 'playChime'; sourceId: string; assetId: string }[];
+	talkbackCommands: number;
 	motion: MotionControlRequest[];
 	ptz: PtzControlRequest[];
 	manufacturer: ManufacturerControlRequest[];
@@ -446,7 +459,7 @@ export type MockControlPeerOptions = {
 	peekLayoutConflictOnSave?: boolean;
 	peekLayoutSaveGate?: Promise<void>;
 	storageWriteProbe?: { writable: boolean; detail: string };
-	cameras?: readonly CameraListItem[];
+	cameras?: readonly FixtureCamera[];
 	healthGate?: Promise<void>;
 	storedRanges?: readonly StoredRangeFixture[];
 	storedBucketedRanges?: readonly StoredRangeFixture[];
@@ -932,6 +945,8 @@ export async function mockControlPeer(
 	const reportedManufacturer = options.reportedManufacturer ?? 'ONVIF';
 	let currentCameras = options.cameras ?? [];
 	const requests: ControlRequests = {
+		doorbellSounds: [],
+		talkbackCommands: 0,
 		motion: [],
 		ptz: [],
 		manufacturer: [],
@@ -2768,10 +2783,22 @@ export async function mockControlPeer(
 				});
 			}
 		}
+		if (request.command.case === 'talkbackCommand') {
+			requests.talkbackCommands++;
+			return encodedError(request.requestId, 'Unexpected microphone request');
+		}
 		if (request.command.case !== 'cameraControlCommand') {
 			throw new Error(`unexpected command ${request.command.case}`);
 		}
 		const action = request.command.value.action;
+		if (action.case === 'playQuickReply' || action.case === 'playChime') {
+			requests.doorbellSounds.push({
+				action: action.case,
+				sourceId: action.value.sourceId,
+				assetId: action.value.assetId
+			});
+			return encodedOk(request.requestId);
+		}
 		const result: Ok['result'] =
 			action.case === 'ptz'
 				? (() => {
@@ -3118,7 +3145,7 @@ async function mockControlHttp(
 }
 
 function encodedCapabilities(
-	cameras: readonly CameraListItem[],
+	cameras: readonly FixtureCamera[],
 	storedRanges: readonly StoredRangeFixture[],
 	capabilityIds: readonly string[],
 	accessRole: ProtoAccessRole,
@@ -3165,13 +3192,15 @@ function encodedCapabilities(
 								rtspPort: camera.ports?.rtsp ?? undefined,
 								onvifPort: camera.ports?.onvif ?? undefined,
 								isReolink: camera.is_reolink,
+								groupIds: camera.groupIds,
 								deviceCapabilities: create(CameraDeviceCapabilitiesSchema, {
 									audio: camera.capabilities?.audio ?? false,
 									events: camera.capabilities?.events ?? false,
 									recording: camera.capabilities?.recording ?? false,
 									analytics: camera.capabilities?.analytics ?? false,
 									imaging: camera.capabilities?.imaging ?? false,
-									twoWayAudio: camera.capabilities?.two_way_audio ?? false
+									twoWayAudio: camera.capabilities?.two_way_audio ?? false,
+									...camera.sounds
 								}),
 								ptz: create(PtzCapabilitySchema, {
 									supported: camera.capabilities?.ptz ?? false

@@ -1,10 +1,12 @@
-import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
+import { create, equals, fromBinary, toBinary } from '@bufbuild/protobuf';
 import { ApiRequestError, createSession, deleteSession } from './api';
 import { AacAudioPlayback } from './audio-playback';
+import { replaceKnownCamera } from './camera-inventory';
 import { liveVariant, safeBitrate } from './live-quality';
 import {
 	ControlEnvelopeSchema,
 	CameraControlCommandSchema,
+	AccessRole,
 	DeliveryTransport,
 	MediaKind,
 	LiveQualitySelectionReason,
@@ -24,12 +26,15 @@ import {
 	type Request,
 	type SubscribeMedia,
 	type Response as ControlResponse,
+	type CameraInfo,
+	type CameraUpdated,
 	type ServerCapabilities,
 	type LiveQualityDiagnostics,
 	type LiveAudioTiming,
 	type MediaVariantCapability,
 	type SubscriptionResult,
 	type SubscriptionStreamState,
+	type TalkbackState,
 	type TalkbackTarget
 } from './proto/webrtc_pb';
 import type { CreateResponse, LiveQuality } from './types';
@@ -103,15 +108,31 @@ export type LivePeerTrack = {
 	liveAudioPreviewOffsetMs?: number;
 	subscribed: boolean;
 	audioAdmission?: 'retry' | 'admitted';
+	audioSourceSessionId?: string;
 	admissionError?: string | null;
 };
 
 export type TalkbackTargetSelection = { sourceId: string } | { groupId: string } | { all: true };
 
 export type CameraAudioAssets = {
+	twoWayAudio: boolean;
 	quickReplies: ReadonlyArray<{ id: string; label: string }>;
 	chimes: ReadonlyArray<{ id: string; label: string }>;
 };
+
+function audioAssets(camera: CameraInfo): CameraAudioAssets | undefined {
+	const device = camera.deviceCapabilities;
+	if (!device || (!device.twoWayAudio && !device.quickReplies.length && !device.chimes.length))
+		return undefined;
+	return {
+		twoWayAudio: device.twoWayAudio,
+		quickReplies: device.quickReplies.map((asset) => ({
+			id: asset.assetId,
+			label: asset.displayName
+		})),
+		chimes: device.chimes.map((asset) => ({ id: asset.assetId, label: asset.displayName }))
+	};
+}
 
 export class LivePeer {
 	connectionState = $state<RTCPeerConnectionState>('new');
@@ -134,7 +155,13 @@ export class LivePeer {
 	#unreliableChannel: RTCDataChannel | null = null;
 	#talkbackTransceiver: RTCRtpTransceiver | null = null;
 	#peerLifetime = new AbortController();
-	#talkbackTrack: MediaStreamTrack | null = null;
+	#talkbackAuthorization = $state.raw<symbol | null>(null);
+	#microphone: {
+		stream: MediaStream;
+		sender: RTCRtpSender;
+		target: TalkbackTarget;
+		requested: boolean;
+	} | null = null;
 	#cameraByMid: Record<string, string> = {};
 	#audioCameraByMid: Record<string, string> = {};
 	#audioContext: AudioContext | null = null;
@@ -249,6 +276,24 @@ export class LivePeer {
 		return this.enqueue(async () => this.closeNow());
 	}
 
+	get canUseMicrophone(): boolean {
+		return this.#talkbackAuthorization !== null;
+	}
+
+	get canBroadcastTalkback(): boolean {
+		return (
+			this.canUseMicrophone &&
+			Object.values(this.cameraAudioAssets).some((camera) => camera.twoWayAudio)
+		);
+	}
+
+	private hasTalkbackTarget(target: TalkbackTargetSelection): boolean {
+		if ('sourceId' in target) return this.cameraAudioAssets[target.sourceId]?.twoWayAudio === true;
+		if ('groupId' in target)
+			return this.talkbackGroups.some((group) => group.id === target.groupId);
+		return this.canBroadcastTalkback;
+	}
+
 	startTalkback(target: TalkbackTargetSelection): Promise<void> {
 		return this.enqueueCommand(async () => {
 			const transceiver = this.#talkbackTransceiver;
@@ -256,31 +301,58 @@ export class LivePeer {
 			if (transceiver === null) {
 				throw new Error('Talkback is unavailable until the live session is connected.');
 			}
+			const authorization = this.#talkbackAuthorization;
+			if (authorization === null)
+				throw new Error('Administrator access is required to use the microphone.');
+			if (!this.hasTalkbackTarget(target))
+				throw new Error('No available speaker matches the selected talkback target.');
 			if (this.talkbackActive) return;
 			const stream = await acquireTalkbackMicrophone(signal);
 			const track = stream.getAudioTracks()[0];
-			if (!track) {
+			if (
+				!track ||
+				this.#talkbackTransceiver !== transceiver ||
+				this.#talkbackAuthorization !== authorization ||
+				!this.hasTalkbackTarget(target)
+			) {
 				stream.getTracks().forEach((item) => item.stop());
-				throw new Error('The microphone did not provide an audio track.');
+				throw new Error(
+					track
+						? 'The live session changed before talkback started.'
+						: 'The microphone did not provide an audio track.'
+				);
 			}
+			const microphone = {
+				stream,
+				sender: transceiver.sender,
+				target: talkbackTarget(target),
+				requested: false
+			};
+			this.#microphone = microphone;
 			try {
-				await transceiver.sender.replaceTrack(track);
+				await microphone.sender.replaceTrack(track);
 				signal.throwIfAborted();
+				if (this.#microphone !== microphone)
+					throw new Error('The live session changed before talkback started.');
+				microphone.requested = true;
 				await this.request({
 					case: 'talkbackCommand',
 					value: create(TalkbackCommandSchema, {
 						action: {
 							case: 'start',
-							value: create(StartTalkbackSchema, { target: talkbackTarget(target) })
+							value: create(StartTalkbackSchema, { target: microphone.target })
 						}
 					})
 				});
 				signal.throwIfAborted();
-				this.#talkbackTrack = track;
+				if (this.#microphone !== microphone)
+					throw new Error('The talkback route ended before the microphone started.');
 				this.talkbackActive = true;
 			} catch (error) {
-				stream.getTracks().forEach((item) => item.stop());
-				await transceiver.sender.replaceTrack(null).catch(() => undefined);
+				if (this.#microphone === microphone) {
+					this.releaseMicrophone();
+					this.talkbackError = error instanceof Error ? error.message : 'Talkback could not start.';
+				}
 				throw error;
 			}
 		});
@@ -289,20 +361,41 @@ export class LivePeer {
 	stopTalkback(): Promise<void> {
 		return this.enqueueCommand(async () => {
 			if (!this.talkbackActive) return;
-			try {
-				await this.request({
-					case: 'talkbackCommand',
-					value: create(TalkbackCommandSchema, {
-						action: { case: 'stop', value: create(StopTalkbackSchema) }
-					})
-				});
-			} finally {
-				await this.#talkbackTransceiver?.sender.replaceTrack(null);
-				this.#talkbackTrack?.stop();
-				this.#talkbackTrack = null;
-				this.talkbackActive = false;
-			}
+			this.releaseMicrophone();
+			await this.request({
+				case: 'talkbackCommand',
+				value: create(TalkbackCommandSchema, {
+					action: { case: 'stop', value: create(StopTalkbackSchema) }
+				})
+			});
 		});
+	}
+
+	private receiveTalkbackState(state: TalkbackState): void {
+		const microphone = this.#microphone;
+		if (
+			!microphone?.requested ||
+			state.ownerSessionId !== this.sessionId ||
+			!state.target ||
+			!equals(TalkbackTargetSchema, state.target, microphone.target) ||
+			state.activeSourceIds.length !== 0 ||
+			state.failedSourceIds.length === 0
+		)
+			return;
+		const selection = microphone.target.selection;
+		if (selection.case === 'sourceId' && !state.failedSourceIds.includes(selection.value)) return;
+		this.releaseMicrophone();
+		this.talkbackError = 'All selected talkback routes ended. The microphone was released.';
+	}
+
+	private releaseMicrophone(): void {
+		const microphone = this.#microphone;
+		if (!microphone) return;
+		this.#microphone = null;
+		this.talkbackActive = false;
+		for (const track of microphone.stream.getTracks()) track.stop();
+		// The microphone is already stopped even if a closing peer rejects the detach.
+		void microphone.sender.replaceTrack(null).catch(() => undefined);
 	}
 
 	playQuickReply(sourceId: string, assetId: string): Promise<void> {
@@ -990,12 +1083,15 @@ export class LivePeer {
 	): Promise<void> {
 		const lifetime = this.#peerLifetime.signal;
 		const sourceSessionId = this.#sourceSessionByCamera[cameraId];
+		if (!sourceSessionId) return;
+		const owner = this.#peer;
 		const source = this.#capabilities?.sourceSessions.find(
 			(item) => item.sourceSessionId === sourceSessionId
 		);
+		const current = this.track(cameraId);
 		const variant =
 			source?.audio?.variants.find(
-				(item) => item.variantId === (videoVariant ?? this.track(cameraId)?.activeStream)
+				(item) => item.variantId === (videoVariant ?? current?.activeStream)
 			) ?? (previewOffset === undefined ? source?.audio?.variants[0] : undefined);
 		if (!variant) {
 			this.replaceTrack(cameraId, { audioAdmission: undefined });
@@ -1006,8 +1102,16 @@ export class LivePeer {
 			}
 			return;
 		}
-		const current = this.track(cameraId);
 		const delivery = requestedAudioDelivery(variant);
+		if (
+			current?.audioSourceSessionId === sourceSessionId &&
+			current?.audioVariantId === variant.variantId &&
+			current?.audioDelivery === delivery &&
+			previewOffset === undefined &&
+			!confirmTiming
+		) {
+			return;
+		}
 		if (
 			current?.audioVariantId &&
 			(current.audioVariantId !== variant.variantId || current.audioDelivery !== delivery)
@@ -1030,12 +1134,17 @@ export class LivePeer {
 			})
 		);
 		lifetime.throwIfAborted();
-		if (result?.case !== 'subscriptionResult') {
+		if (
+			owner !== this.#peer ||
+			this.#sourceSessionByCamera[cameraId] !== sourceSessionId ||
+			result?.case !== 'subscriptionResult'
+		) {
 			if (confirmTiming) throw new Error('Audio timing preview was not admitted.');
 			return;
 		}
 		this.replaceTrack(cameraId, {
 			audioAdmission: 'admitted',
+			audioSourceSessionId: sourceSessionId,
 			audioVariantId: variant.variantId,
 			audioDelivery: result.value.delivery.case,
 			admissionError: null
@@ -1045,6 +1154,7 @@ export class LivePeer {
 		}
 		await this.attachAudioDelivery(
 			cameraId,
+			sourceSessionId,
 			variant,
 			result.value.delivery,
 			previewOffset !== undefined
@@ -1065,6 +1175,7 @@ export class LivePeer {
 
 	private async attachAudioDelivery(
 		cameraId: string,
+		sourceSessionId: string,
 		variant: MediaVariantCapability,
 		delivery: SubscriptionResult['delivery'],
 		requirePlayback: boolean
@@ -1099,7 +1210,7 @@ export class LivePeer {
 				format.value.sampleRateHz,
 				format.value.channelCount
 			);
-			if (owner !== this.#peer) {
+			if (owner !== this.#peer || this.track(cameraId)?.audioSourceSessionId !== sourceSessionId) {
 				playback.close();
 				return;
 			}
@@ -1171,6 +1282,7 @@ export class LivePeer {
 			if (sourceId === cameraId) delete this.#audioCameraByMid[mid];
 		}
 		this.replaceTrack(cameraId, {
+			audioSourceSessionId: undefined,
 			audioVariantId: undefined,
 			audioDelivery: undefined,
 			audioTiming: undefined,
@@ -1178,6 +1290,10 @@ export class LivePeer {
 			audioStream: null,
 			audioAdmission: undefined
 		});
+	}
+
+	private releaseCameraAudio(cameraId: string): void {
+		this.releaseAudio(cameraId);
 	}
 
 	private attachTrackEvent(cameraId: string, event: RTCTrackEvent): void {
@@ -1248,6 +1364,8 @@ export class LivePeer {
 		}
 		if (envelope.message.case === 'notification') {
 			const event = envelope.message.value.event;
+			if (event.case === 'talkbackState') this.receiveTalkbackState(event.value);
+			if (event.case === 'cameraUpdated') this.receiveCameraUpdate(event.value);
 			if (event.case === 'initialCapabilities') {
 				this.receiveCapabilities(event.value);
 			}
@@ -1412,37 +1530,55 @@ export class LivePeer {
 		for (const [cameraId, source] of Object.entries(this.#sourceSessionByCamera)) {
 			if (source !== sourceSessionId) continue;
 			delete this.#sourceSessionByCamera[cameraId];
+			this.releaseCameraAudio(cameraId);
 			this.replaceTrack(cameraId, { liveQuality: undefined, pendingStream: null });
+		}
+	}
+
+	private receiveCameraUpdate(update: CameraUpdated): void {
+		const capabilities = replaceKnownCamera(this.#capabilities, update);
+		if (!capabilities || !update.camera) return;
+		this.#capabilities = capabilities;
+		const assets = audioAssets(update.camera);
+		if (assets) this.cameraAudioAssets = { ...this.cameraAudioAssets, [update.sourceId]: assets };
+		else {
+			const next = { ...this.cameraAudioAssets };
+			delete next[update.sourceId];
+			this.cameraAudioAssets = next;
+		}
+		this.updateTalkbackGroups(capabilities.cameras);
+	}
+
+	private updateTalkbackGroups(cameras: readonly CameraInfo[]): void {
+		const groups = new Set<string>();
+		for (const camera of cameras) {
+			if (!camera.deviceCapabilities?.twoWayAudio) continue;
+			for (const groupId of camera.groupIds) groups.add(groupId);
+		}
+		const ids = [...groups].sort((left, right) => left.localeCompare(right));
+		if (
+			ids.length !== this.talkbackGroups.length ||
+			ids.some((id, index) => this.talkbackGroups[index].id !== id)
+		) {
+			this.talkbackGroups = ids.map((id) => ({ id, label: id }));
 		}
 	}
 
 	private receiveCapabilities(capabilities: ServerCapabilities): void {
 		this.#capabilities = capabilities;
-		this.cameraAudioAssets = Object.fromEntries(
-			capabilities.cameras
-				.filter((camera) => camera.deviceCapabilities?.twoWayAudio === true)
-				.map((camera) => [
-					camera.sourceId,
-					{
-						quickReplies: (camera.deviceCapabilities?.quickReplies ?? []).map((asset) => ({
-							id: asset.assetId,
-							label: asset.displayName
-						})),
-						chimes: (camera.deviceCapabilities?.chimes ?? []).map((asset) => ({
-							id: asset.assetId,
-							label: asset.displayName
-						}))
-					}
-				])
-		);
-		const groups = new Map<string, string>();
-		for (const camera of capabilities.cameras) {
-			if (camera.deviceCapabilities?.twoWayAudio !== true) continue;
-			for (const groupId of camera.groupIds) groups.set(groupId, groupId);
+		if (capabilities.accessSession?.role === AccessRole.ADMINISTRATOR) {
+			this.#talkbackAuthorization ??= Symbol();
+		} else {
+			this.#talkbackAuthorization = null;
+			this.releaseMicrophone();
 		}
-		this.talkbackGroups = [...groups.keys()]
-			.sort((left, right) => left.localeCompare(right))
-			.map((id) => ({ id, label: id }));
+		this.cameraAudioAssets = Object.fromEntries(
+			capabilities.cameras.flatMap((camera) => {
+				const assets = audioAssets(camera);
+				return assets ? [[camera.sourceId, assets]] : [];
+			})
+		);
+		this.updateTalkbackGroups(capabilities.cameras);
 		this.#sourceSessionByCamera = Object.fromEntries(
 			capabilities.sourceSessions
 				.filter(
@@ -1451,13 +1587,24 @@ export class LivePeer {
 				)
 				.map((source) => [source.sourceId, source.sourceSessionId])
 		);
+		for (const track of Object.values(this.tracks)) {
+			if (
+				track.audioSourceSessionId &&
+				this.#sourceSessionByCamera[track.cameraId] !== track.audioSourceSessionId
+			)
+				this.releaseCameraAudio(track.cameraId);
+		}
 		for (const waiter of this.#capabilitiesWaiters) {
 			clearTimeout(waiter.timeout);
 			waiter.resolve(capabilities);
 		}
 		this.#capabilitiesWaiters = [];
 		for (const track of Object.values(this.tracks)) {
-			if (track.subscribed) this.followActiveAudio(track.cameraId);
+			if (
+				track.subscribed &&
+				(track.audioVariantId !== undefined || track.audioAdmission === 'retry')
+			)
+				this.followActiveAudio(track.cameraId);
 		}
 	}
 
@@ -1553,6 +1700,7 @@ export class LivePeer {
 		this.#sourceSessionByCamera = {};
 		this.#trackEventByMid = {};
 		this.#capabilities = null;
+		this.#talkbackAuthorization = null;
 		this.talkbackGroups = [];
 		this.cameraAudioAssets = {};
 		this.sessionId = null;
@@ -1574,9 +1722,7 @@ export class LivePeer {
 		this.#reliableChannel = null;
 		this.#unreliableChannel = null;
 		this.#talkbackTransceiver = null;
-		this.#talkbackTrack?.stop();
-		this.#talkbackTrack = null;
-		this.talkbackActive = false;
+		this.releaseMicrophone();
 		peer?.close();
 		this.failPending('WebRTC media session closed.');
 		this.tracks = {};

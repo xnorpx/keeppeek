@@ -87,6 +87,17 @@ fn resolve_configured_camera_route(
     resolve_camera_route(config.backend, config.transport, is_reolink)
 }
 
+pub(crate) fn powered_reolink_channel(
+    config: &crate::cameras::CameraConfig,
+    is_reolink: bool,
+) -> Option<u8> {
+    matches!(
+        resolve_configured_camera_route(config, is_reolink),
+        Ok(CameraRoute::ReoProto(CameraTransport::Tcp))
+    )
+    .then_some(crate::reolink::CONFIGURED_CHANNEL)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StreamKind {
     Main,
@@ -1293,7 +1304,7 @@ impl KeepPeekLoop {
             camera.config.username.clone(),
             camera.config.password.clone(),
             transport,
-            0,
+            crate::reolink::CONFIGURED_CHANNEL,
             enable_main,
             enable_sub,
             main_video.map_or(0, |video| video.width),
@@ -1378,7 +1389,7 @@ impl KeepPeekLoop {
             camera.config.username.clone(),
             camera.config.password.clone(),
             CameraTransport::Tcp,
-            0,
+            crate::reolink::CONFIGURED_CHANNEL,
             false,
             false,
             0,
@@ -1480,11 +1491,6 @@ impl KeepPeekLoop {
             }
             self.expect_stream(camera.config.ip, camera.config.name.as_deref(), stream_kind);
 
-            let audio_meta = profile.audio.as_ref().map(|a| AudioMeta {
-                encoding: a.encoding.clone(),
-                sample_rate: a.sample_rate,
-            });
-
             let mut log_url = Url::parse(&stream_uri).ok();
             if let Some(ref mut u) = log_url {
                 u.set_username("").ok();
@@ -1513,7 +1519,6 @@ impl KeepPeekLoop {
                 password: camera.config.password.clone(),
                 transport,
                 video_meta,
-                audio_meta,
                 http_port: camera.config.http_port.or(camera.ports.http).unwrap_or(80),
                 talkback_channel: crate::isapi::Route::for_camera(camera)
                     .map(|route| route.channel),

@@ -55,6 +55,7 @@ fn audio_fixture(start: Instant) -> Vec<RecordingFrame> {
             frame: MediaFrame::Audio(AudioFrame {
                 codec: AudioCodec::Aac,
                 sample_rate: 16000,
+                raw_aac_config: None,
                 duration: Duration::from_millis(64),
                 data: bytes::Bytes::copy_from_slice(&data[..length]),
             }),

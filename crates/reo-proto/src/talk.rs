@@ -332,7 +332,19 @@ pub(crate) fn command_header(
     })
 }
 
-fn parse_ability(data: &[u8]) -> Result<TalkAbility, BcError> {
+pub(crate) fn matches_probe_channel(extension: &[u8], channel: u8) -> bool {
+    let mut matches = false;
+    let mut count = 0;
+    let parsed = crate::xml::parse_xml(extension, |name, value| {
+        if name == "channelId" {
+            count += 1;
+            matches = value.parse::<u8>() == Ok(channel);
+        }
+    });
+    parsed.is_ok() && count == 1 && matches
+}
+
+pub(crate) fn parse_ability(data: &[u8]) -> Result<TalkAbility, BcError> {
     let mut ability = TalkAbility::default();
     let mut current_profile = None;
     let mut error = None;

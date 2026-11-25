@@ -15,6 +15,13 @@ pub(super) fn for_principal(
     state: &ServerState,
     principal: &ApiPrincipal,
 ) -> Result<CameraAccess, ControlCommandError> {
+    Ok(resolve_groups(state, camera_policy(state, principal)?))
+}
+
+fn camera_policy(
+    state: &ServerState,
+    principal: &ApiPrincipal,
+) -> Result<CameraAccess, ControlCommandError> {
     if principal.credential_binding().is_some()
         && !super::authentication::bearer_allowed(
             state,
@@ -23,7 +30,7 @@ pub(super) fn for_principal(
     {
         return Err(denied());
     }
-    let policy = match principal.credential_binding() {
+    match principal.credential_binding() {
         Some((id, revision)) => state
             .access_manager
             .camera_access(
@@ -36,8 +43,7 @@ pub(super) fn for_principal(
             Ok(CameraAccess::unrestricted())
         }
         None => super::authentication::camera_policy(state, principal).ok_or_else(denied),
-    }?;
-    Ok(resolve_groups(state, policy))
+    }
 }
 
 fn resolve_groups(state: &ServerState, mut policy: CameraAccess) -> CameraAccess {
@@ -119,6 +125,37 @@ pub(super) fn for_session(
     state: &ServerState,
     session_id: SessionId,
 ) -> Result<CameraAccess, ControlCommandError> {
+    Ok(resolve_groups(state, session_policy(state, session_id)?))
+}
+
+/// Uses the same policy as the inventory while checking group membership on the
+/// exact camera revision being projected. Other cameras need no projection or clone.
+pub(super) fn updated_camera(
+    state: &ServerState,
+    session_id: SessionId,
+    source_id: &str,
+) -> Option<CameraEntry> {
+    let policy = session_policy(state, session_id).ok()?;
+    state
+        .cameras
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|entry| {
+            entry.info.id == source_id
+                && (policy.allows(source_id)
+                    || entry
+                        .groups
+                        .iter()
+                        .any(|group| policy.group_ids.contains(group)))
+        })
+        .cloned()
+}
+
+fn session_policy(
+    state: &ServerState,
+    session_id: SessionId,
+) -> Result<CameraAccess, ControlCommandError> {
     if session_id.as_u64() == 0 {
         return Ok(CameraAccess::unrestricted());
     }
@@ -137,7 +174,7 @@ pub(super) fn for_session(
         }
         session.principal.clone()
     };
-    for_principal(state, &principal)
+    camera_policy(state, &principal)
 }
 
 pub(super) fn authorize_command(

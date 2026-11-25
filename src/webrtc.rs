@@ -44,6 +44,7 @@ use str0m::{
 
 mod background;
 mod bandwidth;
+mod camera_updates;
 mod live_timing;
 mod session_registry;
 mod subscriptions;
@@ -203,6 +204,8 @@ pub(crate) trait ControlRequestHandler: Send + Sync {
         self.session_closed(session_id);
     }
 
+    fn talkback_source_failed(&self, _source_id: &str, _owner: SessionId) {}
+
     fn resolve_media_subscription(
         &self,
         _request: &crate::api::proto::SubscribeMedia,
@@ -211,6 +214,14 @@ pub(crate) trait ControlRequestHandler: Send + Sync {
             ErrorCode::UnsupportedRequest,
             "media subscriptions are not implemented by this server",
         ))
+    }
+
+    fn camera_capability(
+        &self,
+        _session_id: SessionId,
+        _source_id: &str,
+    ) -> Option<crate::api::proto::CameraInfo> {
+        None
     }
 
     fn initial_capabilities(
@@ -730,6 +741,7 @@ struct ApiSessionControl {
     data_tx: Sender<ApiSessionCommand>,
     pending_event_bytes: Arc<AtomicUsize>,
     pending_event_count: Arc<AtomicUsize>,
+    camera_updates: camera_updates::CameraUpdates,
     media_camera_ips: Mutex<HashSet<IpAddr>>,
     background_operation_in_flight: Arc<AtomicBool>,
     share_inspection_in_flight: Arc<AtomicBool>,
@@ -2494,6 +2506,70 @@ impl Publisher {
             .contains_key(source_id)
     }
 
+    pub(crate) fn retire_talkback_source(&self, source_id: &str, owner: SessionId) {
+        let mut sinks = self
+            .inner
+            .talkback_sinks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if sinks.get(source_id).is_some_and(|sink| sink.owner == owner) {
+            sinks.remove(source_id);
+        }
+    }
+
+    pub(crate) fn fail_talkback_route(&self, source_id: &str, route: &TalkbackRoute) {
+        let owner = {
+            let mut sinks = self
+                .inner
+                .talkback_sinks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if sinks
+                .get(source_id)
+                .is_some_and(|sink| sink.route.matches(route))
+            {
+                sinks.remove(source_id).map(|sink| sink.owner)
+            } else {
+                None
+            }
+        };
+        let Some(owner) = owner else {
+            return;
+        };
+        let handler = self
+            .inner
+            .control_handler
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(Weak::upgrade);
+        if let Some(handler) = handler {
+            handler.talkback_source_failed(source_id, owner);
+        }
+    }
+
+    /// Serialize one nonblocking local transport handoff with removal of its source lease.
+    pub(crate) fn offer_talkback_packet(
+        &self,
+        source_id: &str,
+        route: &TalkbackRoute,
+        offer: impl FnOnce() -> anyhow::Result<bool>,
+    ) -> anyhow::Result<bool> {
+        let sinks = self
+            .inner
+            .talkback_sinks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if sinks
+            .get(source_id)
+            .is_some_and(|sink| sink.route.matches(route))
+        {
+            offer()
+        } else {
+            Ok(false)
+        }
+    }
+
     fn route_talkback_audio(&self, session_id: SessionId, frame: WebRtcAudioFrame) {
         let mut sinks = self
             .inner
@@ -2504,6 +2580,11 @@ impl Publisher {
         for sink in sinks.values_mut().filter(|sink| sink.owner == session_id) {
             sink.audio.push(frame.clone(), now);
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn route_test_talkback_audio(&self, session_id: SessionId, frame: WebRtcAudioFrame) {
+        self.route_talkback_audio(session_id, frame);
     }
 
     pub(crate) fn talkback_route_is_current(&self, source_id: &str, route: &TalkbackRoute) -> bool {
@@ -2538,6 +2619,15 @@ impl Publisher {
     }
 
     pub(crate) fn publish_audio(&self, source: Source, frame: WebRtcAudioFrame) {
+        self.publish_audio_with_config(source, frame, &[]);
+    }
+
+    pub(crate) fn publish_audio_with_config(
+        &self,
+        source: Source,
+        frame: WebRtcAudioFrame,
+        decoder_config: &[u8],
+    ) {
         if frame.sample_rate_hz == 0 || frame.channel_count == 0 || frame.data.is_empty() {
             return;
         }
@@ -2561,20 +2651,30 @@ impl Publisher {
             permit,
         };
         guarded.deliver(|frame| {
-            self.inner
+            let mut capabilities = self
+                .inner
                 .audio_capabilities
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let codec = audio_codec_name(frame.codec);
+            if capabilities.get(&source).is_none_or(|capability| {
+                capability.codec != codec
+                    || capability.sample_rate_hz != frame.sample_rate_hz
+                    || capability.channel_count != frame.channel_count
+                    || capability.decoder_config != decoder_config
+            }) {
+                capabilities.insert(
                     source,
                     LiveAudioSourceCapability {
                         stream: source.stream,
-                        codec: audio_codec_name(frame.codec),
+                        codec,
                         sample_rate_hz: frame.sample_rate_hz,
                         channel_count: frame.channel_count,
-                        decoder_config: Vec::new(),
+                        decoder_config: decoder_config.to_vec(),
                     },
                 );
+            }
+            drop(capabilities);
             let mut subscribers = self
                 .inner
                 .audio_subscribers
@@ -2861,6 +2961,14 @@ impl WebRtc {
             .control_handler
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handler);
+    }
+
+    pub(crate) fn refresh_camera_capabilities(&self, source_id: &str) {
+        for control in self.live.inner.sessions.api_controls() {
+            if control.camera_updates.mark(source_id) {
+                let _ = control.poller.notify();
+            }
+        }
     }
 
     pub(crate) fn has_api_session(&self, session_id: SessionId) -> bool {
@@ -3152,6 +3260,7 @@ impl WebRtc {
             data_tx,
             pending_event_bytes: Arc::new(AtomicUsize::new(0)),
             pending_event_count: Arc::new(AtomicUsize::new(0)),
+            camera_updates: Default::default(),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
             share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
@@ -3811,6 +3920,7 @@ fn drive_api_session(
     let mut udp_buffer = vec![0; UDP_PACKET_CAPACITY];
     let mut peer_destinations = HashMap::new();
     let mut connected = false;
+    let mut camera_batch_at = Instant::now();
     let mut next_timeout = drain_api_outputs(
         rtc,
         socket,
@@ -3873,6 +3983,17 @@ fn drive_api_session(
         for (track_id, stream) in applied_streams {
             media.enqueue_stream_state(&track_id, stream);
         }
+        if control_runtime.control_output_ready
+            && deps.control.camera_updates.has_work()
+            && now >= camera_batch_at
+        {
+            camera_batch_at = now + camera_updates::BATCH_INTERVAL;
+            if control_runtime.outbound.is_empty() && media.control_notifications.is_empty() {
+                wrote_media |= deps
+                    .control
+                    .write_camera_updates(rtc, deps.channels.control)?;
+            }
+        }
         if wrote_media {
             next_timeout = drain_api_outputs(
                 rtc,
@@ -3896,9 +4017,15 @@ fn drive_api_session(
                     .filter_map(|t| t.runtime.timing.deadline()),
             )
             .fold(next_timeout, Instant::min);
+        let wake_at =
+            if control_runtime.control_output_ready && deps.control.camera_updates.has_work() {
+                wake.min(camera_batch_at)
+            } else {
+                wake
+            };
         poller.wait(
             &mut events,
-            Some(wake.saturating_duration_since(Instant::now())),
+            Some(wake_at.saturating_duration_since(Instant::now())),
         )?;
         if drain_pending_control_dispatches(deps.control, control_runtime, media)? {
             next_timeout = drain_api_outputs(
@@ -4108,6 +4235,13 @@ fn drain_api_session_commands(data_rx: &Receiver<ApiSessionCommand>, media: &mut
                 notification,
                 control,
             } => {
+                if let (
+                    Some(control),
+                    Some(crate::api::proto::notification::Event::InitialCapabilities(snapshot)),
+                ) = (control.upgrade(), notification.event.as_ref())
+                {
+                    control.camera_updates.refresh_snapshot(&snapshot.cameras);
+                }
                 if let Err(error) = media.enqueue_control_notification(*notification) {
                     if let Some(control) = control.upgrade() {
                         control.close();
@@ -4717,10 +4851,14 @@ fn drain_api_outputs(
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .as_ref()
                         .and_then(Weak::upgrade);
+                    control.camera_updates.begin_initial_snapshot();
                     if let Some(capabilities) = handler
                         .as_deref()
                         .and_then(|handler| handler.initial_capabilities(control.session_id))
                     {
+                        control
+                            .camera_updates
+                            .initial_snapshot(&capabilities.cameras);
                         control_runtime.enqueue(EnvelopeDispatch {
                             envelope: ControlEnvelope {
                                 message: Some(control_envelope::Message::Notification(
@@ -5772,6 +5910,7 @@ impl WebRtc {
             data_tx,
             pending_event_bytes: Arc::new(AtomicUsize::new(0)),
             pending_event_count: Arc::new(AtomicUsize::new(0)),
+            camera_updates: Default::default(),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
             share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
@@ -7165,6 +7304,7 @@ mod tests {
             data_tx: bounded(1).0,
             pending_event_bytes: Arc::new(AtomicUsize::new(0)),
             pending_event_count: Arc::new(AtomicUsize::new(0)),
+            camera_updates: Default::default(),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
             share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
@@ -7263,6 +7403,7 @@ mod tests {
             data_tx,
             pending_event_bytes: Arc::new(AtomicUsize::new(0)),
             pending_event_count: Arc::new(AtomicUsize::new(0)),
+            camera_updates: Default::default(),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
             share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
@@ -7343,6 +7484,7 @@ mod tests {
             data_tx,
             pending_event_bytes: Arc::new(AtomicUsize::new(0)),
             pending_event_count: Arc::new(AtomicUsize::new(0)),
+            camera_updates: Default::default(),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
             share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
@@ -7454,6 +7596,7 @@ mod tests {
                 data_tx: bounded(1).0,
                 pending_event_bytes: Arc::new(AtomicUsize::new(0)),
                 pending_event_count: Arc::new(AtomicUsize::new(0)),
+                camera_updates: Default::default(),
                 media_camera_ips: Mutex::new(media_camera_ips),
                 background_operation_in_flight: Arc::new(AtomicBool::new(false)),
                 share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
@@ -7498,6 +7641,7 @@ mod tests {
             data_tx,
             pending_event_bytes: Arc::new(AtomicUsize::new(0)),
             pending_event_count: Arc::new(AtomicUsize::new(0)),
+            camera_updates: Default::default(),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
             share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
@@ -7666,6 +7810,7 @@ mod tests {
             data_tx: bounded(1).0,
             pending_event_bytes: Arc::new(AtomicUsize::new(0)),
             pending_event_count: Arc::new(AtomicUsize::new(0)),
+            camera_updates: Default::default(),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(true)),
             share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
@@ -8049,6 +8194,7 @@ mod tests {
             data_tx: bounded(1).0,
             pending_event_bytes: Arc::new(AtomicUsize::new(0)),
             pending_event_count: Arc::new(AtomicUsize::new(0)),
+            camera_updates: Default::default(),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
             share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
@@ -8489,6 +8635,7 @@ mod tests {
             data_tx: bounded(1).0,
             pending_event_bytes: Arc::new(AtomicUsize::new(0)),
             pending_event_count: Arc::new(AtomicUsize::new(0)),
+            camera_updates: Default::default(),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
             share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
@@ -9061,8 +9208,20 @@ mod tests {
         publisher.route_talkback_audio(first, frame.clone());
         let (old_route, _) = publisher.take_routed_talkback_audio("front", None).unwrap();
         publisher.route_talkback_audio(first, frame.clone());
+        assert!(
+            publisher
+                .offer_talkback_packet("front", &old_route, || Ok(true))
+                .unwrap()
+        );
 
         publisher.disarm_talkback(first);
+        assert!(
+            !publisher
+                .offer_talkback_packet("front", &old_route, || {
+                    panic!("the retired source handed a queued microphone packet to the transport")
+                })
+                .unwrap()
+        );
         assert!(!publisher.talkback_is_armed("side"));
         assert!(publisher.take_talkback_audio("side").is_none());
         assert!(publisher.arm_talkback(first, &["front".into()]));

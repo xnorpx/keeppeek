@@ -232,10 +232,10 @@
 	let diagnosticsAccessibleLabel = $derived(
 		diagnosticsLabel ? `${diagnosticsLabel} camera information` : 'WebRTC stream diagnostics'
 	);
-	let talkbackControls = $derived(livePeer.cameraAudioAssets?.[cameraId] !== undefined);
-	let talkbackActive = $derived(talkbackControls && livePeer.talkbackActive);
 	let audioAssets = $derived(livePeer.cameraAudioAssets?.[cameraId]);
 	let failedCommand = $state<{ cameraId: string; message: string }>();
+	let talkbackControls = $derived(livePeer.canUseMicrophone && audioAssets?.twoWayAudio === true);
+	let talkbackActive = $derived(talkbackControls && livePeer.talkbackActive);
 
 	async function runCameraCommand(command: () => Promise<void>): Promise<void> {
 		const target = cameraId;
@@ -771,35 +771,35 @@
 								<MicIcon class="size-3.5" />
 							{/if}
 						</button>
-						{#if (audioAssets?.quickReplies.length ?? 0) > 0 || (audioAssets?.chimes.length ?? 0) > 0}
-							<details class="relative">
-								<summary
-									class="grid size-6 cursor-pointer list-none place-items-center rounded-sm border border-white/15 bg-black/65 text-white/65 hover:bg-black/85 focus-visible:ring-2 focus-visible:ring-white/70"
-									aria-label="Play doorbell sound">♫</summary
-								>
-								<div
-									class="absolute top-8 right-0 z-40 flex min-w-40 flex-col gap-1 rounded-md border border-white/15 bg-zinc-950/95 p-2 text-left shadow-xl"
-								>
-									{#each audioAssets?.quickReplies ?? [] as asset (asset.id)}
-										<button
-											type="button"
-											class="rounded px-2 py-1 text-left text-xs text-white/80 hover:bg-white/10 disabled:opacity-50"
-											disabled={talkbackActive}
-											onclick={() => void playAudioAsset('quickReply', asset.id)}
-											>{asset.label}</button
-										>
-									{/each}
-									{#each audioAssets?.chimes ?? [] as asset (asset.id)}
-										<button
-											type="button"
-											class="rounded px-2 py-1 text-left text-xs text-white/80 hover:bg-white/10 disabled:opacity-50"
-											disabled={talkbackActive}
-											onclick={() => void playAudioAsset('chime', asset.id)}>{asset.label}</button
-										>
-									{/each}
-								</div>
-							</details>
-						{/if}
+					{/if}
+					{#if (audioAssets?.quickReplies.length ?? 0) > 0 || (audioAssets?.chimes.length ?? 0) > 0}
+						<details class="relative">
+							<summary
+								class="grid size-6 cursor-pointer list-none place-items-center rounded-sm border border-white/15 bg-black/65 text-white/65 hover:bg-black/85 focus-visible:ring-2 focus-visible:ring-white/70"
+								aria-label="Play doorbell sound">♫</summary
+							>
+							<div
+								class="absolute top-8 right-0 z-40 flex min-w-40 flex-col gap-1 rounded-md border border-white/15 bg-zinc-950/95 p-2 text-left shadow-xl"
+							>
+								{#each audioAssets?.quickReplies ?? [] as asset (asset.id)}
+									<button
+										type="button"
+										class="rounded px-2 py-1 text-left text-xs text-white/80 hover:bg-white/10 disabled:opacity-50"
+										disabled={livePeer.talkbackActive}
+										onclick={() => void playAudioAsset('quickReply', asset.id)}
+										>{asset.label}</button
+									>
+								{/each}
+								{#each audioAssets?.chimes ?? [] as asset (asset.id)}
+									<button
+										type="button"
+										class="rounded px-2 py-1 text-left text-xs text-white/80 hover:bg-white/10 disabled:opacity-50"
+										disabled={livePeer.talkbackActive}
+										onclick={() => void playAudioAsset('chime', asset.id)}>{asset.label}</button
+									>
+								{/each}
+							</div>
+						</details>
 					{/if}
 					{#if cameraHref && diagnosticsLabel}
 						<!-- eslint-disable svelte/no-navigation-without-resolve -->

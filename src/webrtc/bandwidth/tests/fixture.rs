@@ -49,6 +49,7 @@ impl SharedFixture {
             data_tx: bounded(1).0,
             pending_event_bytes: Arc::new(AtomicUsize::new(0)),
             pending_event_count: Arc::new(AtomicUsize::new(0)),
+            camera_updates: Default::default(),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
             share_inspection_in_flight: Arc::new(AtomicBool::new(false)),
