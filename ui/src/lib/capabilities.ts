@@ -153,6 +153,15 @@ export const serverCapabilityCatalog = {
 		whenMissing: 'Range sharing is hidden',
 		failureGuarantee: 'A range with media outside its boundaries cannot issue a guest link'
 	},
+	'keeppeek.usage-reporting.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'Administrator-only consent persistence, snapshot-only v1 payload preview, dedicated telemetry UUID rotation, and bounded receiver delivery/deletion',
+		unlocks: 'Opt-in usage reporting controls in Settings',
+		whenMissing: 'Usage reporting settings stay hidden and zero telemetry requests occur',
+		failureGuarantee:
+			'Disabled installs stay silent; failed sends or deletions remain truthful and never affect recording'
+	},
 	'stored-media-keyframe-preview.v1': {
 		delivery: 'ships',
 		serverOwns:

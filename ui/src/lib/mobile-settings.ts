@@ -106,7 +106,7 @@ export const mobileSettingsSections = Object.freeze<MobileSettingsSection[]>([
 		group: 'system',
 		href: '#system',
 		renderTarget: 'appearance',
-		keywords: ['system', 'updates', 'version', 'restart', 'config']
+		keywords: ['system', 'updates', 'version', 'restart', 'config', 'usage reporting', 'telemetry']
 	},
 	{
 		id: 'logs',

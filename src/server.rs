@@ -152,6 +152,7 @@ mod storage_volumes;
 mod stored_frame_step;
 mod stored_media;
 mod talkback;
+mod usage_reporting;
 
 pub(crate) fn migrate_peek_layout_configuration(
     config_path: &Path,
@@ -550,6 +551,7 @@ const fn access_operation(command: Option<&control_request::Command>) -> &'stati
         Some(control_request::Command::ExportCommand(_)) => "export",
         Some(control_request::Command::ShareCommand(_)) => "sharing",
         Some(control_request::Command::ActivityAnalyticsCommand(_)) => "activity_analytics",
+        Some(control_request::Command::UsageReportingCommand(_)) => "usage_reporting",
         Some(control_request::Command::EventSearchCommand(_)) => "event_search",
         Some(control_request::Command::EventWorkflowCommand(_)) => "event_workflow",
         Some(control_request::Command::RecordingMaintenanceCommand(_)) => "recording_maintenance",
@@ -696,6 +698,9 @@ fn sensitive_administrator_operation(
             _ => None,
         },
         Some(control_request::Command::ShareCommand(command)) => sharing::audit_operation(command),
+        Some(control_request::Command::UsageReportingCommand(command)) => {
+            usage_reporting::audit_operation(command)
+        }
         Some(control_request::Command::PublishEvent(_)) => Some("event_publish"),
         Some(control_request::Command::EventPublicationCommand(command)) => {
             match command.action.as_ref() {
@@ -892,6 +897,10 @@ impl ControlRequestHandler for ServerControlHandler {
                     }
                     Some(control_request::Command::ShareCommand(command)) => {
                         sharing::dispatch_for_session(&self.state, session_id, &principal, command)
+                            .map(Some)
+                    }
+                    Some(control_request::Command::UsageReportingCommand(command)) => {
+                        usage_reporting::dispatch(&self.state, &self.router_tx, &principal, command)
                             .map(Some)
                     }
                     Some(control_request::Command::EventWorkflowCommand(command)) => {
@@ -1490,6 +1499,7 @@ fn server_capability_ids(state: &ServerState) -> Vec<String> {
     if state.camera_config_path.is_some() {
         capability_ids.push(sharing::CAPABILITY_ID.to_owned());
         capability_ids.push(sharing::RANGE_CAPABILITY_ID.to_owned());
+        capability_ids.push(usage_reporting::CAPABILITY_ID.to_owned());
         capability_ids.push(peek_layouts::CAPABILITY_ID.to_owned());
         capability_ids.push(CONFIGURATION_CAPABILITY_ID.to_owned());
         capability_ids.push("keeppeek.recording.pre-roll.v1".to_owned());
@@ -8925,6 +8935,7 @@ pub struct ServerState {
     logging: Option<LoggingService>,
     reporting: reporting::Runtime,
     analytics: analytics::Runtime,
+    usage_reporting: usage_reporting::Runtime,
     notifications: Option<NotificationHandle>,
     event_forwarder: Option<EventForwarderHandle>,
     started_at: Instant,
@@ -9121,6 +9132,7 @@ impl ServerState {
             logging: None,
             reporting: reporting::Runtime::new(config.reporting.clone()),
             analytics: analytics::Runtime::new(config.analytics.clone()),
+            usage_reporting: usage_reporting::Runtime::new(config.usage_reporting.clone()),
             notifications: None,
             event_forwarder: None,
             started_at: Instant::now(),
@@ -9131,6 +9143,11 @@ impl ServerState {
         if self.sharing.open(&self.storage_config).is_err() {
             tracing::warn!("guest review store unavailable; guest access stays disabled");
         }
+    }
+
+    pub(crate) fn start_usage_reporting_if_enabled(&self, router_tx: &FacadeSender<RouterMessage>) {
+        self.usage_reporting
+            .ensure_scheduler_if_enabled(self, router_tx);
     }
 
     pub(crate) fn open_state_store(&mut self) {

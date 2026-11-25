@@ -73,6 +73,7 @@ import type { MqttSettingsUpdate } from './integrations';
 import { MqttControlClient } from './control-client-mqtt';
 import { RecordingMaintenanceClient } from './control-client-maintenance';
 import { SharingControlClient } from './control-client-sharing';
+import { UsageReportingControlClient } from './control-client-usage-reporting';
 import { PeekLayoutControlClient } from './control-client-peek-layouts';
 import { RuntimeProfilesControlClient } from './control-client-runtime-profiles';
 import { CameraAccessControlClient } from './control-client-camera-access';
@@ -688,6 +689,9 @@ export class ControlClient {
 	#accessStateListeners = new Set<AccessStateListener>();
 	#notifications = new NotificationControlClient((command) => this.request(command));
 	readonly sharing = new SharingControlClient((command, timeout) => this.request(command, timeout));
+	readonly usageReporting = new UsageReportingControlClient((command, timeout) =>
+		this.request(command, timeout)
+	);
 	readonly recordingMaintenance = new RecordingMaintenanceClient((command) =>
 		this.request(command)
 	);

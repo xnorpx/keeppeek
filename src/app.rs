@@ -334,6 +334,7 @@ pub fn run_with_dashboard(
     }
 
     let server_state = with_camera_events(server_state, &mut keeppeek);
+    server_state.start_usage_reporting_if_enabled(&router_tx);
     keeppeek.configure_isapi_callbacks(cfg.isapi_callbacks.as_ref(), &cameras)?;
 
     let operational_state = server_state.clone();
