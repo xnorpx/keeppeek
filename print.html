@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-77c19798.js";
+            window.path_to_searchindex_js = "searchindex-2ef34b2a.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-6871163b.js"></script>
@@ -3690,6 +3690,7 @@ Protect all owned volume roots with a separate archive policy when they need rec
 <tr><td>File-backed secrets</td><td>Durable sibling <code>secrets.toml</code>; included in plaintext. Environment overrides remain outside the ZIP.</td></tr>
 <tr><td>Recording metadata, events, coverage and maintenance intent</td><td>Recording catalog data; recover with a consistent catalog and media archive.</td></tr>
 <tr><td>MP4 recordings and event images</td><td>Files in configured storage locations; not part of a configuration ZIP.</td></tr>
+<tr><td>Fourth-tier local archive replicas</td><td>Replica files at the archive root plus manifests, bindings, and receipts in the catalog; excluded from the ZIP. <code>[storage.archive]</code> settings and raw secret references persist in <code>config.toml</code>.</td></tr>
 <tr><td>Evidence-export history and artifacts</td><td>History belongs to the metadata volume; artifacts belong to export volumes, with separate expiry; not part of the ZIP.</td></tr>
 <tr><td>Diagnostic log filter</td><td>The existing sibling <code>log-filter</code> file persists separately and is not in the two-TOML ZIP.</td></tr>
 <tr><td>Notification delivery jobs, retries, inbox/history, cooldowns and delivery counters</td><td>Runtime memory; reset on restart. Saved rule drafts and active rules remain.</td></tr>
@@ -4941,6 +4942,7 @@ the recorder’s own storage and network still needs operational attention.</p>
 <tr><td>Application configuration</td><td>The existing <code>config.toml</code> holds supported settings, policies, layouts, and access configuration.</td><td>Use validated saves or configuration import and preserve the file across upgrades.</td></tr>
 <tr><td>Reusable private strings</td><td>The companion <code>secrets.toml</code> supplies supported secret references.</td><td>Preserve references and protect configuration archives and private restore material.</td></tr>
 <tr><td>Encoded recordings</td><td>MP4 files in the configured storage paths.</td><td>Retention, recording policy, storage pressure, and file integrity determine what remains.</td></tr>
+<tr><td>Fourth-tier local archive</td><td>Verified replica MP4s on an optional confined local destination.</td><td>Extends retention independently of ingest; recover the catalog manifests and archive root together.</td></tr>
 <tr><td>Recording and event catalog</td><td>Indexed recording identity, coverage, events, and related durable investigation state.</td><td>Recover it consistently with the media and the documented archive procedures.</td></tr>
 <tr><td>Images and exports</td><td>Feature-owned data under configured paths and retention policies.</td><td>A playable recording does not imply that an event thumbnail or export is retained.</td></tr>
 <tr><td>Notification and MQTT runtime state</td><td>Bounded process memory for pending work and related runtime history or deduplication.</td><td>A restart does not replay this work. Persisted rules and provider configuration are separate from delivery state.</td></tr>
