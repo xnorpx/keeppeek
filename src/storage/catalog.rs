@@ -3030,6 +3030,7 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
                  model_id TEXT NOT NULL,
                  dimensions INTEGER NOT NULL,
                  embedding BLOB NOT NULL,
+                 event_revision INTEGER,
                  PRIMARY KEY(event_id, model_id)
              );
              CREATE INDEX IF NOT EXISTS recording_event_embeddings_model
@@ -3076,6 +3077,23 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
     )
     .await?;
     ensure_column(connection, "recording_events", "publication_id", "TEXT").await?;
+    ensure_column(
+        connection,
+        "recording_event_embeddings",
+        "event_revision",
+        "INTEGER",
+    )
+    .await?;
+    connection
+        .execute_batch(
+            "CREATE TRIGGER IF NOT EXISTS recording_event_embeddings_invalidate_revision
+             AFTER UPDATE OF revision ON recording_events
+             WHEN NEW.revision <> OLD.revision
+             BEGIN
+                 DELETE FROM recording_event_embeddings WHERE event_id = OLD.id;
+             END;",
+        )
+        .await?;
     ensure_column(
         connection,
         "recording_events",
@@ -4875,7 +4893,10 @@ async fn detach_event_thumbnail(connection: &turso::Connection, id: &str) -> any
     let result = async {
         let changed = connection
             .execute(
-                "UPDATE recording_events SET thumbnail_filename = NULL WHERE id = ?1",
+                "UPDATE recording_events
+                 SET thumbnail_filename = NULL,
+                     revision = CASE WHEN thumbnail_filename IS NOT NULL THEN revision + 1 ELSE revision END
+                 WHERE id = ?1",
                 turso::params![id],
             )
             .await?;
@@ -4917,7 +4938,8 @@ async fn detach_event_thumbnail_file(
             let changed = connection
                 .execute(
                     "UPDATE recording_events
-                     SET thumbnail_filename = NULL
+                     SET thumbnail_filename = NULL,
+                         revision = revision + 1
                      WHERE id = ?1 AND thumbnail_filename = ?2",
                     turso::params![event_id.clone(), thumbnail_filename],
                 )
@@ -5345,11 +5367,14 @@ async fn set_event_embedding(
         connection
             .execute(
                 "INSERT INTO recording_event_embeddings (
-                     event_id, model_id, dimensions, embedding
-                 ) VALUES (?1, ?2, ?3, vector32(?4))
+                     event_id, model_id, dimensions, embedding, event_revision
+                 )
+                 SELECT id, ?2, ?3, vector32(?4), revision
+                 FROM recording_events WHERE id = ?1
                  ON CONFLICT(event_id, model_id) DO UPDATE SET
                      dimensions = excluded.dimensions,
-                     embedding = excluded.embedding",
+                     embedding = excluded.embedding,
+                     event_revision = excluded.event_revision",
                 turso::params![event_id, embedding.model_id, dimensions, encoded],
             )
             .await?;
@@ -5774,9 +5799,11 @@ async fn search_event_semantic_snapshot(
     let dimensions = i64::try_from(query.embedding.values.len())?;
     let encoded = serde_json::to_string(&query.embedding.values)?;
     let source_id = query.source_id;
+    // A legacy embedding without a revision is valid only for an event that has never changed.
     let mut from_sql = String::from(
         "FROM recording_event_embeddings AS s JOIN recording_events AS e ON e.id = s.event_id
-         WHERE s.model_id = ?2 AND s.dimensions = ?3 AND (?4 IS NULL OR e.camera_id = ?5)
+         WHERE COALESCE(s.event_revision, 1) = e.revision
+             AND s.model_id = ?2 AND s.dimensions = ?3 AND (?4 IS NULL OR e.camera_id = ?5)
              AND (e.stream IS NULL OR e.stream = ?6) AND e.start_time_ms < ?8
              AND COALESCE(e.end_time_ms, e.start_time_ms + 1) > ?7
              AND e.rowid <= ?9 AND s.rowid <= ?10",
@@ -7561,6 +7588,126 @@ pub(crate) mod tests {
         });
         assert_eq!(marker_count, 0);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_embeddings_only_rank_with_unmodified_event_revisions() -> anyhow::Result<()> {
+        let root = test_dir("turso-embedding-revision-migration");
+        pollster::block_on(async {
+            let path = root.join("recordings.db");
+            let database = turso::Builder::new_local(path.to_str().unwrap())
+                .build()
+                .await?;
+            let connection = database.connect()?;
+            connection.execute_batch(
+                "CREATE TABLE recording_events (
+                      id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 1,
+                      camera_id TEXT NOT NULL, stream TEXT, source TEXT NOT NULL, kind TEXT NOT NULL,
+                      start_time_ms INTEGER NOT NULL, end_time_ms INTEGER, confidence REAL,
+                      bbox_json TEXT, zone TEXT, thumbnail_filename TEXT
+                 );
+                 CREATE TABLE recording_event_embeddings (
+                      event_id TEXT NOT NULL REFERENCES recording_events(id) ON DELETE CASCADE,
+                      model_id TEXT NOT NULL, dimensions INTEGER NOT NULL, embedding BLOB NOT NULL,
+                      PRIMARY KEY(event_id, model_id)
+                 );
+                 INSERT INTO recording_events (id, revision, camera_id, stream, source, kind, start_time_ms)
+                 VALUES ('unchanged',1,'front','main','camera','motion',100),
+                        ('revised',2,'front','main','camera','motion',200);
+                 INSERT INTO recording_event_embeddings (event_id, model_id, dimensions, embedding)
+                 SELECT id, 'model-v1', 2, vector32('[1,0]') FROM recording_events;"
+            ).await?;
+            initialize_schema(&connection).await?;
+            initialize_schema(&connection).await?;
+            let query = EventSemanticSearchQuery::new(
+                EventEmbedding {
+                    model_id: "model-v1".to_owned(),
+                    values: vec![1.0, 0.0],
+                },
+                "main",
+                0,
+                1_000,
+            );
+            let initial = search_event_semantic(&connection, query.clone()).await?;
+            assert_eq!(initial.hits.len(), 1);
+            assert_eq!(initial.hits[0].event_id, "unchanged");
+
+            set_event_embedding(&connection, "revised", query.embedding.clone()).await?;
+            let refreshed = search_event_semantic(&connection, query.clone()).await?;
+            assert_eq!(refreshed.hits.len(), 2);
+            close_event(&connection, "unchanged", 300).await?;
+            let after_close = search_event_semantic(&connection, query).await?;
+            assert_eq!(after_close.hits.len(), 1);
+            assert_eq!(after_close.hits[0].event_id, "revised");
+            assert_eq!(
+                query_count(
+                    &connection,
+                    "SELECT COUNT(*) FROM recording_event_embeddings WHERE event_id = 'unchanged'"
+                )
+                .await,
+                0,
+            );
+            Ok::<(), anyhow::Error>(())
+        })?;
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn detach_event_thumbnail_increments_revision_and_invalidates_embeddings() -> anyhow::Result<()>
+    {
+        let root = test_dir("turso-detach-thumbnail-embeddings");
+        let path = root.join("recordings.db");
+        pollster::block_on(async {
+            let database = turso::Builder::new_local(path.to_str().unwrap())
+                .build()
+                .await?;
+            let connection = database.connect()?;
+            initialize_schema(&connection).await?;
+            let mut by_id = test_event("detach-by-id", 100);
+            by_id.thumbnail_filename = Some("thumb-id.jpg".to_owned());
+            insert_event(&connection, by_id, None).await?;
+            let mut by_file = test_event("detach-by-file", 200);
+            by_file.thumbnail_filename = Some("thumb-file.jpg".to_owned());
+            insert_event(&connection, by_file, None).await?;
+            let embedding = EventEmbedding {
+                model_id: "model-v1".to_owned(),
+                values: vec![1.0, 0.0],
+            };
+            set_event_embedding(&connection, "detach-by-id", embedding.clone()).await?;
+            set_event_embedding(&connection, "detach-by-file", embedding.clone()).await?;
+
+            detach_event_thumbnail(&connection, "detach-by-id").await?;
+            detach_event_thumbnail_file(&connection, "thumb-file.jpg").await?;
+
+            assert_eq!(
+                query_count(
+                    &connection,
+                    "SELECT revision FROM recording_events WHERE id = 'detach-by-id'"
+                )
+                .await,
+                2,
+            );
+            assert_eq!(
+                query_count(
+                    &connection,
+                    "SELECT revision FROM recording_events WHERE id = 'detach-by-file'"
+                )
+                .await,
+                2,
+            );
+            assert_eq!(
+                query_count(
+                    &connection,
+                    "SELECT COUNT(*) FROM recording_event_embeddings"
+                )
+                .await,
+                0,
+            );
+            Ok::<(), anyhow::Error>(())
+        })?;
+        std::fs::remove_dir_all(root)?;
+        Ok(())
     }
 
     pub fn test_event(id: &str, start_time_ms: i64) -> TimelineEvent {
