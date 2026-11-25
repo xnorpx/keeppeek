@@ -182,23 +182,6 @@ jobs:
           if (-not (Test-Path $installer)) {
             throw "Installer was not created at $installer"
           }
-
-          & 'C:\Program Files (x86)\NSIS\makensis.exe' `
-            "/DARCH=$architecture" `
-            "/DBUILD_DIR=$buildDirectory" `
-            "/DOUT_DIR=$outputDirectory" `
-            '/DVERSION=0.0.0' `
-            '/DVERSION_RESOURCE=0.0.0.0' `
-            installer/keeppeek-desktop.nsi
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Unable to build the KeepPeek Desktop installer'
-          }
-
-          $desktopInstaller = Join-Path $outputDirectory "keeppeek-desktop-0.0.0-windows-$architecture-installer.exe"
-          "desktop_installer=$desktopInstaller" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          if (-not (Test-Path $desktopInstaller)) {
-            throw "Desktop installer was not created at $desktopInstaller"
-          }
       - name: Verify Windows installer lifecycle
         if: runner.os == 'Windows' && matrix.run_nsis == 'true' && steps.windows-installer.outcome == 'success'
         shell: pwsh
@@ -206,19 +189,38 @@ jobs:
           INSTALLER: ${{ steps.windows-installer.outputs.installer }}
           OUTPUT_DIRECTORY: ${{ steps.windows-installer.outputs.output_directory }}
         run: |
+          $zeroDirectory = Join-Path $env:RUNNER_TEMP 'keeppeek-install-zero'
           $installDirectory = Join-Path $env:RUNNER_TEMP 'keeppeek-install'
           $serviceName = 'KeepPeekService'
           $installer = $env:INSTALLER
+          $desktopShortcut = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\KeepPeek\KeepPeek Desktop.lnk'
           try {
+            $zeroProcess = Start-Process -FilePath $installer -ArgumentList @('/S', '/NO_DESKTOP', '/NO_SERVER', '/NO_SERVICE', "/D=$zeroDirectory") -PassThru -Wait
+            if ($zeroProcess.ExitCode -eq 0) {
+              throw 'Installer must fail when zero components are selected'
+            }
+            if (Test-Path $zeroDirectory) {
+              throw 'Zero-component install must not create the target directory'
+            }
+
             $process = Start-Process -FilePath $installer -ArgumentList @('/S', '/SERVICE', "/D=$installDirectory") -PassThru -Wait
             if ($process.ExitCode -ne 0) {
               throw 'Unable to install KeepPeek'
             }
 
-            foreach ($binary in 'keeppeek.exe', 'keeppeek-service.exe') {
+            foreach ($binary in 'keeppeek.exe', 'keeppeek-service.exe', 'keeppeek-desktop.exe', 'uninstall.exe') {
               if (-not (Test-Path (Join-Path $installDirectory $binary))) {
                 throw "$binary was not installed"
               }
+            }
+
+            if (-not (Test-Path $desktopShortcut)) {
+              throw "KeepPeek Desktop Start Menu shortcut was not installed at $desktopShortcut"
+            }
+
+            & (Join-Path $installDirectory 'keeppeek-desktop.exe') --help
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Installed keeppeek-desktop.exe --help failed'
             }
 
             $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
@@ -239,38 +241,7 @@ jobs:
             } else {
               & sc.exe delete $serviceName
             }
-            Remove-Item -Force -Recurse -ErrorAction SilentlyContinue $installDirectory
-          }
-      - name: Verify Windows desktop installer lifecycle
-        if: runner.os == 'Windows' && matrix.run_nsis == 'true' && steps.windows-installer.outcome == 'success'
-        shell: pwsh
-        env:
-          DESKTOP_INSTALLER: ${{ steps.windows-installer.outputs.desktop_installer }}
-          OUTPUT_DIRECTORY: ${{ steps.windows-installer.outputs.output_directory }}
-        run: |
-          $installDirectory = Join-Path $env:RUNNER_TEMP 'keeppeek-desktop-install'
-          try {
-            $process = Start-Process -FilePath $env:DESKTOP_INSTALLER -ArgumentList @('/S', "/D=$installDirectory") -PassThru -Wait
-            if ($process.ExitCode -ne 0) {
-              throw 'Unable to install KeepPeek Desktop'
-            }
-            $binary = Join-Path $installDirectory 'keeppeek-desktop.exe'
-            if (-not (Test-Path $binary)) {
-              throw 'keeppeek-desktop.exe was not installed'
-            }
-            & $binary --help
-            if ($LASTEXITCODE -ne 0) {
-              throw 'Installed keeppeek-desktop.exe --help failed'
-            }
-          } finally {
-            $uninstaller = Join-Path $installDirectory 'uninstall.exe'
-            if (Test-Path $uninstaller) {
-              $process = Start-Process -FilePath $uninstaller -ArgumentList '/S' -PassThru -Wait
-              if ($process.ExitCode -ne 0) {
-                throw 'Unable to uninstall KeepPeek Desktop'
-              }
-            }
-            Remove-Item -Force -Recurse -ErrorAction SilentlyContinue $installDirectory, $env:OUTPUT_DIRECTORY
+            Remove-Item -Force -Recurse -ErrorAction SilentlyContinue $zeroDirectory, $installDirectory, $env:OUTPUT_DIRECTORY
           }
       - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2
         if: matrix.os == 'windows-11-arm'

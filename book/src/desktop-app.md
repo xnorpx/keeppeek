@@ -18,10 +18,10 @@ This separation ensures a 24/7 recorder keeps capturing footage after you close 
 
 ## Supported platforms and webviews
 
-| Operating system | Minimum version               | CPU architectures         | Native webview engine              | Release artifact                                          |
-| ---------------- | ----------------------------- | ------------------------- | ---------------------------------- | --------------------------------------------------------- |
-| Windows          | Windows 10 1809+ / Windows 11 | `x86_64`, `aarch64`       | Microsoft Edge WebView2 (Chromium) | `keeppeek-desktop-<version>-windows-<arch>-installer.exe` |
-| macOS            | macOS 11 (Big Sur)+           | `aarch64` (Apple Silicon) | System `WKWebView` (WebKit)        | `keeppeek-desktop-<version>-macos-aarch64.dmg`            |
+| Operating system | Minimum version               | CPU architectures         | Native webview engine              | Release artifacts                                                                                  |
+| ---------------- | ----------------------------- | ------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Windows          | Windows 10 1809+ / Windows 11 | `x86_64`, `aarch64`       | Microsoft Edge WebView2 (Chromium) | `keeppeek-<version>-windows-<arch>-installer.exe`, `keeppeek-desktop-<version>-windows-<arch>.exe` |
+| macOS            | macOS 11 (Big Sur)+           | `aarch64` (Apple Silicon) | System `WKWebView` (WebKit)        | `keeppeek-desktop-<version>-macos-aarch64.dmg`                                                     |
 
 Linux and mobile desktop builds are intentionally out of scope. Use a browser on those platforms.
 
@@ -29,16 +29,27 @@ Linux and mobile desktop builds are intentionally out of scope. Use a browser on
 
 ### Windows
 
-1. Download `keeppeek-desktop-<version>-windows-<arch>-installer.exe` and its `.sha256` file from the [release page](https://github.com/xnorpx/keeppeek/releases).
-2. Verify the checksum in PowerShell:
+Official Windows releases publish three Authenticode-signed, RFC 3161 timestamped standalone binaries—`keeppeek-<version>-windows-<arch>.exe` (server with TUI), `keeppeek-service-<version>-windows-<arch>.exe` (Windows service), and `keeppeek-desktop-<version>-windows-<arch>.exe` (Tauri desktop UI)—plus a single unified signed installer (`keeppeek-<version>-windows-<arch>-installer.exe`) and the server archive (`keeppeek-<version>-windows-<arch>.zip`).
+
+In the unified installer, choose at least one component:
+
+- **KeepPeek Desktop** (`keeppeek-desktop.exe` and Start Menu shortcut)
+- **KeepPeek Server with TUI** (`keeppeek.exe`)
+- **KeepPeek Windows Service** (`keeppeek-service.exe` and `KeepPeekService`)
+
+Every executable installed by `keeppeek-<version>-windows-<arch>-installer.exe`, including `uninstall.exe`, is Authenticode-signed and RFC 3161 timestamped in official releases.
+
+1. Download `keeppeek-<version>-windows-<arch>-installer.exe` (or the standalone `keeppeek-desktop-<version>-windows-<arch>.exe`) and its `.sha256` file from the [release page](https://github.com/xnorpx/keeppeek/releases).
+2. Verify the checksum and signature in PowerShell:
 
 ```powershell
-Get-FileHash keeppeek-desktop-<version>-windows-x86_64-installer.exe -Algorithm SHA256
+Get-FileHash keeppeek-<version>-windows-x86_64-installer.exe -Algorithm SHA256
+Get-AuthenticodeSignature keeppeek-<version>-windows-x86_64-installer.exe
 ```
 
-3. Run the installer. It installs per-user under `%LOCALAPPDATA%\Programs\KeepPeek Desktop` and adds Start Menu shortcuts without requiring administrator privileges.
+3. Run the unified installer and select **KeepPeek Desktop** (plus **KeepPeek Server with TUI** and/or **KeepPeek Windows Service** if you also want to run the recorder on this machine). For unattended installs, combine `/S` with `/DESKTOP`, `/SERVER`, `/SERVICE` or `/NO_DESKTOP`, `/NO_SERVER`, `/NO_SERVICE` (at least one component must remain selected; e.g. `/S /DESKTOP /NO_SERVER /NO_SERVICE`). If you prefer a portable launch without administrator installation, run the signed standalone `keeppeek-desktop-<version>-windows-<arch>.exe` directly.
 4. Launch **KeepPeek Desktop** from the Start Menu.
-5. To uninstall, use **Installed apps** in Windows Settings or run `%LOCALAPPDATA%\Programs\KeepPeek Desktop\uninstall.exe`. Uninstalling removes only the desktop client and leaves `KeepPeekService` and `%APPDATA%\keeppeek\config.toml` untouched.
+5. To uninstall, use **Installed apps** in Windows Settings or run the signed `C:\Program Files\KeepPeek\uninstall.exe`. Uninstalling removes the installed KeepPeek binaries, shortcuts, and `KeepPeekService` if present, while leaving `%APPDATA%\keeppeek\config.toml` untouched.
 
 Windows 11 includes the Microsoft Edge WebView2 Runtime. On older Windows 10 installations, install the Evergreen WebView2 Runtime if prompted.
 

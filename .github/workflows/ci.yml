@@ -558,7 +558,7 @@ jobs:
     name: Windows Signing
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     environment: artifact-signing
     permissions:
       contents: read
@@ -613,9 +613,72 @@ jobs:
           }
       - name: Set up NSIS
         uses: ./.github/actions/setup-nsis
+      - name: Extract Windows uninstaller
+        id: windows-uninstaller
+        shell: pwsh
+        run: |
+          $uninstRoot = Join-Path $env:RUNNER_TEMP 'keeppeek-uninstaller'
+          $genDirectory = Join-Path $uninstRoot 'gen'
+          $uninstDirectory = Join-Path $uninstRoot 'out'
+          foreach ($dir in $genDirectory, $uninstDirectory) {
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          }
+
+          $uninstaller = Join-Path $uninstDirectory 'uninstall.exe'
+          & 'C:\Program Files (x86)\NSIS\makensis.exe' `
+            '/DARCH=x86_64' `
+            "/DOUT_DIR=$genDirectory" `
+            '/DVERSION=0.0.0' `
+            '/DVERSION_RESOURCE=0.0.0.0' `
+            '/DWRITE_UNINSTALLER_ONLY' `
+            "/DUNINST_OUT=$uninstaller" `
+            installer/keeppeek.nsi
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to build the KeepPeek uninstaller generator'
+          }
+
+          $generator = Join-Path $genDirectory 'keeppeek-uninst-gen.exe'
+          $previousCompat = $env:__COMPAT_LAYER
+          $env:__COMPAT_LAYER = 'RunAsInvoker'
+          try {
+            $process = Start-Process -FilePath $generator -PassThru -Wait
+          } finally {
+            $env:__COMPAT_LAYER = $previousCompat
+          }
+          if ($process.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $uninstaller)) {
+            throw "Unable to extract KeepPeek uninstall.exe (exit $($process.ExitCode))"
+          }
+
+          Remove-Item -Force -Recurse -ErrorAction SilentlyContinue $genDirectory
+          "uninstaller=$uninstaller" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+      - name: Sign Windows uninstaller
+        uses: Azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          files: |
+            ${{ steps.windows-uninstaller.outputs.uninstaller }}
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Verify Windows uninstaller signature
+        shell: pwsh
+        env:
+          UNINSTALLER: ${{ steps.windows-uninstaller.outputs.uninstaller }}
+        run: |
+          $signature = Get-AuthenticodeSignature $env:UNINSTALLER
+          if ($signature.Status -ne 'Valid') {
+            throw "$env:UNINSTALLER has invalid signature status: $($signature.Status)"
+          }
+          if ($null -eq $signature.TimestamperCertificate) {
+            throw "$env:UNINSTALLER does not have an RFC 3161 timestamp"
+          }
       - name: Build Windows installer
         id: windows-installer
         shell: pwsh
+        env:
+          SIGNED_UNINSTALLER: ${{ steps.windows-uninstaller.outputs.uninstaller }}
         run: |
           $buildDirectory = Join-Path $env:GITHUB_WORKSPACE 'target\debug'
           $outputDirectory = Join-Path $env:RUNNER_TEMP 'keeppeek-installer'
@@ -626,6 +689,7 @@ jobs:
             "/DOUT_DIR=$outputDirectory" `
             '/DVERSION=0.0.0' `
             '/DVERSION_RESOURCE=0.0.0.0' `
+            "/DSIGNED_UNINSTALLER=$env:SIGNED_UNINSTALLER" `
             installer/keeppeek.nsi
           if ($LASTEXITCODE -ne 0) {
             throw 'Unable to build the KeepPeek installer'
@@ -636,23 +700,6 @@ jobs:
           if (-not (Test-Path $installer)) {
             throw "Installer was not created at $installer"
           }
-
-          & 'C:\Program Files (x86)\NSIS\makensis.exe' `
-            '/DARCH=x86_64' `
-            "/DBUILD_DIR=$buildDirectory" `
-            "/DOUT_DIR=$outputDirectory" `
-            '/DVERSION=0.0.0' `
-            '/DVERSION_RESOURCE=0.0.0.0' `
-            installer/keeppeek-desktop.nsi
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Unable to build the KeepPeek Desktop installer'
-          }
-
-          $desktopInstaller = Join-Path $outputDirectory 'keeppeek-desktop-0.0.0-windows-x86_64-installer.exe'
-          "desktop_installer=$desktopInstaller" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          if (-not (Test-Path $desktopInstaller)) {
-            throw "Desktop installer was not created at $desktopInstaller"
-          }
       - name: Sign Windows installer
         uses: Azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
@@ -661,7 +708,6 @@ jobs:
           certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
           files: |
             ${{ steps.windows-installer.outputs.installer }}
-            ${{ steps.windows-installer.outputs.desktop_installer }}
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
@@ -669,16 +715,13 @@ jobs:
         shell: pwsh
         env:
           INSTALLER: ${{ steps.windows-installer.outputs.installer }}
-          DESKTOP_INSTALLER: ${{ steps.windows-installer.outputs.desktop_installer }}
         run: |
-          foreach ($path in $env:INSTALLER, $env:DESKTOP_INSTALLER) {
-            $signature = Get-AuthenticodeSignature $path
-            if ($signature.Status -ne 'Valid') {
-              throw "$path has invalid signature status: $($signature.Status)"
-            }
-            if ($null -eq $signature.TimestamperCertificate) {
-              throw "$path does not have an RFC 3161 timestamp"
-            }
+          $signature = Get-AuthenticodeSignature $env:INSTALLER
+          if ($signature.Status -ne 'Valid') {
+            throw "$env:INSTALLER has invalid signature status: $($signature.Status)"
+          }
+          if ($null -eq $signature.TimestamperCertificate) {
+            throw "$env:INSTALLER does not have an RFC 3161 timestamp"
           }
 
   ui-static:
