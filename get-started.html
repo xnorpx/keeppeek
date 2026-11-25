@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d9ec3327.js";
+            window.path_to_searchindex_js = "searchindex-96b8dfbb.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-6871163b.js"></script>
+        <script src="toc-738fe896.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -180,7 +180,9 @@
 The active <a href="https://github.com/xnorpx/keeppeek/issues/145">Alpha gate</a> tracks promotion evidence.</p>
 </blockquote>
 <p>Choose the installation that fits the host. Linux has first-class Docker support; macOS and Windows
-use native packages and service integration.</p>
+use native packages and service integration. On Windows and macOS, you can also install
+<a href="./desktop-app.html">KeepPeek Desktop</a> to open an existing local or remote KeepPeek server in a
+dedicated desktop window.</p>
 <h2 id="before-installation"><a class="header" href="#before-installation">Before installation</a></h2>
 <p>Choose a host with enough disk capacity for the camera bitrates and retention you need. KeepPeek
 stores camera media without transcoding; a browser still needs to support the selected codec.
@@ -246,10 +248,12 @@ artifact rather than assuming every DMG has both. The
 explains packaging and service logs. Use <a href="./upgrades-and-migrations.html#macos">Upgrades and migrations</a>
 when replacing an existing installation.</p>
 <h2 id="windows"><a class="header" href="#windows">Windows</a></h2>
-<p>Windows releases provide signed x86-64 and ARM64 binaries and an installer. Choose the architecture
-that matches the host and run the installer. Select <strong>Run KeepPeek as a Windows service</strong> for
-background operation through the Service Control Manager. The service is named <code>KeepPeekService</code>.
-Without that component, run the installed <code>keeppeek.exe</code> as a standalone process.</p>
+<p>Windows releases provide Authenticode-signed, RFC 3161 timestamped x86-64 and ARM64 binaries and a single unified signed installer (every published executable, including the installer’s <code>uninstall.exe</code>, is signed and timestamped):</p>
+<ul>
+<li><strong>Unified installer (<code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;-installer.exe</code>):</strong> lets you select at least one of <strong>KeepPeek Desktop</strong> (<code>keeppeek-desktop.exe</code>), <strong>KeepPeek Server with TUI</strong> (<code>keeppeek.exe</code>), and <strong>KeepPeek Windows Service</strong> (<code>keeppeek-service.exe</code> / <code>KeepPeekService</code>).</li>
+<li><strong>Standalone signed binaries and server ZIP:</strong> <code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;.exe</code> (server with TUI), <code>keeppeek-service-&lt;version&gt;-windows-&lt;arch&gt;.exe</code> (Windows service), <code>keeppeek-desktop-&lt;version&gt;-windows-&lt;arch&gt;.exe</code> (Tauri desktop UI), and <code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;.zip</code>, each with a matching <code>.sha256</code> file.</li>
+</ul>
+<p>Choose the architecture that matches the host and run <code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;-installer.exe</code>. Select <strong>KeepPeek Desktop</strong> for the <a href="./desktop-app.html">native desktop UI</a>, <strong>KeepPeek Server with TUI</strong> to run <code>keeppeek.exe</code> interactively, and/or <strong>KeepPeek Windows Service</strong> for background operation through the Service Control Manager (<code>KeepPeekService</code>). For unattended installs, combine <code>/S</code> with <code>/DESKTOP</code>, <code>/SERVER</code>, <code>/SERVICE</code>, <code>/NO_DESKTOP</code>, <code>/NO_SERVER</code>, or <code>/NO_SERVICE</code> (at least one component must remain selected).</p>
 <p>Open <code>http://localhost:8081</code> after startup. To inspect the service from PowerShell:</p>
 <pre><code class="language-powershell">sc.exe query KeepPeekService
 sc.exe qc KeepPeekService
@@ -340,7 +344,7 @@ in again. Pending notification and MQTT work does not survive that restart.</li>
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="authentication.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="desktop-app.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -354,7 +358,7 @@ in again. Pending notification and MQTT work does not survive that restart.</li>
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="authentication.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="desktop-app.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

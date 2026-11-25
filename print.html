@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d9ec3327.js";
+            window.path_to_searchindex_js = "searchindex-96b8dfbb.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-6871163b.js"></script>
+        <script src="toc-738fe896.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -359,7 +359,9 @@ concepts. <a href="#groups-and-two-way-audio-current-status">Groups</a> explains
 The active <a href="https://github.com/xnorpx/keeppeek/issues/145">Alpha gate</a> tracks promotion evidence.</p>
 </blockquote>
 <p>Choose the installation that fits the host. Linux has first-class Docker support; macOS and Windows
-use native packages and service integration.</p>
+use native packages and service integration. On Windows and macOS, you can also install
+<a href="#desktop-application-windows-and-macos">KeepPeek Desktop</a> to open an existing local or remote KeepPeek server in a
+dedicated desktop window.</p>
 <h2 id="before-installation"><a class="header" href="#before-installation">Before installation</a></h2>
 <p>Choose a host with enough disk capacity for the camera bitrates and retention you need. KeepPeek
 stores camera media without transcoding; a browser still needs to support the selected codec.
@@ -422,13 +424,15 @@ after that user logs in. Open <code>http://localhost:8081</code> in a browser.</
 <p>Signing and notarization depend on the release workflow’s configured credentials; check the chosen
 artifact rather than assuming every DMG has both. The
 <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/macos-installation.md">macOS installation guide</a>
-explains packaging and service logs. Use <a href="#macos-1">Upgrades and migrations</a>
+explains packaging and service logs. Use <a href="#macos-2">Upgrades and migrations</a>
 when replacing an existing installation.</p>
 <h2 id="windows"><a class="header" href="#windows">Windows</a></h2>
-<p>Windows releases provide signed x86-64 and ARM64 binaries and an installer. Choose the architecture
-that matches the host and run the installer. Select <strong>Run KeepPeek as a Windows service</strong> for
-background operation through the Service Control Manager. The service is named <code>KeepPeekService</code>.
-Without that component, run the installed <code>keeppeek.exe</code> as a standalone process.</p>
+<p>Windows releases provide Authenticode-signed, RFC 3161 timestamped x86-64 and ARM64 binaries and a single unified signed installer (every published executable, including the installer’s <code>uninstall.exe</code>, is signed and timestamped):</p>
+<ul>
+<li><strong>Unified installer (<code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;-installer.exe</code>):</strong> lets you select at least one of <strong>KeepPeek Desktop</strong> (<code>keeppeek-desktop.exe</code>), <strong>KeepPeek Server with TUI</strong> (<code>keeppeek.exe</code>), and <strong>KeepPeek Windows Service</strong> (<code>keeppeek-service.exe</code> / <code>KeepPeekService</code>).</li>
+<li><strong>Standalone signed binaries and server ZIP:</strong> <code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;.exe</code> (server with TUI), <code>keeppeek-service-&lt;version&gt;-windows-&lt;arch&gt;.exe</code> (Windows service), <code>keeppeek-desktop-&lt;version&gt;-windows-&lt;arch&gt;.exe</code> (Tauri desktop UI), and <code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;.zip</code>, each with a matching <code>.sha256</code> file.</li>
+</ul>
+<p>Choose the architecture that matches the host and run <code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;-installer.exe</code>. Select <strong>KeepPeek Desktop</strong> for the <a href="#desktop-application-windows-and-macos">native desktop UI</a>, <strong>KeepPeek Server with TUI</strong> to run <code>keeppeek.exe</code> interactively, and/or <strong>KeepPeek Windows Service</strong> for background operation through the Service Control Manager (<code>KeepPeekService</code>). For unattended installs, combine <code>/S</code> with <code>/DESKTOP</code>, <code>/SERVER</code>, <code>/SERVICE</code>, <code>/NO_DESKTOP</code>, <code>/NO_SERVER</code>, or <code>/NO_SERVICE</code> (at least one component must remain selected).</p>
 <p>Open <code>http://localhost:8081</code> after startup. To inspect the service from PowerShell:</p>
 <pre><code class="language-powershell">sc.exe query KeepPeekService
 sc.exe qc KeepPeekService
@@ -436,7 +440,7 @@ sc.exe qc KeepPeekService
 <p>The service reads configuration in its own process account’s environment, which can differ from
 your interactive <code>%APPDATA%</code>. Inspect the service identity and actual configuration location before
 moving data between standalone and service operation. See
-<a href="#windows-1">Upgrades and migrations</a> and the
+<a href="#windows-2">Upgrades and migrations</a> and the
 <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/windows-service.md">Windows service guide</a> for
 service lifecycle and logging.</p>
 <h2 id="configuration-and-secrets"><a class="header" href="#configuration-and-secrets">Configuration and secrets</a></h2>
@@ -510,6 +514,113 @@ through its intended destination and inspect failures.</li>
 <li>Restart once and confirm recording resumes, durable settings remain, and remote users can sign
 in again. Pending notification and MQTT work does not survive that restart.</li>
 </ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="desktop-application-windows-and-macos"><a class="header" href="#desktop-application-windows-and-macos">Desktop application (Windows and macOS)</a></h1>
+<p>KeepPeek Desktop packages the existing KeepPeek web interface inside a native Tauri v2 window for Windows and macOS. It lets you open KeepPeek from the Start Menu, Applications folder, or Dock without managing browser tabs.</p>
+<h2 id="backend-deployment-model"><a class="header" href="#backend-deployment-model">Backend deployment model</a></h2>
+<p>KeepPeek Desktop is a <strong>connect-to-existing-server client</strong>. It does not bundle, spawn, own, or stop a KeepPeek server process.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Concern</th><th>Owner</th></tr>
+</thead>
+<tbody>
+<tr><td>Recorder startup</td><td>Operator or OS service (<code>keeppeek</code>, Windows <code>KeepPeekService</code>, macOS <code>com.keeppeek</code>, or Docker).</td></tr>
+<tr><td>Recorder shutdown</td><td>Operator or OS service manager. Closing or quitting KeepPeek Desktop never stops recording.</td></tr>
+<tr><td>Desktop window &amp; UI</td><td><code>keeppeek-desktop</code> Tauri application and OS webview (<code>WebView2</code> on Windows, <code>WKWebView</code> on macOS).</td></tr>
+<tr><td>Server settings &amp; DB</td><td>Existing KeepPeek server (<code>config.toml</code>, <code>secrets.toml</code>, <code>recordings.db</code>, media directories).</td></tr>
+<tr><td>Desktop default URL</td><td>Stored in the existing <code>config.toml</code> under <code>[desktop].server_url</code>. No separate settings file.</td></tr>
+</tbody>
+</table>
+</div>
+<p>This separation ensures a 24/7 recorder keeps capturing footage after you close the desktop window, and lets one laptop connect to a local or remote KeepPeek server.</p>
+<h2 id="supported-platforms-and-webviews"><a class="header" href="#supported-platforms-and-webviews">Supported platforms and webviews</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Operating system</th><th>Minimum version</th><th>CPU architectures</th><th>Native webview engine</th><th>Release artifacts</th></tr>
+</thead>
+<tbody>
+<tr><td>Windows</td><td>Windows 10 1809+ / Windows 11</td><td><code>x86_64</code>, <code>aarch64</code></td><td>Microsoft Edge WebView2 (Chromium)</td><td><code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;-installer.exe</code>, <code>keeppeek-desktop-&lt;version&gt;-windows-&lt;arch&gt;.exe</code></td></tr>
+<tr><td>macOS</td><td>macOS 11 (Big Sur)+</td><td><code>aarch64</code> (Apple Silicon)</td><td>System <code>WKWebView</code> (WebKit)</td><td><code>keeppeek-desktop-&lt;version&gt;-macos-aarch64.dmg</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>Linux and mobile desktop builds are intentionally out of scope. Use a browser on those platforms.</p>
+<h2 id="installation-and-uninstall"><a class="header" href="#installation-and-uninstall">Installation and uninstall</a></h2>
+<h3 id="windows-1"><a class="header" href="#windows-1">Windows</a></h3>
+<p>Official Windows releases publish three Authenticode-signed, RFC 3161 timestamped standalone binaries—<code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;.exe</code> (server with TUI), <code>keeppeek-service-&lt;version&gt;-windows-&lt;arch&gt;.exe</code> (Windows service), and <code>keeppeek-desktop-&lt;version&gt;-windows-&lt;arch&gt;.exe</code> (Tauri desktop UI)—plus a single unified signed installer (<code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;-installer.exe</code>) and the server archive (<code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;.zip</code>).</p>
+<p>In the unified installer, choose at least one component:</p>
+<ul>
+<li><strong>KeepPeek Desktop</strong> (<code>keeppeek-desktop.exe</code> and Start Menu shortcut)</li>
+<li><strong>KeepPeek Server with TUI</strong> (<code>keeppeek.exe</code>)</li>
+<li><strong>KeepPeek Windows Service</strong> (<code>keeppeek-service.exe</code> and <code>KeepPeekService</code>)</li>
+</ul>
+<p>Every executable installed by <code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;-installer.exe</code>, including <code>uninstall.exe</code>, is Authenticode-signed and RFC 3161 timestamped in official releases.</p>
+<ol>
+<li>Download <code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;-installer.exe</code> (or the standalone <code>keeppeek-desktop-&lt;version&gt;-windows-&lt;arch&gt;.exe</code>) and its <code>.sha256</code> file from the <a href="https://github.com/xnorpx/keeppeek/releases">release page</a>.</li>
+<li>Verify the checksum and signature in PowerShell:</li>
+</ol>
+<pre><code class="language-powershell">Get-FileHash keeppeek-&lt;version&gt;-windows-x86_64-installer.exe -Algorithm SHA256
+Get-AuthenticodeSignature keeppeek-&lt;version&gt;-windows-x86_64-installer.exe
+</code></pre>
+<ol start="3">
+<li>Run the unified installer and select <strong>KeepPeek Desktop</strong> (plus <strong>KeepPeek Server with TUI</strong> and/or <strong>KeepPeek Windows Service</strong> if you also want to run the recorder on this machine). For unattended installs, combine <code>/S</code> with <code>/DESKTOP</code>, <code>/SERVER</code>, <code>/SERVICE</code> or <code>/NO_DESKTOP</code>, <code>/NO_SERVER</code>, <code>/NO_SERVICE</code> (at least one component must remain selected; e.g. <code>/S /DESKTOP /NO_SERVER /NO_SERVICE</code>). If you prefer a portable launch without administrator installation, run the signed standalone <code>keeppeek-desktop-&lt;version&gt;-windows-&lt;arch&gt;.exe</code> directly.</li>
+<li>Launch <strong>KeepPeek Desktop</strong> from the Start Menu.</li>
+<li>To uninstall, use <strong>Installed apps</strong> in Windows Settings or run the signed <code>C:\Program Files\KeepPeek\uninstall.exe</code>. Uninstalling removes the installed KeepPeek binaries, shortcuts, and <code>KeepPeekService</code> if present, while leaving <code>%APPDATA%\keeppeek\config.toml</code> untouched.</li>
+</ol>
+<p>Windows 11 includes the Microsoft Edge WebView2 Runtime. On older Windows 10 installations, install the Evergreen WebView2 Runtime if prompted.</p>
+<h3 id="macos-1"><a class="header" href="#macos-1">macOS</a></h3>
+<ol>
+<li>Download <code>keeppeek-desktop-&lt;version&gt;-macos-aarch64.dmg</code> and its matching <code>.sha256</code> file.</li>
+<li>Verify the checksum:</li>
+</ol>
+<pre><code class="language-sh">shasum -a 256 -c keeppeek-desktop-&lt;version&gt;-macos-aarch64.dmg.sha256
+</code></pre>
+<ol start="3">
+<li>Open the disk image and drag <code>KeepPeek Desktop.app</code> to <code>/Applications</code>.</li>
+<li>Launch <code>KeepPeek Desktop.app</code>.</li>
+<li>To uninstall, quit <strong>KeepPeek Desktop</strong> (<code>Cmd+Q</code>) and delete <code>/Applications/KeepPeek Desktop.app</code>. This leaves <code>KeepPeek.app</code>, the <code>com.keeppeek</code> LaunchAgent, and <code>~/Library/Application Support/keeppeek/config.toml</code> untouched.</li>
+</ol>
+<h2 id="first-launch-and-server-connection"><a class="header" href="#first-launch-and-server-connection">First launch and server connection</a></h2>
+<p>On startup, KeepPeek Desktop resolves its target server URL in this order:</p>
+<ol>
+<li><code>--server-url &lt;URL&gt;</code> command-line flag</li>
+<li><code>KEEPPEEK_DESKTOP_SERVER_URL</code> environment variable</li>
+<li><code>[desktop].server_url</code> in <code>config.toml</code></li>
+<li>Derived local address <code>http://127.0.0.1:&lt;port&gt;</code> from root <code>host</code> and <code>port</code> in <code>config.toml</code></li>
+<li>Default <code>http://127.0.0.1:8081</code></li>
+</ol>
+<p>Before opening the server UI, KeepPeek Desktop sends a bounded <code>GET /auth/session</code> probe (5-second timeout, redirects disabled, 64 KiB response limit) to verify that a KeepPeek server is reachable.</p>
+<ul>
+<li>When the probe succeeds, the window navigates directly to the server’s SvelteKit interface. Trusted-local administrator access, bearer access-key sign-in, same-origin reverse-proxy sessions, live dashboard, recorded playback, events, health, and authorized settings run directly from the server.</li>
+<li>Cross-origin OIDC login redirects (<code>POST /auth/login</code> to an external identity provider) and popup-based administrator OIDC verification (<code>window.open</code>) are intentionally blocked by the desktop webview’s single-origin navigation and popup restrictions. Use a standard browser for OIDC sign-in or administrator OIDC verification.</li>
+<li>When the server is unreachable, times out, fails TLS verification, requires HTTPS (<code>HTTP 426</code>), or returns a non-KeepPeek response, the launcher stays open and displays the exact failure with a recovery action (<strong>Retry</strong> or update the server URL).</li>
+<li>To switch servers at any time, choose <strong>Connection → Switch Server…</strong> (<code>Ctrl+Shift+S</code> on Windows, <code>Cmd+Shift+S</code> on macOS).</li>
+<li>Use <strong>Connection → Reconnect</strong> (<code>Ctrl+Shift+R</code> / <code>Cmd+Shift+R</code>) to re-probe and reconnect, or <strong>Connection → Reload</strong> (<code>Ctrl+R</code> / <code>Cmd+R</code>) to refresh the current page.</li>
+</ul>
+<p>Use <code>--no-autoconnect</code> to open the launcher without auto-connecting, and <code>--config &lt;path&gt;</code> (or <code>-c &lt;path&gt;</code>) to select an alternate <code>config.toml</code>.</p>
+<h2 id="window-close-reopen-and-exit"><a class="header" href="#window-close-reopen-and-exit">Window close, reopen, and exit</a></h2>
+<ul>
+<li><strong>Windows:</strong> Closing the window exits <code>keeppeek-desktop.exe</code> and releases its WebView2 child processes. Any running <code>keeppeek.exe</code> or <code>KeepPeekService</code> instance continues unaffected.</li>
+<li><strong>macOS:</strong> Closing the window navigates away from active media sessions (triggering <code>pagehide</code> so WebRTC peers close cleanly) and hides the window; clicking the Dock icon reopens it. Choosing <strong>Quit KeepPeek Desktop</strong> (<code>Cmd+Q</code>) exits the client while leaving <code>com.keeppeek</code> running.</li>
+</ul>
+<h2 id="security-boundaries"><a class="header" href="#security-boundaries">Security boundaries</a></h2>
+<ul>
+<li><strong>Zero native capabilities for server content:</strong> Tauri capabilities (<code>crates/keeppeek-desktop/capabilities/default.json</code>) are restricted to <code>"local": true</code> and <code>withGlobalTauri: false</code>. Once the webview navigates to a KeepPeek server origin, server pages and scripts cannot invoke native Tauri commands.</li>
+<li><strong>Strict launcher CSP:</strong> The bundled launcher uses <code>default-src 'self'</code> with no inline scripts, no inline styles, and no wildcards.</li>
+<li><strong>Navigation and popup restrictions:</strong> The Rust <code>on_navigation</code> guard permits only the bundled launcher origin and the active verified KeepPeek server origin. Disallowed schemes (<code>file:</code>, <code>javascript:</code>, <code>data:</code>), embedded credentials, third-party origins, and popup windows (<code>target="_blank"</code> / <code>window.open</code>) are blocked.</li>
+<li><strong>Server-enforced access control:</strong> Local/remote classification, session cookies, CSRF tokens, bearer credentials, camera grants, and privacy schedules remain enforced exclusively by the KeepPeek server.</li>
+</ul>
+<h2 id="media-codecs-and-accessibility"><a class="header" href="#media-codecs-and-accessibility">Media, codecs, and accessibility</a></h2>
+<p>KeepPeek streams camera media without transcoding, so playback depends on the OS webview:</p>
+<ul>
+<li><strong>Windows (<code>WebView2</code> / Chromium):</strong> Supports standard WebRTC and H.264 playback matching Microsoft Edge on the host. Hardware-backed HEVC/H.265 decoding depends on installed Windows video extensions and GPU support.</li>
+<li><strong>macOS (<code>WKWebView</code> / WebKit):</strong> Uses Apple’s WebKit media stack and VideoToolbox decoders. Codec behavior can differ from Chromium for non-standard H.264 profiles or high-bitrate streams; retain a broadly compatible H.264 substream for reliable live view and playback.</li>
+</ul>
+<p>Unsupported codec states remain visibly reported by the existing KeepPeek UI rather than failing silently. Both the bundled launcher and the loaded KeepPeek UI preserve keyboard navigation, visible focus outlines, semantic landmarks, and <code>role="alert"</code> / <code>role="status"</code> announcements.</p>
+<h2 id="build-from-source"><a class="header" href="#build-from-source">Build from source</a></h2>
+<p>See the <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/desktop-app.md">desktop engineering guide</a> for local build commands, packaging scripts, automated contract tests, and benchmark instructions.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="authentication-and-access-control"><a class="header" href="#authentication-and-access-control">Authentication and access control</a></h1>
 <p>KeepPeek is local-first: cameras and recordings stay on the recorder, and KeepPeek does not expose
@@ -2173,6 +2284,7 @@ Root fields must appear before a table header or they belong to that table.</p>
 <tr><td><code>[reporting]</code></td><td><code>reporting::Settings</code></td><td>Optional bug reporting service settings</td></tr>
 <tr><td><code>[access]</code></td><td><code>AccessConfig</code></td><td>Administrator security policy</td></tr>
 <tr><td><code>[direct_card]</code></td><td><code>DirectCardConfig</code></td><td>Exact browser-origin allowlist</td></tr>
+<tr><td><code>[desktop]</code></td><td><code>DesktopConfig</code></td><td>Optional default server URL for KeepPeek Desktop</td></tr>
 <tr><td><code>[storage]</code></td><td><code>StorageToml</code></td><td>Recording paths, retention, and safety</td></tr>
 <tr><td><code>[battery_wake]</code></td><td><code>BatteryWakeConfig</code></td><td>Reolink battery-camera wake service</td></tr>
 <tr><td><code>[logging]</code></td><td><code>LoggingConfig</code></td><td>Service log destination</td></tr>
@@ -2327,6 +2439,18 @@ listener.</p>
 </thead>
 <tbody>
 <tr><td><code>allowed_origins</code></td><td><code>Vec&lt;String&gt;</code></td><td><code>[]</code></td><td>Unique canonical exact HTTP(S) origins, such as <code>"https://ha.example"</code>. No credentials, path, query, fragment, wildcard, or trailing slash.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="desktop-client-settings"><a class="header" href="#desktop-client-settings">Desktop client settings</a></h3>
+<p>Type: <code>DesktopConfig</code>, section <code>[desktop]</code>. Unknown fields in <code>[desktop]</code> are rejected. KeepPeek Desktop stores its saved server target here instead of creating a separate settings file.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Validation and meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>server_url</code></td><td>optional <code>String</code></td><td>Absent</td><td>Canonical exact HTTP(S) origin, 1 to 512 UTF-8 bytes, such as <code>"http://127.0.0.1:8081"</code> or <code>"https://nvr.example"</code>. No credentials, path, query, fragment, or trailing slash.</td></tr>
 </tbody>
 </table>
 </div>
@@ -3849,7 +3973,7 @@ refer to a different build later.</p>
 Do not delete a named volume or host recording directory during an application upgrade. The image
 runs as user <code>65532</code>; the replacement must still be able to write its mounted directories.
 See <a href="#linux-with-docker">Get started</a> for the basic mount contract.</p>
-<h3 id="macos-1"><a class="header" href="#macos-1">macOS</a></h3>
+<h3 id="macos-2"><a class="header" href="#macos-2">macOS</a></h3>
 <p>Download the Apple Silicon DMG and its matching checksum file. Verify the checksum, replace
 <code>/Applications/KeepPeek.app</code>, then open the new application once. The launcher reinstalls and starts
 the per-user <code>com.keeppeek</code> launch agent. It starts after that user logs in; it is not a system-wide
@@ -3862,7 +3986,7 @@ tail -n 100 ~/Library/Logs/KeepPeek/keeppeek.log ~/Library/Logs/KeepPeek/keeppee
 so preserve and recheck any deliberate local service customizations. Package-signing and
 notarization details are in the
 <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/macos-installation.md">macOS installation guide</a>.</p>
-<h3 id="windows-1"><a class="header" href="#windows-1">Windows</a></h3>
+<h3 id="windows-2"><a class="header" href="#windows-2">Windows</a></h3>
 <p>Run the installer for the host architecture. An existing <code>KeepPeekService</code> selects the service
 component by default. The installer stops and removes that registration before replacing binaries,
 then recreates and starts it when the service component is selected.</p>

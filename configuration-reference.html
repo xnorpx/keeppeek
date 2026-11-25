@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d9ec3327.js";
+            window.path_to_searchindex_js = "searchindex-96b8dfbb.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-6871163b.js"></script>
+        <script src="toc-738fe896.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -232,6 +232,7 @@ Root fields must appear before a table header or they belong to that table.</p>
 <tr><td><code>[reporting]</code></td><td><code>reporting::Settings</code></td><td>Optional bug reporting service settings</td></tr>
 <tr><td><code>[access]</code></td><td><code>AccessConfig</code></td><td>Administrator security policy</td></tr>
 <tr><td><code>[direct_card]</code></td><td><code>DirectCardConfig</code></td><td>Exact browser-origin allowlist</td></tr>
+<tr><td><code>[desktop]</code></td><td><code>DesktopConfig</code></td><td>Optional default server URL for KeepPeek Desktop</td></tr>
 <tr><td><code>[storage]</code></td><td><code>StorageToml</code></td><td>Recording paths, retention, and safety</td></tr>
 <tr><td><code>[battery_wake]</code></td><td><code>BatteryWakeConfig</code></td><td>Reolink battery-camera wake service</td></tr>
 <tr><td><code>[logging]</code></td><td><code>LoggingConfig</code></td><td>Service log destination</td></tr>
@@ -386,6 +387,18 @@ listener.</p>
 </thead>
 <tbody>
 <tr><td><code>allowed_origins</code></td><td><code>Vec&lt;String&gt;</code></td><td><code>[]</code></td><td>Unique canonical exact HTTP(S) origins, such as <code>"https://ha.example"</code>. No credentials, path, query, fragment, wildcard, or trailing slash.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="desktop-client-settings"><a class="header" href="#desktop-client-settings">Desktop client settings</a></h3>
+<p>Type: <code>DesktopConfig</code>, section <code>[desktop]</code>. Unknown fields in <code>[desktop]</code> are rejected. KeepPeek Desktop stores its saved server target here instead of creating a separate settings file.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Validation and meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>server_url</code></td><td>optional <code>String</code></td><td>Absent</td><td>Canonical exact HTTP(S) origin, 1 to 512 UTF-8 bytes, such as <code>"http://127.0.0.1:8081"</code> or <code>"https://nvr.example"</code>. No credentials, path, query, fragment, or trailing slash.</td></tr>
 </tbody>
 </table>
 </div>
