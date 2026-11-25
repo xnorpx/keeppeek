@@ -692,27 +692,8 @@ impl RtspLoop {
             }
         }
 
-        driver.setup(0, self.transport)?;
-        for (index, stream) in driver.streams().iter().enumerate() {
-            tracing::debug!(
-                ip = %self.camera_ip,
-                stream = %self.stream,
-                track = index,
-                params = ?stream.parameters(),
-                "rtsp track",
-            );
-        }
-        for index in 1..driver.streams().len() {
-            if let Err(error) = driver.setup(index, self.transport) {
-                tracing::debug!(
-                    ip = %self.camera_ip,
-                    stream = %self.stream,
-                    track = index,
-                    %error,
-                    "skipping RTSP track",
-                );
-            }
-        }
+        let audio_track =
+            setup_described_tracks(&mut driver, self.transport, self.camera_ip, self.stream)?;
         let session = uuid::Uuid::new_v4();
         driver.play_reporting_failure(|tracks| {
             self.report_source_timing(tracks, session, "play_failed");
@@ -748,7 +729,6 @@ impl RtspLoop {
             .map(|_| source_epoch(session))
             .collect();
         let mut video_deadline = Instant::now() + MEDIA_IDLE_TIMEOUT;
-        let mut audio_track = None;
         let mut reported_unsupported_recording_audio = false;
         let mut pending_talkback = None;
         let mut talkback_session: Option<IsapiTalk> = None;
@@ -843,6 +823,9 @@ impl RtspLoop {
                 }
                 CodecItem::AudioFrame(frame) => {
                     let track_id = frame.stream_id();
+                    if audio_track != Some(track_id) {
+                        continue;
+                    }
                     let Some(audio) = driver
                         .streams()
                         .get(track_id)
@@ -850,10 +833,6 @@ impl RtspLoop {
                     else {
                         continue;
                     };
-                    // A camera profile exposes one audio variant. Never mix alternative RTP tracks.
-                    if *audio_track.get_or_insert(track_id) != track_id {
-                        continue;
-                    }
                     let packet_timestamp = frame.packet_timestamp();
                     let epoch = &mut source_epochs[track_id];
                     if frame.loss() > 0 {
@@ -1105,11 +1084,54 @@ impl RtspLoop {
     }
 }
 
+fn setup_described_tracks(
+    driver: &mut BlockingRtsp,
+    transport: RtspTransport,
+    camera_ip: IpAddr,
+    stream_kind: StreamKind,
+) -> anyhow::Result<Option<usize>> {
+    driver.setup(0, transport)?;
+    for (index, stream) in driver.streams().iter().enumerate() {
+        tracing::debug!(
+            ip = %camera_ip,
+            stream = %stream_kind,
+            track = index,
+            params = ?stream.parameters(),
+            "rtsp track",
+        );
+    }
+    let mut audio_track = ObservedAudio::from_track(&driver.streams()[0]).map(|_| 0);
+    for index in 1..driver.streams().len() {
+        let stream = &driver.streams()[index];
+        let is_audio = stream.media().eq_ignore_ascii_case("audio");
+        if is_audio && (audio_track.is_some() || ObservedAudio::from_track(stream).is_none()) {
+            continue;
+        }
+        match driver.setup(index, transport) {
+            Ok(()) if is_audio => audio_track = Some(index),
+            Ok(()) => {}
+            Err(error) => {
+                tracing::debug!(
+                    ip = %camera_ip,
+                    stream = %stream_kind,
+                    track = index,
+                    %error,
+                    "skipping RTSP track",
+                );
+            }
+        }
+    }
+    Ok(audio_track)
+}
+
 #[cfg(test)]
 mod tests {
     mod audio;
 
-    use super::{BlockingRtsp, RtspTransport, VideoContinuity, probe_rtsp_video};
+    use super::{
+        BlockingRtsp, RtspTransport, StreamKind, VideoContinuity, probe_rtsp_video,
+        setup_described_tracks,
+    };
     use crate::shutdown::Shutdown;
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use bytes::Bytes;
