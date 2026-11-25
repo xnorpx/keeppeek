@@ -2334,6 +2334,112 @@ mod tests {
         }
     }
 
+    fn activate_configuration_zip(
+        directory: &Path,
+        source_config: &Path,
+        target_config: &Path,
+    ) -> backup_proto::RestoreRecord {
+        let (bundle, manifest) = backup::create_bundle(
+            Cursor::new(Vec::new()),
+            backup::CreateBundleOptions {
+                config_path: source_config,
+                sections: &[],
+                created_at_unix_ms: 1_788_000_000_000,
+            },
+        )
+        .unwrap();
+        let bundle_path = directory.join("backup.zip");
+        std::fs::write(&bundle_path, bundle.into_inner()).unwrap();
+        let target_dir = target_config.parent().unwrap();
+        let request = restore_request(
+            &manifest,
+            target_dir,
+            target_config,
+            "archive-zip-roundtrip",
+        );
+        let plan = plan_restore(RestorePlanOptions {
+            bundle_path: &bundle_path,
+            target_config_path: target_config,
+            request: &request,
+            now_unix_ms: 1_788_000_001_000,
+        })
+        .unwrap();
+        assert!(plan.can_activate);
+        stage_restore(StageRestoreOptions {
+            bundle_path: &bundle_path,
+            target_config_path: target_config,
+            plan: &plan,
+            now_unix_ms: 1_788_000_002_000,
+        })
+        .unwrap();
+        let verifying = recover_pending_restore(target_config, 1_788_000_003_000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            verifying.state,
+            backup_proto::RestoreState::Verifying as i32
+        );
+        mark_restore_healthy(target_config, 1_788_000_004_000)
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn archive_settings_survive_configuration_zip_export_apply_and_activation_with_references() {
+        let directory = test_directory("archive-zip-roundtrip");
+        let source = directory.join("source");
+        let target = directory.join("target");
+        let archive_root = directory.join("archive-root");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        let source_config = source.join("config.toml");
+        let target_config = target.join("config.toml");
+        let secrets = format!(
+            "ARCHIVE_ID = \"local-archive\"\nARCHIVE_ROOT = {}\nARCHIVE_SOURCE = \"192.0.2.10\"\n",
+            toml::Value::String(archive_root.to_string_lossy().into_owned()),
+        );
+        let source_settings = concat!(
+            "port = 8123\n",
+            "[storage]\n",
+            "long_term_max_gb = 42\n",
+            "[storage.archive]\n",
+            "enabled = true\n",
+            "target_id = \"{secret:ARCHIVE_ID}\"\n",
+            "root = \"{secret:ARCHIVE_ROOT}\"\n",
+            "source_ids = [\"{secret:ARCHIVE_SOURCE}\"]\n",
+            "retention_days = 14\n",
+        );
+        std::fs::write(&source_config, source_settings).unwrap();
+        std::fs::write(source.join("secrets.toml"), secrets).unwrap();
+        std::fs::write(&target_config, "[storage]\nlong_term_max_gb = 20\n").unwrap();
+        std::fs::write(target.join("secrets.toml"), "OLD_SECRET = \"old\"\n").unwrap();
+        let complete = activate_configuration_zip(&directory, &source_config, &target_config);
+        assert_eq!(complete.state, backup_proto::RestoreState::Complete as i32);
+        let restored = config::load_config(&target_config).unwrap();
+        assert_eq!(restored.port, 8123);
+        assert_eq!(restored.storage.long_term_max_gb, 42);
+        let archive = restored.storage.archive.unwrap();
+        assert!(archive.enabled);
+        assert_eq!(archive.target_id, "local-archive");
+        assert_eq!(archive.root, archive_root);
+        assert_eq!(archive.source_ids, ["192.0.2.10"]);
+        assert_eq!(archive.retention_days, Some(14));
+        let raw = std::fs::read_to_string(&target_config).unwrap();
+        assert!(raw.contains("{secret:ARCHIVE_ID}"));
+        assert!(raw.contains("{secret:ARCHIVE_ROOT}"));
+        assert!(raw.contains("{secret:ARCHIVE_SOURCE}"));
+        assert!(!raw.contains("local-archive"));
+        assert!(!raw.contains("archive-root"));
+        assert!(!raw.contains("192.0.2.10"));
+        assert!(
+            !std::fs::read_to_string(target.join("secrets.toml"))
+                .unwrap()
+                .contains("OLD_SECRET")
+        );
+        assert!(!archive_root.exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn native_candidate_override_stages_admitted_identity_and_original_archive_secrets() {
         use crate::access::{AccessRole, CameraAccess, external::Grant, identities};
