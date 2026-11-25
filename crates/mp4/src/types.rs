@@ -531,6 +531,16 @@ pub enum ChannelConfig {
     SevenOne = 0x7,
 }
 
+impl ChannelConfig {
+    /// Number of decoded channels represented by this MPEG-4 configuration index.
+    pub const fn channel_count(self) -> u8 {
+        match self {
+            Self::SevenOne => 8,
+            layout => layout as u8,
+        }
+    }
+}
+
 impl TryFrom<u8> for ChannelConfig {
     type Error = Error;
     fn try_from(value: u8) -> Result<Self> {

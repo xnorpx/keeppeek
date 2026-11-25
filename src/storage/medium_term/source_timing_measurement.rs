@@ -60,6 +60,7 @@ fn workload(start: Instant, measured: bool) -> Vec<Vec<RecordingFrame>> {
                     frame: MediaFrame::Audio(crate::storage::AudioFrame {
                         codec: AudioCodec::Aac,
                         sample_rate: AUDIO_HZ,
+                        raw_aac_config: None,
                         duration: ticks_to_duration(1_024, AUDIO_HZ),
                         data: audio.clone(),
                     }),

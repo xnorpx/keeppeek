@@ -1347,11 +1347,6 @@ impl KeepPeekLoop {
             }
             self.expect_stream(camera.config.ip, camera.config.name.as_deref(), stream_kind);
 
-            let audio_meta = profile.audio.as_ref().map(|a| AudioMeta {
-                encoding: a.encoding.clone(),
-                sample_rate: a.sample_rate,
-            });
-
             let mut log_url = Url::parse(&stream_uri).ok();
             if let Some(ref mut u) = log_url {
                 u.set_username("").ok();
@@ -1380,7 +1375,6 @@ impl KeepPeekLoop {
                 password: camera.config.password.clone(),
                 transport,
                 video_meta,
-                audio_meta,
                 http_port: camera.config.http_port.or(camera.ports.http).unwrap_or(80),
                 talkback_channel: crate::isapi::Route::for_camera(camera)
                     .map(|route| route.channel),
