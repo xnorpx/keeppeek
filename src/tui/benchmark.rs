@@ -462,7 +462,7 @@ fn dashboard_overhead() {
                 "snapshot_rows_high_water": on_samples.iter().map(|s| s.snapshot_rows).max(),
                 "pending_snapshots_high_water": on_samples.iter().map(|s| s.pending_snapshots).max(),
             "superseded_snapshots_high_water": on_samples.iter().map(|s| s.superseded_snapshots).max(),
-                "recording_gaps": "requires separate recorded-media qualification",
+                "recording_gaps": "verified separately by test-camera --test tui_recording_continuity",
             })
         );
     }
