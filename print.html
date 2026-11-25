@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-fee9b832.js";
+            window.path_to_searchindex_js = "searchindex-4a591bf1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-6871163b.js"></script>
@@ -2177,20 +2177,10 @@ it as a camera namespace. Every other non-reserved root table is interpreted as 
 <code>cameras</code> is the conventional name, not the only allowed one. A typo in a section name can therefore
 be interpreted as camera configuration. Some structs ignore unknown fields, so successful TOML
 parsing alone does not prove a field has an effect.</p>
-<p><code>[runtime_profiles]</code> is server-managed internal data. Its registry is bounded to 32 profiles, and
-each profile can target at most 127 cameras with sparse runtime-safe overrides. Do not edit this
-section manually. The partial implementation supports Administrator management and activation
-through WebRTC StateStore, including bounded definition reads and staged bounded writes. Privacy,
-recording, notifications, and camera availability reach their current runtime owners. Delayed
-profile commands cannot replace newer pending runtime status; an already running camera stop is
-not preempted. An active profile’s saved target that is no longer configured remains degraded
-through startup, completion and live removal; re-adding the camera replaces that observation.
-Activating Base clears missing-target observations from the previously active profile.
-Events-only camera edits also remain in effect after a profile disables the camera and Base
-enables it again. Profile targets use the server-managed <code>profile_identity</code> described below.
-An Administrator can retry a pending or degraded selection with <strong>Reapply active policy</strong> in
-Settings. Complete privacy leak, asynchronous convergence, capacity and performance qualification
-remain open under #202.</p>
+<p><code>[runtime_profiles]</code> is server-managed configuration data. Its registry holds up to 32 named
+profiles, and each profile can target up to 127 cameras with sparse runtime-safe overrides. Do not
+edit this section manually. See <a href="#runtime-profiles">Runtime profiles</a> for controls, permitted
+fields, failure handling, retry, and recovery behavior.</p>
 <p>Sources: <a href="https://github.com/xnorpx/keeppeek/blob/main/src/config.rs">configuration</a>,
 <a href="https://github.com/xnorpx/keeppeek/blob/main/src/cameras/mod.rs">cameras</a>, and the subsystem sources
 linked below. <code>Config.source</code> is an in-memory copy of the original TOML table, marked <code>serde(skip)</code>;
@@ -3460,6 +3450,59 @@ versions separate. Do not inline tokens into a book example or export them with 
 <p>The legacy <code>notifications.db</code> is a rule-migration input. Delivery jobs, retry state, evaluation
 history, and counters are runtime state, not extra <code>[notifications]</code> settings. See
 <a href="#notifications-and-integrations">notifications and integrations</a> for provider setup.</p>
+<h2 id="runtime-profiles"><a class="header" href="#runtime-profiles">Runtime profiles</a></h2>
+<p>Type: <code>ProfileRegistry</code>, section <code>[runtime_profiles]</code>. The server persists profile definitions,
+revisions, and the active selection in <code>config.toml</code> through the existing atomic configuration
+writer. Do not edit this section manually.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Validation and meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>identity_schema</code></td><td><code>i64</code> (server-managed marker)</td><td><code>1</code></td><td>Persistence-only rollback guard written on migration and preserved across writes, backup, and restore.</td></tr>
+<tr><td><code>revision</code></td><td><code>u64</code></td><td><code>0</code></td><td>Monotonic compare-and-set revision in <code>0..=i64::MAX</code>.</td></tr>
+<tr><td><code>active_profile_id</code></td><td>Optional <code>String</code></td><td>Absent</td><td>Active profile ID, or absent when Base applies. Active profiles cannot be deleted.</td></tr>
+<tr><td><code>profiles</code></td><td><code>BTreeMap&lt;String, RuntimeProfile&gt;</code></td><td>Empty</td><td>At most 32 profiles keyed by stable machine ID (1–128 ASCII <code>A-Z</code>, <code>a-z</code>, <code>0-9</code>, <code>._-</code>, not <code>.</code>/<code>..</code>).</td></tr>
+</tbody>
+</table>
+</div>
+<p>Each <code>RuntimeProfile</code> stores <code>id</code>, <code>name</code> (non-whitespace, 1–80 UTF-8 bytes without control
+characters), positive <code>revision</code>, and <code>cameras</code> (at most 127 targets keyed by camera
+<code>profile_identity</code> UUID). Each target’s <code>CameraProfileOverride</code> rejects unknown fields and permits
+only four runtime-safe fields:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Override field</th><th>Type</th><th>Inheritance and enforcement</th></tr>
+</thead>
+<tbody>
+<tr><td><code>availability</code></td><td>Optional <code>bool</code></td><td>Omitting inherits Base. <code>false</code> stops runtime camera ingress without editing Base; cannot enable disabled Base.</td></tr>
+<tr><td><code>recording_mode</code></td><td>Optional <code>CameraRecordingMode</code></td><td>Accepts <code>off</code>, <code>sub</code>, <code>main</code>, <code>both</code>, <code>event-boost</code>, or <code>event-only</code>. Cannot enable recording when Base is <code>off</code>; effective mode resolves to <code>off</code> when <code>availability</code> is <code>false</code> or <code>privacy_enforced</code> is <code>true</code>.</td></tr>
+<tr><td><code>privacy_enforced</code></td><td>Optional <code>bool</code></td><td>Feeds the server <code>PrivacyRegistry</code> gate. <code>true</code> enforces privacy; <code>false</code> cannot weaken an active privacy schedule.</td></tr>
+<tr><td><code>notifications_suppressed</code></td><td>Optional <code>bool</code></td><td>Suppresses matching notification candidates and queued outbox delivery without altering saved rule definitions.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Credentials, secret references, addresses, ports, stream URLs, codecs, transport, storage paths,
+retention settings, detectors, zones, masks, access control, PTZ settings, and notification rules
+are not valid profile fields.</p>
+<p><strong>Controls and activation surface:</strong> Administrators manage and activate profiles only through
+<strong>Settings → Runtime profiles</strong> or an authorized WebRTC <code>StateStoreCommand</code> client on the
+<code>service/runtime-profiles/</code> namespace. No HTTP, REST, MQTT, Home Assistant, webhook, CLI,
+scheduler, presence, geofence, or location activation surface exists. Users can observe the active
+profile and camera-scoped application status but cannot read profile definitions or mutate state.</p>
+<p><strong>Failure, retry, and recovery:</strong> Desired selection commits atomically before camera workers
+converge asynchronously. Each visible camera reports <code>pending</code>, <code>applied</code>, or <code>degraded</code> with
+effective-value provenance (<code>base</code> or <code>profile</code>) across eight bounded observed status documents. A
+failed or timed-out target stays <code>degraded</code> without silently falling back to Base, and restrictive
+privacy stays closed until convergence succeeds. Missing configured targets remain <code>degraded</code> with
+<code>configured camera is missing</code> until removed from the profile or Base is activated. After repairing
+storage or camera faults, select <strong>Reapply active policy</strong> in Settings (or re-put the active
+selection over WebRTC CAS). Unknown <code>identity_schema</code> versions fail closed without modifying
+<code>config.toml</code>. Full configuration backup and restore preserve <code>[runtime_profiles]</code>,
+<code>identity_schema = 1</code>, and camera <code>profile_identity</code> bindings; rolling back to a pre-migration
+binary requires restoring a verified pre-migration configuration backup.</p>
 <h2 id="pending-storage-migration"><a class="header" href="#pending-storage-migration">Pending storage migration</a></h2>
 <p>Type: <code>StorageMigration</code>, section <code>[storage_migration]</code>. The server creates this journal for a
 validated move and consumes it during migration. Do not use it as an alternative storage editor.</p>
@@ -3487,9 +3530,8 @@ of borrowed paths, not another TOML section.</p>
 would omit the separate credential, layout, template, and notification records.</li>
 <li>The legacy access, layout, template, and notification files are migration inputs only. Do not
 create new instances of them for new settings.</li>
-<li>There is no generic <code>[users]</code>, <code>[permissions]</code>, <code>[groups]</code>, or persistent runtime-profile schema
-in this configuration. Do not invent those sections or assume a grid’s audience restricts camera
-access elsewhere.</li>
+<li>There is no generic <code>[users]</code>, <code>[permissions]</code>, or <code>[groups]</code> schema in this configuration. Do not
+invent those sections or assume a grid’s audience restricts camera access elsewhere.</li>
 <li>Future layout and permission settings must extend the existing application configuration and
 its validation, atomic writes, and recovery coverage. Secret values remain in the existing
 companion secret store.</li>
