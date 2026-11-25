@@ -201,10 +201,16 @@ mod tests {
     ) {
         let directory = std::env::temp_dir().join(format!("volume-wire-{}", uuid::Uuid::new_v4()));
         let root = directory.join("recordings").to_string_lossy().into_owned();
+        // Disable disk headroom limits so named-volume tests do not depend on runner free space.
         let config = Config {
             storage: crate::config::StorageToml {
                 medium_term_path: Some(root.clone()),
                 long_term_path: Some(root),
+                minimum_free_gb: 0,
+                maximum_used_percent: None,
+                warning_free_gb: 0,
+                critical_free_gb: 0,
+                cleanup_hysteresis_gb: 0,
                 ..Default::default()
             },
             ..Default::default()
