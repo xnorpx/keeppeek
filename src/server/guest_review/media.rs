@@ -33,6 +33,7 @@ struct Admission {
     range: ranges::ByteRange,
     guard: TransferGuard,
     owner: Delivery,
+    peer: IpAddr,
 }
 
 fn prepare(
@@ -56,7 +57,7 @@ fn prepare(
         owner: admission.owner,
         grant: admission.bound.grant,
         guard: admission.guard,
-        peer: request.remote_addr().ip(),
+        peer: admission.peer,
         remaining: length,
     };
     Ok(sized_response(reader, admission.range, bytes, mode))
@@ -113,6 +114,7 @@ fn admission(
         range,
         guard,
         owner,
+        peer: classification.effective_address,
     })
 }
 

@@ -901,3 +901,62 @@ fn disabled_sharing_keeps_only_the_configured_isolated_document_context() {
         .is_err()
     );
 }
+
+#[test]
+fn ordinary_user_role_is_denied_on_every_sharing_management_action() {
+    let fixture = Fixture::new();
+    let issued = fixture.issue();
+    let grant = issued.grant.as_ref().unwrap();
+    let user = ApiPrincipal {
+        identity: ApiPrincipalIdentity::Credential {
+            id: Uuid::new_v4(),
+            revision: 1,
+        },
+        display_name: "Viewer".to_owned(),
+        role: AccessRole::User,
+        credential_expires_at_ms: None,
+    };
+    let actions = [
+        Action::GetPolicy(proto::GetSharePolicy {}),
+        Action::ConfigurePolicy(fixture.policy_change("https://blocked.example")),
+        Action::PreviewExport(proto::PreviewShareExport {
+            export_job_id: "named-export".into(),
+            recording_range: None,
+        }),
+        Action::Create(fixture.intent()),
+        Action::List(proto::ListShareGrants {
+            page_size: 10,
+            after_grant_id: None,
+            all_creators: true,
+        }),
+        Action::Revoke(proto::RevokeShareGrant {
+            grant_id: grant.grant_id.clone(),
+            expected_revision: grant.revision,
+            reason: "unauthorized".into(),
+        }),
+        Action::RevokeEvidence(proto::RevokeShareEvidence {
+            evidence: Some(proto::revoke_share_evidence::Evidence::ArtifactId(
+                grant.evidence.as_ref().unwrap().artifact_id.clone(),
+            )),
+            reason: "unauthorized".into(),
+        }),
+    ];
+    for action in actions {
+        let error = dispatch(
+            &fixture.state,
+            &user,
+            proto::ShareCommand {
+                action: Some(action),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, proto::ErrorCode::Rejected);
+        assert_eq!(error._http_status, 403);
+    }
+    assert_eq!(fixture.list(10).grants.len(), 1);
+    assert!(fixture.summary(&issued).revoked_at_ms.is_none());
+    assert_eq!(
+        context(&fixture.state).unwrap().origin,
+        "https://review.example"
+    );
+}

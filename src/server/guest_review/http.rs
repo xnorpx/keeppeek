@@ -96,8 +96,15 @@ fn admit_context(
         .ok_or_else(|| failure(503))?;
     state
         .guest_review
-        .admit_request(request.remote_addr().ip(), action, abort)
+        .admit_request(classified_peer(request, state), action, abort)
         .map_err(io_failure)
+}
+
+pub(super) fn classified_peer(request: &Request, state: &ServerState) -> std::net::IpAddr {
+    state
+        .network_access
+        .classify(request.remote_addr().ip(), request.headers())
+        .effective_address
 }
 
 fn boundary(

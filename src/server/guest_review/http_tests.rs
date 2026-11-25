@@ -252,3 +252,124 @@ fn canonical_long_public_origins_fit_the_guest_host_header_budget() {
         .is_ok()
     );
 }
+
+#[test]
+fn classified_peer_isolates_trusted_proxy_clients_and_blocks_forged_headers() {
+    use crate::access::NetworkAccessPolicy;
+    use std::net::IpAddr;
+
+    let ip = |value: &str| value.parse::<IpAddr>().unwrap();
+    let direct = ServerState::empty();
+    let spoofed = request(
+        "POST",
+        "/guest/session",
+        vec![("X-Forwarded-For", "198.51.100.42")],
+    );
+    assert_eq!(classified_peer(&spoofed, &direct), ip("127.0.0.1"));
+
+    let mut proxied = ServerState::empty();
+    proxied.network_access = NetworkAccessPolicy::new(
+        vec!["127.0.0.1/32".parse().unwrap()],
+        vec!["127.0.0.1/32".parse().unwrap()],
+    );
+    for (forwarded, expected) in [
+        (Some("192.0.2.2"), "192.0.2.2"),
+        (Some("192.0.2.3"), "192.0.2.3"),
+        (Some("10.0.0.99, 192.0.2.2"), "192.0.2.2"),
+        (Some("::ffff:192.0.2.2"), "192.0.2.2"),
+        (Some("not-an-ip"), "127.0.0.1"),
+        (None, "127.0.0.1"),
+    ] {
+        let headers = forwarded.map_or_else(Vec::new, |v| vec![("X-Forwarded-For", v)]);
+        assert_eq!(
+            classified_peer(&request("POST", "/guest/session", headers), &proxied),
+            ip(expected),
+            "{forwarded:?}"
+        );
+    }
+}
+
+#[test]
+fn trusted_proxy_rate_limit_isolates_distinct_clients_while_blocking_spoofing() {
+    use super::super::limits::{Action, Budget, Limited};
+    use crate::access::NetworkAccessPolicy;
+    use std::time::Instant;
+
+    let now = Instant::now();
+    let direct = ServerState::empty();
+    let mut direct_budget = Budget::new(now);
+    for octet in 1..=20_u8 {
+        let header = format!("198.51.100.{octet}");
+        let req = request("POST", "/guest/session", vec![("X-Forwarded-For", &header)]);
+        direct_budget
+            .admit(classified_peer(&req, &direct), Action::Exchange, now)
+            .unwrap();
+    }
+    let extra = request(
+        "POST",
+        "/guest/session",
+        vec![("X-Forwarded-For", "198.51.100.99")],
+    );
+    assert_eq!(
+        direct_budget.admit(classified_peer(&extra, &direct), Action::Exchange, now),
+        Err(Limited)
+    );
+
+    let mut proxied = ServerState::empty();
+    proxied.network_access = NetworkAccessPolicy::new(
+        vec!["127.0.0.1/32".parse().unwrap()],
+        vec!["127.0.0.1/32".parse().unwrap()],
+    );
+    let mut proxied_budget = Budget::new(now);
+    let first = request(
+        "POST",
+        "/guest/session",
+        vec![("X-Forwarded-For", "192.0.2.2")],
+    );
+    for _ in 0..20 {
+        proxied_budget
+            .admit(classified_peer(&first, &proxied), Action::Exchange, now)
+            .unwrap();
+    }
+    let spoofed_first = request(
+        "POST",
+        "/guest/session",
+        vec![("X-Forwarded-For", "10.0.0.5, 192.0.2.2")],
+    );
+    assert_eq!(
+        proxied_budget.admit(
+            classified_peer(&spoofed_first, &proxied),
+            Action::Exchange,
+            now
+        ),
+        Err(Limited)
+    );
+    let second = request(
+        "POST",
+        "/guest/session",
+        vec![("X-Forwarded-For", "192.0.2.3")],
+    );
+    proxied_budget
+        .admit(classified_peer(&second, &proxied), Action::Exchange, now)
+        .unwrap();
+}
+
+#[test]
+fn guest_cookie_never_routes_or_authorizes_ordinary_protected_http_paths() {
+    let state = ServerState::empty();
+    let cookie = format!("{COOKIE}={}", "A".repeat(43));
+    for (method, path) in [
+        ("GET", "/logs/snapshot"),
+        ("GET", "/metrics"),
+        ("GET", "/config/export"),
+        ("GET", "/recording-coverage?start_ms=0&end_ms=1000"),
+        ("POST", "/create"),
+    ] {
+        let req = request(method, path, vec![("Cookie", &cookie)]);
+        assert!(handle(&req, &state).is_none(), "{method} {path}");
+        assert_eq!(
+            authentication::cookie(&req, "__Host-keeppeek-session").unwrap(),
+            None
+        );
+    }
+}

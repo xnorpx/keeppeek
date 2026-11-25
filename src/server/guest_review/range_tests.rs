@@ -93,3 +93,69 @@ fn small_range_input_corpus_never_exceeds_declared_artifact_bounds() {
         }
     }
 }
+
+fn next_u64(seed: &mut u64) -> u64 {
+    *seed = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    let mut z = *seed;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+fn fuzzed_range_header(seed: &mut u64) -> String {
+    const ALPHABET: &[u8] = b"bytes=0123456789-, +/\r\n\t\0xZ";
+    match next_u64(seed) % 5 {
+        0 => {
+            let left = next_u64(seed);
+            let right = next_u64(seed);
+            format!("bytes={left}-{right}")
+        }
+        1 => format!("bytes=-{}", next_u64(seed)),
+        2 => format!("bytes={}-", next_u64(seed)),
+        3 => format!(
+            "bytes={}-{},{}-{}",
+            next_u64(seed) % 4096,
+            next_u64(seed) % 4096,
+            next_u64(seed) % 4096,
+            next_u64(seed) % 4096
+        ),
+        _ => {
+            let len = usize::try_from(next_u64(seed) % 160).unwrap();
+            (0..len)
+                .map(|_| {
+                    let index = usize::try_from(next_u64(seed) % ALPHABET.len() as u64).unwrap();
+                    ALPHABET[index] as char
+                })
+                .collect()
+        }
+    }
+}
+
+#[test]
+fn deterministic_range_fuzz_never_panics_or_exceeds_artifact_bounds() {
+    let mut seed = 0x1320_cafe_beef_0001_u64;
+    let sizes = [
+        0_u64,
+        1,
+        2,
+        65_535,
+        65_536,
+        65_537,
+        crate::shares::MAX_MEDIA_BYTES,
+        u64::MAX,
+    ];
+    for case in 0..2_500 {
+        let header = fuzzed_range_header(&mut seed);
+        let bytes = sizes[case % sizes.len()];
+        let forbidden = header.len() > 128
+            || header.contains(',')
+            || header.bytes().any(|byte| byte.is_ascii_control());
+        if let Ok(range) = parse(Some(&header), bytes) {
+            assert!(!forbidden, "accepted forbidden header {header:?}");
+            assert!(bytes > 0);
+            assert!(range.partial);
+            assert!(range.start < range.end, "{header:?} for {bytes}");
+            assert!(range.end <= bytes, "{header:?} for {bytes}");
+        }
+    }
+}
