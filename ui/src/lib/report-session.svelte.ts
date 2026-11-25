@@ -97,11 +97,13 @@ export class ReportSession {
 	bytes = $state(0);
 	review: Review | null = $state.raw(null);
 	#session: Session | null = null;
+	#completed = false;
 
 	constructor(private readonly deps: Dependencies) {}
 
 	start(withDisplay: boolean): void {
 		if (this.phase !== 'idle') return;
+		this.#completed = false;
 		this.deps.audit?.({ event: 'start', mode: withDisplay ? 'screen' : 'logs_only' });
 		this.startedAt = this.deps.now();
 		this.phase = 'recording';
@@ -219,19 +221,24 @@ export class ReportSession {
 		if (this.review) this.review = { ...this.review, recording: null };
 	}
 
+	markCompleted(): void {
+		if (this.phase === 'review') this.#completed = true;
+	}
+
 	cancel(): void {
-		const hadActiveSession = this.phase !== 'idle';
+		const shouldAuditCancel = this.phase !== 'idle' && !this.#completed;
 		if (this.#session) {
 			clearTimeout(this.#session.timer);
 			this.#session.media.abort();
 			this.#session.evidence.abort();
 		}
 		this.#session = null;
+		this.#completed = false;
 		this.review = null;
 		this.bytes = 0;
 		this.startedAt = 0;
 		this.mediaState = 'logs-only';
 		this.phase = 'idle';
-		if (hadActiveSession) this.deps.audit?.({ event: 'cancel' });
+		if (shouldAuditCancel) this.deps.audit?.({ event: 'cancel' });
 	}
 }

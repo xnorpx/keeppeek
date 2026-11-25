@@ -103,6 +103,7 @@ export default defineConfig({
 			'/logs': apiTarget,
 			'/metrics': apiTarget,
 			'/recording-coverage': apiTarget,
+			'/reporting/': apiTarget,
 			'/api': apiTarget
 		}
 	},

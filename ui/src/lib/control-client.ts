@@ -224,6 +224,7 @@ import type {
 	RecordingCoverageResponse,
 	RecordingSegment,
 	RecordingsResponse,
+	ReportingAuditPayload,
 	SanitizedConfig,
 	ServerHealthResponse,
 	SettingsConfigUpdate,
@@ -817,10 +818,7 @@ export class ControlClient {
 		);
 	}
 
-	async recordReportingAudit(
-		payload: import('./types').ReportingAuditPayload,
-		signal?: AbortSignal
-	): Promise<void> {
+	async recordReportingAudit(payload: ReportingAuditPayload, signal?: AbortSignal): Promise<void> {
 		await recordAuthenticatedReportingAudit(payload, this.#accessKey, signal);
 	}
 

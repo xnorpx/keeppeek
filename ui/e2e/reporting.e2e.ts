@@ -11,50 +11,57 @@ type MockOptions = {
 	dropFirstFinalize?: boolean;
 };
 
-async function installReportingFixture(page: Page, options: MockOptions = {}) {
-	const generations = [...(options.generations ?? ['recorder-gen-1', 'recorder-gen-1'])];
-	const serviceOrigin = 'https://reporting.invalid';
-	const privateCanaries = ['private-canary-secret', '192.168.2.44', 'camera-secret'];
-	const service = reportingService(() => Date.now(), privateCanaries);
-	let snapshotCalls = 0;
-	let droppedFinalize = false;
-	const serviceRequests: string[] = [];
-	const recorderReportingRequests: string[] = [];
-	const auditPayloads: Array<Record<string, unknown>> = [];
+type FixtureService = ReturnType<typeof reportingService>;
 
+const serviceOrigin = 'https://reporting.invalid';
+const privateCanaries = ['private-canary-secret', '192.168.2.44', 'camera-secret'];
+const defaultRuntimeConfiguration = {
+	host: '0.0.0.0',
+	port: 3000,
+	camera_count: 0,
+	storage: {
+		medium_term_path: '/recordings',
+		long_term_path: '/recordings',
+		recording_catalog_path: '/recordings/recordings.db',
+		event_thumbnail_path: '/recordings/.event-thumbnails',
+		event_thumbnail_max_mb: 1024,
+		short_term_secs: 120,
+		medium_term_secs: 1800,
+		flush_interval_secs: 60,
+		write_buffer_bytes: 8192,
+		long_term_max_gb: 0
+	},
+	recording_estimate: {
+		estimated_bitrate_bps: 0,
+		bytes_per_day: 0,
+		known_streams: 0,
+		unknown_streams: 0,
+		estimated_retention_days: null
+	}
+};
+
+async function routeLogSnapshot(page: Page, generations: readonly string[]) {
+	let snapshotCalls = 0;
 	await page.route('**/logs/snapshot', async (route) => {
 		const call = snapshotCalls++;
 		const generation = generations[Math.min(call, generations.length - 1)];
-		const entries =
-			call === 0
-				? [
-						{
-							sequence: 1,
-							timestamp_ms: Date.UTC(2026, 7, 12, 12, 0, 0),
-							level: 'info',
-							target: 'keeppeek::server',
-							message: 'server-before-window-marker',
-							fields: {}
-						}
-					]
-				: [
-						{
-							sequence: 1,
-							timestamp_ms: Date.UTC(2026, 7, 12, 12, 0, 0),
-							level: 'info',
-							target: 'keeppeek::server',
-							message: 'server-before-window-marker',
-							fields: {}
-						},
-						{
-							sequence: 2,
-							timestamp_ms: Date.UTC(2026, 7, 12, 12, 0, 1),
-							level: 'warn',
-							target: 'keeppeek::server',
-							message: 'server-inside-window-marker token=camera-secret 192.168.2.44',
-							fields: {}
-						}
-					];
+		const beforeEntry = {
+			sequence: 1,
+			timestamp_ms: Date.UTC(2026, 7, 12, 12, 0, 0),
+			level: 'info',
+			target: 'keeppeek::server',
+			message: 'server-before-window-marker',
+			fields: {}
+		};
+		const insideEntry = {
+			sequence: 2,
+			timestamp_ms: Date.UTC(2026, 7, 12, 12, 0, 1),
+			level: 'warn',
+			target: 'keeppeek::server',
+			message: 'server-inside-window-marker token=camera-secret 192.168.2.44',
+			fields: {}
+		};
+		const entries = call === 0 ? [beforeEntry] : [beforeEntry, insideEntry];
 		await route.fulfill({
 			contentType: 'application/json',
 			headers: { 'Cache-Control': 'no-store' },
@@ -76,21 +83,15 @@ async function installReportingFixture(page: Page, options: MockOptions = {}) {
 			})
 		});
 	});
+}
 
-	await page.route('**/metrics', async (route) => {
-		await route.fulfill({
-			contentType: 'text/plain',
-			body: 'keeppeek_server_info{host="keeppeek-private.local"} 1\n'
-		});
-	});
-
-	await page.route(
-		(url) => url.pathname === '/logs',
-		async (route) => {
-			await route.fulfill({ contentType: 'text/event-stream', body: '' });
-		}
-	);
-
+async function routeRecorderReporting(
+	page: Page,
+	service: FixtureService,
+	options: MockOptions,
+	recorderReportingRequests: string[],
+	auditPayloads: Array<Record<string, unknown>>
+) {
 	await page.route('**/reporting/status', async (route) => {
 		recorderReportingRequests.push('GET /reporting/status');
 		await route.fulfill({
@@ -136,21 +137,27 @@ async function installReportingFixture(page: Page, options: MockOptions = {}) {
 		auditPayloads.push(route.request().postDataJSON() as Record<string, unknown>);
 		await route.fulfill({ status: 204, headers: { 'Cache-Control': 'no-store' } });
 	});
+}
 
+async function routeReportingService(
+	page: Page,
+	service: FixtureService,
+	dropFirstFinalize: boolean,
+	serviceRequests: string[]
+) {
+	let droppedFinalize = false;
 	await page.route(`${serviceOrigin}/**`, async (route) => {
 		const request = route.request();
 		const url = new URL(request.url());
 		serviceRequests.push(`${request.method()} ${url.pathname}`);
-		if (options.dropFirstFinalize && url.pathname.endsWith('/finalize') && !droppedFinalize) {
+		const handler = reportingRequestHandler(service, new URL(page.url()).origin);
+		const headers = new Headers(request.headers());
+		if (dropFirstFinalize && url.pathname.endsWith('/finalize') && !droppedFinalize) {
 			droppedFinalize = true;
-			const handler = reportingRequestHandler(service, new URL(page.url()).origin);
-			const headers = new Headers(request.headers());
 			await handler(new Request(request.url(), { method: 'POST', headers }));
 			await route.abort('failed');
 			return;
 		}
-		const handler = reportingRequestHandler(service, new URL(page.url()).origin);
-		const headers = new Headers(request.headers());
 		const body = request.postDataBuffer();
 		const init: RequestInit = { method: request.method(), headers };
 		if (body && request.method() !== 'GET' && request.method() !== 'HEAD') {
@@ -177,35 +184,32 @@ async function installReportingFixture(page: Page, options: MockOptions = {}) {
 			body: responseBody
 		});
 	});
+}
 
+async function installReportingFixture(page: Page, options: MockOptions = {}) {
+	const generations = [...(options.generations ?? ['recorder-gen-1', 'recorder-gen-1'])];
+	const service = reportingService(() => Date.now(), privateCanaries);
+	const serviceRequests: string[] = [];
+	const recorderReportingRequests: string[] = [];
+	const auditPayloads: Array<Record<string, unknown>> = [];
+
+	await routeLogSnapshot(page, generations);
+	await page.route('**/metrics', (route) =>
+		route.fulfill({
+			contentType: 'text/plain',
+			body: 'keeppeek_server_info{host="keeppeek-private.local"} 1\n'
+		})
+	);
+	await page.route(
+		(url) => url.pathname === '/logs',
+		(route) => route.fulfill({ contentType: 'text/event-stream', body: '' })
+	);
+	await routeRecorderReporting(page, service, options, recorderReportingRequests, auditPayloads);
+	await routeReportingService(page, service, Boolean(options.dropFirstFinalize), serviceRequests);
 	await mockControlPeer(page, {
 		accessRole: 'administrator',
-		runtimeConfiguration: {
-			host: '0.0.0.0',
-			port: 3000,
-			camera_count: 0,
-			storage: {
-				medium_term_path: '/recordings',
-				long_term_path: '/recordings',
-				recording_catalog_path: '/recordings/recordings.db',
-				event_thumbnail_path: '/recordings/.event-thumbnails',
-				event_thumbnail_max_mb: 1024,
-				short_term_secs: 120,
-				medium_term_secs: 1800,
-				flush_interval_secs: 60,
-				write_buffer_bytes: 8192,
-				long_term_max_gb: 0
-			},
-			recording_estimate: {
-				estimated_bitrate_bps: 0,
-				bytes_per_day: 0,
-				known_streams: 0,
-				unknown_streams: 0,
-				estimated_retention_days: null
-			}
-		}
+		runtimeConfiguration: defaultRuntimeConfiguration
 	});
-
 	return { service, serviceRequests, recorderReportingRequests, auditPayloads };
 }
 
@@ -261,13 +265,17 @@ test('submits one confirmed report with same-generation server logs and retries 
 		'href',
 		'https://github.com/xnorpx/keeppeek/issues/4242'
 	);
+	await dialog.getByRole('button', { name: 'Done', exact: true }).click();
+	await expect(dialog).not.toBeVisible();
 
 	expect(service.createdIssues()).toHaveLength(1);
 	expect(service.createdIssues()[0]).not.toContain('192.168.2.44');
 	expect(service.createdIssues()[0]).not.toContain('camera-secret');
 	const auditText = JSON.stringify(auditPayloads);
-	expect(auditPayloads.map((entry) => entry.event)).toContain('start');
-	expect(auditPayloads.map((entry) => entry.event)).toContain('complete');
+	const auditEvents = auditPayloads.map((entry) => entry.event);
+	expect(auditEvents).toContain('start');
+	expect(auditEvents).toContain('complete');
+	expect(auditEvents).not.toContain('cancel');
 	expect(auditText).not.toContain('Playback stalled on clip');
 	expect(auditText).not.toContain('192.168.2.44');
 });

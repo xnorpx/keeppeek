@@ -182,12 +182,14 @@
 					!/^\/[^/]+\/[^/]+\/issues\/[1-9][0-9]*$/.test(url.pathname)
 				) {
 					submissionState = 'complete';
+					session.markCompleted();
 					submissionError = 'The service created the issue but returned an invalid issue link.';
 					onaudit?.({ event: 'complete', report_id: attempt.reportId });
 					return;
 				}
 				issueUrl = url.href;
 				submissionState = 'complete';
+				session.markCompleted();
 				onaudit?.({ event: 'complete', report_id: attempt.reportId });
 				return;
 			}

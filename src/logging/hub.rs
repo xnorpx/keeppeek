@@ -110,6 +110,7 @@ struct HubState {
     next_sequence: u64,
     next_subscriber_id: u64,
     subscribers: HashMap<u64, Subscriber>,
+    static_sensitive_values: Vec<String>,
     sensitive_values: Vec<String>,
     dynamic_sensitive_values: VecDeque<String>,
     closed: bool,
@@ -168,6 +169,7 @@ impl LogHub {
                 next_sequence: 1,
                 next_subscriber_id: 1,
                 subscribers: HashMap::new(),
+                static_sensitive_values: Vec::new(),
                 sensitive_values: Vec::new(),
                 dynamic_sensitive_values: VecDeque::new(),
                 closed: false,
@@ -189,14 +191,11 @@ impl LogHub {
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut combined = values
+        state.static_sensitive_values = values
             .into_iter()
-            .chain(state.dynamic_sensitive_values.iter().cloned())
             .filter(|value| !value.is_empty())
-            .collect::<Vec<_>>();
-        combined.sort_unstable_by_key(|value| std::cmp::Reverse(value.len()));
-        combined.dedup();
-        state.sensitive_values = combined;
+            .collect();
+        rebuild_sensitive_values(&mut state);
     }
 
     pub fn add_sensitive_value(&self, value: String) {
@@ -207,20 +206,20 @@ impl LogHub {
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.dynamic_sensitive_values.contains(&value) {
+        if let Some(position) = state
+            .dynamic_sensitive_values
+            .iter()
+            .position(|entry| entry == &value)
+        {
+            state.dynamic_sensitive_values.remove(position);
+            state.dynamic_sensitive_values.push_back(value);
             return;
         }
-        if state.dynamic_sensitive_values.len() >= MAX_DYNAMIC_SENSITIVE_VALUES
-            && let Some(removed) = state.dynamic_sensitive_values.pop_front()
-        {
-            state.sensitive_values.retain(|entry| entry != &removed);
+        if state.dynamic_sensitive_values.len() >= MAX_DYNAMIC_SENSITIVE_VALUES {
+            state.dynamic_sensitive_values.pop_front();
         }
-        state.dynamic_sensitive_values.push_back(value.clone());
-        state.sensitive_values.push(value);
-        state
-            .sensitive_values
-            .sort_unstable_by_key(|entry| std::cmp::Reverse(entry.len()));
-        state.sensitive_values.dedup();
+        state.dynamic_sensitive_values.push_back(value);
+        rebuild_sensitive_values(&mut state);
     }
 
     pub(crate) fn redact_output(&self, text: &str) -> String {
@@ -467,6 +466,19 @@ impl Drop for LogSubscription {
             .subscribers
             .remove(&self.id);
     }
+}
+
+fn rebuild_sensitive_values(state: &mut HubState) {
+    let mut combined = state
+        .static_sensitive_values
+        .iter()
+        .chain(state.dynamic_sensitive_values.iter())
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .collect::<Vec<_>>();
+    combined.sort_unstable_by_key(|value| std::cmp::Reverse(value.len()));
+    combined.dedup();
+    state.sensitive_values = combined;
 }
 
 fn serialized_size(entry: &LogEntry) -> usize {
@@ -790,5 +802,24 @@ mod tests {
         drop(first);
         assert_eq!(hub.stats().active_streams, 0);
         assert!(hub.subscribe(None, 10).is_ok());
+    }
+
+    #[test]
+    fn preserves_static_and_reused_dynamic_secrets_past_eviction_limit() {
+        let hub = LogHub::default();
+        hub.set_sensitive_values(["shared-static-camera-secret".to_owned()]);
+        hub.add_sensitive_value("shared-static-camera-secret".to_owned());
+        hub.add_sensitive_value("reused-reporting-credential".to_owned());
+
+        for index in 0..300usize {
+            hub.add_sensitive_value("reused-reporting-credential".to_owned());
+            hub.add_sensitive_value(format!("ephemeral-grant-{index:03}"));
+        }
+
+        let entry = record(
+            &hub,
+            "shared-static-camera-secret reused-reporting-credential ephemeral-grant-299",
+        );
+        assert_eq!(entry.message, "[REDACTED] [REDACTED] [REDACTED]");
     }
 }

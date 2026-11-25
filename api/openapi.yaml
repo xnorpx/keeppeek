@@ -1225,7 +1225,7 @@ components:
           type: integer
           minimum: 1
           maximum: 30
-    ReportingArtifact:
+    ReportingDiagnosticsArtifact:
       type: object
       additionalProperties: false
       required:
@@ -1236,6 +1236,20 @@ components:
           type: string
           enum:
             - application/gzip
+        bytes:
+          type: integer
+          minimum: 1
+          maximum: 29360128
+    ReportingScreenArtifact:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - bytes
+      properties:
+        type:
+          type: string
+          enum:
             - video/webm
             - video/mp4
         bytes:
@@ -1305,9 +1319,9 @@ components:
             - diagnostics
           properties:
             diagnostics:
-              $ref: "#/components/schemas/ReportingArtifact"
+              $ref: "#/components/schemas/ReportingDiagnosticsArtifact"
             screen:
-              $ref: "#/components/schemas/ReportingArtifact"
+              $ref: "#/components/schemas/ReportingScreenArtifact"
     ReportingGrantRequest:
       type: object
       additionalProperties: false
