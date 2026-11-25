@@ -22585,16 +22585,17 @@ mod tests {
         ));
         let config_path = directory.join("config.toml");
         let recordings = directory.join("recordings");
+        // Keep non-zero safety thresholds small so CI runners with limited free disk still validate.
         let config = Config {
             storage: StorageToml {
                 medium_term_path: Some(recordings.to_string_lossy().into_owned()),
                 long_term_path: Some(recordings.to_string_lossy().into_owned()),
                 long_term_max_gb: 24,
-                minimum_free_gb: 8,
-                maximum_used_percent: Some(85),
-                warning_free_gb: 12,
-                critical_free_gb: 8,
-                cleanup_hysteresis_gb: 2,
+                minimum_free_gb: 1,
+                maximum_used_percent: Some(99),
+                warning_free_gb: 2,
+                critical_free_gb: 1,
+                cleanup_hysteresis_gb: 1,
                 pre_recording_stream_max_bytes: 33_554_432,
                 pre_recording_global_max_bytes: 134_217_728,
                 ..StorageToml::default()
@@ -22670,11 +22671,11 @@ mod tests {
         };
         let preserved = result.config.unwrap();
         let preserved_storage = preserved.storage.unwrap();
-        assert_eq!(preserved_storage.minimum_free_gb, Some(8));
-        assert_eq!(preserved_storage.maximum_used_percent, Some(85));
-        assert_eq!(preserved_storage.warning_free_gb, Some(12));
-        assert_eq!(preserved_storage.critical_free_gb, Some(8));
-        assert_eq!(preserved_storage.cleanup_hysteresis_gb, Some(2));
+        assert_eq!(preserved_storage.minimum_free_gb, Some(1));
+        assert_eq!(preserved_storage.maximum_used_percent, Some(99));
+        assert_eq!(preserved_storage.warning_free_gb, Some(2));
+        assert_eq!(preserved_storage.critical_free_gb, Some(1));
+        assert_eq!(preserved_storage.cleanup_hysteresis_gb, Some(1));
         assert_eq!(
             preserved_storage.pre_recording_stream_max_bytes,
             Some(33_554_432)
@@ -24963,11 +24964,12 @@ mod tests {
                     flush_interval_secs: 15,
                     write_buffer_bytes: 16_384,
                     long_term_max_gb: 24,
-                    minimum_free_gb: 8,
-                    maximum_used_percent: Some(85),
-                    warning_free_gb: 12,
-                    critical_free_gb: 8,
-                    cleanup_hysteresis_gb: 2,
+                    // Keep non-zero headroom thresholds small so CI runners with limited free space pass.
+                    minimum_free_gb: 1,
+                    maximum_used_percent: Some(99),
+                    warning_free_gb: 2,
+                    critical_free_gb: 1,
+                    cleanup_hysteresis_gb: 1,
                     pre_recording_stream_max_bytes:
                         crate::config::default_pre_recording_stream_max_bytes(),
                     pre_recording_global_max_bytes:
@@ -25038,8 +25040,8 @@ mod tests {
             event_thumbnail_path.to_string_lossy()
         );
         assert_eq!(storage.event_thumbnail_max_mb, 512);
-        assert_eq!(storage.minimum_free_gb, Some(8));
-        assert_eq!(storage.maximum_used_percent, Some(85));
+        assert_eq!(storage.minimum_free_gb, Some(1));
+        assert_eq!(storage.maximum_used_percent, Some(99));
         assert_eq!(persisted.camera_count, 1);
 
         let Err(error) = save_runtime_settings(
