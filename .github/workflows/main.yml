@@ -239,13 +239,14 @@ jobs:
             } else {
               & sc.exe delete $serviceName
             }
-            Remove-Item -Force -Recurse -ErrorAction SilentlyContinue $installDirectory, $env:OUTPUT_DIRECTORY
+            Remove-Item -Force -Recurse -ErrorAction SilentlyContinue $installDirectory
           }
       - name: Verify Windows desktop installer lifecycle
-        if: runner.os == 'Windows' && steps.windows-installer.outcome == 'success'
+        if: runner.os == 'Windows' && matrix.run_nsis == 'true' && steps.windows-installer.outcome == 'success'
         shell: pwsh
         env:
           DESKTOP_INSTALLER: ${{ steps.windows-installer.outputs.desktop_installer }}
+          OUTPUT_DIRECTORY: ${{ steps.windows-installer.outputs.output_directory }}
         run: |
           $installDirectory = Join-Path $env:RUNNER_TEMP 'keeppeek-desktop-install'
           try {
@@ -269,7 +270,7 @@ jobs:
                 throw 'Unable to uninstall KeepPeek Desktop'
               }
             }
-            Remove-Item -Force -Recurse -ErrorAction SilentlyContinue $installDirectory
+            Remove-Item -Force -Recurse -ErrorAction SilentlyContinue $installDirectory, $env:OUTPUT_DIRECTORY
           }
       - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2
         if: matrix.os == 'windows-11-arm'

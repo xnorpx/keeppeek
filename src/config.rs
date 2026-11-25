@@ -456,25 +456,7 @@ impl DirectCardConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
         let mut unique = HashSet::with_capacity(self.allowed_origins.len());
         for origin in &self.allowed_origins {
-            let url = Url::parse(origin)
-                .map_err(|error| anyhow::anyhow!("invalid direct card origin: {error}"))?;
-            if !matches!(url.scheme(), "http" | "https")
-                || url.path() != "/"
-                || url.query().is_some()
-                || url.fragment().is_some()
-                || !url.username().is_empty()
-                || url.password().is_some()
-            {
-                anyhow::bail!(
-                    "direct card origin must contain only an HTTP(S) scheme and authority"
-                );
-            }
-            let canonical = url.origin().ascii_serialization();
-            if canonical == "null" || canonical != *origin {
-                anyhow::bail!(
-                    "direct card origin must use its canonical exact origin: {canonical}"
-                );
-            }
+            validate_canonical_http_origin(origin, "direct card origin", None, false)?;
             if !unique.insert(origin) {
                 anyhow::bail!("direct card origin appears more than once: {origin}");
             }
@@ -504,34 +486,64 @@ impl DesktopConfig {
     ///
     /// # Errors
     ///
-    /// Returns an error when `server_url` exceeds 512 bytes, contains credentials, path,
-    /// query, or fragment components, or is not a canonical HTTP(S) origin.
+    /// Returns an error when `server_url` exceeds 512 bytes, contains control
+    /// characters, credentials, path, query, or fragment components, uses an
+    /// unspecified bind address or port zero, or is not a canonical HTTP(S) origin.
     pub fn validate(&self) -> anyhow::Result<()> {
         let Some(server_url) = self.server_url.as_deref() else {
             return Ok(());
         };
-        if server_url.is_empty() || server_url.len() > MAX_DESKTOP_SERVER_URL_BYTES {
-            anyhow::bail!(
-                "desktop server_url must be between 1 and {MAX_DESKTOP_SERVER_URL_BYTES} bytes"
-            );
-        }
-        let url = Url::parse(server_url)
-            .map_err(|error| anyhow::anyhow!("invalid desktop server_url: {error}"))?;
-        if !matches!(url.scheme(), "http" | "https")
-            || url.path() != "/"
-            || url.query().is_some()
-            || url.fragment().is_some()
-            || !url.username().is_empty()
-            || url.password().is_some()
-        {
-            anyhow::bail!("desktop server_url must contain only an HTTP(S) scheme and authority");
-        }
-        let canonical = url.origin().ascii_serialization();
-        if canonical == "null" || canonical != server_url {
-            anyhow::bail!("desktop server_url must use its canonical exact origin: {canonical}");
-        }
-        Ok(())
+        validate_canonical_http_origin(
+            server_url,
+            "desktop server_url",
+            Some(MAX_DESKTOP_SERVER_URL_BYTES),
+            true,
+        )
     }
+}
+
+fn validate_canonical_http_origin(
+    raw: &str,
+    label: &str,
+    max_bytes: Option<usize>,
+    reject_unspecified_host: bool,
+) -> anyhow::Result<()> {
+    if let Some(limit) = max_bytes
+        && (raw.is_empty() || raw.len() > limit)
+    {
+        anyhow::bail!("{label} must be between 1 and {limit} bytes");
+    }
+    if raw.bytes().any(|byte| byte < 0x20 || byte == 0x7f) {
+        anyhow::bail!("{label} must not contain ASCII control characters");
+    }
+    let url = Url::parse(raw).map_err(|error| anyhow::anyhow!("invalid {label}: {error}"))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        anyhow::bail!("{label} must contain only an HTTP(S) scheme and authority");
+    }
+    if url.port() == Some(0) {
+        anyhow::bail!("{label} port must be between 1 and 65535");
+    }
+    if reject_unspecified_host {
+        let unspecified = match url.host() {
+            Some(url::Host::Ipv4(address)) => IpAddr::V4(address).is_unspecified(),
+            Some(url::Host::Ipv6(address)) => IpAddr::V6(address).is_unspecified(),
+            _ => false,
+        };
+        if unspecified {
+            anyhow::bail!("{label} must not use an unspecified bind address");
+        }
+    }
+    let canonical = url.origin().ascii_serialization();
+    if canonical == "null" || canonical != raw {
+        anyhow::bail!("{label} must use its canonical exact origin: {canonical}");
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -5619,6 +5631,10 @@ mod tests {
             "http://127.0.0.1:8081/",
             "http://127.0.0.1:8081/peek",
             "http://user:pass@127.0.0.1:8081",
+            "http://0.0.0.0:8081",
+            "http://[::]:8081",
+            "http://127.0.0.1:0",
+            "http://127.0.0.1\t:8081",
             "https://nvr.example.com:443",
             "https://NVR.EXAMPLE.COM",
             "file:///etc/passwd",

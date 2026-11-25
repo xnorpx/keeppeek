@@ -287,6 +287,47 @@ unknown_key = true
 }
 
 #[test]
+fn config_store_serializes_concurrent_saves_and_preserves_existing_directory_permissions() {
+    let dir = temp_dir("concurrent-save");
+    #[cfg(unix)]
+    let initial_mode = {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777
+    };
+
+    let config_path = dir.join("config.toml");
+    let mut handles = Vec::new();
+    for port in 8100_u16..8108 {
+        let path = config_path.clone();
+        handles.push(thread::spawn(move || {
+            let origin =
+                ServerOrigin::parse_canonical(&format!("http://127.0.0.1:{port}")).unwrap();
+            config_store::save_server_url(&path, &origin).unwrap();
+        }));
+    }
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    let resolved = config_store::resolve_target(&config_path, None, None).unwrap();
+    assert_eq!(resolved.source, TargetSource::ConfigDesktop);
+    assert!(resolved.origin.as_str().starts_with("http://127.0.0.1:810"));
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let final_mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            final_mode, initial_mode,
+            "saving into a pre-existing directory must not mutate its permissions"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn probe_accepts_valid_keeppeek_session_and_classifies_failures() {
     let valid_body = r#"{"local":true,"bearer_enabled":false,"methods":[],"identity":{"id":"local-administrator","display_name":"Local Administrator","role":"administrator"},"csrf_token":null}"#;
     let valid_response = format!(

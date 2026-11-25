@@ -8,6 +8,9 @@ use std::fmt;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +25,10 @@ const DESKTOP_SECTION: &str = "desktop";
 const SERVER_URL_KEY: &str = "server_url";
 const MAX_CONFIG_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const DEFAULT_SERVER_PORT: u16 = 8081;
+const MAX_TEMP_FILE_ATTEMPTS: usize = 64;
+
+static SAVE_LOCK: Mutex<()> = Mutex::new(());
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Identifies where the active desktop server URL came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,6 +75,8 @@ pub enum ConfigStoreError {
     InvalidDesktopSection(String),
     /// A configured server URL failed origin validation.
     InvalidServerUrl(ServerOriginError),
+    /// The file changed concurrently or did not contain the saved origin after writing.
+    VerificationMismatch { path: PathBuf },
 }
 
 impl fmt::Display for ConfigStoreError {
@@ -88,6 +97,11 @@ impl fmt::Display for ConfigStoreError {
                 write!(formatter, "Invalid [desktop] configuration: {detail}.")
             }
             Self::InvalidServerUrl(error) => error.fmt(formatter),
+            Self::VerificationMismatch { path } => write!(
+                formatter,
+                "Configuration file {} changed while saving desktop settings. Retry the operation.",
+                path.display()
+            ),
         }
     }
 }
@@ -214,6 +228,9 @@ pub fn resolve_target(
 /// Returns a [`ConfigStoreError`] when reading, serializing, or atomically
 /// writing `config_path` fails.
 pub fn save_server_url(config_path: &Path, origin: &ServerOrigin) -> Result<(), ConfigStoreError> {
+    let _guard = SAVE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut root = read_existing_table(config_path)?;
     let desktop_value = root
         .entry(DESKTOP_SECTION.to_owned())
@@ -237,11 +254,11 @@ pub fn save_server_url(config_path: &Path, origin: &ServerOrigin) -> Result<(), 
 
     let verified = read_existing_table(config_path)?;
     let persisted = extract_desktop_server_url(&verified)?;
-    assert_eq!(
-        persisted.as_ref(),
-        Some(origin),
-        "persisted [desktop].server_url must match saved origin"
-    );
+    if persisted.as_ref() != Some(origin) {
+        return Err(ConfigStoreError::VerificationMismatch {
+            path: config_path.to_path_buf(),
+        });
+    }
     Ok(())
 }
 
@@ -325,12 +342,13 @@ fn write_private_atomically(path: &Path, bytes: &[u8]) -> Result<(), ConfigStore
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
+    let created_parent = !parent.exists();
     fs::create_dir_all(parent).map_err(|source| ConfigStoreError::Io {
         path: parent.to_path_buf(),
         source,
     })?;
     #[cfg(unix)]
-    {
+    if created_parent {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).map_err(|source| {
             ConfigStoreError::Io {
@@ -339,13 +357,14 @@ fn write_private_atomically(path: &Path, bytes: &[u8]) -> Result<(), ConfigStore
             }
         })?;
     }
+    #[cfg(not(unix))]
+    let _ = created_parent;
 
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or(DEFAULT_CONFIG_NAME);
-    let temp_path = parent.join(format!(".{file_name}.desktop-{}.tmp", std::process::id()));
-    write_private_file(&temp_path, bytes)?;
+    let temp_path = create_unique_temp_file(parent, file_name, bytes)?;
     if let Err(source) = fs::rename(&temp_path, path) {
         let _ = fs::remove_file(&temp_path);
         return Err(ConfigStoreError::Io {
@@ -356,18 +375,53 @@ fn write_private_atomically(path: &Path, bytes: &[u8]) -> Result<(), ConfigStore
     Ok(())
 }
 
-fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), ConfigStoreError> {
-    let mut options = fs::OpenOptions::new();
-    options.create(true).truncate(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+fn create_unique_temp_file(
+    parent: &Path,
+    file_name: &str,
+    bytes: &[u8],
+) -> Result<PathBuf, ConfigStoreError> {
+    let timestamp_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0_u128, |duration| duration.as_nanos());
+    for _ in 0..MAX_TEMP_FILE_ATTEMPTS {
+        let sequence = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(
+            ".{file_name}.desktop-{}-{timestamp_nanos}-{sequence}.tmp",
+            std::process::id()
+        ));
+        let mut options = fs::OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = match options.open(&candidate) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(source) => {
+                return Err(ConfigStoreError::Io {
+                    path: candidate,
+                    source,
+                });
+            }
+        };
+        if let Err(error) = write_and_sync(&mut file, &candidate, bytes) {
+            let _ = fs::remove_file(&candidate);
+            return Err(error);
+        }
+        return Ok(candidate);
     }
-    let mut file = options.open(path).map_err(|source| ConfigStoreError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    Err(ConfigStoreError::Io {
+        path: parent.to_path_buf(),
+        source: std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "unable to allocate unique temporary configuration file",
+        ),
+    })
+}
+
+fn write_and_sync(file: &mut fs::File, path: &Path, bytes: &[u8]) -> Result<(), ConfigStoreError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

@@ -67,7 +67,8 @@ On startup, KeepPeek Desktop resolves its target server URL in this order:
 
 Before opening the server UI, KeepPeek Desktop sends a bounded `GET /auth/session` probe (5-second timeout, redirects disabled, 64 KiB response limit) to verify that a KeepPeek server is reachable.
 
-- When the probe succeeds, the window navigates directly to the server's SvelteKit interface. All existing workflows—authentication (trusted-local, bearer access key, OIDC/proxy), live dashboard, recorded playback, events, health, and authorized settings—run from the server with full parity.
+- When the probe succeeds, the window navigates directly to the server's SvelteKit interface. Trusted-local administrator access, bearer access-key sign-in, same-origin reverse-proxy sessions, live dashboard, recorded playback, events, health, and authorized settings run directly from the server.
+- Cross-origin OIDC login redirects (`POST /auth/login` to an external identity provider) and popup-based administrator OIDC verification (`window.open`) are intentionally blocked by the desktop webview's single-origin navigation and popup restrictions. Use a standard browser for OIDC sign-in or administrator OIDC verification.
 - When the server is unreachable, times out, fails TLS verification, requires HTTPS (`HTTP 426`), or returns a non-KeepPeek response, the launcher stays open and displays the exact failure with a recovery action (**Retry** or update the server URL).
 - To switch servers at any time, choose **Connection → Switch Server...** (`Ctrl+Shift+S` on Windows, `Cmd+Shift+S` on macOS).
 - Use **Connection → Reconnect** (`Ctrl+Shift+R` / `Cmd+Shift+R`) to re-probe and reconnect, or **Connection → Reload** (`Ctrl+R` / `Cmd+R`) to refresh the current page.

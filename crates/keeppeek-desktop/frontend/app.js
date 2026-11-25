@@ -10,6 +10,15 @@ const errorMessage = document.getElementById('error-message');
 const configMeta = document.getElementById('config-meta');
 
 let busy = false;
+let navigationGuardTimer = null;
+const NAVIGATION_TIMEOUT_MS = 10_000;
+
+function clearNavigationGuard() {
+	if (navigationGuardTimer !== null) {
+		window.clearTimeout(navigationGuardTimer);
+		navigationGuardTimer = null;
+	}
+}
 
 function invokeCommand(command, args = {}) {
 	const bridge = window.__TAURI_INTERNALS__;
@@ -56,6 +65,7 @@ async function attemptConnect(saveDefault, fromStartup = false) {
 	}
 
 	showError('');
+	clearNavigationGuard();
 	setBusy(true, `Checking ${candidate}...`);
 	try {
 		await invokeCommand('connect_server', {
@@ -63,7 +73,16 @@ async function attemptConnect(saveDefault, fromStartup = false) {
 			saveDefault
 		});
 		setBusy(true, `Opening ${candidate}...`);
+		navigationGuardTimer = window.setTimeout(() => {
+			navigationGuardTimer = null;
+			setBusy(false);
+			showError(
+				`The desktop webview did not finish loading ${candidate}. Verify the server is reachable and click Retry.`
+			);
+			serverUrlInput.focus();
+		}, NAVIGATION_TIMEOUT_MS);
 	} catch (failure) {
+		clearNavigationGuard();
 		setBusy(false);
 		const message = failure instanceof Error ? failure.message : String(failure);
 		showError(message);
@@ -104,5 +123,7 @@ form.addEventListener('submit', (event) => {
 retryButton.addEventListener('click', () => {
 	void attemptConnect(false, false);
 });
+
+window.addEventListener('pagehide', clearNavigationGuard);
 
 void initializeLauncher();

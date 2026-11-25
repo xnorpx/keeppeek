@@ -42,40 +42,168 @@ type SteadyStats = {
 	webrtcSessionObserved: boolean;
 };
 
-const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-const repositoryRoot = path.resolve(scriptDir, '../../..');
-const executableExt = process.platform === 'win32' ? '.exe' : '';
+type PlaywrightChromium = {
+	launch: (options: { headless: boolean }) => Promise<{
+		version: () => string;
+		newPage: () => Promise<{
+			goto: (url: string, options: { waitUntil: string }) => Promise<unknown>;
+			waitForSelector: (selector: string, options: { timeout: number }) => Promise<unknown>;
+			waitForFunction: (
+				fn: () => boolean,
+				arg: unknown,
+				options: { timeout: number }
+			) => Promise<unknown>;
+			close: () => Promise<void>;
+		}>;
+		close: () => Promise<void>;
+	}>;
+	launchPersistentContext: (
+		userDataDir: string,
+		options: { headless: boolean }
+	) => Promise<{
+		pages: () => Array<{
+			goto: (url: string, options: { waitUntil: string }) => Promise<unknown>;
+			waitForFunction: (
+				fn: () => boolean,
+				arg: unknown,
+				options: { timeout: number }
+			) => Promise<unknown>;
+		}>;
+		newPage: () => Promise<{
+			goto: (url: string, options: { waitUntil: string }) => Promise<unknown>;
+			waitForFunction: (
+				fn: () => boolean,
+				arg: unknown,
+				options: { timeout: number }
+			) => Promise<unknown>;
+		}>;
+		close: () => Promise<void>;
+	}>;
+};
 
-const args = parseArgs(process.argv.slice(2));
-const launches = args.launches;
-const steadySecs = args.steadySecs;
-const warmupSecs = args.warmupSecs;
-const outputPath = args.output;
+type HarnessPaths = {
+	repositoryRoot: string;
+	keeppeekBin: string;
+	testCameraBin: string;
+	desktopBin: string;
+	sampleVideo: string;
+	runRoot: string;
+};
 
-const targetRoot = process.env.CARGO_TARGET_DIR
-	? path.resolve(process.env.CARGO_TARGET_DIR)
-	: path.join(repositoryRoot, 'target');
-const releaseDir = path.join(targetRoot, 'release');
+await main();
 
-const keeppeekBin = requireFile(path.join(releaseDir, `keeppeek${executableExt}`));
-const testCameraBin = requireFile(path.join(releaseDir, `test_camera${executableExt}`));
-const desktopBin = requireFile(path.join(releaseDir, `keeppeek-desktop${executableExt}`));
-const sampleVideo = requireFile(
-	path.join(repositoryRoot, 'crates', 'test-camera', 'testdata', 'cc-4k-640x360-h264.mp4')
-);
+async function main(): Promise<void> {
+	if (process.platform !== 'win32' && process.platform !== 'darwin') {
+		throw new Error(
+			`KeepPeek Desktop benchmark supports only Windows and macOS (got ${process.platform}).`
+		);
+	}
+	const args = parseArgs(process.argv.slice(2));
+	const paths = resolvePaths();
+	await mkdir(paths.runRoot, { recursive: true });
 
-const runRoot = path.join(tmpdir(), `keeppeek-desktop-bench-${Date.now()}`);
-await mkdir(runRoot, { recursive: true });
+	const serverPort = await findFreePort();
+	const closedPort = await findFreePort();
+	const serverUrl = `http://127.0.0.1:${serverPort}`;
+	const fixture = await startFixtureServer(paths, serverPort);
 
-const serverPort = await findFreePort();
-const closedPort = await findFreePort();
-const serverUrl = `http://127.0.0.1:${serverPort}`;
+	try {
+		await waitForServerReady(serverUrl, 30_000);
+		const smoke = await runSmokeChecks(paths, serverUrl, closedPort);
+		const playwrightModule = (await import(
+			path.join(paths.repositoryRoot, 'ui', 'node_modules', 'playwright', 'index.mjs')
+		)) as { chromium: PlaywrightChromium };
 
-const camera = await startTestCamera('bench-h264', sampleVideo);
-const configPath = path.join(runRoot, 'config.toml');
-await writeFile(
-	configPath,
-	`host = "127.0.0.1"
+		const browserLaunches = await runBrowserLaunches(
+			playwrightModule.chromium,
+			serverUrl,
+			args.launches
+		);
+		const desktopLaunches = await runDesktopLaunches(paths, serverUrl, args.launches);
+		const browserSteady = await measureBrowserSteady(
+			playwrightModule.chromium,
+			paths.runRoot,
+			serverUrl,
+			args.warmupSecs,
+			args.steadySecs
+		);
+		const desktopSteady = await measureDesktopSteady(
+			paths,
+			serverUrl,
+			args.warmupSecs,
+			args.steadySecs
+		);
+		await assertServerStillAlive(serverUrl);
+
+		const result = {
+			environment: {
+				os: `${platform()} ${release()}`,
+				arch: arch(),
+				cpuModel: cpus()[0]?.model ?? 'unknown',
+				logicalCores: cpus().length,
+				chromiumVersion: browserLaunches.chromiumVersion,
+				webviewVersion: detectWebViewVersion()
+			},
+			workload: {
+				launches: args.launches,
+				warmupSecs: args.warmupSecs,
+				steadySecs: args.steadySecs,
+				fixture: 'cc-4k-640x360-h264.mp4 (1 camera via test_camera RTSP)'
+			},
+			smoke,
+			browser: {
+				coldLaunchMs: summarize(browserLaunches.launchMs),
+				firstLiveFrameMs: summarize(browserLaunches.firstFrameMs),
+				steady: browserSteady
+			},
+			desktop: {
+				coldLaunchMs: summarize(desktopLaunches.launchMs),
+				launcherReadyMs: summarize(desktopLaunches.launcherMs),
+				steady: desktopSteady
+			}
+		};
+
+		const summaryText = JSON.stringify(result, null, 2);
+		if (args.output) await writeFile(args.output, `${summaryText}\n`);
+		console.log(summaryText);
+	} finally {
+		fixture.server.kill();
+		fixture.camera.kill();
+		await Promise.allSettled([fixture.server.exited, fixture.camera.exited]);
+		await rm(paths.runRoot, { recursive: true, force: true });
+	}
+}
+
+function resolvePaths(): HarnessPaths {
+	const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+	const repositoryRoot = path.resolve(scriptDir, '../../..');
+	const executableExt = process.platform === 'win32' ? '.exe' : '';
+	const targetRoot = process.env.CARGO_TARGET_DIR
+		? path.resolve(process.env.CARGO_TARGET_DIR)
+		: path.join(repositoryRoot, 'target');
+	const releaseDir = path.join(targetRoot, 'release');
+
+	return {
+		repositoryRoot,
+		keeppeekBin: requireFile(path.join(releaseDir, `keeppeek${executableExt}`)),
+		testCameraBin: requireFile(path.join(releaseDir, `test_camera${executableExt}`)),
+		desktopBin: requireFile(path.join(releaseDir, `keeppeek-desktop${executableExt}`)),
+		sampleVideo: requireFile(
+			path.join(repositoryRoot, 'crates', 'test-camera', 'testdata', 'cc-4k-640x360-h264.mp4')
+		),
+		runRoot: path.join(tmpdir(), `keeppeek-desktop-bench-${Date.now()}`)
+	};
+}
+
+async function startFixtureServer(
+	paths: HarnessPaths,
+	serverPort: number
+): Promise<{ camera: ReturnType<typeof Bun.spawn>; server: ReturnType<typeof Bun.spawn> }> {
+	const camera = await startTestCamera(paths, 'bench-h264');
+	const configPath = path.join(paths.runRoot, 'config.toml');
+	await writeFile(
+		configPath,
+		`host = "127.0.0.1"
 port = ${serverPort}
 
 [access]
@@ -91,22 +219,29 @@ long_term_max_gb = 0
 
 ${camera.config}
 `
-);
+	);
 
-const server = Bun.spawn([keeppeekBin, '--tui', 'never', `--config=${configPath}`], {
-	cwd: repositoryRoot,
-	stdout: 'ignore',
-	stderr: 'pipe'
-});
+	const server = Bun.spawn([paths.keeppeekBin, '--tui', 'never', `--config=${configPath}`], {
+		cwd: paths.repositoryRoot,
+		stdout: 'ignore',
+		stderr: 'pipe'
+	});
+	return { camera: camera.process, server };
+}
 
-try {
-	await waitForServerReady(serverUrl, 30_000);
-	const webviewVersion = detectWebViewVersion();
-
-	// Smoke 1: unavailable server must fail cleanly with a recovery message.
+async function runSmokeChecks(
+	paths: HarnessPaths,
+	serverUrl: string,
+	closedPort: number
+): Promise<{
+	unavailableServerRejected: boolean;
+	connectedServerOrigin: string;
+	serverSurvivedDesktopExit: boolean;
+}> {
 	const unavailableDiag = await runDesktopSmoke(
+		paths,
 		`http://127.0.0.1:${closedPort}`,
-		path.join(runRoot, 'diag-unavailable.json'),
+		path.join(paths.runRoot, 'diag-unavailable.json'),
 		100
 	);
 	if (unavailableDiag.probe_ok || !unavailableDiag.probe_error?.includes('Retry')) {
@@ -115,10 +250,10 @@ try {
 		);
 	}
 
-	// Smoke 2: live server connection and server survival after desktop exit.
 	const connectedDiag = await runDesktopSmoke(
+		paths,
 		serverUrl,
-		path.join(runRoot, 'diag-connected.json'),
+		path.join(paths.runRoot, 'diag-connected.json'),
 		150
 	);
 	if (
@@ -130,139 +265,74 @@ try {
 		throw new Error(`Connected smoke check failed: ${JSON.stringify(connectedDiag)}`);
 	}
 	await assertServerStillAlive(serverUrl);
-
-	// Benchmark 1: cold launch latency (browser baseline vs desktop release).
-	const playwrightModule = (await import(
-		path.join(repositoryRoot, 'ui', 'node_modules', 'playwright', 'index.mjs')
-	)) as {
-		chromium: {
-			launch: (options: { headless: boolean }) => Promise<{
-				version: () => string;
-				newPage: () => Promise<{
-					goto: (url: string, options: { waitUntil: string }) => Promise<unknown>;
-					waitForSelector: (selector: string, options: { timeout: number }) => Promise<unknown>;
-					waitForFunction: (fn: () => boolean, arg: unknown, options: { timeout: number }) => Promise<unknown>;
-					close: () => Promise<void>;
-				}>;
-				close: () => Promise<void>;
-			}>;
-			launchPersistentContext: (
-				userDataDir: string,
-				options: { headless: boolean }
-			) => Promise<{
-				pages: () => Array<{
-					goto: (url: string, options: { waitUntil: string }) => Promise<unknown>;
-					waitForFunction: (fn: () => boolean, arg: unknown, options: { timeout: number }) => Promise<unknown>;
-				}>;
-				newPage: () => Promise<{
-					goto: (url: string, options: { waitUntil: string }) => Promise<unknown>;
-					waitForFunction: (fn: () => boolean, arg: unknown, options: { timeout: number }) => Promise<unknown>;
-				}>;
-				close: () => Promise<void>;
-			}>;
-		};
+	return {
+		unavailableServerRejected: true,
+		connectedServerOrigin: connectedDiag.active_origin,
+		serverSurvivedDesktopExit: true
 	};
+}
 
-	const browserLaunchMs: number[] = [];
-	const browserFirstFrameMs: number[] = [];
+async function runBrowserLaunches(
+	chromium: PlaywrightChromium,
+	serverUrl: string,
+	count: number
+): Promise<{ launchMs: number[]; firstFrameMs: number[]; chromiumVersion: string }> {
+	const launchMs: number[] = [];
+	const firstFrameMs: number[] = [];
 	let chromiumVersion = 'unknown';
 
-	for (let run = 0; run < launches; run += 1) {
+	for (let run = 0; run < count; run += 1) {
 		const started = performance.now();
-		const browser = await playwrightModule.chromium.launch({ headless: true });
+		const browser = await chromium.launch({ headless: true });
 		chromiumVersion = browser.version();
 		try {
 			const page = await browser.newPage();
 			await page.goto(serverUrl, { waitUntil: 'load' });
 			await page.waitForSelector('[data-peek-wall], [data-shell-rail]', { timeout: 20_000 });
-			const interactiveElapsed = Math.round(performance.now() - started);
-			browserLaunchMs.push(interactiveElapsed);
+			launchMs.push(Math.round(performance.now() - started));
 
 			await page.waitForFunction(
 				() => {
 					const video = document.querySelector('video');
 					if (!video) return false;
 					const quality = video.getVideoPlaybackQuality?.();
-					return video.videoWidth > 0 && (quality ? quality.totalVideoFrames > 0 : video.readyState >= 2);
+					return (
+						video.videoWidth > 0 &&
+						(quality ? quality.totalVideoFrames > 0 : video.readyState >= 2)
+					);
 				},
 				undefined,
 				{ timeout: 20_000 }
 			);
-			browserFirstFrameMs.push(Math.round(performance.now() - started));
+			firstFrameMs.push(Math.round(performance.now() - started));
 		} finally {
 			await browser.close();
 		}
 	}
+	return { launchMs, firstFrameMs, chromiumVersion };
+}
 
-	const desktopLaunchMs: number[] = [];
-	const desktopLauncherMs: number[] = [];
-	for (let run = 0; run < launches; run += 1) {
+async function runDesktopLaunches(
+	paths: HarnessPaths,
+	serverUrl: string,
+	count: number
+): Promise<{ launchMs: number[]; launcherMs: number[] }> {
+	const launchMs: number[] = [];
+	const launcherMs: number[] = [];
+	for (let run = 0; run < count; run += 1) {
 		const diag = await runDesktopSmoke(
+			paths,
 			serverUrl,
-			path.join(runRoot, `diag-launch-${run}.json`),
+			path.join(paths.runRoot, `diag-launch-${run}.json`),
 			50
 		);
 		if (!diag.probe_ok || diag.server_loaded_ms === null) {
 			throw new Error(`Desktop launch ${run} failed: ${JSON.stringify(diag)}`);
 		}
-		desktopLaunchMs.push(diag.server_loaded_ms);
-		if (diag.launcher_loaded_ms !== null) {
-			desktopLauncherMs.push(diag.launcher_loaded_ms);
-		}
+		launchMs.push(diag.server_loaded_ms);
+		if (diag.launcher_loaded_ms !== null) launcherMs.push(diag.launcher_loaded_ms);
 	}
-
-	// Benchmark 2: steady-state live-view CPU and process-tree memory.
-	const browserSteady = await measureBrowserSteady(
-		playwrightModule.chromium,
-		serverUrl,
-		warmupSecs,
-		steadySecs
-	);
-	const desktopSteady = await measureDesktopSteady(serverUrl, warmupSecs, steadySecs);
-	await assertServerStillAlive(serverUrl);
-
-	const result = {
-		environment: {
-			os: `${platform()} ${release()}`,
-			arch: arch(),
-			cpuModel: cpus()[0]?.model ?? 'unknown',
-			logicalCores: cpus().length,
-			chromiumVersion,
-			webviewVersion
-		},
-		workload: {
-			launches,
-			warmupSecs,
-			steadySecs,
-			fixture: 'cc-4k-640x360-h264.mp4 (1 camera via test_camera RTSP)'
-		},
-		smoke: {
-			unavailableServerRejected: !unavailableDiag.probe_ok,
-			connectedServerOrigin: connectedDiag.active_origin,
-			serverSurvivedDesktopExit: true
-		},
-		browser: {
-			coldLaunchMs: summarize(browserLaunchMs),
-			firstLiveFrameMs: summarize(browserFirstFrameMs),
-			steady: browserSteady
-		},
-		desktop: {
-			coldLaunchMs: summarize(desktopLaunchMs),
-			launcherReadyMs: summarize(desktopLauncherMs),
-			steady: desktopSteady
-		}
-	};
-
-	const summaryText = JSON.stringify(result, null, 2);
-	if (outputPath) {
-		await writeFile(outputPath, `${summaryText}\n`);
-	}
-	console.log(summaryText);
-} finally {
-	server.kill();
-	camera.process.kill();
-	await Promise.allSettled([server.exited, camera.process.exited]);
-	await rm(runRoot, { recursive: true, force: true });
+	return { launchMs, launcherMs };
 }
 
 function parseArgs(argv: string[]): {
@@ -332,12 +402,23 @@ function findFreePort(): Promise<number> {
 }
 
 async function startTestCamera(
-	name: string,
-	mediaPath: string
+	paths: HarnessPaths,
+	name: string
 ): Promise<{ process: ReturnType<typeof Bun.spawn>; config: string }> {
 	const proc = Bun.spawn(
-		[testCameraBin, 'rtsp', '--main', mediaPath, '--sub', mediaPath, '--name', name, '--start-at-seconds', '0'],
-		{ cwd: repositoryRoot, stdout: 'pipe', stderr: 'ignore' }
+		[
+			paths.testCameraBin,
+			'rtsp',
+			'--main',
+			paths.sampleVideo,
+			'--sub',
+			paths.sampleVideo,
+			'--name',
+			name,
+			'--start-at-seconds',
+			'0'
+		],
+		{ cwd: paths.repositoryRoot, stdout: 'pipe', stderr: 'ignore' }
 	);
 	const reader = proc.stdout.getReader();
 	const decoder = new TextDecoder();
@@ -378,15 +459,16 @@ async function assertServerStillAlive(url: string): Promise<void> {
 }
 
 async function runDesktopSmoke(
+	paths: HarnessPaths,
 	url: string,
 	diagnosticsPath: string,
 	smokeExitMs: number
 ): Promise<DiagnosticsReport> {
 	const proc = Bun.spawn(
 		[
-			desktopBin,
+			paths.desktopBin,
 			'--config',
-			path.join(runRoot, 'desktop-client-config.toml'),
+			path.join(paths.runRoot, 'desktop-client-config.toml'),
 			'--server-url',
 			url,
 			'--diagnostics-file',
@@ -394,7 +476,7 @@ async function runDesktopSmoke(
 			'--smoke-exit-ms',
 			String(smokeExitMs)
 		],
-		{ cwd: repositoryRoot, stdout: 'ignore', stderr: 'pipe' }
+		{ cwd: paths.repositoryRoot, stdout: 'ignore', stderr: 'pipe' }
 	);
 	const exitCode = await proc.exited;
 	if (exitCode !== 0) {
@@ -405,22 +487,8 @@ async function runDesktopSmoke(
 }
 
 async function measureBrowserSteady(
-	chromium: {
-		launchPersistentContext: (
-			userDataDir: string,
-			options: { headless: boolean }
-		) => Promise<{
-			pages: () => Array<{
-				goto: (url: string, options: { waitUntil: string }) => Promise<unknown>;
-				waitForFunction: (fn: () => boolean, arg: unknown, options: { timeout: number }) => Promise<unknown>;
-			}>;
-			newPage: () => Promise<{
-				goto: (url: string, options: { waitUntil: string }) => Promise<unknown>;
-				waitForFunction: (fn: () => boolean, arg: unknown, options: { timeout: number }) => Promise<unknown>;
-			}>;
-			close: () => Promise<void>;
-		}>;
-	},
+	chromium: PlaywrightChromium,
+	runRoot: string,
 	url: string,
 	warmupSeconds: number,
 	steadySeconds: number
@@ -447,17 +515,18 @@ async function measureBrowserSteady(
 }
 
 async function measureDesktopSteady(
+	paths: HarnessPaths,
 	url: string,
 	warmupSeconds: number,
 	steadySeconds: number
 ): Promise<SteadyStats> {
 	const holdMs = (warmupSeconds + steadySeconds + 15) * 1000;
-	const diagPath = path.join(runRoot, 'diag-steady.json');
+	const diagPath = path.join(paths.runRoot, 'diag-steady.json');
 	const proc = Bun.spawn(
 		[
-			desktopBin,
+			paths.desktopBin,
 			'--config',
-			path.join(runRoot, 'desktop-client-config.toml'),
+			path.join(paths.runRoot, 'desktop-client-config.toml'),
 			'--server-url',
 			url,
 			'--diagnostics-file',
@@ -465,7 +534,7 @@ async function measureDesktopSteady(
 			'--smoke-exit-ms',
 			String(holdMs)
 		],
-		{ cwd: repositoryRoot, stdout: 'ignore', stderr: 'ignore' }
+		{ cwd: paths.repositoryRoot, stdout: 'ignore', stderr: 'ignore' }
 	);
 	try {
 		await Bun.sleep(warmupSeconds * 1000);
@@ -498,9 +567,7 @@ async function sampleSteadyTree(
 		last = sample;
 		memorySamples.push(sample.memoryMib);
 		if (sample.processCount > maxProcesses) maxProcesses = sample.processCount;
-		if (!webrtcObserved) {
-			webrtcObserved = await checkActiveWebRtcSession(url);
-		}
+		if (!webrtcObserved) webrtcObserved = await checkActiveWebRtcSession(url);
 	}
 
 	const elapsedSecs = Math.max(1, (performance.now() - startWall) / 1000);
@@ -532,12 +599,20 @@ async function checkActiveWebRtcSession(url: string): Promise<boolean> {
 }
 
 function sampleProcessTree(selector: { rootPid?: number; commandMarker?: string }): TreeSample {
-	if (process.platform === 'win32') {
-		const rootExpr =
-			selector.rootPid !== undefined
-				? `@(${selector.rootPid})`
-				: `@($all | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('${(selector.commandMarker ?? '').replace(/'/g, "''")}') } | ForEach-Object { [int]$_.ProcessId })`;
-		const script = `
+	if (process.platform === 'win32') return sampleWindowsProcessTree(selector);
+	if (process.platform === 'darwin') return sampleDarwinProcessTree(selector);
+	throw new Error(`Process-tree sampling is not supported on ${process.platform}.`);
+}
+
+function sampleWindowsProcessTree(selector: {
+	rootPid?: number;
+	commandMarker?: string;
+}): TreeSample {
+	const rootExpr =
+		selector.rootPid !== undefined
+			? `@(${selector.rootPid})`
+			: `@($all | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('${(selector.commandMarker ?? '').replace(/'/g, "''")}') } | ForEach-Object { [int]$_.ProcessId })`;
+	const script = `
 $all = Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, WorkingSetSize, KernelModeTime, UserModeTime, CommandLine
 $roots = ${rootExpr}
 $children = @{}
@@ -568,19 +643,84 @@ foreach ($id in $visited) {
 }
 @{ processCount = $count; memoryMib = [math]::Round($mem / 1MB, 2); cpuSeconds = [math]::Round($cpu / 10000000.0, 4) } | ConvertTo-Json -Compress
 `;
-		const res = Bun.spawnSync(['powershell.exe', '-NoLogo', '-NoProfile', '-Command', script], {
-			stdout: 'pipe',
-			stderr: 'ignore'
+	const res = Bun.spawnSync(['powershell.exe', '-NoLogo', '-NoProfile', '-Command', script], {
+		stdout: 'pipe',
+		stderr: 'pipe'
+	});
+	if (res.exitCode !== 0) {
+		throw new Error(`Windows process-tree sampling failed: ${new TextDecoder().decode(res.stderr)}`);
+	}
+	return JSON.parse(new TextDecoder().decode(res.stdout).trim()) as TreeSample;
+}
+
+function sampleDarwinProcessTree(selector: {
+	rootPid?: number;
+	commandMarker?: string;
+}): TreeSample {
+	const res = Bun.spawnSync(['ps', '-axo', 'pid=,ppid=,rss=,time=,command='], {
+		stdout: 'pipe',
+		stderr: 'pipe'
+	});
+	if (res.exitCode !== 0) {
+		throw new Error(`macOS process-tree sampling failed: ${new TextDecoder().decode(res.stderr)}`);
+	}
+	const rows = new Map<number, { ppid: number; rssKib: number; cpuSecs: number; cmd: string }>();
+	const children = new Map<number, number[]>();
+	for (const line of new TextDecoder().decode(res.stdout).split('\n')) {
+		const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+([0-9:.-]+)\s+(.*)$/.exec(line);
+		if (!match) continue;
+		const pid = Number(match[1]);
+		const ppid = Number(match[2]);
+		rows.set(pid, {
+			ppid,
+			rssKib: Number(match[3]),
+			cpuSecs: parsePsTime(match[4]),
+			cmd: match[5]
 		});
-		if (res.exitCode === 0) {
-			try {
-				return JSON.parse(new TextDecoder().decode(res.stdout).trim()) as TreeSample;
-			} catch {
-				// Fall through to zero sample.
-			}
+		const list = children.get(ppid) ?? [];
+		list.push(pid);
+		children.set(ppid, list);
+	}
+	const roots: number[] = [];
+	if (selector.rootPid !== undefined) {
+		roots.push(selector.rootPid);
+	} else if (selector.commandMarker) {
+		for (const [pid, info] of rows) {
+			if (info.cmd.includes(selector.commandMarker)) roots.push(pid);
 		}
 	}
-	return { processCount: 0, memoryMib: 0, cpuSeconds: 0 };
+	const visited = new Set<number>();
+	const queue = [...roots];
+	while (queue.length > 0) {
+		const current = queue.shift()!;
+		if (visited.has(current)) continue;
+		visited.add(current);
+		for (const child of children.get(current) ?? []) queue.push(child);
+	}
+	let rssKib = 0;
+	let cpuSecs = 0;
+	let processCount = 0;
+	for (const pid of visited) {
+		const info = rows.get(pid);
+		if (!info) continue;
+		processCount += 1;
+		rssKib += info.rssKib;
+		cpuSecs += info.cpuSecs;
+	}
+	return {
+		processCount,
+		memoryMib: Number((rssKib / 1024).toFixed(2)),
+		cpuSeconds: Number(cpuSecs.toFixed(4))
+	};
+}
+
+function parsePsTime(raw: string): number {
+	const [dayPart, clockPart] = raw.includes('-') ? raw.split('-') : ['0', raw];
+	const parts = clockPart.split(':').map(Number);
+	const days = Number(dayPart) || 0;
+	if (parts.length === 3) return days * 86_400 + parts[0] * 3600 + parts[1] * 60 + parts[2];
+	if (parts.length === 2) return days * 86_400 + parts[0] * 60 + parts[1];
+	return days * 86_400 + (parts[0] || 0);
 }
 
 function detectWebViewVersion(): string {

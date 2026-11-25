@@ -226,6 +226,7 @@ async fn connect_server(
             {
                 let mut guard = state.lock();
                 guard.configured_origin = origin;
+                guard.active_origin = None;
                 guard.last_error = Some(message.clone());
                 guard.probe_ok = false;
                 guard.probe_finished_ms = Some(guard.elapsed_ms());
@@ -254,11 +255,20 @@ async fn connect_server(
         write_diagnostics_if_configured(&guard);
     }
 
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        let _ = window.set_title(&format!("KeepPeek Desktop — {origin}"));
-        window
-            .navigate(origin.app_entry_url())
-            .map_err(|error| format!("Unable to open {origin}: {error}."))?;
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        let mut guard = state.lock();
+        guard.active_origin = None;
+        return Err("KeepPeek Desktop main window is unavailable.".to_owned());
+    };
+    let _ = window.set_title(&format!("KeepPeek Desktop — {origin}"));
+    if let Err(error) = window.navigate(origin.app_entry_url()) {
+        let message = format!("Unable to open {origin}: {error}.");
+        let mut guard = state.lock();
+        guard.active_origin = None;
+        guard.last_error = Some(message.clone());
+        write_diagnostics_if_configured(&guard);
+        let _ = window.set_title("KeepPeek Desktop");
+        return Err(message);
     }
 
     Ok(ConnectResponse {
@@ -453,6 +463,7 @@ fn navigate_to_launcher(app: &AppHandle, manual_select: bool) {
     let launcher_url = {
         let state = app.state::<ManagedDesktopState>();
         let mut guard = state.lock();
+        guard.active_origin = None;
         guard.auto_connect = !manual_select;
         let mut url = guard.launcher_url.clone();
         url.set_query(if manual_select {

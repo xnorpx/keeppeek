@@ -15,8 +15,9 @@
 
 1. `crates/keeppeek-desktop/tauri.conf.json` sets `"withGlobalTauri": false` and a strict CSP (`default-src 'self'`, `object-src 'none'`, `frame-ancestors 'none'`, no `'unsafe-inline'`, no `'unsafe-eval'`, no wildcards).
 2. `crates/keeppeek-desktop/capabilities/default.json` grants `"local": true` only to the `"main"` window with no `"remote"` URLs and no `shell`, `fs`, `http`, or `process` plugin permissions.
-3. `crates/keeppeek-desktop/src/navigation.rs` allows top-level navigation only to the bundled launcher origin (`tauri://localhost`, `http://tauri.localhost`, `https://tauri.localhost`) or the active verified KeepPeek server origin, and denies all popup windows (`NewWindowResponse::Deny`).
+3. `crates/keeppeek-desktop/src/navigation.rs` allows top-level navigation only to the bundled launcher origin (`tauri://localhost`, `http://tauri.localhost`, `https://tauri.localhost`) or the active verified KeepPeek server origin, and denies all popup windows (`NewWindowResponse::Deny`). As a deliberate consequence of this boundary, cross-origin OIDC redirects (`POST /auth/login` to an external IdP) and popup-based administrator OIDC verification (`window.open`) are blocked in the desktop webview; operators should use a standard browser for those OIDC flows while trusted-local, bearer access-key, and same-origin proxy sessions run directly in KeepPeek Desktop.
 4. `crates/keeppeek-desktop/tests/desktop_contracts.rs` verifies these invariants in CI on Linux, macOS, and Windows.
+5. Root `Cargo.toml` patches `urlpattern` 0.3 to `crates/urlpattern-compat` (wrapping maintained `urlpattern` 0.6 / `icu_properties`) and excludes unused Linux GTK3/WebKit2GTK targets (`crates/linux-desktop-unsupported/*`) with compile-time guards so `cargo audit --deny warnings` and GitHub Dependency Review stay clean with zero advisories or warnings.
 
 ## Building and packaging locally
 
