@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3979094d.js";
+            window.path_to_searchindex_js = "searchindex-933d6fda.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-6871163b.js"></script>
@@ -368,6 +368,16 @@ Start with a small camera set and measure it before increasing the workload.</p>
 Record that version and retain its checksum information. By default, clients on private and local
 networks receive Administrator access without signing in; review
 <a href="#authentication-and-access-control">the access policy</a> before exposing the listener to other devices.</p>
+<h2 id="monitor-a-foreground-server"><a class="header" href="#monitor-a-foreground-server">Monitor a foreground server</a></h2>
+<p>Run <code>keeppeek</code> in an interactive terminal to see server health and stream statistics. The default
+<code>--tui auto</code> opens the dashboard when the terminal supports it and all three standard streams are
+attached. Use <code>keeppeek --tui never</code> to show plain logs. With <code>--tui always</code>, KeepPeek prints a
+diagnostic and continues with logs if it cannot open the dashboard. Services, redirected output
+and unattended containers use plain logs. For interactive Docker or SSH sessions, allocate a TTY.</p>
+<p>Use the arrow keys or Page Up and Page Down to select a stream. Press <strong>q</strong> to return to logs
+while the recorder keeps running. Press <strong>Ctrl+C</strong> to request a graceful server shutdown and
+finalize recordings. Resizing the terminal changes the visible rows. After a hard kill, opening
+a new terminal restores the normal display. On Unix you can also run <code>reset</code> in the affected shell.</p>
 <h2 id="linux-with-docker"><a class="header" href="#linux-with-docker">Linux with Docker</a></h2>
 <p>The published image supports <code>linux/amd64</code> and <code>linux/arm64</code>. It runs KeepPeek directly as the
 non-root user <code>65532</code> and listens on port <code>8081</code>.</p>
@@ -1726,6 +1736,16 @@ load fleet health, check <a href="#authentication-and-access-control">access per
 diagnostic panel as a camera failure.</p>
 <p>The current health contract version is <code>1</code>. A client that cannot understand a state or reason must
 treat it as <code>unknown</code>, never as healthy.</p>
+<h2 id="read-the-terminal-dashboard"><a class="header" href="#read-the-terminal-dashboard">Read the terminal dashboard</a></h2>
+<p>The foreground dashboard uses the recorder’s health evidence for its summary, stream states
+and warnings. Select a main or sub stream to see its source identity, media type, report age
+and available counters. Received bitrate uses decimal kbit/s. Ingest FPS comes from received
+video frames. Process CPU and resident memory describe the KeepPeek process.</p>
+<p>A zero is a measured value. A dash marks evidence that is unavailable or does not apply to the
+selected stream. The report age shows how recently the recorder sampled the stream. The header
+shows the age of the latest successful health collection. A stale bitrate retains its last
+measured value and carries a stale label. Use the selected row’s recording progress age and
+health reason when investigating a stalled recording.</p>
 <h2 id="evidence-dimensions"><a class="header" href="#evidence-dimensions">Evidence dimensions</a></h2>
 <p>Health keeps these dimensions separate:</p>
 <div class="table-wrapper">

@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3979094d.js";
+            window.path_to_searchindex_js = "searchindex-933d6fda.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-6871163b.js"></script>
@@ -200,6 +200,16 @@ load fleet health, check <a href="./authentication.html">access permissions</a> 
 diagnostic panel as a camera failure.</p>
 <p>The current health contract version is <code>1</code>. A client that cannot understand a state or reason must
 treat it as <code>unknown</code>, never as healthy.</p>
+<h2 id="read-the-terminal-dashboard"><a class="header" href="#read-the-terminal-dashboard">Read the terminal dashboard</a></h2>
+<p>The foreground dashboard uses the recorder’s health evidence for its summary, stream states
+and warnings. Select a main or sub stream to see its source identity, media type, report age
+and available counters. Received bitrate uses decimal kbit/s. Ingest FPS comes from received
+video frames. Process CPU and resident memory describe the KeepPeek process.</p>
+<p>A zero is a measured value. A dash marks evidence that is unavailable or does not apply to the
+selected stream. The report age shows how recently the recorder sampled the stream. The header
+shows the age of the latest successful health collection. A stale bitrate retains its last
+measured value and carries a stale label. Use the selected row’s recording progress age and
+health reason when investigating a stalled recording.</p>
 <h2 id="evidence-dimensions"><a class="header" href="#evidence-dimensions">Evidence dimensions</a></h2>
 <p>Health keeps these dimensions separate:</p>
 <div class="table-wrapper">
