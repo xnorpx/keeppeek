@@ -23,6 +23,162 @@ fn volume_location_distinguishes_a_lost_acknowledgement_from_an_unavailable_cata
 }
 
 #[test]
+fn read_only_location_requests_run_without_write_transactions() {
+    pollster::block_on(async {
+        let path = test_dir("volume-readonly-no-write-txn").join("catalog.db");
+        let database = turso::Builder::new_local(path.to_str().unwrap())
+            .experimental_generated_columns(true)
+            .build()
+            .await
+            .unwrap();
+        let reader = database.connect().unwrap();
+        super::super::initialize_schema(&reader).await.unwrap();
+        reader.busy_timeout(Duration::from_millis(50)).unwrap();
+
+        let writer = database.connect().unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE").await.unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        assert!(matches!(
+            execute(&reader, Request::Revision, deadline).await.unwrap(),
+            Reply::Revision(_)
+        ));
+        assert!(matches!(
+            execute(&reader, Request::Usage, deadline).await.unwrap(),
+            Reply::Usage(_)
+        ));
+        assert!(matches!(
+            execute(
+                &reader,
+                Request::PendingMoves(moves::Page {
+                    after: None,
+                    limit: 16,
+                    include_terminal: false,
+                }),
+                deadline,
+            )
+            .await
+            .unwrap(),
+            Reply::PendingMoves(_)
+        ));
+        assert!(matches!(
+            execute(
+                &reader,
+                Request::Lookup(Object {
+                    kind: Kind::Recording,
+                    id: "missing".into(),
+                }),
+                deadline,
+            )
+            .await
+            .unwrap(),
+            Reply::Location(None)
+        ));
+        assert!(matches!(
+            execute(
+                &reader,
+                Request::RecordingRetention(recordings::Action::Load("missing".into())),
+                deadline,
+            )
+            .await
+            .unwrap(),
+            Reply::RecordingRetirement(None)
+        ));
+        assert!(reader.is_autocommit().unwrap());
+        assert!(
+            execute(
+                &reader,
+                Request::Bind(binding(path.parent().unwrap(), "primary", "disk")),
+                deadline
+            )
+            .await
+            .is_err()
+        );
+        writer.execute_batch("ROLLBACK").await.unwrap();
+    });
+}
+
+#[test]
+fn read_only_retry_enforces_attempt_deadline_and_error_boundaries() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let run_case = |outcomes: &[Option<anyhow::Result<Reply>>], deadline: Option<Instant>| {
+        let (write_tx, write_rx) = mpsc::sync_channel(1);
+        let (search_tx, _search_rx) = mpsc::sync_channel(1);
+        let handle = RecordingCatalogHandle::test_handle(write_tx, search_tx);
+        let attempts = AtomicUsize::new(0);
+        let attempts_ref = &attempts;
+        let result = std::thread::scope(|scope| {
+            scope.spawn(move || {
+                while let Ok(Command::VolumeLocation { reply, .. }) = write_rx.recv() {
+                    let index = attempts_ref.fetch_add(1, Ordering::AcqRel);
+                    match outcomes.get(index) {
+                        Some(Some(Ok(value))) => {
+                            let _ = reply.send(Ok(value.clone()));
+                        }
+                        Some(Some(Err(error))) => {
+                            let _ = reply.send(Err(anyhow::anyhow!("{error}")));
+                        }
+                        _ => drop(reply),
+                    }
+                }
+            });
+            let outcome = handle.volume_location_read_only_retried(Request::Revision, deadline);
+            drop(handle);
+            outcome
+        });
+        (result, attempts.load(Ordering::Acquire))
+    };
+
+    // Two transient UnconfirmedOutcomes followed by Ok succeed on attempt 3.
+    let (result, attempts) = run_case(&[None, None, Some(Ok(Reply::Revision(7)))], None);
+    assert_eq!(result.unwrap(), Reply::Revision(7));
+    assert_eq!(attempts, 3);
+
+    // Three UnconfirmedOutcomes exhaust retries and return UnconfirmedOutcome.
+    let (result, attempts) = run_case(&[None, None, None], None);
+    assert!(result.unwrap_err().is::<UnconfirmedOutcome>());
+    assert_eq!(attempts, 3);
+
+    // An expired deadline stops after the first UnconfirmedOutcome without retrying.
+    let expired = Instant::now()
+        .checked_sub(Duration::from_millis(1))
+        .unwrap_or_else(Instant::now);
+    let (result, attempts) = run_case(&[None, Some(Ok(Reply::Revision(9)))], Some(expired));
+    assert!(result.unwrap_err().is::<UnconfirmedOutcome>());
+    assert_eq!(attempts, 1);
+
+    // Non-UnconfirmedOutcome errors fail immediately without retrying.
+    let (result, attempts) = run_case(
+        &[
+            Some(Err(anyhow::anyhow!("catalog read error"))),
+            Some(Ok(Reply::Revision(9))),
+        ],
+        None,
+    );
+    let error = result.unwrap_err();
+    assert!(!error.is::<UnconfirmedOutcome>());
+    assert!(error.to_string().contains("catalog read error"));
+    assert_eq!(attempts, 1);
+}
+
+#[test]
+#[should_panic(expected = "read-only location request")]
+fn read_only_retry_rejects_mutating_request() {
+    let (write_tx, _write_rx) = mpsc::sync_channel(1);
+    let (search_tx, _search_rx) = mpsc::sync_channel(1);
+    let handle = RecordingCatalogHandle::test_handle(write_tx, search_tx);
+    let _ = handle.volume_location_read_only_retried(
+        Request::SetDraining {
+            volume: "primary".into(),
+            generation: 1,
+            draining: true,
+        },
+        None,
+    );
+}
+
+#[test]
 fn draining_binding_survives_restart_and_allows_only_existing_growth() {
     let root = test_dir("volume-draining-reopen");
     let path = root.join("catalog.db");

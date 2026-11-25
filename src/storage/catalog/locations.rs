@@ -284,6 +284,69 @@ pub enum Request {
     ImageRetirementAcknowledged(String),
 }
 
+impl Request {
+    const fn is_read_only(&self) -> bool {
+        match self {
+            Self::CheckBinding(_)
+            | Self::EnsureRemovable(_)
+            | Self::Revision
+            | Self::Move(_)
+            | Self::FindMove(_)
+            | Self::Moves(_)
+            | Self::PendingMoves(_)
+            | Self::Archive(_)
+            | Self::Usage
+            | Self::LegacyRecordingBytes
+            | Self::Lookup(_)
+            | Self::Objects(_)
+            | Self::ObjectSource(_)
+            | Self::RecordingRetention(recordings::Action::Load(_))
+            | Self::RecordingRecovery(recording_recovery::Action::Load(_))
+            | Self::Image { .. }
+            | Self::PendingImage(_)
+            | Self::ExportCleanup(
+                export_cleanup::Action::Owned(_) | export_cleanup::Action::Load(_),
+            ) => true,
+            Self::Bind(_)
+            | Self::SetDraining { .. }
+            | Self::Reserve(_)
+            | Self::ReserveArchive(_, _)
+            | Self::Grow(_)
+            | Self::Materialize(_)
+            | Self::BeginMove(_)
+            | Self::CompleteArchive { .. }
+            | Self::AdvanceMove(_)
+            | Self::Publish(_)
+            | Self::Finalize(_)
+            | Self::RecordingRetention(
+                recordings::Action::Begin { .. }
+                | recordings::Action::Expire { .. }
+                | recordings::Action::Complete(_)
+                | recordings::Action::Acknowledge(_),
+            )
+            | Self::RecordingRecovery(
+                recording_recovery::Action::Begin(_, _)
+                | recording_recovery::Action::ReleaseUnopened(_)
+                | recording_recovery::Action::Complete(_)
+                | recording_recovery::Action::Acknowledge(_),
+            )
+            | Self::CommitImages(_)
+            | Self::ImageRetirement(_)
+            | Self::ImageRetired(_)
+            | Self::ImageAbandoned(_)
+            | Self::ImagePressure(_)
+            | Self::EmptyImageAbandoned(_)
+            | Self::RetireExport(_)
+            | Self::ExportCleanup(
+                export_cleanup::Action::Verify(_, _)
+                | export_cleanup::Action::Complete(_)
+                | export_cleanup::Action::Acknowledge(_),
+            )
+            | Self::ImageRetirementAcknowledged(_) => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
     Bound,
@@ -329,6 +392,40 @@ impl RecordingCatalogHandle {
             .map_err(|_| UnconfirmedOutcome)?
     }
 
+    /// Retries a strictly read-only location query up to two times on unconfirmed timeouts.
+    ///
+    /// # Panics
+    /// Panics if `request` is not read-only.
+    ///
+    /// # Errors
+    /// Returns any non-timeout catalog error immediately, or [`UnconfirmedOutcome`] once retries
+    /// or `deadline` are exhausted.
+    pub(crate) fn volume_location_read_only_retried(
+        &self,
+        request: Request,
+        deadline: Option<Instant>,
+    ) -> anyhow::Result<Reply> {
+        assert!(
+            request.is_read_only(),
+            "read-only retry requires a read-only location request"
+        );
+        // ponytail: Retry read-only catalog queries up to two times on transient commit delays.
+        let mut retries_remaining = 2;
+        loop {
+            match self.volume_location(request.clone()) {
+                Ok(reply) => return Ok(reply),
+                Err(error)
+                    if retries_remaining > 0
+                        && error.is::<UnconfirmedOutcome>()
+                        && deadline.is_none_or(|limit| Instant::now() < limit) =>
+                {
+                    retries_remaining -= 1;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     /// Resamples up to three times if a competing write invalidates the observation before admission.
     pub(crate) fn with_fresh_capacity<T>(
         &self,
@@ -338,7 +435,12 @@ impl RecordingCatalogHandle {
         let deadline = Instant::now() + OBSERVATION_LIFETIME;
         let mut retries = 3;
         loop {
-            let capacity = root.capacity(self.volume_ledger_revision()?)?;
+            let Reply::Revision(revision) =
+                self.volume_location_read_only_retried(Request::Revision, Some(deadline))?
+            else {
+                unreachable!("revision requests return revisions");
+            };
+            let capacity = root.capacity(revision)?;
             match submit(capacity) {
                 Err(error)
                     if error.is::<StaleCapacity>() && retries > 0 && Instant::now() < deadline =>
@@ -586,8 +688,10 @@ pub(super) async fn execute(
 ) -> anyhow::Result<Reply> {
     check_deadline(deadline)?;
     validate(&request)?;
-    if matches!(request, Request::Revision) {
-        return Ok(Reply::Revision(revision(connection).await?));
+    if request.is_read_only() {
+        let reply = dispatch(connection, request).await?;
+        check_deadline(deadline)?;
+        return Ok(reply);
     }
     connection.execute_batch("BEGIN IMMEDIATE").await?;
     let result = async {
@@ -692,7 +796,7 @@ async fn dispatch(connection: &turso::Connection, request: Request) -> anyhow::R
         Request::Image { event, attachment } => {
             Reply::Location(images::lookup(connection, &event, &attachment).await?)
         }
-        Request::Revision => unreachable!("read returned before transaction"),
+        Request::Revision => Reply::Revision(revision(connection).await?),
     })
 }
 

@@ -611,10 +611,18 @@ impl Inner {
         &self,
         candidates: &[super::VolumeId],
     ) -> anyhow::Result<Vec<VolumeObservation>> {
-        let Reply::Usage(usage) = self.catalog.volume_location(Request::Usage)? else {
+        let Reply::Usage(usage) = self
+            .catalog
+            .volume_location_read_only_retried(Request::Usage, None)?
+        else {
             anyhow::bail!("invalid volume usage reply");
         };
-        let revision = self.catalog.volume_ledger_revision()?;
+        let Reply::Revision(revision) = self
+            .catalog
+            .volume_location_read_only_retried(Request::Revision, None)?
+        else {
+            anyhow::bail!("invalid volume ledger revision reply");
+        };
         self.configuration
             .volumes
             .iter()
