@@ -169,7 +169,8 @@ export async function waitForMetricsAt(origin: string): Promise<void> {
 
 export async function createSession(
 	offer: RTCSessionDescriptionInit,
-	accessKey?: HttpCredential
+	accessKey?: HttpCredential,
+	previousSession?: string
 ): Promise<CreateResponse> {
 	const request: CreateRequest = { offer: { type: offer.type as string, sdp: offer.sdp! } };
 	const requestString = JSON.stringify(request);
@@ -195,7 +196,8 @@ export async function createSession(
 			accessKey,
 			{
 				'Content-Type': 'application/json',
-				'Content-Encoding': 'gzip'
+				'Content-Encoding': 'gzip',
+				...(previousSession ? { 'X-KeepPeek-Previous-Session': previousSession } : {})
 			},
 			true
 		),
@@ -206,7 +208,12 @@ export async function createSession(
 		throw new ApiRequestError(res.status, res.statusText);
 	}
 
-	return res.json();
+	const session: CreateResponse = await res.json();
+	if (previousSession && res.headers.get('X-KeepPeek-Previous-Session') !== previousSession) {
+		await deleteSession(session.session_id, accessKey).catch(() => undefined);
+		throw new ApiRequestError(401, 'The server did not confirm the previous session.');
+	}
+	return session;
 }
 
 export function deleteSession(

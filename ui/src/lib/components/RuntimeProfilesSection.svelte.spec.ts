@@ -330,6 +330,32 @@ describe('RuntimeProfilesSection', () => {
 		await expect.element(page.getByLabelText('Display name')).toHaveValue('Away');
 		expect(runtimeProfiles.saveRegistry).not.toHaveBeenCalled();
 	});
+	it('restores an interrupted registry while the dirty draft keeps its original compare-and-set revision', async () => {
+		const { client, runtimeProfiles, registry } = recoveryClient('away');
+		let fail: (cause: unknown) => void = () => {};
+		let publish: (value: RuntimeProfileRegistry) => void = () => {};
+		runtimeProfiles.watchRegistry.mockImplementation(
+			async (receive: typeof publish, onError: typeof fail) => {
+				fail = onError;
+				publish = receive;
+				return { close: vi.fn() };
+			}
+		);
+		runtimeProfiles.saveRegistry.mockRejectedValue(new Error('The revision changed.'));
+		await render(RuntimeProfilesSectionFixture, { props: { client, cameras: [] } });
+		const name = page.getByLabelText('Display name');
+		await name.fill('My unfinished draft');
+		fail(new Error('Disconnected'));
+		await expect.element(name).toBeDisabled();
+		publish({ ...registry, revision: '4' });
+		await expect.element(name).toBeEnabled();
+		await expect.element(name).toHaveValue('My unfinished draft');
+		await page.getByRole('button', { name: 'Save profile changes' }).click();
+		expect(runtimeProfiles.saveRegistry).toHaveBeenCalledWith(
+			expect.objectContaining({ revision: '3' })
+		);
+		await expect.element(page.getByRole('alert')).toHaveTextContent('The revision changed.');
+	});
 	it('installs the newest deferred watch after a successful pending save', async () => {
 		const { client, runtimeProfiles, registry } = recoveryClient('away');
 		const pending = Promise.withResolvers<RuntimeProfileRegistry>();
@@ -551,7 +577,11 @@ describe('RuntimeProfilesSection', () => {
 			const retry = page.getByRole('button', { name: 'Reapply active policy' });
 			await expect.element(retry).toBeEnabled();
 			await retry.click();
-			expect(runtimeProfiles.activateWithHeader).toHaveBeenCalledExactlyOnceWith(id, '3');
+			expect(runtimeProfiles.activateWithHeader).toHaveBeenCalledExactlyOnceWith(
+				id,
+				'3',
+				expect.objectContaining({ revision: '3' })
+			);
 			await expect
 				.element(page.getByText('Active policy reapplied.', { exact: true }))
 				.toBeVisible();
@@ -612,20 +642,31 @@ describe('RuntimeProfilesSection', () => {
 	});
 
 	it('keeps recovery available after a failed request refreshes the accepted revision', async () => {
-		const { client, runtimeProfiles, status } = recoveryClient('away');
+		const { client, runtimeProfiles, status, registry } = recoveryClient('away');
 		runtimeProfiles.activateWithHeader.mockRejectedValueOnce(new Error('Activation conflicted.'));
 		await render(RuntimeProfilesSectionFixture, { props: { client, cameras: [] } });
 		const retry = page.getByRole('button', { name: 'Reapply active policy' });
 		await expect.element(retry).toBeEnabled();
 		runtimeProfiles.getActive.mockResolvedValue({ profileId: 'away', revision: '5' });
 		runtimeProfiles.getStatus.mockResolvedValue({ ...status, revision: '5' });
+		runtimeProfiles.getRegistry.mockResolvedValue({ ...registry, revision: '5' });
 		await retry.click();
 		await expect.element(page.getByRole('alert')).toHaveTextContent('Activation conflicted.');
 		await expect.element(retry).toBeEnabled();
 		await retry.click();
 		expect(runtimeProfiles.activateWithHeader).toHaveBeenCalledTimes(2);
-		expect(runtimeProfiles.activateWithHeader).toHaveBeenNthCalledWith(1, 'away', '3');
-		expect(runtimeProfiles.activateWithHeader).toHaveBeenNthCalledWith(2, 'away', '5');
+		expect(runtimeProfiles.activateWithHeader).toHaveBeenNthCalledWith(
+			1,
+			'away',
+			'3',
+			expect.objectContaining({ revision: '3' })
+		);
+		expect(runtimeProfiles.activateWithHeader).toHaveBeenNthCalledWith(
+			2,
+			'away',
+			'5',
+			expect.objectContaining({ revision: '5' })
+		);
 	});
 
 	it('does not reapply with unsaved edits', async () => {

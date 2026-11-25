@@ -4,10 +4,20 @@ import { render } from 'vitest-browser-svelte';
 import { create } from '@bufbuild/protobuf';
 import { RecordedAudioTimingSchema, type RecordedAudioTiming } from '$lib/proto/webrtc_pb';
 import '../../app.css';
+import {
+	loadPlaybackPreferences,
+	savePlaybackPreferences,
+	withMediaPreferences
+} from '$lib/playback-preferences';
 import Keep from './+page.svelte';
+import { TimelineRepository } from '$lib/timeline-repository.svelte';
 
 const context = vi.hoisted(() => ({ control: vi.fn() }));
 vi.mock('$lib/control-context', () => ({ useControlClient: context.control }));
+vi.mock('$lib/capability-context', async () => {
+	const { CapabilityState } = await import('$lib/capability-state.svelte');
+	return { useCapabilityState: () => new CapabilityState([]) };
+});
 vi.mock('$app/navigation', () => ({ afterNavigate: vi.fn(), goto: vi.fn() }));
 vi.mock('$app/paths', () => ({ resolve: (value: string) => value }));
 vi.mock('$app/state', () => ({
@@ -90,6 +100,11 @@ function controller(
 	segments: (typeof recording)[]
 ) {
 	const open = vi.fn().mockResolvedValueOnce(first.playback).mockResolvedValue(next.playback);
+	type TimelineAccess = {
+		status: 'checking' | 'authenticated';
+		session: { principalId: string } | null;
+	};
+	let acceptAccess: (access: TimelineAccess) => void = () => {};
 	context.control.mockReturnValue({
 		onCapabilities: (listener: (values: string[]) => void) => {
 			listener([
@@ -98,8 +113,9 @@ function controller(
 			]);
 			return () => {};
 		},
-		onAccessState: (listener: (value: { session: null }) => void) => {
-			listener({ session: null });
+		onAccessState: (listener: (value: TimelineAccess) => void) => {
+			acceptAccess = listener;
+			listener({ status: 'authenticated', session: null });
 			return () => {};
 		},
 		getCameras: async () => [
@@ -111,18 +127,18 @@ function controller(
 		queryStoredTimeline: async () => ({ ranges: [], events: [] }),
 		openStoredMedia: open
 	});
-	return open;
+	return { open, emitAccess: (value: TimelineAccess) => acceptAccess(value) };
 }
 
 function keepFixture(audioSupported = false, segments = [recording]) {
 	const original = window.location.href;
 	const first = cursor('first');
 	const next = cursor('replacement');
-	const open = controller(first, next, audioSupported, segments);
+	const controls = controller(first, next, audioSupported, segments);
 	return {
 		first,
 		next,
-		open,
+		...controls,
 		async mount() {
 			await page.viewport(1280, 800);
 			window.history.replaceState(
@@ -131,7 +147,7 @@ function keepFixture(audioSupported = false, segments = [recording]) {
 				`/keep?camera=front&stream=sub&date=2026-10-15&at=${start}`
 			);
 			await render(Keep);
-			await vi.waitFor(() => expect(open).toHaveBeenCalledOnce());
+			await vi.waitFor(() => expect(controls.open).toHaveBeenCalledOnce());
 		},
 		dispose() {
 			window.history.replaceState(null, '', original);
@@ -140,6 +156,193 @@ function keepFixture(audioSupported = false, segments = [recording]) {
 		}
 	};
 }
+
+it('revalidates the mounted timeline only after retained access is confirmed again', async () => {
+	const fixture = keepFixture();
+	const revalidate = vi.spyOn(TimelineRepository.prototype, 'revalidate');
+	try {
+		await fixture.mount();
+		revalidate.mockClear();
+		const session = { principalId: 'viewer' };
+		fixture.emitAccess({ status: 'checking', session });
+		expect(revalidate).not.toHaveBeenCalled();
+		fixture.emitAccess({ status: 'authenticated', session });
+		await vi.waitFor(() => expect(revalidate).toHaveBeenCalled());
+		revalidate.mockClear();
+		fixture.emitAccess({ status: 'authenticated', session });
+		expect(revalidate).not.toHaveBeenCalled();
+	} finally {
+		revalidate.mockRestore();
+		fixture.dispose();
+	}
+});
+
+function setVideoPlayhead(video: HTMLMediaElement, currentTimeSeconds: number) {
+	Object.defineProperty(video, 'readyState', {
+		configurable: true,
+		value: HTMLMediaElement.HAVE_METADATA,
+		writable: true
+	});
+	Object.defineProperty(video, 'currentSrc', {
+		configurable: true,
+		value: video.src,
+		writable: true
+	});
+	video.dispatchEvent(new Event('loadedmetadata'));
+	Object.defineProperty(video, 'currentTime', {
+		configurable: true,
+		value: currentTimeSeconds,
+		writable: true
+	});
+	video.dispatchEvent(new Event('timeupdate'));
+}
+
+it.each([true, false])(
+	'restores the cursor at its playhead with play intent %s and its audio preview',
+	async (playing) => {
+		const previous = loadPlaybackPreferences(window.localStorage);
+		savePlaybackPreferences(window.localStorage, withMediaPreferences(previous, { playing }));
+		const fixture = keepFixture(true);
+		try {
+			await fixture.mount();
+			await vi.waitFor(() => expect(document.querySelector('video')).not.toBeNull());
+			fixture.first.emitTiming(
+				create(RecordedAudioTimingSchema, { appliedOffsetMs: 137, preview: true })
+			);
+			const video = document.querySelector('video')!;
+			setVideoPlayhead(video, 6.25);
+			expect(fixture.open).toHaveBeenCalledWith(expect.objectContaining({ playing }));
+			const session = { principalId: 'viewer' };
+			fixture.emitAccess({ status: 'checking', session });
+			await vi.waitFor(() => expect(fixture.first.playback.close).toHaveBeenCalledOnce());
+			expect(fixture.open).toHaveBeenCalledTimes(1);
+			fixture.emitAccess({ status: 'authenticated', session });
+			await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledTimes(2));
+			expect(fixture.open).toHaveBeenLastCalledWith(
+				expect.objectContaining({
+					sourceId: 'front',
+					streamId: 'sub',
+					timestampMs: start + 6250,
+					playing,
+					recordedAudioPreview: 137
+				})
+			);
+			fixture.emitAccess({ status: 'authenticated', session });
+			expect(fixture.open).toHaveBeenCalledTimes(2);
+		} finally {
+			savePlaybackPreferences(window.localStorage, previous);
+			fixture.dispose();
+		}
+	}
+);
+
+it('holds reverse shuttle seeks until privacy recovery installs the new cursor', async () => {
+	const fixture = keepFixture(true);
+	const intervals = vi.spyOn(window, 'setInterval');
+	try {
+		await fixture.mount();
+		fixture.first.emitTiming(
+			create(RecordedAudioTimingSchema, { appliedOffsetMs: 137, preview: true })
+		);
+		const video = document.querySelector('video')!;
+		setVideoPlayhead(video, 6.25);
+		video.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true }));
+		await vi.waitFor(() => expect(intervals.mock.calls.some(([, ms]) => ms === 250)).toBe(true));
+		const reverse = intervals.mock.calls.find(([, ms]) => ms === 250)?.[0];
+		if (typeof reverse !== 'function') throw new Error('Missing reverse shuttle timer.');
+		const player = document.querySelector('[data-keep-player]')!;
+		const interruptedMs = Number(player.getAttribute('data-recording-playhead-ms'));
+		const session = { principalId: 'viewer' };
+		fixture.emitAccess({ status: 'checking', session });
+		await vi.waitFor(() => expect(fixture.first.playback.close).toHaveBeenCalledOnce());
+		reverse();
+		await Promise.resolve();
+		expect(fixture.open).toHaveBeenCalledTimes(1);
+		fixture.emitAccess({ status: 'authenticated', session });
+		await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledTimes(2));
+		expect(fixture.open).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				timestampMs: interruptedMs,
+				recordedAudioPreview: 137
+			})
+		);
+	} finally {
+		intervals.mockRestore();
+		fixture.dispose();
+	}
+});
+
+it('retains an interrupted playhead while switching to Export during privacy recovery', async () => {
+	const fixture = keepFixture();
+	const session = { principalId: 'viewer' };
+	try {
+		await fixture.mount();
+		const video = document.querySelector('video')!;
+		setVideoPlayhead(video, 4.5);
+		fixture.emitAccess({ status: 'checking', session });
+		await vi.waitFor(() => expect(fixture.first.playback.close).toHaveBeenCalledOnce());
+		await page.getByRole('button', { name: 'Export', exact: true }).click();
+		fixture.emitAccess({ status: 'authenticated', session });
+		await expect.element(page.getByRole('button', { name: 'Timeline', exact: true })).toBeVisible();
+		expect(fixture.open).toHaveBeenCalledTimes(1);
+		await page.getByRole('button', { name: 'Timeline', exact: true }).click();
+		await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledTimes(2));
+		expect(fixture.open).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				sourceId: 'front',
+				streamId: 'sub',
+				timestampMs: start + 4500
+			})
+		);
+	} finally {
+		fixture.dispose();
+	}
+});
+
+it('recovers a pending scrub cursor at its target without carrying over a previous audio preview', async () => {
+	const fixture = keepFixture(true);
+	const pending = Promise.withResolvers<typeof fixture.next.playback>();
+	const stale = cursor('obsolete-scrub');
+	const oldPreferences = loadPlaybackPreferences(window.localStorage);
+	savePlaybackPreferences(
+		window.localStorage,
+		withMediaPreferences(oldPreferences, { playing: false })
+	);
+	try {
+		await fixture.mount();
+		fixture.first.emitTiming(
+			create(RecordedAudioTimingSchema, { appliedOffsetMs: 125, preview: true })
+		);
+		await page.getByRole('button', { name: 'Close playback', exact: true }).click();
+		fixture.open.mockReturnValueOnce(pending.promise);
+		beginDrag();
+		await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledTimes(2));
+		const pendingOpen = fixture.open.mock.calls[1]![0];
+		expect(pendingOpen.mode).toBe('scrub');
+		const session = { principalId: 'viewer' };
+		fixture.emitAccess({ status: 'checking', session });
+		expect(pendingOpen.signal.aborted).toBe(true);
+		fixture.emitAccess({ status: 'authenticated', session });
+		await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledTimes(3));
+		expect(fixture.open).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				sourceId: 'front',
+				streamId: 'sub',
+				timestampMs: pendingOpen.timestampMs,
+				playing: false,
+				recordedAudioPreview: undefined
+			})
+		);
+		pending.resolve(stale.playback);
+		await vi.waitFor(() => expect(stale.playback.close).toHaveBeenCalledOnce());
+		expect(fixture.open).toHaveBeenCalledTimes(3);
+	} finally {
+		pending.resolve(stale.playback);
+		savePlaybackPreferences(window.localStorage, oldPreferences);
+		stale.dispose();
+		fixture.dispose();
+	}
+});
 
 function beginDrag() {
 	const playhead = page.getByRole('button', { name: /Playback position at/ }).element();

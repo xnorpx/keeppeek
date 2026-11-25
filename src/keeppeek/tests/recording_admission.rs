@@ -19,7 +19,7 @@ fn runtime_profile_recording_rejection_is_degraded_and_keeps_live_media() {
     .unwrap();
     let applications = recorder.apply_runtime_profiles(profiles).unwrap();
     let live = recorder.camera_workers.contains_key(&camera.config.ip);
-    recorder.stop_camera(camera.config.ip);
+    recorder.stop_camera(camera.config.ip).unwrap();
     assert_eq!(writer.join().unwrap(), 2);
     assert!(live, "recording rejection must not disable live media");
     assert_eq!(
@@ -61,7 +61,7 @@ fn runtime_profile_recording_disconnection_keeps_startup_live_and_degraded() {
         [&camera.config.ip.to_string()]
         .clone();
     let live = recorder.camera_workers.contains_key(&camera.config.ip);
-    recorder.stop_camera(camera.config.ip);
+    recorder.stop_camera(camera.config.ip).unwrap();
     assert!(live);
     assert_eq!(
         application.state,
@@ -95,7 +95,7 @@ fn runtime_profile_recording_rejection_still_disables_another_camera() {
     .unwrap();
     let applications = recorder.apply_runtime_profiles(profiles).unwrap();
     let other_stopped = !recorder.camera_workers.contains_key(&other.config.ip);
-    recorder.stop_camera(camera.config.ip);
+    recorder.stop_camera(camera.config.ip).unwrap();
     assert_eq!(writer.join().unwrap(), 4);
     assert!(other_stopped);
     assert_eq!(applications.len(), 2);
@@ -155,7 +155,7 @@ fn runtime_profile_recording_configures_once_and_recovers_after_a_full_queue() {
     let writer = acknowledge();
     let recovered = recorder.apply_runtime_profiles(profiles).unwrap();
     assert_eq!(writer.join().unwrap(), 1);
-    recorder.stop_camera(camera.config.ip);
+    recorder.stop_camera(camera.config.ip).unwrap();
     assert_eq!(
         initial[0].state,
         crate::profiles::RuntimeApplicationState::Applied

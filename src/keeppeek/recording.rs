@@ -162,13 +162,14 @@ impl KeepPeekLoop {
         result: Result<RuntimeApplicationState, String>,
     ) -> crate::profiles::CameraRuntimeApplication {
         let result = result.and_then(|state| {
-            if policy.notifications_enabled {
-                Ok(state)
-            } else {
-                self.runtime_profile_notification_error
-                    .clone()
-                    .map_or(Ok(state), Err)
+            if let Some(reason) = &self.runtime_profile_notification_error
+                && self
+                    .runtime_profile_notification_sources
+                    .contains(&ip.to_string())
+            {
+                return Err(reason.clone());
             }
+            Ok(state)
         });
         crate::profiles::CameraRuntimeApplication {
             camera_id: self.runtime_profile_camera_ids.camera_id(ip),
@@ -188,11 +189,17 @@ impl KeepPeekLoop {
         camera: &Camera,
         result: Result<RuntimeApplicationState, String>,
     ) {
-        let application = self.camera_runtime_application(
+        let mut application = self.camera_runtime_application(
             camera.config.ip,
             self.effective_camera_policy(&camera.config),
             result,
         );
+        let confirm_privacy = self.deferred_privacy_confirmation == Some(camera.config.ip)
+            && application.state == RuntimeApplicationState::Applied;
+        if confirm_privacy {
+            application.state = RuntimeApplicationState::Degraded;
+            application.reason = Some(crate::profiles::PENDING_PRIVACY_CONFIRMATION.into());
+        }
         let mut status = self
             .runtime_profile_status
             .write()
@@ -206,6 +213,9 @@ impl KeepPeekLoop {
             .insert(application.camera_id.clone(), application);
         drop(status);
         self.publish_runtime_profile_status();
+        if confirm_privacy && let Some(publish) = &self.recovered_profile_publisher {
+            publish(self.runtime_profiles.revision);
+        }
     }
 
     pub(super) fn finish_camera_recordings(&self, pending: Vec<PendingCameraRecording<'_>>) {

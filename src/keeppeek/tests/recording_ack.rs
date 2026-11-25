@@ -20,7 +20,7 @@ fn runtime_profile_stalled_recording_writer_does_not_report_applied() {
     let application = recorder.runtime_profile_status.read().unwrap().cameras
         [&camera.config.ip.to_string()]
         .clone();
-    recorder.stop_camera(camera.config.ip);
+    recorder.stop_camera(camera.config.ip).unwrap();
     assert!(live, "writer timeout must preserve live viewing");
     assert_eq!(drain(), 1, "the configuration entered the queue");
     assert_eq!(
@@ -55,7 +55,7 @@ fn runtime_profile_recording_stays_pending_until_writer_acknowledges() {
         [&camera.config.ip.to_string()]
         .state
         .clone();
-    recorder.stop_camera(camera.config.ip);
+    recorder.stop_camera(camera.config.ip).unwrap();
     assert_eq!(
         state_before,
         crate::profiles::RuntimeApplicationState::Pending
@@ -81,7 +81,7 @@ fn runtime_profile_writer_rejection_preserves_live_and_reports_degraded() {
     let application = recorder.runtime_profile_status.read().unwrap().cameras
         [&camera.config.ip.to_string()]
         .clone();
-    recorder.stop_camera(camera.config.ip);
+    recorder.stop_camera(camera.config.ip).unwrap();
     assert_eq!(writer.join().unwrap(), 1);
     assert!(live);
     assert_eq!(
@@ -118,7 +118,7 @@ fn runtime_profile_late_writer_ack_preserves_newer_pending_revision() {
     assert_eq!(respond(vec![Some(Ok(()))]), 1);
     recorder.finish_camera_recordings(pending);
     let status = recorder.runtime_profile_status.read().unwrap().clone();
-    recorder.stop_camera(camera.config.ip);
+    recorder.stop_camera(camera.config.ip).unwrap();
     assert_eq!(status.revision, 1);
     assert_eq!(
         status.cameras[&camera.config.ip.to_string()].state,

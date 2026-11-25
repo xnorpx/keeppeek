@@ -28,6 +28,87 @@ async function until(predicate: () => boolean, timeoutMs = 15_000): Promise<void
 	}
 }
 
+async function waitForConvergence(api: RuntimeProfilesControlClient, revision: string) {
+	const deadline = performance.now() + 15_000;
+	let status = await api.getStatus();
+	while (
+		performance.now() < deadline &&
+		(status === null ||
+			status.revision !== revision ||
+			Object.values(status.cameras).some((camera) => camera.state === 'pending'))
+	) {
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		status = await api.getStatus();
+	}
+	if (status === null)
+		throw new Error(
+			'The recorder did not publish a complete observation before the convergence deadline.'
+		);
+	const cameras = Object.values(status.cameras);
+	return {
+		revision: status.revision,
+		observed: performance.timeOrigin + performance.now(),
+		count: cameras.length,
+		pending: cameras
+			.filter((camera) => camera.state === 'pending')
+			.map((camera) => camera.camera_id),
+		degraded: cameras
+			.filter((camera) => camera.state === 'degraded')
+			.map((camera) => ({ id: camera.camera_id, reason: camera.reason }))
+	};
+}
+
+export async function measureProfileActivations(size: { cameras: number; profiles: number }) {
+	const writer = await createClient();
+	const api = writer.runtimeProfiles;
+	const now = () => performance.timeOrigin + performance.now();
+	const received = new Map<string, { id: string | null; time: number }>();
+	let watch: ProfileSubscription | undefined;
+	const close = async () => {
+		try {
+			await watch?.close();
+		} finally {
+			await writer.close();
+		}
+	};
+	try {
+		const [registry, bindings, initial] = await Promise.all([
+			api.getRegistry(),
+			api.getCameras(),
+			api.getActive()
+		]);
+		if (
+			Object.keys(bindings).length !== size.cameras ||
+			Object.keys(registry.profiles).length !== size.profiles ||
+			initial.profileId !== null
+		) {
+			throw new Error('Release fixture does not match its declared capacity and Base selection.');
+		}
+		let revision = initial.revision;
+		watch = await api.watchActive((active) => {
+			if (!active) return;
+			const { revision, profileId } = active;
+			if (!received.has(revision)) received.set(revision, { id: profileId, time: now() });
+		});
+		await until(() => received.has(revision));
+		return {
+			async activate(index: number) {
+				const id = 'qual-' + String(index).padStart(2, '0');
+				const start = now();
+				revision = await api.activate(id, revision, { ...registry, revision });
+				const ack = now();
+				await until(() => received.get(revision)?.id === id);
+				return { id, revision, start, ack, watch: received.get(revision)!.time };
+			},
+			convergence: (revision: string) => waitForConvergence(api, revision),
+			close
+		};
+	} catch (error) {
+		await close();
+		throw error;
+	}
+}
+
 export async function activateFromAnotherClient() {
 	const writer = await createClient();
 	const reader = await createClient();
@@ -69,7 +150,11 @@ export async function activateFromAnotherClient() {
 		watch = await reader.runtimeProfiles.watchActive((active) => {
 			if (active) observed.push(active);
 		});
-		const activatedRevision = await writer.runtimeProfiles.activate(profileId, saved.revision);
+		const activatedRevision = await writer.runtimeProfiles.activate(
+			profileId,
+			saved.revision,
+			saved
+		);
 		await until(() =>
 			observed.some(
 				(update) => update.profileId === profileId && update.revision === activatedRevision

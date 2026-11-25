@@ -9,10 +9,13 @@ use std::{
 
 const BOUNDED_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
 
+type WriteGuard = dyn Fn() -> io::Result<()> + Send + Sync;
+
 struct State {
     connection: Option<Connection>,
     original_timeout: Duration,
     bounded: bool,
+    guard: Option<Arc<WriteGuard>>,
     started: bool,
     timeout_armed: bool,
     aborted: bool,
@@ -52,6 +55,7 @@ impl ResponseAbortHandle {
                 connection: Some(connection),
                 original_timeout,
                 bounded: false,
+                guard: None,
                 started: false,
                 timeout_armed: false,
                 aborted: false,
@@ -75,6 +79,38 @@ impl ResponseAbortHandle {
         }
         state.bounded = true;
         Ok(())
+    }
+
+    /// Checks authorization at each bounded write and flush. A revoker must abort
+    /// this handle before publishing the changed authorization so an in-flight write is interrupted.
+    ///
+    /// # Errors
+    /// Returns an error if the writer already started or has already been guarded or closed.
+    pub fn guard_writes(
+        &self,
+        guard: impl Fn() -> io::Result<()> + Send + Sync + 'static,
+    ) -> io::Result<()> {
+        let mut state = self.state.lock().map_err(|_| poisoned())?;
+        if state.started || state.aborted || state.connection.is_none() || state.guard.is_some() {
+            return Err(io::Error::other(
+                "response can no longer install a write guard",
+            ));
+        }
+        state.bounded = true;
+        state.guard = Some(Arc::new(guard));
+        Ok(())
+    }
+
+    fn authorize_write(&self) -> io::Result<()> {
+        // A guard may synchronously abort this very response. Never call it under the state lock.
+        let guard = {
+            let state = self.state.lock().map_err(|_| poisoned())?;
+            if state.aborted || state.connection.is_none() {
+                return Err(io::ErrorKind::ConnectionAborted.into());
+            }
+            state.guard.clone()
+        };
+        guard.map_or(Ok(()), |authorize| authorize())
     }
 
     /// Shuts down the connection. Other requests sharing this connection also stop.
@@ -139,6 +175,7 @@ impl ResponseAbortHandle {
             }
         }
         state.connection = None;
+        state.guard = None;
         restore
     }
 
@@ -197,23 +234,27 @@ impl ResponseWriter {
 impl Write for ResponseWriter {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         self.prepare()?;
-        let result = self.writer.write(buffer);
+        let result = self
+            .handle
+            .authorize_write()
+            .and_then(|()| self.writer.write(buffer));
         self.abort_on_error(result)
     }
 
     fn flush(&mut self) -> io::Result<()> {
         self.prepare()?;
-        let result = self.writer.flush();
+        let result = self
+            .handle
+            .authorize_write()
+            .and_then(|()| self.writer.flush());
         self.abort_on_error(result)
     }
 }
 
 impl Drop for ResponseWriter {
     fn drop(&mut self) {
-        // Keep the turn barrier on cancellation; a queued drop must not release the next writer.
-        if self.writer.flush().is_err() {
-            let _ = self.handle.abort();
-        }
+        // Flush only when still authorized; SequentialWriter::drop preserves any queued turn barrier.
+        let _ = self.flush();
         // Restore before the inner SequentialWriter drops and signals its successor.
         if self.handle.finish().is_err() {
             log::debug!("response write-timeout restoration failed; connection closed");
@@ -308,6 +349,110 @@ mod tests {
     }
 
     #[test]
+    fn buffered_output_checks_permission_again_on_flush_and_drop() {
+        use std::io::Read as _;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        for explicit_flush in [false, true] {
+            let (mut peer, socket) = pair();
+            peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+            let handle = handle(&socket);
+            let allowed = Arc::new(AtomicBool::new(true));
+            let access = allowed.clone();
+            handle
+                .guard_writes(move || {
+                    if access.load(Ordering::Acquire) {
+                        Ok(())
+                    } else {
+                        Err(io::ErrorKind::PermissionDenied.into())
+                    }
+                })
+                .unwrap();
+            let mut writer = handle.wrap(Box::new(BufWriter::new(socket)));
+            writer.write_all(b"buffered").unwrap();
+            allowed.store(false, Ordering::Release);
+            if explicit_flush {
+                assert_eq!(
+                    writer.flush().unwrap_err().kind(),
+                    io::ErrorKind::PermissionDenied
+                );
+            }
+            drop(writer);
+            assert!(handle.is_finished().unwrap());
+            match peer.read(&mut [0; 16]) {
+                Ok(0) => {}
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted
+                    ) => {}
+                other => panic!("buffered bytes must not reach the peer: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn revocation_can_close_the_socket_while_an_admitted_write_is_waiting() {
+        use std::io::Read as _;
+
+        struct WaitingWriter {
+            socket: Connection,
+            started: mpsc::SyncSender<()>,
+            resume: mpsc::Receiver<()>,
+        }
+        impl Write for WaitingWriter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.started.send(()).unwrap();
+                self.resume.recv_timeout(Duration::from_secs(3)).unwrap();
+                self.socket.write(bytes)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                self.socket.flush()
+            }
+        }
+
+        let (mut peer, socket) = pair();
+        peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let handle = handle(&socket);
+        let revoked = Arc::new(Mutex::new(false));
+        let authority = revoked.clone();
+        handle
+            .guard_writes(move || {
+                if *authority.lock().unwrap() {
+                    return Err(io::ErrorKind::PermissionDenied.into());
+                }
+                Ok(())
+            })
+            .unwrap();
+        let (started, waiting) = mpsc::sync_channel(1);
+        let (release, resume) = mpsc::sync_channel(1);
+        let mut writer = handle.wrap(Box::new(WaitingWriter {
+            socket,
+            started,
+            resume,
+        }));
+        let thread = std::thread::spawn(move || writer.write_all(b"media"));
+        waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        {
+            let mut privacy = revoked
+                .try_lock()
+                .expect("socket waits must release the privacy gate");
+            assert!(handle.abort().unwrap());
+            *privacy = true;
+        }
+        release.send(()).unwrap();
+        assert!(thread.join().unwrap().is_err());
+        match peer.read(&mut [0; 16]) {
+            Ok(0) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted
+                ) => {}
+            other => panic!("revoked response wrote to the peer: {other:?}"),
+        }
+    }
+
+    #[test]
     fn restoration_failure_closes_the_connection_before_disarming() {
         use std::io::Read as _;
         let (mut peer, socket) = pair();
@@ -340,6 +485,94 @@ mod tests {
             terminated,
             "failed restoration must not leave a reusable connection"
         );
+    }
+
+    #[test]
+    fn failed_guarded_flush_skips_inner_flush_and_preserves_turn_order() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        #[derive(Clone, Default)]
+        struct Capture(Arc<Mutex<(Vec<u8>, usize)>>);
+        impl Write for Capture {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.0.lock().unwrap().0.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                self.0.lock().unwrap().1 += 1;
+                Ok(())
+            }
+        }
+
+        // Production wraps SequentialWriter<BufWriter<...>>: revoked buffered bytes must not flush on drop.
+        let capture = Capture::default();
+        let (_peer, socket) = pair();
+        let mut buffered_writers = SequentialWriterBuilder::new(BufWriter::new(capture.clone()));
+        let handle_buffered = handle(&socket);
+        let allowed = Arc::new(AtomicBool::new(true));
+        let access = allowed.clone();
+        handle_buffered
+            .guard_writes(move || {
+                if access.load(Ordering::Acquire) {
+                    Ok(())
+                } else {
+                    Err(io::ErrorKind::PermissionDenied.into())
+                }
+            })
+            .unwrap();
+        let mut buffered = handle_buffered.wrap(Box::new(buffered_writers.next().unwrap()));
+        buffered.write_all(b"secret").unwrap();
+        allowed.store(false, Ordering::Release);
+        assert_eq!(
+            buffered.flush().unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        drop(buffered);
+        assert_eq!(*capture.0.lock().unwrap(), (Vec::new(), 1));
+
+        // Queued aborted writers must wait for their turn before waking a successor.
+        let ordered = Capture::default();
+        let (_peer2, socket2) = pair();
+        let mut writers = SequentialWriterBuilder::new(BufWriter::new(ordered.clone()));
+        let first_handle = handle(&socket2);
+        let mut first = first_handle.wrap(Box::new(writers.next().unwrap()));
+        let second_handle = handle(&socket2);
+        second_handle.abort().unwrap();
+        let second = second_handle.wrap(Box::new(writers.next().unwrap()));
+        let third_handle = handle(&socket2);
+        let mut third = third_handle.wrap(Box::new(writers.next().unwrap()));
+
+        let (second_dropped_tx, second_dropped_rx) = mpsc::sync_channel(1);
+        let (third_done_tx, third_done_rx) = mpsc::sync_channel(1);
+        let t2 = std::thread::spawn(move || {
+            drop(second);
+            second_dropped_tx.send(()).unwrap();
+        });
+        let t3 = std::thread::spawn(move || {
+            third.write_all(b"third").unwrap();
+            third.flush().unwrap();
+            drop(third);
+            third_done_tx.send(()).unwrap();
+        });
+        assert!(
+            second_dropped_rx
+                .recv_timeout(Duration::from_millis(80))
+                .is_err()
+        );
+        assert!(
+            third_done_rx
+                .recv_timeout(Duration::from_millis(80))
+                .is_err()
+        );
+        first.write_all(b"first").unwrap();
+        drop(first);
+        second_dropped_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        third_done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        t2.join().unwrap();
+        t3.join().unwrap();
+        assert_eq!(ordered.0.lock().unwrap().0, b"firstthird");
     }
 
     #[test]

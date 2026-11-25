@@ -144,6 +144,13 @@ Pending replay means media is queued; it does not prove a successful disk or cat
 Use Recording integrity and playback to inspect committed evidence. Audio packets crossing the
 selected video boundary are omitted without re-encoding.
 
+When a profile activates camera privacy, a viewer carrying that camera's media can briefly
+disconnect. KeepPeek makes up to three attempts to reconnect and restore the viewer's authorized
+streams. An access denial ends the retries. If a talkback, chime, or quick reply was interrupted,
+start it again only if you still want the camera to perform it. An active guest download for the
+camera stops when privacy takes effect. Previously stored recordings remain available to authorized
+operators in the timeline.
+
 If a runtime profile reports a camera as **Degraded** because storage rejected its recording
 settings or could not queue the change, new recording input for that camera stops. Live viewing
 can continue, and other cameras still apply their profile changes. **Pending** means the recording
@@ -509,3 +516,25 @@ For the detailed coverage model and export lifecycle, see the
 [event presentation](https://github.com/xnorpx/keeppeek/blob/main/docs/event-presentation.md),
 and [evidence export](https://github.com/xnorpx/keeppeek/blob/main/docs/evidence-exports.md)
 references.
+
+## Calibrating live audio
+
+Open the camera’s Audio synchronization settings and select Live audio. Use a clearly
+visible sound, such as one clap, on the Main or Sub stream you want to calibrate.
+If the sound arrives early, try a positive offset to delay audio. If it arrives late,
+try a negative offset to delay video. The preview shows the added video latency before
+you apply it. Choose **Apply preview** to test in this viewer, or **Reset preview** to
+return to saved timing. Listening for several repetitions helps distinguish a persistent
+offset from variable network or browser jitter.
+
+Save a camera default or override each stream separately. Whole-millisecond offsets range
+from −200 through +200. An explicit zero disables correction on that stream. Inherit
+uses the camera default. Recorded playback and exports use the separate recorded setting.
+Changing live timing leaves the original recording and its timestamps intact.
+
+Live diagnostics show saved and applied timing independently of browser jitter-buffer delay.
+Source health includes held bytes, held encoded video frames, and capacity or expiry drops.
+A rising drop count means the server could not hold every frame within its time or memory
+budget. These measurements end at the server listener handoff. Camera capture latency,
+external transcoder buffering, loudspeaker latency and physical alignment require
+separate measurements.

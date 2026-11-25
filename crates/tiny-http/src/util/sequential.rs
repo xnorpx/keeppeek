@@ -169,6 +169,10 @@ where
     W: Write + Send,
 {
     fn drop(&mut self) {
+        if let Some(trigger) = self.trigger.take() {
+            // Preserve queued turn order on drop without flushing buffered data.
+            let _ = trigger.recv();
+        }
         self.on_finish.send(()).ok();
     }
 }

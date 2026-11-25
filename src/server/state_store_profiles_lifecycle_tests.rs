@@ -29,6 +29,10 @@ struct Lifecycle {
 
 impl Lifecycle {
     fn new(private: bool) -> Self {
+        Self::with_privacy(private, false)
+    }
+
+    fn with_privacy(private: bool, profile_private: bool) -> Self {
         let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("target/test-output")
             .join(format!("profile-lifecycle-{}", uuid::Uuid::new_v4()));
@@ -56,7 +60,7 @@ impl Lifecycle {
                     SOURCE.to_owned(),
                     CameraProfileOverride {
                         recording_mode: Some(CameraRecordingMode::Main),
-                        privacy_enforced: Some(false),
+                        privacy_enforced: Some(profile_private),
                         ..Default::default()
                     },
                 )]),
@@ -126,6 +130,10 @@ impl Lifecycle {
         let private_before_start = privacy.decision(&source, chrono::Utc::now()).unwrap().0;
         storage.set_privacy_registry(privacy.clone());
         runtime.set_privacy_registry(privacy);
+        let recovery = state.clone();
+        runtime.set_recovered_profile_publisher(move |revision| {
+            recovery.confirm_recovered_profile(revision);
+        });
         let publisher = state.clone();
         runtime.set_runtime_profile_status_publisher(move || {
             publisher.publish_runtime_profile_status();
@@ -197,7 +205,27 @@ impl Lifecycle {
     }
 
     fn assert_applied(&self, revision: u64, profile: Option<&str>, mode: CameraRecordingMode) {
-        let status = self.state.runtime_profile_status.read().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let status = self.state.runtime_profile_status.read().unwrap();
+            let observed = super::application::observed_status(&self.state, &status);
+            if observed.revision == revision
+                && observed
+                    .cameras
+                    .get(&self.identity)
+                    .is_some_and(|camera| camera.state == RuntimeApplicationState::Applied)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "camera did not converge: {status:?}"
+            );
+            drop(status);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let actual = self.state.runtime_profile_status.read().unwrap();
+        let status = super::application::observed_status(&self.state, &actual);
         assert_eq!(status.revision, revision);
         assert_eq!(status.active_profile_id.as_deref(), profile);
         assert_eq!(
@@ -208,12 +236,16 @@ impl Lifecycle {
     }
 
     fn send_frames(&self, stream: &str) {
-        // ponytail: Inject encoded media at storage ingress; wire decoding has separate tests.
+        self.send_tagged_frames(stream, &[]);
+    }
+
+    fn send_tagged_frames(&self, stream: &str, marker: &[u8]) {
+        // Exercise storage ingress with a recognizable IDR payload in each sample.
         let started = Instant::now();
         for offset in [0, 40, 80] {
             self.storage.as_ref().unwrap().handle().ingest_stream(
                 RecordingStreamIdentity::new(&self.source, stream, "lifecycle"),
-                keyframe(started + Duration::from_millis(offset)),
+                keyframe(started + Duration::from_millis(offset), marker),
             );
         }
     }
@@ -292,7 +324,13 @@ fn always_private_schedule() -> crate::privacy::PrivacySchedule {
     }
 }
 
-fn keyframe(received_at: Instant) -> RecordingFrame {
+fn keyframe(received_at: Instant, marker: &[u8]) -> RecordingFrame {
+    let mut data = vec![
+        0, 0, 0, 8, 0x67, 0x42, 0, 0x1f, 0xe5, 0x88, 0x68, 0x40, 0, 0, 0, 4, 0x68, 0xce, 0x3c, 0x80,
+    ];
+    data.extend_from_slice(&u32::try_from(1 + marker.len()).unwrap().to_be_bytes());
+    data.push(0x65);
+    data.extend_from_slice(marker);
     RecordingFrame {
         source_rtp: None,
         received_at,
@@ -302,11 +340,7 @@ fn keyframe(received_at: Instant) -> RecordingFrame {
             is_keyframe: true,
             width: 320,
             height: 240,
-            data: vec![
-                0, 0, 0, 8, 0x67, 0x42, 0, 0x1f, 0xe5, 0x88, 0x68, 0x40, 0, 0, 0, 4, 0x68, 0xce,
-                0x3c, 0x80, 0, 0, 0, 1, 0x65,
-            ]
-            .into(),
+            data: data.into(),
         }),
     }
 }
@@ -414,9 +448,177 @@ fn runtime_profile_lifecycle_restores_base_privacy_before_runtime_acceptance() {
 }
 
 #[test]
+fn profile_only_privacy_excludes_tagged_recording_bytes_through_restart_and_supersession() {
+    const ACCEPTED: &[u8] = b"keeppeek-accepted-base-frame";
+    const PRIVATE: &[u8] = b"keeppeek-private-profile-frame";
+    const RESTARTED: &[u8] = b"keeppeek-private-restarted-frame";
+    const SUPERSEDED: &[u8] = b"keeppeek-private-superseded-frame";
+    let mut lifecycle = Lifecycle::with_privacy(false, true);
+    assert!(!lifecycle.private_before_start);
+    lifecycle.activate("away", 0);
+    for stream in ["main", "sub"] {
+        lifecycle.send_tagged_frames(stream, PRIVATE);
+    }
+    lifecycle.writer_barrier();
+    lifecycle.restart();
+    assert!(lifecycle.private_before_start);
+    for stream in ["main", "sub"] {
+        lifecycle.send_tagged_frames(stream, RESTARTED);
+    }
+    lifecycle.writer_barrier();
+    lifecycle.activate("", 1);
+    lifecycle.activate("away", 2);
+    assert!(
+        lifecycle
+            .state
+            .privacy_registry()
+            .decision(SOURCE, chrono::Utc::now())
+            .unwrap()
+            .0
+    );
+    for stream in ["main", "sub"] {
+        lifecycle.send_tagged_frames(stream, SUPERSEDED);
+    }
+    lifecycle.writer_barrier();
+    assert_eq!(
+        (lifecycle.progress("main"), lifecycle.progress("sub")),
+        (0, 0)
+    );
+    lifecycle.activate("", 3);
+    lifecycle.assert_applied(4, None, CameraRecordingMode::Sub);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while lifecycle
+        .state
+        .privacy_registry()
+        .decision(SOURCE, chrono::Utc::now())
+        .unwrap()
+        .0
+    {
+        assert!(
+            Instant::now() < deadline,
+            "Base did not release the profile privacy gate"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    lifecycle.send_tagged_frames("sub", ACCEPTED);
+    lifecycle.wait_for_progress("sub", 0);
+    lifecycle.stop();
+    assert_final_recording_markers(
+        &lifecycle.directory,
+        ACCEPTED,
+        &[PRIVATE, RESTARTED, SUPERSEDED],
+    );
+}
+
+fn assert_final_recording_markers(
+    directory: &std::path::Path,
+    accepted: &[u8],
+    forbidden: &[&[u8]],
+) {
+    let mut directories = vec![directory.to_path_buf()];
+    let mut accepted_recording = false;
+    while let Some(directory) = directories.pop() {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            let kind = entry.file_type().unwrap();
+            if kind.is_dir() {
+                directories.push(entry.path());
+            } else if kind.is_file() {
+                let bytes = std::fs::read(entry.path()).unwrap();
+                for &private in forbidden {
+                    assert!(
+                        !bytes.windows(private.len()).any(|sample| sample == private),
+                        "private media was written to {:?}",
+                        entry.path()
+                    );
+                }
+                if entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "mp4")
+                {
+                    accepted_recording |= bytes
+                        .windows(accepted.len())
+                        .any(|sample| sample == accepted);
+                }
+            }
+        }
+    }
+    assert!(
+        accepted_recording,
+        "the authorized control sample must be present in a finalized recording"
+    );
+}
+
+#[test]
+fn profile_privacy_blocks_an_existing_export_download_after_activation_and_restart() {
+    use crate::server::{
+        download_export, encode_lower_hex, millis_timestamp, tests::active_export_fixture,
+    };
+    const CONTENT: &[u8] = b"KeepPeek synthetic export privacy control";
+    let mut lifecycle = Lifecycle::with_privacy(false, true);
+    let path = lifecycle.directory.join("privacy-control.mp4");
+    std::fs::write(&path, CONTENT).unwrap();
+    let request = proto::CreateExportJob {
+        job_id: "profile-privacy-control".to_owned(),
+        source_id: SOURCE.to_owned(),
+        stream_id: "main".to_owned(),
+        start_time: Some(millis_timestamp(1_000)),
+        end_time: Some(millis_timestamp(2_000)),
+        ..Default::default()
+    };
+    let mut ready = active_export_fixture(&lifecycle.state, &request);
+    ready.job.status = proto::ExportJobStatus::Ready as i32;
+    ready.job.sha256 = Some(encode_lower_hex(Sha256::digest(CONTENT)));
+    ready.path = Some(path);
+    let seed = |state: &ServerState| {
+        state
+            .export_jobs
+            .lock()
+            .unwrap()
+            .insert(request.job_id.clone(), ready.clone());
+    };
+    let download = |state: &ServerState| {
+        download_export(
+            state,
+            "owner",
+            proto::DownloadExport {
+                job_id: request.job_id.clone(),
+                channel: proto::DataChannelKind::ReliableData as i32,
+            },
+        )
+    };
+    seed(&lifecycle.state);
+    let (_, messages) = download(&lifecycle.state).unwrap();
+    assert_eq!(messages.len(), 1);
+    let Some(proto::message::Message::Export(export)) = &messages[0].message.message else {
+        panic!("expected export data")
+    };
+    let Some(proto::export_message::Message::FileChunk(chunk)) = &export.message else {
+        panic!("expected export chunk")
+    };
+    assert_eq!(chunk.payload.as_slice(), CONTENT);
+    let permit = messages[0].permit.as_ref().unwrap();
+    assert!(permit.deliver(|| ()).is_some());
+    lifecycle.activate("away", 0);
+    assert!(permit.deliver(|| ()).is_none());
+    let denied = |state: &ServerState| {
+        let error = download(state).unwrap_err();
+        assert_eq!(error.code, proto::ErrorCode::Rejected);
+        assert!(error.message.contains("privacy is active"));
+    };
+    denied(&lifecycle.state);
+    lifecycle.restart();
+    assert!(lifecycle.private_before_start);
+    seed(&lifecycle.state);
+    denied(&lifecycle.state);
+}
+
+#[test]
 fn runtime_profile_identity_survives_ip_edit_and_readd_uses_base() {
     let mut lifecycle = Lifecycle::new(false);
     lifecycle.activate("away", 0);
+    lifecycle.assert_applied(1, Some("away"), CameraRecordingMode::Main);
     let original_identity = lifecycle.identity.clone();
     lifecycle.send_frames("main");
     lifecycle.wait_for_progress("main", 0);
@@ -748,4 +950,126 @@ fn legacy_status_rejects_oversize_get_and_watch_with_typed_error() {
         assert_eq!(detail.code(), proto::StateStoreErrorCode::ValueTooLarge);
         assert_eq!(detail.key, STATUS_KEY);
     }
+}
+
+pub(super) fn with_applied_base(run: impl FnOnce(&ServerState, &Path, &str)) {
+    let lifecycle = Lifecycle::new(false);
+    lifecycle.activate("away", 0);
+    lifecycle.assert_applied(1, Some("away"), CameraRecordingMode::Main);
+    lifecycle.activate("", 1);
+    lifecycle.assert_applied(2, None, CameraRecordingMode::Sub);
+    run(
+        &lifecycle.state,
+        &lifecycle.directory.join("config.toml"),
+        &lifecycle.source,
+    );
+}
+
+#[test]
+fn repaired_camera_restart_confirms_privacy_against_the_new_observation() {
+    let lifecycle = Lifecycle::new(false);
+    lifecycle.activate("away", 0);
+    lifecycle.assert_applied(1, Some("away"), CameraRecordingMode::Main);
+    let state = &lifecycle.state;
+    let path = lifecycle.directory.join("config.toml");
+    let mut before = crate::server::refresh_runtime_profile_camera_ids(state, &path).unwrap();
+    for observation in &mut before.applications {
+        observation.state = RuntimeApplicationState::Degraded;
+    }
+    state
+        .privacy
+        .replace_profile_overrides(BTreeMap::from([(lifecycle.source.clone(), true)]))
+        .unwrap();
+    before.apply(state, None).unwrap();
+    assert!(
+        state
+            .privacy
+            .decision(&lifecycle.source, chrono::Utc::now())
+            .unwrap()
+            .0
+    );
+    let configured = config::load_config(&path)
+        .unwrap()
+        .camera_configurations()
+        .unwrap();
+    let camera = crate::cameras::configured_cameras(&configured)
+        .into_values()
+        .next()
+        .unwrap();
+    state
+        .camera_runtime
+        .as_ref()
+        .unwrap()
+        .restart_camera(camera)
+        .unwrap();
+    before.confirm_after_start(state, &path).unwrap();
+    assert!(
+        !state
+            .privacy
+            .decision(&lifecycle.source, chrono::Utc::now())
+            .unwrap()
+            .0
+    );
+    let mut camera = configured.into_values().flatten().next().unwrap();
+    camera.username = "subsequent-edit".into();
+    config::upsert_camera(&path, &camera).unwrap();
+    assert!(before.confirm_after_start(state, &path).is_err());
+}
+
+#[test]
+fn recovered_camera_confirms_the_current_configuration_before_releasing_privacy() {
+    let lifecycle = Lifecycle::new(false);
+    lifecycle.activate("away", 0);
+    lifecycle.activate("", 1);
+    let wait = |condition: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(6);
+        while !condition() {
+            assert!(
+                Instant::now() < deadline,
+                "recovery confirmation did not settle"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    let state = &lifecycle.state;
+    wait(&|| {
+        let status = state.runtime_profile_status.read().unwrap();
+        status.revision == 2
+            && status
+                .cameras
+                .get(&lifecycle.identity)
+                .is_some_and(|a| a.state == RuntimeApplicationState::Applied)
+    });
+    let hold = || {
+        state
+            .privacy
+            .replace_profile_overrides(BTreeMap::from([(lifecycle.source.clone(), true)]))
+            .unwrap();
+        let mut status = state.runtime_profile_status.write().unwrap();
+        let camera = status.cameras.get_mut(&lifecycle.identity).unwrap();
+        camera.state = RuntimeApplicationState::Degraded;
+        camera.reason = Some(crate::profiles::PENDING_PRIVACY_CONFIRMATION.into());
+    };
+    let private = || {
+        state
+            .privacy
+            .decision(&lifecycle.source, chrono::Utc::now())
+            .unwrap()
+            .0
+    };
+    hold();
+    state.confirm_recovered_profile(2);
+    wait(&|| !private() && lifecycle.application().state == RuntimeApplicationState::Applied);
+    let path = lifecycle.directory.join("config.toml");
+    let mut camera = config::load_cameras(&path)
+        .unwrap()
+        .into_values()
+        .flatten()
+        .next()
+        .unwrap();
+    camera.recorded_audio.default_offset_ms = Some(50);
+    config::upsert_camera(&path, &camera).unwrap();
+    hold();
+    state.confirm_recovered_profile(2);
+    wait(&|| !private() && lifecycle.application().state == RuntimeApplicationState::Applied);
 }

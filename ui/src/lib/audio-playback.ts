@@ -45,11 +45,19 @@ export class AudioJitterBuffer {
 }
 
 export class AacAudioPlayback {
-	readonly #context = new AudioContext();
+	readonly #context: AudioContext;
 	readonly #jitter = new AudioJitterBuffer();
 	#decoder: AudioDecoder | null = null;
+	#anchor: { timestampUs: number; contextTime: number } | null = null;
+	#scheduled = new Map<AudioBufferSourceNode, number>();
 	#nextStart = 0;
+	#expectedTimestampUs?: number;
+	#fallbackTimestampUs = 0;
 	#closed = false;
+
+	constructor(context: AudioContext) {
+		this.#context = context;
+	}
 
 	async configure(
 		codec: string,
@@ -75,19 +83,16 @@ export class AacAudioPlayback {
 		this.#decoder.configure(config);
 	}
 
-	async resume(): Promise<void> {
-		if (this.#context.state === 'suspended') await this.#context.resume();
-	}
-
 	push(frame: AudioDataFrame): void {
 		if (this.#closed || !this.#decoder) return;
 		this.#jitter.push(frame, (ready) => {
 			const timestampUs = ready.timestamp
 				? Number(ready.timestamp.seconds) * 1_000_000 + ready.timestamp.nanos / 1_000
-				: 0;
+				: this.#fallbackTimestampUs;
 			const durationUs = ready.duration
 				? Number(ready.duration.seconds) * 1_000_000 + ready.duration.nanos / 1_000
 				: 64_000;
+			this.#fallbackTimestampUs = timestampUs + durationUs;
 			this.#decoder?.decode(
 				new EncodedAudioChunk({
 					type: 'key',
@@ -103,12 +108,29 @@ export class AacAudioPlayback {
 		this.#closed = true;
 		this.#jitter.clear();
 		if (this.#decoder?.state !== 'closed') this.#decoder?.close();
-		void this.#context.close();
+		this.#clearScheduled();
+	}
+
+	#release(source: AudioBufferSourceNode): void {
+		source.onended = null;
+		source.disconnect();
+		this.#scheduled.delete(source);
+	}
+
+	#clearScheduled(): void {
+		for (const source of this.#scheduled.keys()) {
+			source.stop();
+			this.#release(source);
+		}
+		this.#anchor = null;
+		this.#nextStart = 0;
+		this.#expectedTimestampUs = undefined;
 	}
 
 	#render(audioData: AudioData): void {
-		if (this.#closed) {
+		if (this.#closed || this.#context.state !== 'running') {
 			audioData.close();
+			this.#clearScheduled();
 			return;
 		}
 		const buffer = this.#context.createBuffer(
@@ -122,12 +144,47 @@ export class AacAudioPlayback {
 				format: 'f32-planar'
 			});
 		}
+		const timestampUs = audioData.timestamp;
 		audioData.close();
 		const source = this.#context.createBufferSource();
 		source.buffer = buffer;
 		source.connect(this.#context.destination);
-		this.#nextStart = Math.max(this.#nextStart, this.#context.currentTime);
-		source.start(this.#nextStart);
-		this.#nextStart += buffer.duration;
+		const start = this.#presentationTime(timestampUs, buffer.duration);
+		this.#nextStart = start + buffer.duration;
+		this.#scheduled.set(source, this.#nextStart);
+		source.onended = () => this.#release(source);
+		source.start(start);
+	}
+
+	#presentationTime(timestampUs: number, duration: number): number {
+		const now = this.#context.currentTime;
+		const continuous =
+			this.#expectedTimestampUs !== undefined &&
+			Math.abs(timestampUs - this.#expectedTimestampUs) <= 2;
+		this.#expectedTimestampUs = timestampUs + duration * 1_000_000;
+		const mapped = this.#anchor
+			? this.#anchor.contextTime + (timestampUs - this.#anchor.timestampUs) / 1_000_000
+			: now;
+		// Late delivery changes the local clock mapping but does not reverse presentation order.
+		let start = Math.max(now, continuous ? this.#nextStart : mapped);
+		if (
+			!this.#anchor ||
+			Math.abs(mapped - now) > maxAgeMs / 1000 ||
+			start - now > maxAgeMs / 1000 ||
+			this.#scheduled.size >= maxFrames
+		)
+			start = now;
+		this.#anchor = { timestampUs, contextTime: start };
+		if (Math.abs(start - this.#nextStart) < 0.000_002) start = Math.max(now, this.#nextStart);
+		for (const [source, end] of this.#scheduled) {
+			if (end <= now) {
+				this.#release(source);
+			} else if (end > start) {
+				source.stop(start);
+				if (start <= now) this.#release(source);
+				else this.#scheduled.set(source, start);
+			}
+		}
+		return start;
 	}
 }

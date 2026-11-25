@@ -481,6 +481,13 @@ impl AuthenticationFailure {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct ProfileAuditDetails {
+    pub(crate) registry_revision: u64,
+    pub(crate) definition_revision: Option<u64>,
+    pub(crate) override_target_count: Option<usize>,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct AccessAuditEvent {
     pub(crate) id: Uuid,
@@ -491,6 +498,8 @@ pub struct AccessAuditEvent {
     pub(crate) target_id: Option<String>,
     pub(crate) result: String,
     pub(crate) client_classification: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) profile: Option<ProfileAuditDetails>,
 }
 
 pub struct NewAccessAuditEvent<'a> {
@@ -501,6 +510,7 @@ pub struct NewAccessAuditEvent<'a> {
     pub(crate) target_id: Option<&'a str>,
     pub(crate) result: &'a str,
     pub(crate) client_classification: ClientClassificationReason,
+    pub(crate) profile: Option<ProfileAuditDetails>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -1027,15 +1037,48 @@ impl AccessManager {
                 .map(|value| bounded_field(value, MAX_AUDIT_FIELD_BYTES)),
             result: bounded_field(record.result, MAX_AUDIT_FIELD_BYTES),
             client_classification: record.client_classification.as_str().to_owned(),
+            profile: record.profile,
         };
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.catalog.audit.len() == MAX_AUDIT_EVENTS {
-            state.catalog.audit.remove(0);
+        let audit = &mut state.catalog.audit;
+        let sampled =
+            |event: &AccessAuditEvent| event.profile.is_some() && event.result != "accepted";
+        if sampled(&event) {
+            // Keep the most recent equivalent outcome per actor/per minute. The structured trace
+            // below retains each individual denial. Bound samples independently of accepted actions.
+            let equivalent = audit.iter().rposition(|old| {
+                old.profile == event.profile
+                    && old.principal_id == event.principal_id
+                    && old.role == event.role
+                    && old.action == event.action
+                    && old.result == event.result
+                    && old.client_classification == event.client_classification
+                    && old.timestamp_ms.abs_diff(event.timestamp_ms) < 60_000
+            });
+            if let Some(index) = equivalent {
+                audit.remove(index);
+            } else if audit.iter().filter(|old| sampled(old)).count() >= 64
+                && let Some(index) = audit.iter().position(sampled)
+            {
+                audit.remove(index);
+            }
         }
-        state.catalog.audit.push(event);
+        if audit.len() == MAX_AUDIT_EVENTS {
+            // Sampling cannot displace completed mutations, credentials or login events.
+            if sampled(&event) {
+                if let Some(index) = audit.iter().position(sampled) {
+                    audit.remove(index);
+                }
+            } else {
+                audit.remove(0);
+            }
+        }
+        if audit.len() < MAX_AUDIT_EVENTS {
+            audit.push(event);
+        }
         tracing::info!(
             event = "access_audit",
             action = record.action,
@@ -1043,6 +1086,9 @@ impl AccessManager {
             principal_id = record.principal_id.unwrap_or(""),
             target_id = record.target_id.unwrap_or(""),
             client_classification = record.client_classification.as_str(),
+            registry_revision = record.profile.map(|p| p.registry_revision),
+            definition_revision = record.profile.and_then(|p| p.definition_revision),
+            override_target_count = record.profile.and_then(|p| p.override_target_count),
         );
     }
 
@@ -1515,6 +1561,119 @@ mod tests {
         }
     }
 
+    fn record_audit_outcome(
+        manager: &AccessManager,
+        timestamp_ms: i64,
+        action: &str,
+        result: &str,
+        revision: Option<u64>,
+    ) {
+        manager.record_audit(NewAccessAuditEvent {
+            timestamp_ms,
+            principal_id: Some("administrator"),
+            role: Some(AccessRole::Administrator),
+            action,
+            target_id: Some("front"),
+            result,
+            client_classification: ClientClassificationReason::DirectLocal,
+            profile: revision.map(|registry_revision| ProfileAuditDetails {
+                registry_revision,
+                definition_revision: None,
+                override_target_count: None,
+            }),
+        });
+    }
+
+    #[test]
+    fn distinct_profile_denials_keep_the_latest_64_samples_and_completed_audit_events() {
+        let manager = AccessManager::ephemeral(AccessKey::unset());
+        record_audit_outcome(&manager, 0, "credential_rotate", "success", None);
+        record_audit_outcome(&manager, 1, "oidc_login", "success", None);
+        record_audit_outcome(
+            &manager,
+            2,
+            "runtime_profile_registry_updated",
+            "accepted",
+            Some(0),
+        );
+        let completed = manager.list_audit(3);
+        for revision in 1_u64..=80 {
+            record_audit_outcome(
+                &manager,
+                3,
+                "runtime_profile_draft_write",
+                "rejected",
+                Some(revision),
+            );
+        }
+        let audit = manager.list_audit(200);
+        assert_eq!(&audit[..3], completed.as_slice());
+        let retained: Vec<_> = audit[3..]
+            .iter()
+            .map(|entry| {
+                assert_eq!(entry.result, "rejected");
+                entry.profile.unwrap().registry_revision
+            })
+            .collect();
+        assert_eq!(retained, (17..=80).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn full_audit_only_evicts_an_existing_sample_for_a_new_profile_denial() {
+        for with_sample in [false, true] {
+            let manager = AccessManager::ephemeral(AccessKey::unset());
+            record_audit_outcome(&manager, 0, "credential_rotate", "success", None);
+            record_audit_outcome(&manager, 1, "oidc_login", "success", None);
+            if with_sample {
+                record_audit_outcome(
+                    &manager,
+                    2,
+                    "runtime_profile_draft_write",
+                    "rejected",
+                    Some(1),
+                );
+            }
+            for index in (2 + usize::from(with_sample))..MAX_AUDIT_EVENTS {
+                record_audit_outcome(
+                    &manager,
+                    index as i64,
+                    "runtime_profile_registry_updated",
+                    "accepted",
+                    Some(index as u64),
+                );
+            }
+            // The operator API pages the last 200 events. Check the entire bounded ring, including the oldest protected entries.
+            let snapshot = || manager.state.lock().unwrap().catalog.audit.clone();
+            let before = snapshot();
+            assert_eq!(before.len(), MAX_AUDIT_EVENTS);
+            for revision in 1_100..1_180 {
+                record_audit_outcome(
+                    &manager,
+                    2_000,
+                    "runtime_profile_draft_write",
+                    "rejected",
+                    Some(revision),
+                );
+            }
+            let after = snapshot();
+            assert_eq!(after.len(), MAX_AUDIT_EVENTS);
+            if with_sample {
+                assert_eq!(
+                    after.last().unwrap().profile.unwrap().registry_revision,
+                    1_179
+                );
+                assert_eq!(after.last().unwrap().result, "rejected");
+                let completed: Vec<_> = before
+                    .into_iter()
+                    .filter(|event| event.result != "rejected")
+                    .collect();
+                assert_eq!(&after[..MAX_AUDIT_EVENTS - 1], completed.as_slice());
+            } else {
+                assert_eq!(after, before);
+            }
+        }
+    }
+
     #[test]
     fn credential_lifecycle_persists_in_config_and_audit_resets_on_reopen() {
         let directory = std::env::temp_dir().join(format!("keeppeek-access-{}", Uuid::new_v4()));
@@ -1583,6 +1742,7 @@ mod tests {
             target_id: Some(&issued.metadata.id.to_string()),
             result: "success",
             client_classification: ClientClassificationReason::DirectLocal,
+            profile: None,
         });
         reopened.flush_audit(true).unwrap();
         let reopened = AccessManager::open(&config_path, initial).unwrap();

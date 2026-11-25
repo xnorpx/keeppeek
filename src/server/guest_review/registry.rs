@@ -17,7 +17,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const MAX_TRANSFERS: usize = 8;
+use crate::privacy::MAX_GUEST_MEDIA_TRANSFERS as MAX_TRANSFERS;
 const MAX_SESSION_TRANSFERS: usize = 2;
 const MAX_HASH_READERS: usize = 2;
 const WATCHDOG_INTERVAL: Duration = Duration::from_millis(50);
@@ -325,7 +325,7 @@ impl RequestGuard {
         let deadline = bound
             .media_deadline
             .ok_or_else(|| io::Error::other("guest media expired"))?;
-        {
+        let abort = {
             let mut state = self.registry.lock()?;
             if !state.watchdog || self.cancelled.load(Ordering::Acquire) {
                 return Err(io::Error::other("guest cancellation is unavailable"));
@@ -357,12 +357,14 @@ impl RequestGuard {
                 evidence: bound.grant.intent.binding.clone(),
                 context: context.clone(),
             });
-        }
+            flow.abort.clone()
+        };
         Ok(TransferGuard {
             registry: self.registry,
             id: self.id,
             deadline,
             cancelled: self.cancelled,
+            abort,
         })
     }
 }
@@ -387,9 +389,14 @@ pub(super) struct TransferGuard {
     id: Uuid,
     deadline: MediaDeadline,
     cancelled: Arc<AtomicBool>,
+    abort: ResponseAbortHandle,
 }
 
 impl TransferGuard {
+    pub(super) fn response_abort_handle(&self) -> ResponseAbortHandle {
+        self.abort.clone()
+    }
+
     pub fn check(&self) -> io::Result<()> {
         check(self.deadline, &self.cancelled)
     }

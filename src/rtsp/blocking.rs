@@ -853,6 +853,7 @@ impl RtspLoop {
                                 codec: audio.live_codec,
                                 sample_rate_hz: audio.sample_rate,
                                 channel_count: audio.channels,
+                                duration: Some(duration),
                                 timestamp,
                                 received_at,
                                 data: data.clone(),

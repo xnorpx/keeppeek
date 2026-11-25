@@ -6,6 +6,21 @@
 channels open. The server sends a complete `ServerCapabilities` snapshot on the
 control channel before sending live-source events, stored-media state, or stream payloads.
 
+## Privacy-retired viewer sessions
+
+A viewer may send the decimal ID of its retired session in the
+`X-KeepPeek-Previous-Session` header on the existing authenticated `POST /create`. The server
+accepts one replacement within 60 seconds of retiring that transport for a camera privacy
+transition. It checks the same authenticated identity, credential revision, effective client
+address, original idle timeout and absolute deadline. The replacement inherits the previous
+activity and expiry times. A successful `201` echoes the previous session ID in the same header.
+An invalid ID yields `400`. A retired session that cannot be resumed yields `401`.
+
+The viewer verifies the echoed ID before restoring subscriptions. If recovery cannot be confirmed,
+it closes the unconfirmed transport and requests fresh authorization. In-flight control commands
+are discarded. An unsaved draft remains mounted while the same principal's authorization is
+being checked.
+
 ## Channels
 
 | SCTP stream ID | Label             | Delivery                       | Payload                           |
@@ -644,9 +659,14 @@ A second `Subscribe` that reuses an active `subscription_id` atomically replaces
 subscription. The replacement must keep the same target kind: a media subscription stays a
 media subscription for the same `(source_session_id, MediaKind)`, a data subscription stays a data
 subscription for the same source session, and an event subscription stays an event subscription.
-A successful replace keeps the existing RTP MID or media-data binding when transport and media
-kind still match; otherwise KeepPeek assigns a new compatible binding and releases the old one
-atomically, or returns `Error`. The previous variant selection ends at replace. A failed replace
+An audio replacement must retain its source variant and delivery transport. To change either,
+unsubscribe the existing audio subscription and wait for the acknowledgement before subscribing
+to the new variant or transport. A successful replace keeps the existing RTP MID when transport
+and media kind still match.
+Compatible media-data subscriptions keep their binding unless the viewer changes or clears
+its timing preview. That change assigns a fresh opaque binding for each affected reliable
+audio or video subscription. When a new binding is required, KeepPeek releases the old one
+atomically on success or returns `Error`. The previous variant selection ends at replace. A failed replace
 leaves the existing subscription and `StreamId` ownership unchanged. A successful `Unsubscribe`
 releases its RTP `StreamId` for a later subscription.
 
@@ -943,6 +963,11 @@ sends frames using that revision. A client-published media-data stream fixes its
 through `StartPublication.format`; it must stop and start a new publication to change that format.
 A frame always includes the configuration revision needed to decode it.
 
+A reliable live AAC listener schedules decoded blocks from the presentation timestamps on the
+active binding. A saved audio delay changes those timestamps on the first frame under the new
+policy, including sources without a usable RTP timestamp. This preserves the correction when the
+browser has already queued decoded audio.
+
 Each binary SCTP message carrying audio contains a `Message.audio.frame` value. `frame_id` is the
 monotonically increasing audio frame number within its stream binding. `timestamp_us` is the
 presentation timestamp, and `duration_us` is the frame duration. For AAC,
@@ -1015,6 +1040,43 @@ one fragmented `VideoDataFrame`. The configuration and frame stream-binding IDs 
 revisions must match. The frame is a random-access unit at or before the requested timestamp and
 is bounded to 4 MiB. H.264 uses AVCC IDR bytes with AVC decoder configuration; H.265 uses HVCC
 random-access bytes with HEVC decoder configuration.
+
+### Live audio timing
+
+`keeppeek.live-audio-timing.v1` advertises bounded live correction for camera listeners.
+`CameraSettings.live_audio` contains optional signed `default_offset_ms`, `main_offset_ms`
+and `sub_offset_ms` values. Main and Sub each inherit the camera default. An absent default
+resolves to 0 ms. Explicit zero disables correction at that level. Supported values are
+whole milliseconds from −200 through +200. Positive values hold audio. Negative values
+hold video and add the absolute offset to its presentation latency. Clients must show
+that added latency before the operator applies or saves a negative offset. A saved negative
+offset also delays a muted or video-only listener on the selected camera profile.
+
+Administrator `UpdateCameraConfiguration.live_audio` replaces the complete nested settings
+object under `expected_configuration_revision`. An empty object restores inheritance.
+Omitting the field preserves saved live settings. A timing-only update takes effect on
+current listeners without restarting camera ingestion or recording. Recorded timing,
+stored playback, export and two-way audio have independent settings and lifecycles.
+
+An authorized listener may set `SubscribeMedia.live_audio_preview_offset_ms` for a camera
+audio or video subscription. Both subscriptions for a calibration preview must request the
+same source profile and identical signed offset. Zero previews uncorrected timing.
+Omitting the field restores configured timing. Check `SubscriptionResult.live_audio.preview`
+and `applied_offset_ms` on both admitted tracks and confirm the video profile is active before showing the preview as active. A pending handover can still present the previous profile. Changing or clearing a timing preview retires the opaque reliable-data binding for each affected audio or video track. Install the returned binding and retire the previous decoder and queued frames.
+`SubscriptionStreamState.live_audio` follows the actual active video profile during adaptive
+handover. Audio stream-state notifications carry their own selected profile and timing,
+including when adaptive video and available audio use different profiles. Preview selections last only for their subscriptions and do not change other listeners.
+
+`LiveAudioTiming` separates saved, applied and preview timing from jitter-buffer statistics.
+It reports currently held audio bytes, video bytes and encoded video frames plus cumulative
+capacity and expiry drops for that camera profile across listeners. The same source counters
+appear in `WebRtcSourceHealthSnapshot.live_audio` with the saved policy. A listener may hold
+encoded audio for up to 250 ms and the profile shares 256 KiB of audio storage across sessions.
+Identical source payloads shared by listeners count once toward the encoded bytes and frames. Each listener's allocated queue slots also count toward the byte limit, including empty slots in a partially drained queue. The listener frees the allocation when the queue empties. Video admission reserves room for both the captured payload and its shared Annex B representation, which another listener can generate at any time. Reported bytes count captured payload occupancy. Video has the same 250 ms age ceiling with at most 2 MiB and 128 encoded frames per profile.
+Capacity rejects new frames. Expiry discards late frames. A codec change, backward source time,
+reconnect, policy change or removed subscription invalidates its pending correction.
+These limits describe the server-side hold. Transport and browser playout can add latency. Reliable AAC frames carry the original
+encoded access-unit duration when the source supplies it.
 
 ### Recorded-audio timing
 

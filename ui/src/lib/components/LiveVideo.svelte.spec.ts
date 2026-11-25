@@ -4,6 +4,8 @@ import { render } from 'vitest-browser-svelte';
 import { create } from '@bufbuild/protobuf';
 import {
 	LiveQualityDiagnosticsSchema,
+	LiveAudioTimingSchema,
+	type LiveAudioTiming,
 	LiveQualitySelectionReason,
 	type LiveQualityDiagnostics
 } from '$lib/proto/webrtc_pb';
@@ -12,27 +14,36 @@ import '../../app.css';
 
 const state = vi.hoisted(() => ({
 	estimate: null as number | null,
+	timing: undefined as LiveAudioTiming | undefined,
 	cameraAudioAssets: {} as Record<string, CameraAudioAssets>,
 	playQuickReply: vi.fn(),
 	playChime: vi.fn(),
 	quality: undefined as LiveQualityDiagnostics | undefined,
+	announceFailure: false,
 	requestedQuality: 'high' as 'auto' | 'high'
 }));
 
 vi.mock('$lib/stream-peer-context', () => ({
 	useLivePeer: () => ({
 		track: () => ({
-			status: 'queued',
+			status: state.announceFailure ? 'live' : 'queued',
 			subscribed: false,
 			requestedQuality: state.requestedQuality,
 			activeStream: 'main',
 			estimatedBitrateBps: 123_000,
-			liveQuality: state.quality
+			liveQuality: state.quality,
+			liveAudio: state.timing
 		}),
+		startTalkback: async () => {
+			throw new Error(
+				'The live connection changed. Check whether the command ran before trying again.'
+			);
+		},
 		attach: () => () => {},
 		markPlaying: () => {},
 		resumeAudioPlayback: async () => {},
 		sessionId: 'session-network',
+		canUseMicrophone: true,
 		cameraAudioAssets: state.cameraAudioAssets,
 		playQuickReply: state.playQuickReply,
 		playChime: state.playChime,
@@ -66,6 +77,59 @@ it('plays advertised doorbell assets independently of microphone support', async
 });
 
 describe('Live network estimate diagnostics', () => {
+	it('separates saved and applied preview timing from queue pressure and browser jitter', async () => {
+		state.timing = create(LiveAudioTimingSchema, {
+			configuredOffsetMs: 20,
+			appliedOffsetMs: -80,
+			preview: true,
+			heldVideoBytes: 1200,
+			heldVideoFrames: 1,
+			capacityDrops: 4n,
+			expiredDrops: 2n
+		});
+		try {
+			await render(LiveVideo, {
+				cameraId: 'front-door',
+				stream: 'main',
+				quality: 'high',
+				class: 'h-64 w-full'
+			});
+			await page.getByRole('button', { name: 'WebRTC stream diagnostics' }).click();
+			const dialog = page.getByRole('dialog', { name: 'WebRTC stream diagnostics' });
+			for (const text of [
+				'Video +80 ms',
+				'Saved audio offset',
+				'20 ms',
+				'Video 1200 B',
+				'4 capacity',
+				'2 expired',
+				'Jitter buffer'
+			])
+				await expect.element(dialog).toMatchTextContent(text);
+		} finally {
+			state.timing = undefined;
+		}
+	});
+
+	it('announces interrupted focused commands beside the control', async () => {
+		state.announceFailure = true;
+		state.cameraAudioAssets['front-door'] = {
+			twoWayAudio: true,
+			quickReplies: [],
+			chimes: []
+		};
+		try {
+			const view = await render(LiveVideo, { props: { cameraId: 'front-door', stream: 'main' } });
+			await page.getByRole('button', { name: 'Talk to front-door' }).click();
+			await expect
+				.poll(() => view.container.querySelector('p[role="status"]')?.textContent?.trim())
+				.toBe('The live connection changed. Check whether the command ran before trying again.');
+			await view.unmount();
+		} finally {
+			delete state.cameraAudioAssets['front-door'];
+			state.announceFailure = false;
+		}
+	});
 	it.each([
 		[320, null, 'Unknown'],
 		[390, 0, '0 bps'],

@@ -2,7 +2,11 @@ import { observedPartCount } from '../../src/lib/runtime-profiles';
 import { createHash } from 'node:crypto';
 import { isIP } from 'node:net';
 import type { BrowserSession } from '../../src/lib/external-authentication.svelte';
-import { protoRecordedAudioSettings, recordedAudioSettings } from '../../src/lib/recorded-audio';
+import {
+	protoLiveAudioSettings,
+	protoRecordedAudioSettings,
+	recordedAudioSettings
+} from '../../src/lib/recorded-audio';
 import {
 	ExternalAuthenticationConfigurationSchema,
 	ExternalAuthenticationResultSchema,
@@ -390,6 +394,7 @@ export type ControlRequests = {
 		subscriptionId: string;
 		variantId: string;
 		videoQuality: VideoQuality;
+		previewOffsetMs?: number;
 	}>;
 	mediaUnsubscriptions: string[][];
 	peekLayoutReads: number;
@@ -402,7 +407,10 @@ export type ControlRequests = {
 	}>;
 	configurationActions: string[];
 	configurationPlans: Array<{ target: string; change: string }>;
-	publishCapabilities(capabilityIds: readonly string[]): Promise<void>;
+	publishCapabilities(
+		capabilityIds: readonly string[],
+		cameras?: readonly CameraListItem[]
+	): Promise<void>;
 };
 
 export type MockControlPeerOptions = {
@@ -433,6 +441,7 @@ export type MockControlPeerOptions = {
 	health?: HealthFixture;
 	healthSequence?: readonly HealthFixture[];
 	healthError?: string;
+	mediaAdmissionError?: (subscription: SubscribeMedia) => string | null | Promise<string | null>;
 	motionDetection?: MotionDetection;
 	ptzPresets?: readonly { id: number; name: string }[];
 	runtimeUpdateResult?: SettingsConfigUpdateResponse;
@@ -889,11 +898,12 @@ function encodedData(message: ReturnType<typeof create<typeof MessageSchema>>): 
 
 function fixtureSubscriptionResult(
 	subscribe: SubscribeMedia,
-	cameras: readonly CameraListItem[],
+	options: Pick<MockControlPeerOptions, 'cameras' | 'capabilityIds'>,
 	subscriptions: ControlRequests['mediaSubscriptions']
 ): SubscriptionResult {
 	const profiles =
-		cameras.find((camera) => `camera:${camera.id}` === subscribe.sourceSessionId)?.profiles ?? [];
+		options.cameras?.find((camera) => `camera:${camera.id}` === subscribe.sourceSessionId)
+			?.profiles ?? [];
 	const hasSub = profiles.some((profile) => profile.stream === 'sub');
 	const selectedVariantId =
 		subscribe.variantId ||
@@ -901,11 +911,27 @@ function fixtureSubscriptionResult(
 	subscriptions.push({
 		subscriptionId: subscribe.subscriptionId,
 		variantId: subscribe.variantId,
-		videoQuality: subscribe.videoQuality
+		videoQuality: subscribe.videoQuality,
+		...(subscribe.liveAudioPreviewOffsetMs === undefined
+			? {}
+			: { previewOffsetMs: subscribe.liveAudioPreviewOffsetMs })
 	});
 	return create(SubscriptionResultSchema, {
 		subscriptionId: subscribe.subscriptionId,
-		delivery: { case: 'rtp', value: create(RtpDeliverySchema, { mid: '0' }) },
+		delivery: {
+			case: 'rtp',
+			value: create(RtpDeliverySchema, { mid: subscribe.kind === MediaKind.AUDIO ? '1' : '0' })
+		},
+		liveAudio: options.capabilityIds?.includes('keeppeek.live-audio-timing.v1')
+			? {
+					preview: subscribe.liveAudioPreviewOffsetMs !== undefined,
+					appliedOffsetMs: subscribe.liveAudioPreviewOffsetMs ?? 0
+				}
+			: undefined,
+		liveQuality:
+			subscribe.liveAudioPreviewOffsetMs !== undefined
+				? { activeVariantId: selectedVariantId }
+				: undefined,
 		selectedVariantId
 	});
 }
@@ -917,6 +943,7 @@ export async function mockControlPeer(
 	let metadataPending = options.metadataPendingVolumeId;
 	let metadataRevision = 1;
 	const reportedManufacturer = options.reportedManufacturer ?? 'ONVIF';
+	let currentCameras = options.cameras ?? [];
 	const requests: ControlRequests = {
 		doorbellSounds: [],
 		talkbackCommands: 0,
@@ -963,9 +990,10 @@ export async function mockControlPeer(
 		runtimeProfileWrites: [],
 		configurationActions: [],
 		configurationPlans: [],
-		publishCapabilities: async (capabilityIds) => {
+		publishCapabilities: async (capabilityIds, cameras = currentCameras) => {
+			currentCameras = cameras;
 			const payload = encodedCapabilities(
-				options.cameras ?? [],
+				cameras,
 				options.storedRanges ?? [],
 				capabilityIds,
 				accessRole,
@@ -1100,7 +1128,7 @@ export async function mockControlPeer(
 	await page.exposeFunction('takeKeepPeekData', () => pendingDataMessages.splice(0));
 	await page.exposeFunction('getKeepPeekCapabilities', () =>
 		encodedCapabilities(
-			options.cameras ?? [],
+			currentCameras,
 			options.storedRanges ?? [],
 			options.capabilityIds ?? [],
 			accessRole,
@@ -1201,14 +1229,16 @@ export async function mockControlPeer(
 			}
 		}
 		if (request.command.case === 'subscribeMedia') {
-			return encodedOk(request.requestId, {
-				case: 'subscriptionResult',
-				value: fixtureSubscriptionResult(
-					request.command.value,
-					options.cameras ?? [],
-					requests.mediaSubscriptions
-				)
-			});
+			const subscription = request.command.value;
+			const result = fixtureSubscriptionResult(
+				subscription,
+				{ cameras: currentCameras, capabilityIds: options.capabilityIds },
+				requests.mediaSubscriptions
+			);
+			const error = await options.mediaAdmissionError?.(subscription);
+			return error
+				? encodedError(request.requestId, error)
+				: encodedOk(request.requestId, { case: 'subscriptionResult', value: result });
 		}
 		if (request.command.case === 'unsubscribe') {
 			requests.mediaUnsubscriptions.push([...request.command.value.subscriptionIds]);
@@ -2865,6 +2895,7 @@ export async function mockControlPeer(
 			pushKeepPeekCapabilities(payload: number[]): void;
 		};
 		let activeControlChannel: MockDataChannel | null = null;
+		const openControlChannels = new Set<MockDataChannel>();
 
 		class MockDataChannel {
 			readyState: RTCDataChannelState = 'connecting';
@@ -2910,6 +2941,7 @@ export async function mockControlPeer(
 				this.readyState = 'open';
 				this.onopen?.call(this as unknown as RTCDataChannel, new Event('open'));
 				if (this.label === 'control-channel') {
+					openControlChannels.add(this);
 					void (window as unknown as ControlWindow).getKeepPeekCapabilities().then((message) => {
 						this.receive(Uint8Array.from(message).buffer);
 					});
@@ -2917,11 +2949,12 @@ export async function mockControlPeer(
 			}
 
 			close(): void {
+				openControlChannels.delete(this);
 				this.readyState = 'closed';
 			}
 
 			remoteClose(): void {
-				this.readyState = 'closed';
+				this.close();
 				this.onclose?.call(this as unknown as RTCDataChannel, new Event('close'));
 			}
 		}
@@ -2984,7 +3017,7 @@ export async function mockControlPeer(
 		});
 		Object.defineProperty(window, 'pushKeepPeekCapabilities', {
 			value: (payload: number[]) => {
-				activeControlChannel?.receive(Uint8Array.from(payload).buffer);
+				for (const channel of openControlChannels) channel.receive(Uint8Array.from(payload).buffer);
 			}
 		});
 		class MockVideoFrame {
@@ -3181,6 +3214,21 @@ function encodedCapabilities(
 									sourceSessionId: `camera:${camera.id}`,
 									sourceId: camera.id,
 									displayName: camera.name ?? camera.id,
+									audio: capabilityIds.includes('keeppeek.live-audio-timing.v1')
+										? {
+												variants: camera.profiles.flatMap((profile) =>
+													profile.audio
+														? [
+																{
+																	variantId: profile.stream,
+																	codec: { name: profile.audio.encoding ?? '' },
+																	deliveryTransports: [DeliveryTransport.RTP]
+																}
+															]
+														: []
+												)
+											}
+										: undefined,
 									video: create(MediaStreamCapabilitySchema, {
 										variants: camera.profiles
 											.filter((profile) => profile.encoding)
@@ -3815,6 +3863,9 @@ function cameraUpdate(
 	if (update.recordedAudio !== undefined) {
 		result.recorded_audio = recordedAudioSettings(update.recordedAudio);
 	}
+	if (update.liveAudio !== undefined) {
+		result.live_audio = recordedAudioSettings(update.liveAudio);
+	}
 	applyStringPatch(result, 'display_name', update.displayName);
 	applyStringPatch(result, 'manufacturer', update.manufacturer);
 	if (update.username !== undefined) result.username = update.username;
@@ -3922,7 +3973,8 @@ function protoCameraSettings(camera: CameraSettings) {
 				: ProtoEventRecordingStream.MAIN,
 		health: camera.health ?? undefined,
 		model: camera.model ?? undefined,
-		recordedAudio: protoRecordedAudioSettings(camera.recorded_audio)
+		recordedAudio: protoRecordedAudioSettings(camera.recorded_audio),
+		liveAudio: protoLiveAudioSettings(camera.live_audio)
 	});
 }
 

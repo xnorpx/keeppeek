@@ -233,28 +233,39 @@
 		diagnosticsLabel ? `${diagnosticsLabel} camera information` : 'WebRTC stream diagnostics'
 	);
 	let audioAssets = $derived(livePeer.cameraAudioAssets?.[cameraId]);
+	let failedCommand = $state<{ cameraId: string; message: string }>();
 	let talkbackControls = $derived(livePeer.canUseMicrophone && audioAssets?.twoWayAudio === true);
 	let talkbackActive = $derived(talkbackControls && livePeer.talkbackActive);
 
-	async function playAudioAsset(kind: 'quickReply' | 'chime', assetId: string): Promise<void> {
+	async function runCameraCommand(command: () => Promise<void>): Promise<void> {
+		const target = cameraId;
+		failedCommand = undefined;
 		try {
-			if (kind === 'quickReply') await livePeer.playQuickReply(cameraId, assetId);
-			else await livePeer.playChime(cameraId, assetId);
-		} catch {
-			// The live peer owns the actionable transport error.
+			await command();
+		} catch (error) {
+			failedCommand = {
+				cameraId: target,
+				message:
+					livePeer.talkbackError ??
+					(error instanceof Error
+						? error.message
+						: 'The recorder could not confirm the audio command.')
+			};
 		}
 	}
 
-	async function toggleTalkback(): Promise<void> {
-		try {
-			if (talkbackActive) {
-				await livePeer.stopTalkback();
-			} else {
-				await livePeer.startTalkback({ sourceId: cameraId });
-			}
-		} catch {
-			// The peer exposes the actionable error state to the next render.
-		}
+	function playAudioAsset(kind: 'quickReply' | 'chime', assetId: string): Promise<void> {
+		return runCameraCommand(() =>
+			kind === 'quickReply'
+				? livePeer.playQuickReply(cameraId, assetId)
+				: livePeer.playChime(cameraId, assetId)
+		);
+	}
+
+	function toggleTalkback(): Promise<void> {
+		return runCameraCommand(() =>
+			talkbackActive ? livePeer.stopTalkback() : livePeer.startTalkback({ sourceId: cameraId })
+		);
 	}
 
 	onMount(() => {
@@ -700,6 +711,13 @@
 			{/if}
 		</div>
 	</FocusedMediaViewport>
+	{#if failedCommand?.cameraId === cameraId}
+		<p
+			role="status"
+			class="absolute top-10 right-2 z-30 max-w-[calc(100%-1rem)] rounded bg-black/90 p-2 text-xs text-white"
+			>{failedCommand.message}</p
+		>
+	{/if}
 	{#if statusOverlay || freshnessVisible || mediaFit === 'cover'}
 		<div
 			class="pointer-events-none absolute inset-x-2 bottom-2 z-30 flex flex-col items-start gap-1"
@@ -930,6 +948,39 @@
 								</dd>
 								<dt class="text-white/45">Jitter</dt>
 								<dd class="font-mono">{formatMilliseconds(diagnostics.jitterMs)}</dd>
+								{#if track?.liveAudio}
+									<dt class="text-white/45"
+										>Live timing{track.liveAudio.preview ? ' preview' : ''}</dt
+									>
+									<dd class="font-mono"
+										>{track.liveAudio.appliedOffsetMs === 0
+											? '0 ms'
+											: track.liveAudio.appliedOffsetMs > 0
+												? `Audio +${track.liveAudio.appliedOffsetMs} ms`
+												: `Video +${-track.liveAudio.appliedOffsetMs} ms`}</dd
+									>
+									{#if track.liveAudio.preview}
+										<dt class="text-white/45">Saved audio offset</dt>
+										<dd class="font-mono">{track.liveAudio.configuredOffsetMs} ms</dd>
+									{/if}
+									<dt class="text-white/45">Profile timing queue</dt>
+									<dd class="font-mono"
+										>Audio {track.liveAudio.heldAudioBytes} B · Video {track.liveAudio
+											.heldVideoBytes} B ({track.liveAudio.heldVideoFrames} frames)</dd
+									>
+									<dt class="text-white/45">Profile timing drops</dt>
+									<dd class="font-mono"
+										>{track.liveAudio.capacityDrops.toString()} capacity · {track.liveAudio.expiredDrops.toString()}
+										expired</dd
+									>
+
+									{#if track.audioTiming && track.audioVariantId !== track.activeStream}
+										<dt class="text-white/45">Audio profile</dt>
+										<dd class="font-mono"
+											>{track.audioVariantId} · {track.audioTiming.appliedOffsetMs} ms</dd
+										>
+									{/if}
+								{/if}
 								<dt class="text-white/45">Jitter buffer</dt>
 								<dd class="font-mono">{formatMilliseconds(diagnostics.jitterBufferMs)}</dd>
 								<dt class="text-white/45">Round trip</dt>

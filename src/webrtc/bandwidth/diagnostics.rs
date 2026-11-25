@@ -1,5 +1,32 @@
 use super::*;
-use crate::api::proto::{LiveQualityDiagnostics, LiveQualitySelectionReason, Notification};
+use crate::api::proto::{
+    LiveAudioTiming, LiveQualityDiagnostics, LiveQualitySelectionReason, Notification,
+};
+
+const OCCUPANCY_REPORT_INTERVAL: Duration = Duration::from_secs(10);
+
+fn timing_changed(
+    previous: Option<LiveAudioTiming>,
+    current: LiveAudioTiming,
+    sample_occupancy: bool,
+) -> bool {
+    let Some(previous) = previous else {
+        return true;
+    };
+    // Queue occupancy is shared across viewers and can change on every frame.
+    // Offsets, preview transitions, and dropped packets use the normal reporting cadence.
+    let comparable = if sample_occupancy {
+        current
+    } else {
+        LiveAudioTiming {
+            held_audio_bytes: previous.held_audio_bytes,
+            held_video_bytes: previous.held_video_bytes,
+            held_video_frames: previous.held_video_frames,
+            ..current
+        }
+    };
+    comparable != previous
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::webrtc) struct QualitySnapshot {
@@ -119,7 +146,7 @@ impl ApiMediaRuntime {
         let result = if let Some(index) = index {
             self.enqueue_quality_state_at(index)
         } else {
-            self.enqueue_control_notification(state_notification(track_id, stream, None))
+            self.enqueue_control_notification(state_notification(track_id, stream, None, None))
         };
         if let Err(error) = result {
             tracing::warn!(%error, "dropping subscription stream-state notification");
@@ -128,7 +155,8 @@ impl ApiMediaRuntime {
 
     pub(in crate::webrtc) fn discard_queued_stream_states(&mut self, track_id: &TrackId) {
         let mut removed_bytes = 0usize;
-        self.control_notifications.retain(|notification| {
+        self.control_notifications.retain(|guarded| {
+            let notification = &guarded.value;
             let remove = matches!(
                 notification.event.as_ref(),
                 Some(crate::api::proto::notification::Event::SubscriptionStreamState(state))
@@ -154,27 +182,57 @@ impl ApiMediaRuntime {
             return;
         }
         self.bandwidth.quality_report_due = Some(now + DESIRED_BITRATE_REFRESH);
+        let sample_occupancy = self
+            .bandwidth
+            .occupancy_report_due
+            .is_none_or(|due| now >= due);
+        if sample_occupancy {
+            self.bandwidth.occupancy_report_due = Some(now + OCCUPANCY_REPORT_INTERVAL);
+        }
         for index in 0..self.tracks.len() {
             let runtime = &self.tracks[index].runtime;
             let snapshot = QualitySnapshot::observe(runtime, self.bandwidth.transport_estimate_bps);
-            if runtime.reported_quality == Some(snapshot) {
+            let timing = runtime
+                .timing
+                .report(runtime.subscription.active_source.stream);
+            if runtime.reported_quality == Some(snapshot)
+                && !timing_changed(runtime.reported_timing, timing, sample_occupancy)
+            {
                 continue;
             }
             if self.enqueue_quality_state_at(index).is_err() {
                 break;
             }
         }
+        for index in 0..self.audio_tracks.len() {
+            let track = &self.audio_tracks[index];
+            let runtime = &track.runtime;
+            let timing = runtime.timing.report(runtime.source.stream);
+            if !timing_changed(track.reported_timing, timing, sample_occupancy) {
+                continue;
+            }
+            let notification =
+                state_notification(&runtime.track_id, runtime.source.stream, None, Some(timing));
+            if self.enqueue_control_notification(notification).is_err() {
+                break;
+            }
+            self.audio_tracks[index].reported_timing = Some(timing);
+        }
     }
 
     fn enqueue_quality_state_at(&mut self, index: usize) -> anyhow::Result<()> {
         let runtime = &self.tracks[index].runtime;
         let snapshot = QualitySnapshot::observe(runtime, self.bandwidth.transport_estimate_bps);
+        let stream = runtime.subscription.active_source.stream;
+        let timing = runtime.timing.report(stream);
         let notification = state_notification(
             &runtime.track_id,
-            runtime.subscription.active_source.stream,
+            stream,
             Some(snapshot.into_proto()),
+            Some(timing),
         );
         self.enqueue_control_notification(notification)?;
+        self.tracks[index].runtime.reported_timing = Some(timing);
         self.tracks[index].runtime.reported_quality = Some(snapshot);
         Ok(())
     }
@@ -184,6 +242,7 @@ fn state_notification(
     track_id: &TrackId,
     stream: StreamKind,
     live_quality: Option<LiveQualityDiagnostics>,
+    live_audio: Option<crate::api::proto::LiveAudioTiming>,
 ) -> Notification {
     Notification {
         event: Some(
@@ -192,6 +251,7 @@ fn state_notification(
                     subscription_id: track_id.0.clone(),
                     active_variant_id: stream.to_string(),
                     live_quality,
+                    live_audio,
                 },
             ),
         ),

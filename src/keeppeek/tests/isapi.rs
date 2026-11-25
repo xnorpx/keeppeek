@@ -42,7 +42,7 @@ fn generic_onvif_camera_commits_motion_before_live_delivery_and_unsubscribes() {
     let started = published.recv_timeout(Duration::from_secs(1)).unwrap();
     assert_eq!(started.kind, "motion");
     assert_eq!(started.source, EventSource::Camera);
-    recorder.stop_camera(camera.config.ip);
+    recorder.stop_camera(camera.config.ip).unwrap();
     let ended = published.recv_timeout(Duration::from_secs(1)).unwrap();
     assert_eq!(started.id, ended.id);
     assert!(ended.end_time_ms.is_some());
@@ -76,7 +76,7 @@ fn generic_event_policy_reconfiguration_does_not_cancel_media_workers() {
     recorder.restart_camera(&camera).unwrap();
     assert!(fake.wait_for_pulls(2, Duration::from_secs(3)));
     assert!(!media_cancel.is_cancelled());
-    recorder.stop_camera(camera.config.ip);
+    recorder.stop_camera(camera.config.ip).unwrap();
     assert_eq!(fake.unsubscribe_count(), 2);
 }
 
@@ -99,7 +99,7 @@ fn automatic_events_fall_back_to_onvif_after_isapi_is_unsupported() {
     assert_eq!(generic.subscription_count(), 1);
     assert_eq!(vendor.requests().len(), 1);
     assert!(!media.is_cancelled());
-    recorder.stop_camera(camera.config.ip);
+    recorder.stop_camera(camera.config.ip).unwrap();
     assert_eq!(generic.active_subscriptions(), 0);
 }
 
@@ -150,7 +150,7 @@ fn generic_event_snapshots_are_optional_and_commit_after_the_event() {
         }
         revisions.extend(published.try_iter());
     }
-    recorder.stop_camera(camera.config.ip);
+    recorder.stop_camera(camera.config.ip).unwrap();
     assert!(revisions.len() >= 2);
     assert!(revisions[0].attachments.is_empty());
     let enriched = revisions
@@ -214,7 +214,7 @@ fn isapi_camera_worker_persists_revisions_before_live_delivery() {
         let message = recorder.rx.recv_timeout(Duration::from_secs(5)).unwrap();
         recorder.handle_event(message);
     }
-    recorder.stop_camera(camera.config.ip);
+    recorder.stop_camera(camera.config.ip).unwrap();
     assert_eq!(
         server
             .requests()
@@ -388,7 +388,7 @@ fn fake_hikvision_anpr_images_are_committed_with_the_correct_box_and_revision() 
     );
     assert_eq!(closed.id, first.id);
     assert_eq!(closed.revision, 2);
-    recorder.stop_camera(camera.config.ip);
+    recorder.stop_camera(camera.config.ip).unwrap();
     drop(recorder);
     drop(store);
     catalog.shutdown();

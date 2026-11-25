@@ -2,11 +2,12 @@ import { expect, test, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { gunzipSync } from 'node:zlib';
 import { mockControlPeer } from './fixtures/control-peer';
+import { mixedCameras } from './fixtures/peek';
 
 async function installLoggingMocks(
 	page: Page,
 	accessRole: 'administrator' | 'user' = 'administrator'
-): Promise<void> {
+) {
 	await page.route('**/logs/snapshot', async (route) => {
 		await route.fulfill({
 			contentType: 'application/json',
@@ -71,7 +72,7 @@ async function installLoggingMocks(
 			});
 		}
 	);
-	await mockControlPeer(page, {
+	return mockControlPeer(page, {
 		accessRole,
 		runtimeConfiguration: {
 			host: '0.0.0.0',
@@ -253,6 +254,25 @@ test('captures a scoped bug report across Settings and Logs navigation', async (
 	await dialog.getByRole('button', { name: 'Done', exact: true }).click();
 	await expect(dialog).not.toBeVisible();
 	await expect(indicator).not.toBeVisible();
+});
+
+test('cancels an active report when the same administrator loses camera access', async ({
+	page
+}) => {
+	const control = await installLoggingMocks(page);
+	await page.goto('/settings/logs');
+	const start = page.getByRole('button', { name: 'Report a bug' });
+	await expect(start).toBeVisible();
+	await control.publishCapabilities([], mixedCameras);
+	await start.click();
+	await page.getByRole('button', { name: 'Collect logs only' }).click();
+	const indicator = page.getByRole('complementary', { name: 'Bug report in progress' });
+	await expect(indicator).toBeVisible();
+	await control.publishCapabilities([], []);
+	await expect(indicator).toBeHidden();
+	await start.click();
+	await expect(page.getByRole('dialog', { name: 'Report a bug' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Collect logs only' })).toBeVisible();
 });
 
 test('ordinary viewers cannot start a bug report from administrator routes', async ({ page }) => {

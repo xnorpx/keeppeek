@@ -1,7 +1,13 @@
+import { fromJson, toBinary, type JsonObject } from '@bufbuild/protobuf';
+import { StructSchema } from '@bufbuild/protobuf/wkt';
 import { describe, expect, it, vi } from 'vitest';
-import type { StateEntry } from './proto/webrtc_pb';
+import { StateStoreErrorCode, type StateEntry } from './proto/webrtc_pb';
+import { StateStoreRequestError } from './state-store-error';
 import { RuntimeProfilesControlClient } from './control-client-runtime-profiles';
 import {
+	runtimeProfileCompactRegistrySchema,
+	runtimeProfileSelectSchema,
+	runtimeProfilesActiveSchema,
 	assembleObservedParts,
 	observedPartFromEntry,
 	runtimeProfileHeaderFromEntry,
@@ -14,6 +20,175 @@ import {
 import type { ControlClientStateStore } from './control-client-state-store';
 
 describe('RuntimeProfilesControlClient', () => {
+	it('pins the displayed definition across active updates and detects recreated profiles', async () => {
+		const original = await profile('away', 0, '3');
+		const selection = {
+			revision: '6',
+			active_profile_id: null,
+			profiles: { away: original.definition }
+		};
+		const summary = {
+			id: 'away',
+			name: original.definition.name,
+			revision: '3',
+			target_count: 0,
+			part_count: 0,
+			digest: original.digest
+		};
+		const manifest = { revision: '8', active_profile_id: null, profiles: { away: summary } };
+		const get = vi
+			.fn()
+			.mockResolvedValue(entry('registry', runtimeProfilesRegistrySchema, manifest, 8n));
+		const put = vi
+			.fn()
+			.mockResolvedValue(entry('active', runtimeProfilesActiveSchema, { profile_id: 'away' }, 9n));
+		const client = new RuntimeProfilesControlClient({
+			put,
+			get
+		} as unknown as ControlClientStateStore);
+		await client.activate('away', '8', {
+			...selection,
+			activation_schema: runtimeProfileSelectSchema
+		});
+		expect(put).toHaveBeenLastCalledWith(runtimeProfilesNamespace, 'active', {
+			schema: runtimeProfileSelectSchema,
+			value: { profile_id: 'away', definition_revision: '3', definition_digest: original.digest },
+			expectedRevision: 8n
+		});
+		await client.activate('away', '8', selection);
+		expect(put).toHaveBeenLastCalledWith(runtimeProfilesNamespace, 'active', {
+			schema: runtimeProfilesActiveSchema,
+			value: { profile_id: 'away' },
+			expectedRevision: 8n
+		});
+		const recreated = { ...manifest, profiles: { away: { ...summary, digest: '0'.repeat(64) } } };
+		get.mockResolvedValue(entry('registry', runtimeProfilesRegistrySchema, recreated, 8n));
+		await expect(client.activate('away', '8', selection)).rejects.toMatchObject({
+			code: StateStoreErrorCode.CONFLICT
+		});
+		expect(put).toHaveBeenCalledTimes(2);
+		await client.activate(null, '8', selection);
+		expect(put).toHaveBeenLastCalledWith(runtimeProfilesNamespace, 'active', {
+			schema: runtimeProfilesActiveSchema,
+			value: { profile_id: '' },
+			expectedRevision: 8n
+		});
+	});
+
+	it('preserves an untouched definition revision when a different profile is edited', async () => {
+		const first = await profile('home', 0, '3');
+		const second = await profile('away', 0, '4');
+		const manifest = {
+			revision: '8',
+			active_profile_id: null,
+			profiles: Object.fromEntries(
+				[first, second].map(({ definition, digest }) => [
+					definition.id,
+					{
+						id: definition.id,
+						name: definition.name,
+						revision: definition.revision,
+						digest,
+						target_count: 0,
+						part_count: 0
+					}
+				])
+			)
+		};
+		const put = vi
+			.fn()
+			.mockResolvedValue(entry('registry', runtimeProfilesRegistrySchema, manifest, 8n));
+		const get = vi
+			.fn()
+			.mockResolvedValue(entry('registry', runtimeProfilesRegistrySchema, manifest, 8n));
+		const client = new RuntimeProfilesControlClient({
+			put,
+			get
+		} as unknown as ControlClientStateStore);
+		await expect(
+			client.saveRegistry({
+				...manifest,
+				profiles: { home: { ...first.definition, revision: '2' } }
+			})
+		).rejects.toMatchObject({ code: StateStoreErrorCode.CONFLICT, currentRevision: 8n });
+		expect(put).not.toHaveBeenCalled();
+		await client.saveRegistry({
+			...manifest,
+			profiles: { home: first.definition, away: { ...second.definition, name: 'Edited' } }
+		});
+		expect(put).toHaveBeenCalledExactlyOnceWith(
+			runtimeProfilesNamespace,
+			'registry',
+			expect.objectContaining({
+				expectedRevision: 8n,
+				value: expect.objectContaining({
+					profiles: expect.objectContaining({
+						home: expect.objectContaining({ revision: '3', digest: first.digest }),
+						away: expect.objectContaining({ revision: '5' })
+					})
+				})
+			})
+		);
+		put.mockClear();
+		await client.saveRegistry({
+			...manifest,
+			profiles: { home: { ...first.definition, name: 'Recreated', revision: '0' } }
+		});
+		expect(put).toHaveBeenCalledWith(
+			runtimeProfilesNamespace,
+			'registry',
+			expect.objectContaining({
+				expectedRevision: 8n,
+				value: expect.objectContaining({
+					profiles: expect.objectContaining({
+						home: expect.objectContaining({ revision: '4', name: 'Recreated' })
+					})
+				})
+			})
+		);
+	});
+
+	it('stores all 32 maximum-length profiles on a compact-capable recorder', async () => {
+		const { client, put } = profileRegistryRecorder(false);
+		const registry = capacityRegistry(128);
+		const accepted = await client.saveRegistry(registry);
+		expect(put.mock.calls.map(([, , input]) => input.schema)).toEqual([
+			runtimeProfileCompactRegistrySchema
+		]);
+		for (const [id, definition] of Object.entries(registry.profiles)) {
+			expect(accepted.profiles[id]).toEqual({ ...definition, revision: '1' });
+		}
+	});
+
+	it.each([
+		{ idLength: 128, storedBytes: 16704, fits: false },
+		{ idLength: 124, storedBytes: 16349, fits: true }
+	])(
+		'enforces the legacy recorder limit for a $storedBytes-byte stored registry',
+		async ({ idLength, storedBytes, fits }) => {
+			const { client, put, current } = profileRegistryRecorder(true);
+			const previous = current();
+			const saving = client.saveRegistry(capacityRegistry(idLength));
+			if (fits) {
+				const accepted = await saving;
+				expect(Object.keys(accepted.profiles)).toHaveLength(32);
+				expect(current().schema).toBe(runtimeProfilesRegistrySchema);
+			} else {
+				await expect(saving).rejects.toMatchObject({ code: StateStoreErrorCode.VALUE_TOO_LARGE });
+				expect(current()).toBe(previous);
+			}
+			const writes = put.mock.calls.map(([, , input]) => input);
+			expect(writes.map(({ schema }) => schema)).toEqual([
+				runtimeProfileCompactRegistrySchema,
+				runtimeProfilesRegistrySchema
+			]);
+			expect(writes.map(({ expectedRevision }) => expectedRevision)).toEqual([0n, 0n]);
+			expect(writes[0].value.draft_id).toBe(writes[1].value.draft_id);
+			const { draft_id: _draft, ...header } = writes[1].value;
+			expect(toBinary(StructSchema, fromJson(StructSchema, header)).byteLength).toBe(storedBytes);
+		}
+	);
+
 	it('reports an asynchronous registry watch read failure to its owner', async () => {
 		let notify: (entries: readonly StateEntry[]) => void = () => {};
 		const stateStore = {
@@ -33,6 +208,38 @@ describe('RuntimeProfilesControlClient', () => {
 			)
 		);
 	});
+	it.each(['success', 'failure'])(
+		'ignores a prior connection registry %s before the new snapshot',
+		async (outcome) => {
+			let notify: (entries: readonly StateEntry[]) => void = () => {};
+			const client = new RuntimeProfilesControlClient({
+				watch: async (_namespace: string, options: { listener: typeof notify }) => {
+					notify = options.listener;
+					return { close: vi.fn() };
+				}
+			} as unknown as ControlClientStateStore);
+			const registry = { profiles: {}, revision: '3', active_profile_id: null };
+			const delayed = Promise.withResolvers<typeof registry>();
+			vi.spyOn(client, 'getRegistry')
+				.mockReturnValueOnce(delayed.promise)
+				.mockResolvedValue(registry);
+			const received = vi.fn();
+			const failed = vi.fn();
+			await client.watchRegistry(received, failed);
+			const entries = [entry('registry', runtimeProfilesRegistrySchema, {}, 3n)];
+			notify(entries);
+			client.handleConnectionClosed();
+			await client.handleConnectionOpened();
+			if (outcome === 'success') delayed.resolve(registry);
+			else delayed.reject(new Error('Old connection closed'));
+			await delayed.promise.catch(() => {});
+			await Promise.resolve();
+			expect(received).not.toHaveBeenCalled();
+			expect(failed).not.toHaveBeenCalled();
+			notify(entries);
+			await vi.waitFor(() => expect(received).toHaveBeenCalledExactlyOnceWith(registry));
+		}
+	);
 	it('reads stable camera targets without imposing the per-profile 127-target limit', async () => {
 		const cameras = Object.fromEntries(
 			Array.from({ length: 200 }, (_, index) => [
@@ -799,6 +1006,59 @@ describe('runtime profile observations', () => {
 		await handle.close();
 	});
 });
+
+function capacityRegistry(idLength: number) {
+	const profiles = Object.fromEntries(
+		Array.from({ length: 32 }, (_, i) => {
+			const suffix = String(i).padStart(2, '0');
+			const id = 'p'.repeat(idLength - suffix.length) + suffix;
+			const name = '界'.repeat(26) + suffix;
+			return [id, { id, name, revision: '0', cameras: {} }];
+		})
+	);
+	return { revision: '0', active_profile_id: null, profiles };
+}
+
+function profileRegistryRecorder(legacy: boolean) {
+	let stored = entry(
+		'registry',
+		runtimeProfilesRegistrySchema,
+		{ revision: '0', active_profile_id: null, profiles: {} },
+		0n
+	);
+	const put = vi.fn(
+		async (
+			namespace: string,
+			key: string,
+			input: { schema: string; value: JsonObject; expectedRevision: bigint }
+		) => {
+			if (legacy && input.schema === runtimeProfileCompactRegistrySchema) {
+				throw new StateStoreRequestError('Unsupported schema', {
+					namespace,
+					key,
+					code: StateStoreErrorCode.SCHEMA_INVALID
+				});
+			}
+			const { draft_id: _draft, ...value } = input.value;
+			const header = { ...value, revision: '1' };
+			if (toBinary(StructSchema, fromJson(StructSchema, header)).byteLength > 16 * 1024) {
+				throw new StateStoreRequestError('Registry exceeds the document limit', {
+					namespace,
+					key,
+					code: StateStoreErrorCode.VALUE_TOO_LARGE
+				});
+			}
+			stored = entry(key, input.schema, header, 1n);
+			return stored;
+		}
+	);
+	const current = () => stored;
+	const client = new RuntimeProfilesControlClient({
+		get: current,
+		put
+	} as unknown as ControlClientStateStore);
+	return { client, put, current };
+}
 
 function entry(key: string, schema: string, value: unknown, revision: bigint): StateEntry {
 	return {

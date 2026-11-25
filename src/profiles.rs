@@ -11,6 +11,9 @@ const MAX_PROFILE_ID_BYTES: usize = 128;
 const MAX_PROFILE_NAME_BYTES: usize = 80;
 const MAX_CAMERA_ID_BYTES: usize = 256;
 
+pub(crate) const PENDING_PRIVACY_CONFIRMATION: &str =
+    "Camera recovered. Reapply the current profile if privacy confirmation remains pending.";
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct CameraProfileOverride {

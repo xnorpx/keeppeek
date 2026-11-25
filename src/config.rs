@@ -45,6 +45,7 @@ const MANAGED_CAMERA_KEYS: &[&str] = &[
     "event_pre_recording_duration_secs",
     "event_recording_stream",
     "recorded_audio",
+    "live_audio",
 ];
 const RUNTIME_PROFILE_IDENTITY_SCHEMA: &str = "identity_schema";
 const RUNTIME_PROFILE_IDENTITY_SCHEMA_VERSION: i64 = 1;
@@ -2364,6 +2365,17 @@ fn camera_profile_identity(camera: &toml::Table) -> anyhow::Result<Option<String
     Ok(Some(identity.to_string()))
 }
 
+fn validate_camera_audio(config: &CameraConfig, namespace: &str, name: &str) -> anyhow::Result<()> {
+    config
+        .recorded_audio
+        .validate()
+        .map_err(|error| anyhow::anyhow!("{namespace}.{name}.recorded_audio: {error}"))?;
+    config
+        .live_audio
+        .validate()
+        .map_err(|error| anyhow::anyhow!("{namespace}.{name}.live_audio: {error}"))
+}
+
 fn cameras_from_table(
     root: &toml::Table,
     secrets: &Secrets,
@@ -2386,7 +2398,7 @@ fn cameras_from_table(
             resolve_toml_secret_references(&mut resolved, secrets)?;
             let mut config: CameraConfig = resolved.try_into()?;
             config.events.validate(config.ip)?;
-            config.recorded_audio.validate()?;
+            validate_camera_audio(&config, namespace, cam_name)?;
             config.name = Some(cam_name.clone());
             if config.username.is_empty() {
                 config.username.clone_from(&defaults.username);
@@ -2762,7 +2774,6 @@ pub fn set_camera_manufacturer(
 }
 
 pub fn upsert_camera(path: &Path, config: &CameraConfig) -> anyhow::Result<String> {
-    config.recorded_audio.validate()?;
     validate_event_recording_policy(
         config.recording_mode,
         config.event_pre_recording_duration_secs,
@@ -2785,6 +2796,7 @@ pub fn upsert_camera(path: &Path, config: &CameraConfig) -> anyhow::Result<Strin
         cameras.insert(name.clone(), toml::Value::Table(toml::Table::new()));
         ("cameras".to_owned(), name)
     };
+    validate_camera_audio(config, &namespace, &name)?;
     let camera = root
         .get_mut(&namespace)
         .and_then(toml::Value::as_table_mut)
@@ -2844,7 +2856,7 @@ fn merge_camera_fields(
                 continue;
             }
             // This numeric table is a replacement. Omitted stream keys restore inheritance.
-            let value = if key == "recorded_audio" {
+            let value = if matches!(key.as_str(), "recorded_audio" | "live_audio") {
                 value
             } else {
                 preserve_secret_reference(original.get(&key), value, secrets)?
@@ -5368,6 +5380,7 @@ mod tests {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
 
         assert_eq!(upsert_camera(&path, &config).unwrap(), "existing");

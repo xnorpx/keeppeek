@@ -133,6 +133,7 @@ impl Store {
     pub(super) fn set_profile_suppressed_sources(
         &self,
         source_ids: BTreeSet<String>,
+        revision: Option<&super::ProfileRevisionFence>,
     ) -> anyhow::Result<usize> {
         if source_ids.len() > 127
             || source_ids
@@ -147,10 +148,44 @@ impl Store {
             .and_then(|duration| i64::try_from(duration.as_millis()).ok())
             .unwrap_or(i64::MAX);
         let mut state = self.lock_state();
+        // Check at the point of application, after acquiring the notification state.
+        // The desired revision stays writable while the notification command waits in its queue.
+        let current = revision.map(|expected| {
+            (
+                expected
+                    .status
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                expected.revision,
+            )
+        });
+        anyhow::ensure!(
+            current
+                .as_ref()
+                .is_none_or(|(status, revision)| status.revision == *revision),
+            "notification profile update was superseded"
+        );
         *self
             .profile_suppressed_sources
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = source_ids.clone();
+        drop(current);
+        let suppressed = Self::suppress_pending_deliveries(&mut state, &source_ids, now_ms);
+        drop(state);
+        if suppressed != 0 {
+            decrement_counter(
+                &self.metrics.pending_deliveries,
+                u64::try_from(suppressed).unwrap_or(u64::MAX),
+            );
+        }
+        Ok(suppressed)
+    }
+
+    fn suppress_pending_deliveries(
+        state: &mut RuntimeState,
+        source_ids: &BTreeSet<String>,
+        now_ms: i64,
+    ) -> usize {
         let suppressed = state
             .outbox
             .iter()
@@ -185,14 +220,7 @@ impl Store {
                 next_eligible_at_ms: None,
             });
         }
-        drop(state);
-        if !suppressed.is_empty() {
-            decrement_counter(
-                &self.metrics.pending_deliveries,
-                u64::try_from(suppressed.len()).unwrap_or(u64::MAX),
-            );
-        }
-        Ok(suppressed.len())
+        suppressed.len()
     }
 
     fn normalize_operational_interval(
@@ -1565,7 +1593,7 @@ mod tests {
 
         assert_eq!(
             store
-                .set_profile_suppressed_sources(BTreeSet::from(["front-door".to_owned()]))
+                .set_profile_suppressed_sources(BTreeSet::from(["front-door".to_owned()]), None)
                 .unwrap(),
             2
         );
@@ -1595,8 +1623,31 @@ mod tests {
             1
         );
 
+        let status = std::sync::Arc::new(std::sync::RwLock::new(
+            crate::profiles::RuntimeProfileStatus {
+                revision: 3,
+                ..Default::default()
+            },
+        ));
+        let mut fence = crate::notifications::ProfileRevisionFence {
+            status,
+            revision: 2,
+        };
+        assert!(
+            store
+                .set_profile_suppressed_sources(BTreeSet::new(), Some(&fence))
+                .is_err()
+        );
+        assert!(
+            store
+                .profile_suppressed_sources
+                .read()
+                .unwrap()
+                .contains("front-door")
+        );
+        fence.revision = 3;
         store
-            .set_profile_suppressed_sources(BTreeSet::new())
+            .set_profile_suppressed_sources(BTreeSet::new(), Some(&fence))
             .unwrap();
         assert_eq!(
             store

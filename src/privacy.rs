@@ -1,4 +1,6 @@
-use chrono::{DateTime, Datelike, Duration, NaiveDateTime, NaiveTime, TimeZone, Utc, Weekday};
+use chrono::{
+    DateTime, Datelike, Duration, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc, Weekday,
+};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -8,6 +10,7 @@ use std::{
 };
 
 const MAX_WINDOWS: usize = 64;
+pub(crate) const MAX_GUEST_MEDIA_TRANSFERS: usize = 8;
 const MAX_PROFILE_OVERRIDES_DURING_TRANSITION: usize = crate::profiles::MAX_PROFILE_TARGETS * 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,20 +25,320 @@ pub struct PrivacyGate {
     active: AtomicBool,
     epoch: AtomicU64,
     transition: Mutex<()>,
+    responses: Mutex<Vec<(Arc<str>, rouille::ResponseAbortHandle)>>,
+}
+
+/// Local minute lookup compiled at configuration time. Seven bits represent Monday through Sunday.
+#[derive(Clone, Debug)]
+struct CompiledSchedule {
+    enabled: bool,
+    zone: Tz,
+    weekdays: Box<[u8; 1440]>,
+    temporary_override: Option<(DateTime<Utc>, DateTime<Utc>)>,
+}
+
+impl CompiledSchedule {
+    fn new(schedule: &PrivacySchedule) -> anyhow::Result<Self> {
+        schedule.validate()?;
+        let mut weekdays = Box::new([0; 1440]);
+        for window in &schedule.windows {
+            let start = parse_time(&window.start)?.num_seconds_from_midnight() as usize / 60;
+            let end = parse_time(&window.end)?.num_seconds_from_midnight() as usize / 60;
+            let days = window
+                .weekdays
+                .iter()
+                .fold(0u8, |bits, day| bits | (1 << (day - 1)));
+            if start < end {
+                for minute in &mut weekdays[start..end] {
+                    *minute |= days;
+                }
+            } else {
+                for minute in &mut weekdays[start..] {
+                    *minute |= days;
+                }
+                let next_days = ((days << 1) & 127) | (days >> 6);
+                for minute in &mut weekdays[..end] {
+                    *minute |= next_days;
+                }
+            }
+        }
+        let temporary_override = schedule
+            .temporary_override
+            .as_ref()
+            .map(|o| -> anyhow::Result<_> {
+                Ok((
+                    parse_override_time(&o.accepted_at)?,
+                    parse_override_time(&o.expires_at)?,
+                ))
+            })
+            .transpose()?;
+        Ok(Self {
+            enabled: schedule.enabled,
+            zone: schedule.timezone.parse()?,
+            weekdays,
+            temporary_override,
+        })
+    }
+
+    fn active(&self, instant: DateTime<Utc>) -> bool {
+        if !self.enabled
+            || self
+                .temporary_override
+                .is_some_and(|(start, end)| instant >= start && instant < end)
+        {
+            return false;
+        }
+        let local = instant.with_timezone(&self.zone);
+        let minute = local.time().num_seconds_from_midnight() as usize / 60;
+        self.weekdays[minute] & (1 << local.weekday().num_days_from_monday()) != 0
+    }
 }
 
 #[derive(Debug, Default)]
 struct PrivacyState {
+    compiled: BTreeMap<String, CompiledSchedule>,
     schedules: BTreeMap<String, PrivacySchedule>,
     profile_overrides: BTreeMap<String, bool>,
     gates: BTreeMap<String, std::sync::Arc<PrivacyGate>>,
+}
+
+impl PrivacyState {
+    fn active(&self, id: &str, instant: DateTime<Utc>) -> bool {
+        self.profile_overrides.get(id).copied().unwrap_or(false)
+            || self
+                .compiled
+                .get(id)
+                .is_some_and(|schedule| schedule.active(instant))
+    }
+}
+
+/// Captures permission at media ingress and rechecks it at the final local write.
+#[derive(Clone, Debug)]
+pub struct MediaPermit {
+    registry: Arc<PrivacyRegistry>,
+    camera_id: Arc<str>,
+    gate: Arc<PrivacyGate>,
+    epoch: u64,
+    alias_generation: u64,
+}
+
+impl MediaPermit {
+    fn capture(
+        registry: &Arc<PrivacyRegistry>,
+        state: &PrivacyState,
+        id: &str,
+        camera_id: &Arc<str>,
+        alias_generation: u64,
+    ) -> Option<Self> {
+        let gate = state.gates.get(id)?;
+        let active = state.active(id, Utc::now());
+        let epoch = gate.set_active(active);
+        (!active).then(|| Self {
+            registry: registry.clone(),
+            camera_id: camera_id.clone(),
+            gate: gate.clone(),
+            epoch,
+            alias_generation,
+        })
+    }
+
+    /// Arms the existing bounded guest HTTP writer for synchronous cancellation at an epoch change.
+    pub(crate) fn protect_response(
+        &self,
+        response: rouille::ResponseAbortHandle,
+    ) -> std::io::Result<()> {
+        self.deliver(|| {
+            let mut responses = self
+                .gate
+                .responses
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            responses.retain(|(_, r)| !r.is_finished().unwrap_or(false));
+            if responses.len() >= MAX_GUEST_MEDIA_TRANSFERS {
+                return Err(std::io::Error::other(
+                    "guest response privacy capacity reached",
+                ));
+            }
+            let permit = self.clone();
+            // The socket stays registered until its final flush. Revocation shuts it down
+            // before publishing the new epoch or alias, including a write already in progress.
+            response.guard_writes(move || {
+                permit
+                    .deliver(|| ())
+                    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            })?;
+            responses.push((self.camera_id.clone(), response));
+            Ok(())
+        })
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "camera privacy changed",
+            )
+        })?
+    }
+
+    pub(crate) fn deliver<T>(&self, write: impl FnOnce() -> T) -> Option<T> {
+        let aliases = self
+            .registry
+            .aliases
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (id, generation) = resolve_alias(&aliases, &self.camera_id);
+        if generation != self.alias_generation {
+            return None;
+        }
+        let state = self
+            .registry
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let gate = state.gates.get(id)?;
+        if !Arc::ptr_eq(gate, &self.gate) {
+            return None;
+        }
+        let _guard = gate
+            .transition
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let active = state.active(id, Utc::now());
+        let epoch = gate.set_active_locked(active);
+        (!active && epoch == self.epoch).then(write)
+    }
+}
+
+/// Only an actual privacy epoch transition permits reauthentication on a new transport.
+#[derive(Debug)]
+pub(crate) struct PrivacyTransportRetired;
+
+impl std::fmt::Display for PrivacyTransportRetired {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RTC media privacy epoch changed")
+    }
+}
+
+impl std::error::Error for PrivacyTransportRetired {}
+
+/// Remembers every camera epoch admitted to one multiplexed RTC transport.
+/// The encrypted datagrams and SCTP retransmissions no longer expose a camera ID.
+#[derive(Default)]
+pub(crate) struct TransportPermits {
+    permits: Vec<MediaPermit>,
+}
+
+impl TransportPermits {
+    pub(crate) fn remember(&mut self, permit: Option<&MediaPermit>) -> anyhow::Result<()> {
+        let Some(permit) = permit else {
+            return Ok(());
+        };
+        if let Some(first) = self.permits.first() {
+            anyhow::ensure!(
+                Arc::ptr_eq(&first.registry.state, &permit.registry.state)
+                    && Arc::ptr_eq(&first.registry.aliases, &permit.registry.aliases),
+                "RTC media privacy registry changed"
+            );
+        }
+        // A stable gate order also orders concurrent sends for two shared cameras.
+        let key = (Arc::as_ptr(&permit.gate), permit.camera_id.as_ref());
+        match self
+            .permits
+            .binary_search_by(|p| (Arc::as_ptr(&p.gate), p.camera_id.as_ref()).cmp(&key))
+        {
+            Ok(i) => {
+                anyhow::ensure!(
+                    self.permits[i].alias_generation == permit.alias_generation,
+                    "RTC media privacy identity changed"
+                );
+                anyhow::ensure!(
+                    self.permits[i].epoch == permit.epoch,
+                    PrivacyTransportRetired
+                );
+            }
+            Err(i) => {
+                anyhow::ensure!(
+                    self.permits.len() < 128,
+                    "RTC camera history requires a fresh transport"
+                );
+                self.permits.insert(i, permit.clone());
+            }
+        }
+        Ok(())
+    }
+
+    /// Serialize the nonblocking UDP send with every applicable privacy transition.
+    /// A revoked permit permanently retires its peer, including after privacy ends.
+    pub(crate) fn send<T>(&self, write: impl FnOnce() -> std::io::Result<T>) -> anyhow::Result<T> {
+        let Some(first) = self.permits.first() else {
+            return Ok(write()?);
+        };
+        let aliases = first
+            .registry
+            .aliases
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = first
+            .registry
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        lock_transport_gates(&self.permits, || {
+            let now = Utc::now();
+            for permit in &self.permits {
+                let (id, generation) = resolve_alias(&aliases, &permit.camera_id);
+                anyhow::ensure!(
+                    generation == permit.alias_generation,
+                    "RTC media privacy identity changed"
+                );
+                anyhow::ensure!(
+                    state
+                        .gates
+                        .get(id)
+                        .is_some_and(|gate| Arc::ptr_eq(gate, &permit.gate)),
+                    "RTC media privacy identity changed"
+                );
+                let active = state.active(id, now);
+                let epoch = permit.gate.set_active_locked(active);
+                anyhow::ensure!(!active && epoch == permit.epoch, PrivacyTransportRetired);
+            }
+            Ok(write()?)
+        })
+    }
+}
+
+// The 128-entry history bounds recursion. Aliases for one gate share a single lock.
+fn lock_transport_gates<T>(permits: &[MediaPermit], write: impl FnOnce() -> T) -> T {
+    let Some(first) = permits.first() else {
+        return write();
+    };
+    let _guard = first
+        .gate
+        .transition
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let next = permits.partition_point(|permit| Arc::ptr_eq(&permit.gate, &first.gate));
+    lock_transport_gates(&permits[next..], write)
+}
+
+#[derive(Clone, Debug)]
+struct CameraAlias {
+    camera_id: String,
+    generation: u64,
+}
+
+fn resolve_alias<'a>(
+    aliases: &'a BTreeMap<String, CameraAlias>,
+    camera: &'a str,
+) -> (&'a str, u64) {
+    aliases.get(camera).map_or((camera, 0), |alias| {
+        (alias.camera_id.as_str(), alias.generation)
+    })
 }
 
 /// Resolves the effective schedule for each camera.
 #[derive(Debug, Clone, Default)]
 pub struct PrivacyRegistry {
     state: Arc<RwLock<PrivacyState>>,
-    aliases: Arc<RwLock<BTreeMap<String, String>>>,
+    aliases: Arc<RwLock<BTreeMap<String, CameraAlias>>>,
 }
 
 impl PrivacyRegistry {
@@ -44,11 +347,12 @@ impl PrivacyRegistry {
         if schedules.len() > 127 {
             anyhow::bail!("privacy registry cannot contain more than 127 cameras");
         }
+        let mut compiled = BTreeMap::new();
         for (camera_id, schedule) in &schedules {
             if camera_id.trim().is_empty() || camera_id.len() > 256 {
                 anyhow::bail!("privacy camera keys must contain 1 to 256 bytes");
             }
-            schedule.validate()?;
+            compiled.insert(camera_id.clone(), CompiledSchedule::new(schedule)?);
         }
         let gates = schedules
             .keys()
@@ -57,6 +361,7 @@ impl PrivacyRegistry {
         Ok(Self {
             state: Arc::new(RwLock::new(PrivacyState {
                 schedules,
+                compiled,
                 profile_overrides: BTreeMap::new(),
                 gates,
             })),
@@ -78,22 +383,29 @@ impl PrivacyRegistry {
             .state
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let old_gates = std::mem::take(&mut state.gates);
-        state.gates = replacement_state
-            .schedules
-            .keys()
-            .chain(state.profile_overrides.keys())
-            .map(|camera_id| {
-                (
-                    camera_id.clone(),
-                    old_gates
-                        .get(camera_id)
-                        .cloned()
-                        .unwrap_or_else(|| Arc::new(PrivacyGate::new())),
-                )
-            })
-            .collect();
         state.schedules = replacement_state.schedules.clone();
+        state.compiled = replacement_state.compiled.clone();
+        let PrivacyState {
+            schedules,
+            profile_overrides,
+            gates,
+            ..
+        } = &mut *state;
+        gates.retain(|id, gate| {
+            schedules.contains_key(id)
+                || profile_overrides.contains_key(id)
+                || Arc::strong_count(gate) > 1
+                || gate.has_responses()
+        });
+        for id in schedules.keys().chain(profile_overrides.keys()) {
+            gates
+                .entry(id.clone())
+                .or_insert_with(|| Arc::new(PrivacyGate::new()));
+        }
+        let now = Utc::now();
+        for (id, gate) in &state.gates {
+            gate.set_active(state.active(id, now));
+        }
         Ok(())
     }
 
@@ -133,12 +445,9 @@ impl PrivacyRegistry {
         for camera_id in affected {
             let profile_active = overrides.get(&camera_id).copied().unwrap_or(false);
             let scheduled_active = state
-                .schedules
+                .compiled
                 .get(&camera_id)
-                .map(|schedule| schedule.is_active_unchecked(now))
-                .transpose()
-                .map(|scheduled| scheduled.unwrap_or(false))
-                .unwrap_or(true);
+                .is_some_and(|schedule| schedule.active(now));
             if let Some(gate) = state.gates.get(&camera_id) {
                 gate.set_active(profile_active || scheduled_active);
             }
@@ -157,33 +466,48 @@ impl PrivacyRegistry {
 
     /// Associates a transport identity with a configured camera identity.
     pub fn set_alias(&self, alias: String, camera_id: String) {
-        self.aliases
+        let mut aliases = self
+            .aliases
             .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (previous, generation) = resolve_alias(&aliases, &alias);
+        if previous == camera_id {
+            return;
+        }
+        if let Some(gate) = self
+            .state
+            .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(alias, camera_id);
+            .gates
+            .get(previous)
+        {
+            gate.abort_responses(Some(&alias));
+        }
+        aliases.insert(
+            alias,
+            CameraAlias {
+                camera_id,
+                generation: generation.wrapping_add(1),
+            },
+        );
     }
 
     fn configured_id(&self, camera_id: &str) -> String {
-        self.aliases
+        let aliases = self
+            .aliases
             .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(camera_id)
-            .cloned()
-            .unwrap_or_else(|| camera_id.to_owned())
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        resolve_alias(&aliases, camera_id).0.to_owned()
     }
 
-    pub(crate) fn schedule_active(
-        &self,
-        camera_id: &str,
-        instant: DateTime<Utc>,
-    ) -> anyhow::Result<bool> {
+    pub(crate) fn schedule_active(&self, camera_id: &str, instant: DateTime<Utc>) -> bool {
         let configured_id = self.configured_id(camera_id);
         self.state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .schedules
+            .compiled
             .get(&configured_id)
-            .map_or(Ok(false), |schedule| schedule.is_active_unchecked(instant))
+            .is_some_and(|schedule| schedule.active(instant))
     }
 
     pub(crate) fn observed_profile_policy(
@@ -228,29 +552,65 @@ impl PrivacyRegistry {
             .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let profile_active = state
-            .profile_overrides
-            .get(&configured_id)
-            .copied()
-            .unwrap_or(false);
-        let schedule = state.schedules.get(&configured_id);
-        if schedule.is_none() && !profile_active {
-            if let Some(gate) = state.gates.get(&configured_id) {
-                return Ok((false, gate.set_active(false)));
-            }
+        let active = state.active(&configured_id, instant);
+        if !active && !state.gates.contains_key(&configured_id) {
             return Ok((false, 0));
         }
-        let active = profile_active
-            || schedule
-                .map(|schedule| schedule.is_active_unchecked(instant))
-                .transpose()?
-                .unwrap_or(false);
         let gate = state
             .gates
             .get(&configured_id)
             .ok_or_else(|| anyhow::anyhow!("privacy gate is missing for configured camera"))?;
         let epoch = gate.set_active(active);
         Ok((active, epoch))
+    }
+
+    pub(crate) fn media_permit(self: &Arc<Self>, camera_id: Arc<str>) -> Option<MediaPermit> {
+        let aliases = self
+            .aliases
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (id, alias_generation) = resolve_alias(&aliases, &camera_id);
+        let state = self
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.gates.contains_key(id) {
+            drop(state);
+            let mut state = self
+                .state
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.gates.len() >= MAX_PROFILE_OVERRIDES_DURING_TRANSITION {
+                let PrivacyState {
+                    gates,
+                    schedules,
+                    profile_overrides,
+                    ..
+                } = &mut *state;
+                gates.retain(|key, gate| {
+                    schedules.contains_key(key)
+                        || profile_overrides.contains_key(key)
+                        || Arc::strong_count(gate) > 1
+                        || gate.has_responses()
+                });
+                if state.gates.len() >= MAX_PROFILE_OVERRIDES_DURING_TRANSITION
+                    && !state.gates.contains_key(id)
+                {
+                    return None;
+                }
+            }
+            state
+                .gates
+                .entry(id.to_owned())
+                .or_insert_with(|| Arc::new(PrivacyGate::new()));
+        } else {
+            return MediaPermit::capture(self, &state, id, &camera_id, alias_generation);
+        }
+        let state = self
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        MediaPermit::capture(self, &state, id, &camera_id, alias_generation)
     }
 
     /// Returns the gate for a configured camera.
@@ -292,7 +652,32 @@ impl PrivacyGate {
             active: AtomicBool::new(false),
             epoch: AtomicU64::new(0),
             transition: Mutex::new(()),
+            responses: Mutex::new(Vec::new()),
         }
+    }
+
+    fn has_responses(&self) -> bool {
+        let mut responses = self
+            .responses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        responses.retain(|(_, r)| !r.is_finished().unwrap_or(false));
+        !responses.is_empty()
+    }
+
+    fn abort_responses(&self, alias: Option<&str>) {
+        self.responses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(camera, response)| {
+                if alias.is_some_and(|name| name != camera.as_ref()) {
+                    return true;
+                }
+                if response.abort().is_err() {
+                    tracing::warn!("guest media transport cancellation failed");
+                }
+                false
+            });
     }
 
     fn set_active(&self, active: bool) -> u64 {
@@ -300,9 +685,14 @@ impl PrivacyGate {
             .transition
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.set_active_locked(active)
+    }
+
+    fn set_active_locked(&self, active: bool) -> u64 {
         if self.active.load(Ordering::Acquire) == active {
             return self.epoch();
         }
+        self.abort_responses(None);
         let epoch = self.epoch.fetch_add(1, Ordering::AcqRel).saturating_add(1);
         self.active.store(active, Ordering::Release);
         epoch
@@ -581,6 +971,117 @@ const fn weekday_number(day: Weekday) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compiled_weekly_decisions_match_the_schedule_at_dst_and_override_boundaries() {
+        let mut policy = schedule(PrivacyWindow {
+            weekdays: vec![6, 7],
+            start: "22:30".into(),
+            end: "03:30".into(),
+        });
+        policy.windows.push(PrivacyWindow {
+            weekdays: vec![1, 3],
+            start: "10:15".into(),
+            end: "12:45".into(),
+        });
+        policy.temporary_override = Some(PrivacyOverride {
+            actor: "operator".into(),
+            reason: "service".into(),
+            accepted_at: "2026-11-01T08:59:59.500Z".into(),
+            expires_at: "2026-11-01T09:02:03.500Z".into(),
+        });
+        let compiled = CompiledSchedule::new(&policy).unwrap();
+        for start in ["2026-03-06T00:00:00Z", "2026-10-30T00:00:00Z"] {
+            let start = parse_override_time(start).unwrap();
+            for minute in 0..(8 * 24 * 60) {
+                let instant = start + Duration::minutes(minute);
+                assert_eq!(
+                    compiled.active(instant),
+                    policy.is_active_unchecked(instant).unwrap(),
+                    "{instant}"
+                );
+            }
+        }
+        for instant in [
+            "2026-11-01T08:59:59.499Z",
+            "2026-11-01T08:59:59.500Z",
+            "2026-11-01T09:02:03.499Z",
+            "2026-11-01T09:02:03.500Z",
+        ] {
+            let instant = parse_override_time(instant).unwrap();
+            assert_eq!(
+                compiled.active(instant),
+                policy.is_active_unchecked(instant).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "fleet privacy transport throughput measurement"]
+    fn measure_compiled_privacy_schedules_at_the_loopback_udp_handoff() {
+        use std::net::UdpSocket;
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let destination = socket.local_addr().unwrap();
+        socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut packet = [0_u8; 1200];
+        let day = weekday_number(Utc::now().weekday());
+        let mut policy = schedule(PrivacyWindow {
+            weekdays: vec![day % 7 + 1],
+            start: "10:00".into(),
+            end: "10:01".into(),
+        });
+        policy.timezone = "UTC".into();
+        policy.windows = vec![policy.windows[0].clone(); 64];
+        for cameras in [1, 32, 127] {
+            let schedules: BTreeMap<_, _> = (0..cameras)
+                .map(|i| (format!("camera-{i}"), policy.clone()))
+                .collect();
+            let registry = Arc::new(PrivacyRegistry::new(schedules).unwrap());
+            let mut permits = TransportPermits::default();
+            for i in 0..cameras {
+                let permit = registry
+                    .media_permit(Arc::from(format!("camera-{i}")))
+                    .unwrap();
+                permits.remember(Some(&permit)).unwrap();
+            }
+            for compiled in [false, true] {
+                let started = std::time::Instant::now();
+                let mut latencies = Vec::with_capacity(512);
+                for _ in 0..512 {
+                    let begin = std::time::Instant::now();
+                    let send = || socket.send_to(&packet, destination);
+                    if compiled {
+                        assert_eq!(permits.send(send).unwrap(), packet.len());
+                    } else {
+                        let aliases = registry.aliases.read().unwrap();
+                        let state = registry.state.read().unwrap();
+                        lock_transport_gates(&permits.permits, || {
+                            let now = Utc::now();
+                            for p in &permits.permits {
+                                let (id, generation) = resolve_alias(&aliases, &p.camera_id);
+                                assert_eq!(generation, p.alias_generation);
+                                assert!(Arc::ptr_eq(&state.gates[id], &p.gate));
+                                let active = state.schedules[id].is_active_unchecked(now).unwrap();
+                                assert_eq!(p.gate.set_active_locked(active), p.epoch);
+                                assert!(!active);
+                            }
+                            assert_eq!(send().unwrap(), packet.len());
+                        });
+                    }
+                    latencies.push(begin.elapsed().as_nanos());
+                    assert_eq!(socket.recv_from(&mut packet).unwrap().0, 1200);
+                }
+                latencies.sort_unstable();
+                println!(
+                    "privacy_udp cameras={cameras} compiled={compiled} packets=512 p95_ns={} packets_per_second={:.0}",
+                    latencies[486],
+                    512.0 / started.elapsed().as_secs_f64()
+                );
+            }
+        }
+    }
 
     #[test]
     fn gate_rejects_stale_and_private_media_epochs() {
@@ -930,6 +1431,35 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_privacy_revokes_audio_queued_across_two_configuration_changes() {
+        let registry = Arc::new(PrivacyRegistry::default());
+        registry.set_alias("transport".into(), "front".into());
+        let old = registry.media_permit("transport".into()).unwrap();
+        let other = registry.media_permit("back".into()).unwrap();
+        let mut full_day = schedule(PrivacyWindow {
+            weekdays: (1..=7).collect(),
+            start: "00:00".into(),
+            end: "12:00".into(),
+        });
+        full_day.windows.push(PrivacyWindow {
+            weekdays: (1..=7).collect(),
+            start: "12:00".into(),
+            end: "00:00".into(),
+        });
+        registry
+            .replace_schedules([("front".into(), full_day)].into())
+            .unwrap();
+        assert!(registry.media_permit("transport".into()).is_none());
+        registry.replace_schedules(BTreeMap::new()).unwrap();
+        assert!(old.deliver(|| true).is_none());
+        assert_eq!(other.deliver(|| true), Some(true));
+        let fresh = registry.media_permit("transport".into()).unwrap();
+        assert_eq!(fresh.deliver(|| true), Some(true));
+        registry.set_alias("transport".into(), "back".into());
+        assert!(fresh.deliver(|| true).is_none());
+    }
+
+    #[test]
     fn replacing_schedules_is_atomic_for_concurrent_decisions() {
         let mut schedules = BTreeMap::new();
         schedules.insert(
@@ -972,5 +1502,66 @@ mod tests {
         for worker in workers {
             worker.join().unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_retired_camera_epoch_qualifies_a_transport_for_privacy_recovery() {
+        let registry = Arc::new(PrivacyRegistry::default());
+        let old = registry.media_permit("front".into()).unwrap();
+        let mut permits = TransportPermits::default();
+        permits.remember(Some(&old)).unwrap();
+        registry
+            .replace_profile_overrides(BTreeMap::from([("front".to_owned(), true)]))
+            .unwrap();
+        let denied = permits.send(|| Ok(())).unwrap_err();
+        assert!(denied.is::<PrivacyTransportRetired>());
+        registry.replace_profile_overrides(BTreeMap::new()).unwrap();
+        assert!(
+            permits
+                .send(|| Ok(()))
+                .unwrap_err()
+                .is::<PrivacyTransportRetired>()
+        );
+        let fresh = registry.media_permit("front".into()).unwrap();
+        assert!(
+            permits
+                .remember(Some(&fresh))
+                .unwrap_err()
+                .is::<PrivacyTransportRetired>()
+        );
+        let mut clean = TransportPermits::default();
+        clean.remember(Some(&fresh)).unwrap();
+        assert!(clean.send(|| Ok(())).is_ok());
+    }
+
+    #[test]
+    fn restored_alias_cannot_resurrect_old_protected_output() {
+        let registry = Arc::new(PrivacyRegistry::default());
+        registry.set_alias("input".into(), "front".into());
+        let old = registry.media_permit("input".into()).unwrap();
+        let mut permits = TransportPermits::default();
+        permits.remember(Some(&old)).unwrap();
+        registry.set_alias("input".into(), "back".into());
+        registry.set_alias("input".into(), "front".into());
+        assert!(old.deliver(|| ()).is_none());
+        assert!(
+            !permits
+                .send(|| Ok(()))
+                .unwrap_err()
+                .is::<PrivacyTransportRetired>()
+        );
+        let fresh = registry.media_permit("input".into()).unwrap();
+        assert!(
+            !permits
+                .remember(Some(&fresh))
+                .unwrap_err()
+                .is::<PrivacyTransportRetired>()
+        );
+        assert_eq!(fresh.deliver(|| true), Some(true));
     }
 }

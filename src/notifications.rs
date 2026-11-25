@@ -102,6 +102,7 @@ enum Command {
     },
     SetProfileSuppressedSources {
         source_ids: std::collections::BTreeSet<String>,
+        revision: Option<ProfileRevisionFence>,
         active: Arc<AtomicBool>,
         reply: SyncSender<anyhow::Result<usize>>,
     },
@@ -148,6 +149,12 @@ enum Command {
         reply: SyncSender<anyhow::Result<u64>>,
     },
     Shutdown,
+}
+
+#[derive(Debug)]
+pub struct ProfileRevisionFence {
+    pub(crate) status: Arc<std::sync::RwLock<crate::profiles::RuntimeProfileStatus>>,
+    pub(crate) revision: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -276,6 +283,7 @@ impl Handle {
     pub fn set_profile_suppressed_sources(
         &self,
         source_ids: std::collections::BTreeSet<String>,
+        revision: Option<ProfileRevisionFence>,
     ) -> anyhow::Result<usize> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         let active = Arc::new(AtomicBool::new(true));
@@ -287,6 +295,7 @@ impl Handle {
             self.tx
                 .try_send(Command::SetProfileSuppressedSources {
                     source_ids,
+                    revision,
                     active: active.clone(),
                     reply: reply_tx,
                 })
@@ -598,12 +607,14 @@ fn run(
             }
             Command::SetProfileSuppressedSources {
                 source_ids,
+                revision,
                 active,
                 reply,
             } => {
                 let _ = reply.send(apply_profile_suppression(
                     &store,
                     source_ids,
+                    revision.as_ref(),
                     &active,
                     &profile_suppression,
                 ));
@@ -672,6 +683,7 @@ fn run(
 fn apply_profile_suppression(
     store: &store::Store,
     source_ids: std::collections::BTreeSet<String>,
+    revision: Option<&ProfileRevisionFence>,
     active: &Arc<AtomicBool>,
     profile_suppression: &Mutex<Option<Arc<AtomicBool>>>,
 ) -> anyhow::Result<usize> {
@@ -685,7 +697,7 @@ fn apply_profile_suppression(
         && active.load(Ordering::Acquire);
     drop(latest);
     anyhow::ensure!(accepted, "notification profile update was superseded");
-    store.set_profile_suppressed_sources(source_ids)
+    store.set_profile_suppressed_sources(source_ids, revision)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -867,7 +879,7 @@ mod profile_suppression_tests {
             profile_suppression: profile_suppression.clone(),
         };
         let caller = std::thread::spawn(move || {
-            handle.set_profile_suppressed_sources(BTreeSet::from(["front-door".to_owned()]))
+            handle.set_profile_suppressed_sources(BTreeSet::from(["front-door".to_owned()]), None)
         });
         assert!(caller.join().unwrap().is_err());
 
@@ -897,11 +909,11 @@ mod profile_suppression_tests {
         };
         let older = std::thread::spawn({
             let handle = handle.clone();
-            move || handle.set_profile_suppressed_sources(BTreeSet::from(["old".to_owned()]))
+            move || handle.set_profile_suppressed_sources(BTreeSet::from(["old".to_owned()]), None)
         });
         let old_command = rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
         let newer = std::thread::spawn(move || {
-            handle.set_profile_suppressed_sources(BTreeSet::from(["new".to_owned()]))
+            handle.set_profile_suppressed_sources(BTreeSet::from(["new".to_owned()]), None)
         });
         let new_command = rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
         tx.send(old_command).unwrap();
@@ -955,7 +967,9 @@ mod performance {
             };
             let started = Instant::now();
             assert_eq!(
-                handle.set_profile_suppressed_sources(source_ids).unwrap(),
+                handle
+                    .set_profile_suppressed_sources(source_ids, None)
+                    .unwrap(),
                 0
             );
             samples_ns.push(elapsed_ns(started));

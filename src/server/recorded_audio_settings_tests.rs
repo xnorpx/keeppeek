@@ -241,3 +241,54 @@ fn failed_atomic_replace_preserves_live_audio_and_saved_file() {
     );
     drop(locked);
 }
+
+#[test]
+fn signed_live_settings_round_trip_without_restarting_or_changing_recorded_timing() {
+    let fixture = Fixture::new();
+    let camera_ip = "192.0.2.10";
+    let (_, router_tx) = crate::runtime::Router::new().unwrap();
+    let revision = camera_configuration_revision(&fixture.state).unwrap();
+    let submit = |ms: i32, revision: &str| {
+        let update = camera_settings_update_from_proto(proto::UpdateCameraConfiguration {
+            expected_configuration_revision: revision.to_owned(),
+            live_audio: Some(proto::LiveAudioSettings {
+                default_offset_ms: Some(ms),
+                sub_offset_ms: Some(0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })?;
+        save_camera_settings(update, &router_tx, &fixture.state, camera_ip)
+    };
+    assert!(submit(201, &revision).is_err());
+    let saved = submit(-200, &revision).unwrap();
+    assert!(!saved.restart_required);
+    assert_eq!(saved.camera.live_audio.main_offset_ms, None);
+    assert_eq!(saved.camera.live_audio.sub_offset_ms, Some(0));
+    assert_eq!(saved.camera.live_audio.default_offset_ms, Some(-200));
+    assert_eq!(saved.camera.recorded_audio.main_offset_ms, Some(75));
+    assert!(submit(200, &revision).is_err());
+    let disk = config::load_cameras(&fixture.path).unwrap();
+    let live = disk["cameras"][0].live_audio;
+    assert_eq!(live.effective_offset_ms("main").unwrap(), -200);
+    assert_eq!(live.effective_offset_ms("sub").unwrap(), 0);
+    let reset = camera_settings_update_from_proto(proto::UpdateCameraConfiguration {
+        expected_configuration_revision: saved.configuration_revision,
+        live_audio: Some(Default::default()),
+        ..Default::default()
+    })
+    .unwrap();
+    assert!(
+        save_camera_settings(reset, &router_tx, &fixture.state, camera_ip)
+            .unwrap()
+            .camera
+            .live_audio
+            .is_default()
+    );
+    assert_eq!(
+        config::load_cameras(&fixture.path).unwrap()["cameras"][0]
+            .recorded_audio
+            .main_offset_ms,
+        Some(75)
+    );
+}

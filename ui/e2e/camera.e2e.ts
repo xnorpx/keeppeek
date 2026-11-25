@@ -642,6 +642,186 @@ test('renders Board 24 mobile settings as the editable per-camera owner', async 
 	expect(controls.cameraUpdates).toEqual([]);
 });
 
+for (const pending of ['settled', 'accepted', 'denied'] as const) {
+	test(`clears a ${pending} listener preview when navigating away from and back to the camera`, async ({
+		page
+	}) => {
+		const { camera, health } = mobilePtzCamera();
+		const cameras = [camera, { ...camera, id: 'garage', name: 'Garage', ip: '192.0.2.88' }];
+		let release!: (error: string | null) => void;
+		const gate = new Promise<string | null>((resolve) => {
+			release = resolve;
+		});
+		let held = false;
+		const controls = await mockControlPeer(page, {
+			mediaAdmissionError: (subscription) => {
+				if (pending === 'settled' || held || subscription.liveAudioPreviewOffsetMs !== 80)
+					return null;
+				held = true;
+				return gate;
+			},
+			cameras,
+			capabilityIds: ['keeppeek.live-audio-timing.v1'],
+			cameraSettings: cameras.map((item) => ({ ...configuredCamera(item), live_audio: {} })),
+			health: {
+				cameras: cameras.map((item) => ({
+					...health,
+					id: item.id,
+					ip: item.ip,
+					name: item.name!,
+					configured_profiles: item.profiles
+				}))
+			}
+		});
+		await page.goto(`/camera?camera=${camera.id}`);
+		const editor = page.getByRole('region', { name: 'Live audio synchronization' });
+		await editor.getByLabel('Preview stream').selectOption('main');
+		await expect(editor.getByLabel('Preview offset (ms)')).toHaveAttribute('inputmode', 'text');
+		await editor.getByLabel('Preview offset (ms)').fill('80');
+		await editor.getByRole('button', { name: 'Apply preview' }).click();
+		if (pending === 'settled') await expect(editor.getByText(/Active preview/)).toBeVisible();
+		else await expect.poll(() => held).toBe(true);
+		const admittedPreviews = controls.mediaSubscriptions.filter(
+			(request) => request.previewOffsetMs === 80
+		).length;
+		expect(admittedPreviews).toBe(pending === 'settled' ? 2 : 1);
+		// A SvelteKit same-route navigation keeps the component mounted, as does browser Back.
+		const link = await page.evaluateHandle(() => {
+			const anchor = document.createElement('a');
+			anchor.href = '/camera?camera=garage';
+			anchor.textContent = 'Open Garage';
+			document.body.append(anchor);
+			return anchor;
+		});
+		await link.click();
+		await expect(page).toHaveURL(/camera=garage$/);
+		await expect(page.getByRole('heading', { name: 'Garage', exact: true }).first()).toBeVisible();
+		await expect(editor.getByRole('button', { name: 'Reset preview' })).toBeDisabled();
+		await page.goBack();
+		await expect(page).toHaveURL(new RegExp(`camera=${camera.id}$`));
+		await expect(
+			page.getByRole('heading', { name: camera.name!, exact: true }).first()
+		).toBeVisible();
+		await expect(editor.getByRole('button', { name: 'Reset preview' })).toBeDisabled();
+		release(pending === 'denied' ? 'preview admission failed' : null);
+		await editor.getByLabel('Preview offset (ms)').fill('-35');
+		await editor.getByRole('button', { name: 'Apply preview' }).click();
+		await expect(editor.getByText(/Active preview.*35/)).toBeVisible();
+		const oldRequests = controls.mediaSubscriptions.filter(
+			(request) => request.previewOffsetMs === 80
+		);
+		// An accepted in-flight video request can still finish its single audio handoff.
+		expect(oldRequests.length).toBeLessThanOrEqual(pending === 'denied' ? 1 : 2);
+		await editor.getByRole('button', { name: 'Reset preview' }).click();
+		await expect(editor.getByRole('button', { name: 'Reset preview' })).toBeDisabled();
+	});
+}
+
+test('drops a listener preview during offline health and returns with saved timing', async ({
+	page
+}) => {
+	const { camera, health } = mobilePtzCamera();
+	const current = { ...health, configured_profiles: camera.profiles };
+	const controls = await mockControlPeer(page, {
+		cameras: [camera],
+		capabilityIds: ['keeppeek.live-audio-timing.v1'],
+		cameraSettings: [{ ...configuredCamera(camera), live_audio: {} }],
+		health: { cameras: [current] }
+	});
+	await page.goto(`/camera?camera=${camera.id}`);
+	const editor = page.getByRole('region', { name: 'Live audio synchronization' });
+	await editor.getByLabel('Preview offset (ms)').fill('90');
+	await editor.getByRole('button', { name: 'Apply preview' }).click();
+	await expect(editor.getByText(/Active preview/)).toBeVisible();
+	const before = controls.mediaSubscriptions.filter(
+		(request) => request.previewOffsetMs === 90
+	).length;
+	const healthy = current.state;
+	current.state = 'offline';
+	await expect(editor.getByRole('button', { name: 'Apply preview' })).toHaveCount(0, {
+		timeout: 12000
+	});
+	current.state = healthy;
+	await expect(editor.getByRole('button', { name: 'Apply preview' })).toBeEnabled({
+		timeout: 12000
+	});
+	await expect(editor.getByRole('button', { name: 'Reset preview' })).toBeDisabled();
+	expect(
+		controls.mediaSubscriptions.filter((request) => request.previewOffsetMs === 90)
+	).toHaveLength(before);
+});
+
+for (const { width, reset } of [
+	{ width: 320, reset: false },
+	{ width: 1440, reset: true }
+]) {
+	test(`saves and reloads live timing with recorded offsets preserved at ${width}px`, async ({
+		page
+	}) => {
+		await page.setViewportSize({ width, height: 900 });
+		const { camera, health } = mobilePtzCamera();
+		const settings = {
+			...configuredCamera(camera),
+			recorded_audio: { default_offset_ms: -250, main_offset_ms: 200 },
+			live_audio: { default_offset_ms: 60, main_offset_ms: 25 }
+		};
+		const offsets = reset ? {} : { default_offset_ms: -80, main_offset_ms: 0 };
+		const controls = await mockControlPeer(page, {
+			cameras: [camera],
+			capabilityIds: ['keeppeek.live-audio-timing.v1'],
+			cameraSettings: [settings],
+			cameraConfigurationRevision: 'camera-revision-1',
+			cameraUpdateResult: {
+				camera: { ...settings, live_audio: offsets },
+				restart_required: false,
+				configuration_revision: 'camera-revision-2'
+			},
+			health: { cameras: [{ ...health, configured_profiles: camera.profiles }] }
+		});
+
+		await page.goto(`/camera?camera=${camera.id}`);
+		if (width < 768) await page.getByRole('button', { name: 'Settings', exact: true }).click();
+		const live = page.locator('[data-live-audio-settings]');
+		const recorded = page.locator('[data-recorded-audio-settings]');
+		const mode = (field: string) => live.getByLabel(`${field} mode`, { exact: true });
+		const offset = (field: string) => live.getByLabel(`${field} offset (ms)`, { exact: true });
+		await expect(offset('Camera default')).toHaveValue('60');
+		await expect(offset('Main stream')).toHaveAttribute('inputmode', 'text');
+		const recordedBox = await recorded.boundingBox();
+		const liveBox = await live.boundingBox();
+		expect(liveBox!.y - (recordedBox!.y + recordedBox!.height)).toBeGreaterThan(0);
+		if (reset) {
+			await mode('Camera default').selectOption('inherit');
+			await mode('Main stream').selectOption('inherit');
+		} else {
+			await offset('Camera default').fill('-80');
+			await offset('Main stream').fill('0');
+		}
+		await live.getByRole('button', { name: 'Save live timing' }).click();
+		await expect(live.getByText('Live timing saved.', { exact: true })).toBeVisible();
+		expect(controls.cameraUpdates).toEqual([
+			{
+				ip: camera.ip,
+				update: { expected_configuration_revision: 'camera-revision-1', live_audio: offsets }
+			}
+		]);
+		await page.reload();
+		if (width < 768) await page.getByRole('button', { name: 'Settings', exact: true }).click();
+		await expect(mode('Camera default')).toHaveValue(reset ? 'inherit' : 'custom');
+		await expect(mode('Main stream')).toHaveValue(reset ? 'inherit' : 'custom');
+		await expect(mode('Sub stream')).toHaveValue('inherit');
+		await expect(offset('Camera default')).toHaveValue(reset ? '0' : '-80');
+		await expect(offset('Main stream')).toHaveValue('0');
+		await expect(live.getByRole('button', { name: 'Save live timing' })).toBeDisabled();
+		await expect(recorded.getByLabel('Camera default offset (ms)', { exact: true })).toHaveValue(
+			'-250'
+		);
+		await expect(recorded.getByLabel('Main stream offset (ms)', { exact: true })).toHaveValue(
+			'200'
+		);
+	});
+}
+
 for (const width of [320, 390, 1440]) {
 	test(`saves only recorded audio timing and reloads at ${width}px`, async ({ page }) => {
 		await page.setViewportSize({ width, height: 900 });

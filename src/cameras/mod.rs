@@ -4,7 +4,11 @@ mod network;
 mod recorded_audio;
 pub mod reolink;
 
-pub use recorded_audio::{MAX_RECORDED_AUDIO_OFFSET_MS, RecordedAudioSettings};
+pub(crate) use recorded_audio::AudioOffsetSettings;
+pub use recorded_audio::{
+    LiveAudioSettings, MAX_LIVE_AUDIO_OFFSET_MS, MAX_RECORDED_AUDIO_OFFSET_MS,
+    RecordedAudioSettings,
+};
 
 use crate::camera_catalog::common_onvif_probe_ports;
 use ipnet::Ipv4Net;
@@ -207,7 +211,7 @@ pub struct OnvifDevice {
     pub urls: Vec<Url>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CameraConfig {
     pub ip: IpAddr,
     /// Stable configuration key used for recording storage identity.
@@ -254,6 +258,8 @@ pub struct CameraConfig {
     pub event_recording_stream: EventRecordingStream,
     #[serde(default, skip_serializing_if = "RecordedAudioSettings::is_default")]
     pub recorded_audio: RecordedAudioSettings,
+    #[serde(default, skip_serializing_if = "LiveAudioSettings::is_default")]
+    pub live_audio: LiveAudioSettings,
 }
 
 impl fmt::Debug for CameraConfig {
@@ -284,6 +290,7 @@ impl fmt::Debug for CameraConfig {
             )
             .field("event_recording_stream", &self.event_recording_stream)
             .field("recorded_audio", &self.recorded_audio)
+            .field("live_audio", &self.live_audio)
             .field("recording_mode", &self.recording_mode)
             .field(
                 "event_recording_duration_secs",
@@ -1940,6 +1947,7 @@ mod tests {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
 
         let camera = configured_camera(&config);
@@ -1981,6 +1989,7 @@ mod tests {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
         let configs = HashMap::from([("cameras".to_owned(), vec![config])]);
 
@@ -2021,6 +2030,7 @@ mod tests {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
         let configs = HashMap::from([("cameras".to_owned(), vec![config])]);
 
@@ -2062,6 +2072,7 @@ mod tests {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
         let mut camera = Camera {
             config,
@@ -2134,6 +2145,7 @@ mod tests {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
         let mut camera = Camera {
             config,

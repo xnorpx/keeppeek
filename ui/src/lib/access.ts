@@ -62,11 +62,29 @@ export type AccessAuditEvent = {
 };
 
 export type AccessConnectionState = {
+	/** Sorted camera sources granted by the current recorder session. */
+	cameraSourceIds?: readonly string[];
 	status: 'checking' | 'authenticated' | 'sign-in-required' | 'error';
 	session: AccessSession | null;
 	message: string | null;
 	generation: number;
 };
+
+export function workspaceAccessChanged(
+	previous: AccessConnectionState,
+	session: AccessSession | null,
+	cameraSourceIds?: readonly string[]
+): boolean {
+	if (!previous.session) return false;
+	if (
+		!session ||
+		session.principalId !== previous.session.principalId ||
+		session.role !== previous.session.role
+	)
+		return true;
+	const granted = new Set(cameraSourceIds);
+	return previous.cameraSourceIds?.some((id) => !granted.has(id)) ?? false;
+}
 
 export type AccessCredentialInput = {
 	name: string;

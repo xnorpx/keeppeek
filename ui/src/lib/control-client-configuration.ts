@@ -920,6 +920,7 @@ function cameraSettings(camera: ProtoCameraSettings): CameraSettings {
 		recording_mode: cameraRecordingMode(camera.recordingMode),
 		event_recording_duration_secs: camera.eventRecordingDurationSecs || 60,
 		recorded_audio: recordedAudioSettings(camera.recordedAudio),
+		live_audio: recordedAudioSettings(camera.liveAudio),
 		event_pre_recording_duration_secs: camera.eventPreRecordingDurationSecs,
 		event_recording_stream: eventStream(camera.eventRecordingStream),
 		health: (camera.health ?? null) as CameraSettings['health'],

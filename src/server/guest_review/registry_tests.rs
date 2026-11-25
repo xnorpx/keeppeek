@@ -260,3 +260,78 @@ fn hash_reader_permits_are_bounded_and_released_by_drop() {
     drop((second, replacement));
     assert_eq!(registry.lock().unwrap().hash_readers, 0);
 }
+
+#[test]
+fn camera_epoch_cancels_only_its_bound_guest_http_response() {
+    let registry = Arc::new(crate::privacy::PrivacyRegistry::default());
+    let mut peers = Harness::new();
+    let front = peers.request();
+    front.enable_bounded_writes().unwrap();
+    let back = peers.request();
+    back.enable_bounded_writes().unwrap();
+    let permit = registry.media_permit("front".into()).unwrap();
+    permit.protect_response(front).unwrap();
+    registry
+        .media_permit("back".into())
+        .unwrap()
+        .protect_response(back)
+        .unwrap();
+    registry
+        .replace_profile_overrides([("front".into(), true)].into())
+        .unwrap();
+    registry
+        .replace_profile_overrides(Default::default())
+        .unwrap();
+    assert!(permit.deliver(|| ()).is_none());
+    expect_empty_response(&mut peers, 0);
+    peers.finish(1);
+}
+
+fn expect_empty_response(peers: &mut Harness, index: usize) {
+    let (client, release) = &mut peers.held[index];
+    release.send(()).unwrap();
+    let mut bytes = Vec::new();
+    let result = client.take(8192).read_to_end(&mut bytes);
+    assert!(
+        result.is_ok()
+            || result.is_err_and(|e| matches!(
+                e.kind(),
+                io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted
+            ))
+    );
+    assert!(bytes.is_empty());
+}
+
+#[test]
+fn guest_http_writer_observes_expiry_of_a_temporary_privacy_override_without_a_sweep() {
+    use crate::privacy::{PrivacyOverride, PrivacyRegistry, PrivacySchedule, PrivacyWindow};
+    let mut peers = Harness::new();
+    let handle = peers.request();
+    let now = chrono::Utc::now();
+    let expires = now + chrono::Duration::milliseconds(300);
+    let days: Vec<u8> = (1..=7).collect();
+    let windows = [("00:00", "12:00"), ("12:00", "00:00")].map(|(start, end)| PrivacyWindow {
+        weekdays: days.clone(),
+        start: start.into(),
+        end: end.into(),
+    });
+    let schedule = PrivacySchedule {
+        enabled: true,
+        timezone: "UTC".into(),
+        windows: windows.into(),
+        keep_camera_connected: true,
+        temporary_override: Some(PrivacyOverride {
+            actor: "operator".into(),
+            reason: "live check".into(),
+            accepted_at: now.to_rfc3339(),
+            expires_at: expires.to_rfc3339(),
+        }),
+    };
+    let registry = Arc::new(PrivacyRegistry::new([("front".into(), schedule)].into()).unwrap());
+    let permit = registry.media_permit("front".into()).unwrap();
+    permit.protect_response(handle).unwrap();
+    while let Ok(remaining) = (expires - chrono::Utc::now()).to_std() {
+        std::thread::sleep(remaining);
+    }
+    expect_empty_response(&mut peers, 0);
+}

@@ -180,6 +180,10 @@ function catalogCamera() {
 }
 
 class FakeDataChannel {
+	static localAccess = false;
+	static omitAccessSession = false;
+	static omittedSource: string | undefined;
+	static absoluteExpiry = 1_777_086_400_000n;
 	readyState: RTCDataChannelState = 'connecting';
 	binaryType: BinaryType = 'blob';
 	onopen: (() => void) | null = null;
@@ -610,6 +614,30 @@ class FakeDataChannel {
 		}
 		if (command.case === 'storedMediaCommand') {
 			const action = command.value.action;
+			if (action.case === 'open') {
+				const preview = action.value.recordedAudioPreview?.selection;
+				const state = recordedTimingState(
+					1n,
+					Date.UTC(2026, 7, 20, 12),
+					preview?.case === 'offsetMs' ? preview.value : undefined
+				);
+				state.storedMediaId = action.value.storedMediaId;
+				const response = create(ControlEnvelopeSchema, {
+					message: {
+						case: 'response',
+						value: {
+							requestId: request.message.value.requestId,
+							result: { case: 'ok', value: { result: { case: 'storedMediaState', value: state } } }
+						}
+					}
+				});
+				queueMicrotask(() =>
+					this.onmessage?.({
+						data: toBinary(ControlEnvelopeSchema, response).buffer
+					} as MessageEvent)
+				);
+				return;
+			}
 			if (action.case === 'queryTimeline') {
 				this.storedTimelineQueries.push(action.value);
 				const delivery = create(StoredMediaQueryDeliverySchema, {
@@ -1322,17 +1350,19 @@ class FakeDataChannel {
 							value: create(ServerCapabilitiesSchema, {
 								revision: 2n,
 								capabilityIds: ['keeppeek.runtime-config.v1'],
-								accessSession: create(AccessSessionSchema, {
-									sessionId: 'session-42',
-									principalId: '550e8400-e29b-41d4-a716-446655440001',
-									displayName: 'Remote viewer',
-									role: ProtoAccessRole.USER,
-									local: false,
-									clientClassification: 'direct_remote',
-									createdAtMs: 1_777_000_000_000n,
-									lastActivityAtMs: 1_777_000_000_000n,
-									absoluteExpiresAtMs: 1_777_086_400_000n
-								}),
+								accessSession: FakeDataChannel.omitAccessSession
+									? undefined
+									: create(AccessSessionSchema, {
+											sessionId: 'session-42',
+											principalId: '550e8400-e29b-41d4-a716-446655440001',
+											displayName: 'Remote viewer',
+											role: ProtoAccessRole.USER,
+											local: FakeDataChannel.localAccess,
+											clientClassification: 'direct_remote',
+											createdAtMs: 1_777_000_000_000n,
+											lastActivityAtMs: 1_777_000_000_000n,
+											absoluteExpiresAtMs: FakeDataChannel.absoluteExpiry
+										}),
 								cameras: [
 									create(CameraInfoSchema, {
 										sourceId: 'front-door',
@@ -1356,7 +1386,7 @@ class FakeDataChannel {
 										displayName: 'Garage',
 										ip: '192.0.2.11'
 									})
-								],
+								].filter((camera) => camera.sourceId !== FakeDataChannel.omittedSource),
 								sourceSessions: [
 									create(SourceSessionSchema, {
 										sourceSessionId: 'camera:front-door',
@@ -1463,7 +1493,7 @@ function recordedTimingState(generation: bigint, anchorMs: number, appliedOffset
 	});
 }
 
-function recordedTimingPlayback(appliedOffsetMs?: number) {
+function installRecordedTimingSource() {
 	class TimingSourceBuffer extends EventTarget {
 		updating = false;
 		mode: AppendMode = 'segments';
@@ -1492,6 +1522,11 @@ function recordedTimingPlayback(appliedOffsetMs?: number) {
 	vi.stubGlobal('MediaSource', TimingMediaSource);
 	vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:recorded-timing');
 	vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+	return TimingMediaSource;
+}
+
+function recordedTimingPlayback(appliedOffsetMs?: number) {
+	const TimingMediaSource = installRecordedTimingSource();
 	const anchorMs = Date.UTC(2026, 7, 20, 12);
 	const seek = vi.fn(async (timestampMs: number) =>
 		recordedTimingState(2n, timestampMs - 500, appliedOffsetMs)
@@ -1556,6 +1591,10 @@ function appendTimingPeriod(
 }
 
 afterEach(() => {
+	FakeDataChannel.localAccess = false;
+	FakeDataChannel.omitAccessSession = false;
+	FakeDataChannel.omittedSource = undefined;
+	FakeDataChannel.absoluteExpiry = 1_777_086_400_000n;
 	vi.useRealTimers();
 	vi.unstubAllGlobals();
 	vi.restoreAllMocks();
@@ -2005,6 +2044,322 @@ describe('ControlClient', () => {
 		expect(states.every((state) => !state.serialized.includes(accessKey))).toBe(true);
 		await client.close();
 		expect(api.deleteSession).toHaveBeenLastCalledWith('session-42', accessKey);
+	});
+
+	it.each([true, false])(
+		'honors the server privacy recovery decision for a current bearer (allowed %s)',
+		async (allowed) => {
+			vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+			FakeDataChannel.absoluteExpiry = BigInt(Date.now() + 3600_000);
+			const response = { session_id: 'first', answer: { type: 'answer', sdp: 'v=0' } };
+			api.createSession.mockResolvedValueOnce(response);
+			if (allowed) api.createSession.mockResolvedValueOnce({ ...response, session_id: 'restored' });
+			else
+				api.createSession.mockRejectedValueOnce(
+					new api.ApiRequestError(401, 'previous session unavailable')
+				);
+			api.deleteSession.mockResolvedValue(undefined);
+			const client = new ControlClient();
+			const states: string[] = [];
+			client.onAccessState((state) => states.push(state.status));
+			await client.signIn('retained-bearer');
+			FakePeerConnection.latest!.channels[0].close();
+			await vi.waitFor(() =>
+				expect(states.at(-1)).toBe(allowed ? 'authenticated' : 'sign-in-required')
+			);
+			expect(api.createSession).toHaveBeenLastCalledWith(
+				expect.objectContaining({ type: 'offer' }),
+				'retained-bearer',
+				'first'
+			);
+			expect(api.createSession).toHaveBeenCalledTimes(2);
+			if (allowed) expect(api.deleteSession).not.toHaveBeenCalled();
+			else expect(api.deleteSession).toHaveBeenCalledExactlyOnceWith('first', 'retained-bearer');
+			await client.close();
+		}
+	);
+
+	it.each(['active', 'revoked', 'rotated'])(
+		'checks cookie authority before attempting privacy recovery (%s)',
+		async (authority) => {
+			vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+			const active = authority === 'active';
+			const identity = { id: 'viewer', display_name: 'Remote viewer', role: 'user' };
+			const browserSession = {
+				local: false,
+				bearer_enabled: false,
+				methods: [],
+				identity,
+				csrf_token: 'cookie-session'
+			};
+			const discovered = {
+				...browserSession,
+				identity: authority === 'revoked' ? null : identity,
+				csrf_token: authority === 'rotated' ? 'replacement-cookie' : browserSession.csrf_token
+			};
+			const discover = vi
+				.fn()
+				.mockResolvedValueOnce(Response.json(browserSession))
+				.mockResolvedValueOnce(Response.json(discovered));
+			vi.stubGlobal('fetch', discover);
+			const answer = { type: 'answer', sdp: 'v=0' };
+			api.createSession.mockResolvedValueOnce({ session_id: 'original', answer });
+			if (active) api.createSession.mockResolvedValueOnce({ session_id: 'restored', answer });
+			api.deleteSession.mockResolvedValue(undefined);
+			const client = new ControlClient();
+			const states: string[] = [];
+			client.onAccessState(({ status }) => states.push(status));
+			await client.checkAccess();
+			FakePeerConnection.latest!.channels[0].close();
+			await vi.waitFor(() =>
+				expect(states.slice(-2)).toEqual([
+					'checking',
+					active ? 'authenticated' : 'sign-in-required'
+				])
+			);
+			expect(discover).toHaveBeenCalledTimes(2);
+			expect(api.createSession).toHaveBeenCalledTimes(active ? 2 : 1);
+			if (active) {
+				expect(api.createSession).toHaveBeenLastCalledWith(
+					expect.objectContaining({ type: 'offer' }),
+					{ csrfToken: 'cookie-session' },
+					'original'
+				);
+			} else {
+				expect(api.deleteSession).toHaveBeenCalledExactlyOnceWith('original', {
+					csrfToken: 'cookie-session'
+				});
+			}
+			await client.close();
+		}
+	);
+
+	it('deletes an unconfirmed replacement using the original bearer before requiring sign-in', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		const response = { session_id: 'old', answer: { type: 'answer', sdp: 'v=0' } };
+		api.createSession
+			.mockResolvedValueOnce(response)
+			.mockResolvedValueOnce({ ...response, session_id: 'unconfirmed' });
+		api.deleteSession.mockResolvedValue(undefined);
+		const client = new ControlClient();
+		const states: string[] = [];
+		client.onAccessState((state) => states.push(state.status));
+		await client.signIn('original-bearer');
+		FakeDataChannel.omitAccessSession = true;
+		FakePeerConnection.latest!.channels[0].close();
+		await vi.waitFor(() => expect(states.at(-1)).toBe('sign-in-required'));
+		expect(api.deleteSession).toHaveBeenCalledExactlyOnceWith('unconfirmed', 'original-bearer');
+		await client.close();
+	});
+
+	it.each(['control-channel', 'reliable-data'])(
+		'publishes the interruption before stored playback errors when %s closes first',
+		async (channel) => {
+			vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+			installRecordedTimingSource();
+			const answer = { type: 'answer', sdp: 'v=0' };
+			const recovered = Promise.withResolvers<{ session_id: string; answer: typeof answer }>();
+			api.createSession
+				.mockResolvedValueOnce({ session_id: 'old', answer })
+				.mockReturnValueOnce(recovered.promise);
+			api.deleteSession.mockResolvedValue(undefined);
+			const client = new ControlClient();
+			const observed: string[] = [];
+			client.onAccessState((state) => observed.push(state.status));
+			await client.signIn('viewer');
+			const playback = await client.openStoredMedia({
+				sourceId: 'front-door',
+				streamId: 'main',
+				timestampMs: 1000,
+				endTimeMs: 9000,
+				playing: false,
+				playbackRate: 2,
+				recordedAudioPreview: -40
+			});
+			expect(playback.recordedAudio?.appliedOffsetMs).toBe(-40);
+			playback.onError(() => observed.push('playback error'));
+			observed.length = 0;
+			FakePeerConnection.latest!.channels.find((item) => item.label === channel)!.close();
+			expect(observed).toEqual(['checking', 'playback error']);
+			recovered.resolve({ session_id: 'restored', answer });
+			await vi.waitFor(() => expect(observed.at(-1)).toBe('authenticated'));
+			await client.close();
+		}
+	);
+
+	it.each([
+		{ local: true, confirmed: false },
+		{ local: true, confirmed: true },
+		{ local: false, confirmed: false },
+		{ local: false, confirmed: true }
+	])(
+		'reports an interrupted connection for local=$local when replacement creation succeeds=$confirmed',
+		async ({ local, confirmed }) => {
+			vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+			FakeDataChannel.localAccess = local;
+			const answer = { type: 'answer', sdp: 'v=0' };
+			api.createSession.mockResolvedValueOnce({ session_id: 'original', answer });
+			if (confirmed) api.createSession.mockResolvedValueOnce({ session_id: 'unconfirmed', answer });
+			else
+				api.createSession.mockRejectedValueOnce(
+					new api.ApiRequestError(401, 'Previous session unavailable.')
+				);
+			api.deleteSession.mockResolvedValue(undefined);
+			const client = new ControlClient();
+			const states: Array<{ status: string; message: string | null }> = [];
+			client.onAccessState(({ status, message }) => states.push({ status, message }));
+			if (local) await client.getServerCapabilities();
+			else await client.signIn('remote-key');
+			FakeDataChannel.omitAccessSession = confirmed;
+			FakePeerConnection.latest!.channels[0].close();
+			await vi.waitFor(() =>
+				expect(states.at(-1)).toEqual({
+					status: local ? 'error' : 'sign-in-required',
+					message: local
+						? 'The recorder connection was interrupted. Retry to reconnect.'
+						: 'The remote session expired, was revoked, or disconnected.'
+				})
+			);
+			expect(api.deleteSession).toHaveBeenCalledExactlyOnceWith(
+				confirmed ? 'unconfirmed' : 'original',
+				local ? null : 'remote-key'
+			);
+			expect(api.createSession).toHaveBeenCalledTimes(2);
+			await expect(client.createWebRtcSession({ type: 'offer', sdp: 'v=0' })).rejects.toThrow(
+				'Sign in again'
+			);
+			if (local) {
+				FakeDataChannel.omitAccessSession = false;
+				api.createSession.mockResolvedValueOnce({ session_id: 'fresh', answer });
+				vi.stubGlobal(
+					'fetch',
+					vi.fn().mockResolvedValue(
+						Response.json({
+							local: true,
+							bearer_enabled: true,
+							methods: [],
+							identity: null,
+							csrf_token: null
+						})
+					)
+				);
+				await client.checkAccess();
+				expect(states.at(-1)?.status).toBe('authenticated');
+				expect(api.createSession).toHaveBeenLastCalledWith(expect.any(Object), null);
+			}
+			await client.close();
+		}
+	);
+
+	it('lets the recorder decide continuity when the browser clock is ahead', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		FakeDataChannel.absoluteExpiry = BigInt(Date.now() - 1);
+		const session = {
+			session_id: 'first',
+			answer: { type: 'answer', sdp: 'v=0' }
+		};
+		api.createSession.mockResolvedValueOnce(session).mockResolvedValueOnce({
+			session_id: 'replacement',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const client = new ControlClient();
+		const states: string[] = [];
+		client.onAccessState((state) => states.push(state.status));
+		await client.signIn('retained-bearer');
+		FakePeerConnection.latest!.channels[0].close();
+		await vi.waitFor(() => expect(states.at(-1)).toBe('authenticated'));
+		expect(api.createSession).toHaveBeenLastCalledWith(
+			expect.any(Object),
+			'retained-bearer',
+			'first'
+		);
+		await client.close();
+	});
+
+	it.each([false, true])(
+		'ends a lost replacement before capabilities (channel open: %s)',
+		async (opened) => {
+			const signaled = Promise.withResolvers<void>();
+			let connection = 0;
+			class DelayedReplacement extends FakePeerConnection {
+				override async setRemoteDescription(): Promise<void> {
+					if (++connection !== 2) return super.setRemoteDescription();
+					if (opened) {
+						this.channels[0]!.readyState = 'open';
+						this.channels[0]!.onopen?.();
+					}
+					signaled.resolve();
+				}
+			}
+			vi.stubGlobal('RTCPeerConnection', DelayedReplacement);
+			const session = { session_id: 'first', answer: { type: 'answer', sdp: 'v=0' } };
+			api.createSession
+				.mockResolvedValueOnce(session)
+				.mockResolvedValueOnce({ ...session, session_id: 'lost' })
+				.mockResolvedValueOnce({ ...session, session_id: 'fresh' });
+			api.deleteSession.mockResolvedValue(undefined);
+			const client = new ControlClient();
+			const states: string[] = [];
+			client.onAccessState((state) => states.push(state.status));
+			await client.signIn('first-bearer');
+			FakePeerConnection.latest!.channels[0].close();
+			await signaled.promise;
+			FakePeerConnection.latest!.channels[0].close();
+			expect(states.at(-1)).toBe('sign-in-required');
+			await client.signIn('next-bearer');
+			expect(states.at(-1)).toBe('authenticated');
+			expect(api.deleteSession).toHaveBeenCalledWith('lost', 'first-bearer');
+			await client.close();
+		}
+	);
+
+	it('keeps a local workspace identity during recovery and blocks commands until capabilities arrive', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		FakeDataChannel.localAccess = true;
+		FakeDataChannel.absoluteExpiry = BigInt(Date.now() + 3600_000);
+		const response = { session_id: 'old', answer: { type: 'answer', sdp: 'v=0' } };
+		const pending = Promise.withResolvers<typeof response>();
+		api.createSession.mockResolvedValueOnce(response).mockReturnValueOnce(pending.promise);
+		api.deleteSession.mockResolvedValue(undefined);
+		const client = new ControlClient();
+		const states: { status: string; principal?: string }[] = [];
+		client.onAccessState((state) =>
+			states.push({ status: state.status, principal: state.session?.principalId })
+		);
+		await client.getServerCapabilities();
+		const principal = states.at(-1)?.principal;
+		FakePeerConnection.latest!.channels[0].close();
+		expect(states.at(-1)).toEqual({ status: 'checking', principal });
+		await expect(client.getHealth()).rejects.toThrow(/reconnecting/);
+		pending.resolve({ ...response, session_id: 'fresh' });
+		await vi.waitFor(() => expect(states.at(-1)).toEqual({ status: 'authenticated', principal }));
+		expect(api.createSession).toHaveBeenCalledTimes(2);
+		await client.close();
+	});
+
+	it('publishes the recorder-confirmed camera set after same-principal recovery', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'camera-set',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const client = new ControlClient();
+		const states: { status: string; ids?: readonly string[] }[] = [];
+		client.onAccessState((state) =>
+			states.push({ status: state.status, ids: state.cameraSourceIds })
+		);
+		await client.signIn('camera-viewer');
+		expect(states.at(-1)).toEqual({ status: 'authenticated', ids: ['front-door', 'garage'] });
+		FakeDataChannel.omittedSource = 'garage';
+		FakePeerConnection.latest!.channels[0].close();
+		expect(states.at(-1)).toEqual({ status: 'checking', ids: ['front-door', 'garage'] });
+		await vi.waitFor(() =>
+			expect(states.at(-1)).toEqual({ status: 'authenticated', ids: ['front-door'] })
+		);
+		expect((await client.getCameras()).map((camera) => camera.id)).toEqual(['front-door']);
+		await client.close();
 	});
 
 	it('clears a rejected bearer and publishes token-free sign-in state', async () => {

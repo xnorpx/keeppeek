@@ -57,6 +57,29 @@ impl TerminalOutput {
         })
     }
 
+    fn handle_chunk(&mut self, chunk: &[u8]) -> Result<()> {
+        #[cfg(windows)]
+        for byte in chunk {
+            // ConPTY requests the host terminal's cursor position at attach and resize.
+            self.query.rotate_left(1);
+            self.query[3] = *byte;
+            if self.query == *b"\x1b[6n" {
+                self.input.write_all(b"\x1b[1;1R")?;
+                self.input.flush()?;
+            }
+        }
+        self.pending.extend_from_slice(chunk);
+        Ok(())
+    }
+
+    fn drain(&mut self) -> Result<()> {
+        while let Ok(chunk) = self.chunks.try_recv() {
+            self.handle_chunk(&chunk)?;
+            self.pending.clear();
+        }
+        Ok(())
+    }
+
     fn through(&mut self, marker: &[u8]) -> Result<()> {
         ensure!(!marker.is_empty(), "terminal marker must be nonempty");
         let deadline = Instant::now() + TIMEOUT;
@@ -80,17 +103,7 @@ impl TerminalOutput {
                         String::from_utf8_lossy(marker)
                     )
                 })?;
-            #[cfg(windows)]
-            for byte in &chunk {
-                // ConPTY requests the host terminal's cursor position at attach and resize.
-                self.query.rotate_left(1);
-                self.query[3] = *byte;
-                if self.query == *b"\x1b[6n" {
-                    self.input.write_all(b"\x1b[1;1R")?;
-                    self.input.flush()?;
-                }
-            }
-            self.pending.extend_from_slice(&chunk);
+            self.handle_chunk(&chunk)?;
             ensure!(
                 Instant::now() <= deadline,
                 "terminal marker deadline elapsed"
@@ -191,6 +204,7 @@ fn foreground_lifecycle(exit: Exit) -> Result<()> {
             health.status == "ok",
             "recorder did not remain healthy after detachment"
         );
+        output.drain()?;
     }
     #[cfg(unix)]
     let _pause = if exit == Exit::BlockedOutput {
@@ -211,6 +225,7 @@ fn foreground_lifecycle(exit: Exit) -> Result<()> {
     }
     let deadline = Instant::now() + TIMEOUT;
     loop {
+        output.drain()?;
         if let Some(status) = recorder.child.try_wait()? {
             ensure!(
                 status.success(),

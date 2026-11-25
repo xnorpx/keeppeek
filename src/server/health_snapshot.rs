@@ -696,6 +696,7 @@ fn proto_webrtc_health(health: crate::webrtc::WebRtcHealth) -> proto::WebRtcHeal
                 bitrate_bps: source.bitrate_bps,
                 has_keyframe: source.has_keyframe,
                 keyframe_age_ms: source.keyframe_age_ms,
+                live_audio: Some(source.live_audio),
             })
             .collect(),
     }

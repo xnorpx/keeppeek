@@ -10,6 +10,7 @@ import {
 describe('server capability contract', () => {
 	it('contains the exact capability identifiers without duplicates', () => {
 		expect(serverCapabilityIds).toEqual([
+			'keeppeek.live-audio-timing.v1',
 			'keeppeek.recorded-audio.v1',
 			'keeppeek.local-archive.v1',
 			'keeppeek.local-archive-retention.v1',

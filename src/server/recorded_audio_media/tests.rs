@@ -450,6 +450,34 @@ fn correction_admission_is_bounded_and_permits_are_released() {
 }
 
 #[test]
+fn privacy_revokes_queued_corrected_media_and_preserves_ordinary_historical_playback() {
+    let fixture = Fixture::new();
+    let corrected = fixture.batch(0, -200).unwrap().messages;
+    assert!(!corrected.is_empty());
+    let permits = corrected
+        .iter()
+        .map(|message| message.permit.as_ref().unwrap())
+        .collect::<Vec<_>>();
+    assert!(permits.iter().all(|permit| permit.deliver(|| ()).is_some()));
+    fixture
+        .state
+        .privacy
+        .replace_profile_overrides(BTreeMap::from([("127.0.0.1".into(), true)]))
+        .unwrap();
+    assert!(permits.iter().all(|permit| permit.deliver(|| ()).is_none()));
+    let (_, _, historical) = fixture.open_cursor(0);
+    assert!(!historical.is_empty());
+    assert!(historical.iter().all(|message| message.permit.is_none()));
+    fixture
+        .state
+        .privacy
+        .replace_profile_overrides(BTreeMap::new())
+        .unwrap();
+    assert!(permits.iter().all(|permit| permit.deliver(|| ()).is_none()));
+    fixture.assert_released();
+}
+
+#[test]
 fn maintenance_privacy_and_extent_failures_release_admission() {
     let fixture = Fixture::new();
     fixture

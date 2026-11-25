@@ -255,6 +255,15 @@
 	let capabilitiesSeen = false;
 	let guestRangeSupported = $state(false);
 	let reconnectPending = false;
+	let interruptedPlayback: {
+		camera: string;
+		segment: RecordingSegment;
+		timestampMs: number;
+		play: boolean;
+		audioPreview?: number;
+		version: number;
+	} | null = null;
+	let openingAudioPreview: number | undefined;
 	let scrubUsesFragmentFallback = false;
 	let secondaryLoadsReady = $state(false);
 	let secondaryLoadsTimer: number | null = null;
@@ -437,6 +446,7 @@
 	$effect(() => {
 		if (mode === 'export' || shuttleDirection !== -1 || !selected) return;
 		const reverse = () => {
+			if (reconnectPending || interruptedPlayback || !storedPlayback) return;
 			const current = playheadMs ?? selected?.start_time_ms;
 			if (current !== undefined) seekToTimestamp(current - shuttleSpeed * 250, false);
 		};
@@ -462,15 +472,26 @@
 				if (capabilitiesSeen) reconnectPending = true;
 				return;
 			}
-			if (reconnectPending) {
-				reconnectPending = false;
-				timelineRepository.revalidate();
-				if (latestTimelineViewport) void loadTimelineViewport(latestTimelineViewport);
-			}
 			capabilitiesSeen = true;
 		});
 		const unsubscribeAccess = controlClient.onAccessState((access) => {
+			if (access.status === 'checking' && access.session) {
+				if (!interruptedPlayback) interruptStoredPlayback();
+				reconnectPending = true;
+				return;
+			}
+			if (access.status === 'authenticated' && reconnectPending) {
+				reconnectPending = false;
+				if (access.cameraSourceIds && !access.cameraSourceIds.includes(cameraId)) {
+					interruptedPlayback = null;
+					return;
+				}
+				void resumeStoredPlayback();
+				timelineRepository.revalidate();
+				if (latestTimelineViewport) void loadTimelineViewport(latestTimelineViewport);
+			}
 			if (!access.session) {
+				interruptedPlayback = null;
 				workflow.setActor('');
 				workflowIdentity = null;
 				selectedWorkflowEvent = null;
@@ -1651,8 +1672,12 @@
 			clearColdSeek();
 		}
 		mode = nextMode;
+		const recoveringPlayback =
+			interruptedPlayback?.version === playbackVersion && interruptedPlayback.camera === cameraId;
 		if (scrubTarget) {
 			void selectSegment(scrubTarget.segment, scrubTarget.offsetSeconds);
+		} else if (recoveringPlayback) {
+			if (nextMode === 'timeline') void resumeStoredPlayback();
 		} else if (nextMode === 'export' || (nextMode === 'timeline' && selected && !storedPlayback)) {
 			const target = retryPlaybackTarget;
 			if (target?.cameraId === cameraId && target.segment.date === selectedDate) {
@@ -1934,9 +1959,10 @@
 		play: boolean,
 		version: number,
 		previousPlayback: StoredMediaPlayback | null,
-		recordedAudioPreview?: 0
+		recordedAudioPreview?: number
 	): Promise<void> {
 		let playback: StoredMediaPlayback;
+		openingAudioPreview = recordedAudioPreview;
 		playbackOpenController?.abort();
 		const openController = new AbortController();
 		playbackOpenController = openController;
@@ -2023,6 +2049,71 @@
 		} finally {
 			if (playbackSourceCommitVersion === version) playbackSourceCommitVersion = null;
 		}
+	}
+
+	function interruptStoredPlayback() {
+		const target = retryPlaybackTarget;
+		if ((!storedPlayback && !playbackOpenController && !scrubOpenController) || !target) return;
+		const opening = playbackOpenController !== null;
+		const openingScrub = scrubOpenController !== null;
+		const targetTime = target.segment.start_time_ms + target.offsetSeconds * 1_000;
+		const timestampMs =
+			openingScrub || scrubbing
+				? (scrubTargetMs ?? playheadMs ?? targetTime)
+				: opening
+					? targetTime
+					: (playheadMs ?? targetTime);
+		const segment =
+			openingScrub || scrubbing
+				? recordingTarget(orderedSegments, timestampMs)?.segment
+				: opening
+					? target.segment
+					: selected;
+		if (!segment) return;
+		interruptedPlayback = {
+			camera: cameraId,
+			segment,
+			timestampMs,
+			play: openingScrub || scrubbing ? scrubPlayIntent : opening ? target.play : playbackIntent(),
+			audioPreview: openingScrub
+				? undefined
+				: opening
+					? openingAudioPreview
+					: recordedAudio?.preview
+						? recordedAudio.appliedOffsetMs
+						: undefined,
+			version: ++playbackVersion
+		};
+		scrubVersion++;
+		scrubTargetMs = null;
+		scrubbing = false;
+		targetLoadVersion++;
+		targetLoadController?.abort();
+		clearColdSeek();
+		void closeStoredPlayback();
+	}
+
+	async function resumeStoredPlayback() {
+		const target = interruptedPlayback;
+		if (!target) return;
+		// Let an authority change unmount this page before opening another cursor.
+		await tick();
+		if (target !== interruptedPlayback || reconnectPending || mode === 'export') return;
+		interruptedPlayback = null;
+		if (target.version !== playbackVersion || target.camera !== cameraId) return;
+		rememberPlaybackTarget(
+			target.segment,
+			(target.timestampMs - target.segment.start_time_ms) / 1_000,
+			target.play
+		);
+		await openStoredSegment(
+			target.segment,
+			target.timestampMs,
+			target.play,
+			++playbackVersion,
+			null,
+			target.audioPreview
+		);
 	}
 
 	async function closeStoredPlayback() {

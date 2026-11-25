@@ -128,6 +128,7 @@ mod stored_read;
 use stored_read::StoredReadRange;
 mod runtime_configuration;
 mod session_lifecycle;
+mod session_recovery;
 mod sharing;
 pub(crate) mod state_store;
 #[cfg(test)]
@@ -263,6 +264,7 @@ struct CameraSettingsUpdate {
     event_pre_recording_duration_secs: Option<u64>,
     event_recording_stream: Option<crate::cameras::EventRecordingStream>,
     recorded_audio: Option<crate::cameras::RecordedAudioSettings>,
+    live_audio: Option<crate::cameras::LiveAudioSettings>,
 }
 
 #[derive(Deserialize)]
@@ -321,6 +323,7 @@ struct CameraSettings {
     event_pre_recording_duration_secs: u64,
     event_recording_stream: crate::cameras::EventRecordingStream,
     recorded_audio: crate::cameras::RecordedAudioSettings,
+    live_audio: crate::cameras::LiveAudioSettings,
     health: Option<String>,
     model: Option<String>,
 }
@@ -983,6 +986,11 @@ impl ControlRequestHandler for ServerControlHandler {
         }
     }
 
+    fn session_privacy_retired(&self, session_id: SessionId) {
+        self.state.session_recovery.retire(&self.state, session_id);
+        close_api_session(&self.state, session_id);
+    }
+
     fn session_closed(&self, session_id: SessionId) {
         close_api_session(&self.state, session_id);
     }
@@ -1408,6 +1416,7 @@ fn server_capabilities(
 fn server_capability_ids(state: &ServerState) -> Vec<String> {
     let mut capability_ids = vec![
         "keeppeek.media-export.v1".to_owned(),
+        "keeppeek.live-audio-timing.v1".to_owned(),
         "keeppeek.event-search".to_owned(),
         "keeppeek.event-publication.v1".to_owned(),
         "stored-media-keyframe-preview.v1".to_owned(),
@@ -1889,6 +1898,16 @@ impl ServerControlHandler {
         required_role: AccessRole,
         operation: &'static str,
     ) -> Result<ApiPrincipal, (ControlCommandError, bool)> {
+        self.check_api_session(session_id, required_role, operation, true)
+    }
+
+    fn check_api_session(
+        &self,
+        session_id: SessionId,
+        required_role: AccessRole,
+        operation: &'static str,
+        client_activity: bool,
+    ) -> Result<ApiPrincipal, (ControlCommandError, bool)> {
         if session_id.as_u64() == 0 {
             return Ok(ApiPrincipal::local(IpAddr::V4(Ipv4Addr::LOCALHOST)));
         }
@@ -1921,6 +1940,9 @@ impl ServerControlHandler {
             let classification = session.classification;
             drop(sessions);
             return Err(self.insufficient_api_role(&principal, classification, operation, now_ms));
+        }
+        if !client_activity {
+            return Ok(session.principal.clone());
         }
         session.last_activity = now_at;
         session.last_activity_at_ms = now_ms;
@@ -2911,6 +2933,7 @@ impl ServerControlHandler {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
         let (camera, onvif_error) = if request.query_onvif.unwrap_or(true) {
             match probe_onvif_camera(&config) {
@@ -3349,6 +3372,7 @@ impl ServerControlHandler {
                 )
             })?;
         let removed = session_lifecycle::close(&self.state, target_session_id);
+        self.state.session_recovery.cancel(target_session_id, None);
         record_access_audit(
             &self.state,
             now_ms,
@@ -4235,6 +4259,28 @@ fn privacy_active_for_media(
         })
 }
 
+fn derived_media_permit(
+    state: &ServerState,
+    source_id: &str,
+    denied_status: u16,
+) -> Result<crate::privacy::MediaPermit, ControlCommandError> {
+    if let Some(permit) = state.privacy.media_permit(source_id.into()) {
+        return Ok(permit);
+    }
+    if privacy_active_for_media(state, source_id)? {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            denied_status,
+            "camera privacy is active",
+        ));
+    }
+    Err(ControlCommandError::new(
+        proto::ErrorCode::Unavailable,
+        503,
+        "camera privacy permission is unavailable",
+    ))
+}
+
 fn cancel_privacy_exports(state: &ServerState, source_id: &str) {
     let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
     let mut cleanup = Vec::new();
@@ -4675,6 +4721,7 @@ fn encode_stored_media_keyframe(
         .chunks(DATA_MESSAGE_CHUNK_BYTES)
         .enumerate()
         .map(|(chunk_index, chunk)| OutboundDataMessage {
+            permit: None,
             target: DataChannelTarget::Reliable,
             group: format!("stored:{}", request.stored_media_id),
             message: proto::Message {
@@ -4979,6 +5026,7 @@ fn append_initialization_messages(
     let chunk_count = protobuf_chunk_count(payload.len())?;
     for (chunk_index, chunk) in payload.chunks(DATA_MESSAGE_CHUNK_BYTES).enumerate() {
         messages.push(OutboundDataMessage {
+            permit: None,
             target: DataChannelTarget::Reliable,
             group: format!("stored:{stored_media_id}"),
             message: proto::Message {
@@ -5018,6 +5066,7 @@ fn append_fragment_messages(
     let chunk_count = protobuf_chunk_count(payload.len())?;
     for (chunk_index, chunk) in payload.chunks(DATA_MESSAGE_CHUNK_BYTES).enumerate() {
         messages.push(OutboundDataMessage {
+            permit: None,
             target,
             group: format!("stored:{stored_media_id}"),
             message: proto::Message {
@@ -6580,6 +6629,7 @@ fn event_search_message(
     message: proto::event_search_message::Message,
 ) -> OutboundDataMessage {
     OutboundDataMessage {
+        permit: None,
         target,
         group: group.to_owned(),
         message: proto::Message {
@@ -6913,6 +6963,7 @@ fn query_stored_media_timeline(
         })?;
         for (chunk_index, chunk) in payload.chunks(DATA_MESSAGE_CHUNK_BYTES).enumerate() {
             data_messages.push(OutboundDataMessage {
+                permit: None,
                 target,
                 group: format!("query:{}", query.query_id),
                 message: proto::Message {
@@ -7231,6 +7282,7 @@ fn stored_query_message(
     message: proto::stored_media_query_message::Message,
 ) -> OutboundDataMessage {
     OutboundDataMessage {
+        permit: None,
         target,
         group: format!(
             "query:{}",
@@ -7664,6 +7716,11 @@ fn proto_camera_settings(camera: CameraSettings) -> proto::CameraSettings {
         health: camera.health,
         model: camera.model,
         recorded_audio: Some(recorded_audio_settings::to_proto(camera.recorded_audio)),
+        live_audio: Some(proto::LiveAudioSettings {
+            default_offset_ms: camera.live_audio.default_offset_ms,
+            main_offset_ms: camera.live_audio.main_offset_ms,
+            sub_offset_ms: camera.live_audio.sub_offset_ms,
+        }),
     }
 }
 
@@ -7688,6 +7745,15 @@ fn camera_settings_update_from_proto(
         event_recording_duration_secs: update.event_recording_duration_secs.map(u64::from),
         event_pre_recording_duration_secs: update.event_pre_recording_duration_secs.map(u64::from),
         event_recording_stream: optional_event_recording_stream(update.event_recording_stream)?,
+        live_audio: update
+            .live_audio
+            .map(|settings| crate::cameras::LiveAudioSettings {
+                default_offset_ms: settings.default_offset_ms,
+                main_offset_ms: settings.main_offset_ms,
+                sub_offset_ms: settings.sub_offset_ms,
+            })
+            .map(recorded_audio_settings::validated)
+            .transpose()?,
         recorded_audio: update
             .recorded_audio
             .map(recorded_audio_settings::from_proto)
@@ -8559,6 +8625,7 @@ pub struct ServerState {
     privacy: Arc<PrivacyRegistry>,
     runtime_profiles: Arc<RwLock<crate::profiles::ProfileRegistry>>,
     runtime_profile_status: Arc<RwLock<crate::profiles::RuntimeProfileStatus>>,
+    profile_application: Arc<Mutex<state_store::profiles::ProfileApplicationQueue>>,
     runtime_profile_drafts: Arc<Mutex<state_store::profiles::RuntimeProfileDrafts>>,
     profile_generation_cache: Arc<state_store::profiles::observed::GenerationCache>,
     privacy_sources: Arc<RwLock<BTreeMap<String, PrivacySource>>>,
@@ -8570,6 +8637,7 @@ pub struct ServerState {
     api_session_policy: ApiSessionPolicy,
     allowed_origins: Arc<HashSet<String>>,
     api_session_owners: Arc<Mutex<HashMap<SessionId, ApiSessionRecord>>>,
+    session_recovery: Arc<session_recovery::Directory>,
     http_stream_cancellations: Arc<Mutex<Vec<HttpStreamCancellation>>>,
     stored_media_cursors: Arc<Mutex<HashMap<(SessionId, String), StoredMediaCursor>>>,
     recorded_audio_workers: Arc<AtomicUsize>,
@@ -8686,6 +8754,7 @@ impl ServerState {
             .map(|camera_id| (camera_id.clone(), PrivacySource::Camera))
             .collect::<BTreeMap<_, _>>();
         for camera in &entries {
+            webrtc.configure_live_audio(camera.configuration.ip, camera.configuration.live_audio);
             if let Some(schedule) = config
                 .privacy
                 .schedule_for(&camera.info.id, &camera.info.ip)
@@ -8719,7 +8788,6 @@ impl ServerState {
         for camera in &entries {
             if let Ok(camera_ip) = camera.info.ip.parse::<IpAddr>() {
                 privacy.set_alias(camera_ip.to_string(), camera.info.id.clone());
-                webrtc.set_privacy_camera_id(camera_ip, camera.info.id.clone());
             }
         }
 
@@ -8748,6 +8816,7 @@ impl ServerState {
             runtime_profile_drafts: Arc::new(Mutex::new(
                 state_store::profiles::RuntimeProfileDrafts::default(),
             )),
+            profile_application: Arc::default(),
             privacy_sources: Arc::new(RwLock::new(privacy_sources)),
             privacy_epochs: Arc::new(Mutex::new(HashMap::new())),
             privacy_override_states: Arc::new(Mutex::new(HashMap::new())),
@@ -8760,6 +8829,7 @@ impl ServerState {
             api_session_policy: initial_session_policy(config),
             allowed_origins: Arc::new(config.direct_card.allowed_origins.iter().cloned().collect()),
             api_session_owners: Arc::new(Mutex::new(HashMap::new())),
+            session_recovery: Arc::default(),
             http_stream_cancellations: Arc::new(Mutex::new(Vec::new())),
             stored_media_cursors: Arc::new(Mutex::new(HashMap::new())),
             recorded_audio_workers: Arc::new(AtomicUsize::new(0)),
@@ -8975,7 +9045,7 @@ impl ServerState {
                         .as_ref()
                         .is_some_and(|schedule| !schedule.keep_camera_connected)
                     && let Some(runtime) = &self.camera_runtime
-                    && let Err(error) = runtime.pause_camera_for_privacy(camera_ip)
+                    && let Err(error) = self.update_scheduled_camera(&camera.info.id, true, runtime)
                 {
                     tracing::warn!(%camera_ip, %error, "privacy could not stop camera ingress");
                     record_access_audit(
@@ -9007,8 +9077,7 @@ impl ServerState {
                     .as_ref()
                     .is_some_and(|schedule| !schedule.keep_camera_connected)
                 && let Some(runtime) = &self.camera_runtime
-                && let Some(runtime_camera) = &camera.runtime_camera
-                && let Err(error) = runtime.start_camera(runtime_camera.clone())
+                && let Err(error) = self.update_scheduled_camera(&camera.info.id, false, runtime)
             {
                 tracing::warn!(%camera_ip, %error, "privacy could not restart camera ingress");
                 record_access_audit(
@@ -9023,6 +9092,50 @@ impl ServerState {
                 );
             }
         }
+    }
+
+    fn update_scheduled_camera(
+        &self,
+        id: &str,
+        stop: bool,
+        runtime: &KeepPeekControl,
+    ) -> anyhow::Result<()> {
+        if let Some(reply) = self.submit_scheduled_camera(id, stop, runtime)? {
+            reply
+                .recv_timeout(crate::keeppeek::CAMERA_CONTROL_TIMEOUT)
+                .map_err(|error| {
+                    anyhow::anyhow!("Recorder did not acknowledge the privacy transition: {error}")
+                })??;
+        }
+        Ok(())
+    }
+
+    fn submit_scheduled_camera(
+        &self,
+        id: &str,
+        stop: bool,
+        runtime: &KeepPeekControl,
+    ) -> anyhow::Result<Option<std::sync::mpsc::Receiver<anyhow::Result<()>>>> {
+        let _update = self
+            .config_update
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The schedule snapshot may predate a removal, credential edit or renewed deny.
+        if self.privacy.decision(id, chrono::Utc::now())?.0 != stop {
+            return Ok(None);
+        }
+        let Some(entry) = self.camera(id) else {
+            return Ok(None);
+        };
+        if stop {
+            return runtime
+                .submit_privacy_stop(entry.configuration.ip)
+                .map(Some);
+        }
+        entry
+            .runtime_camera
+            .map(|camera| runtime.submit_start_camera(camera))
+            .transpose()
     }
 
     fn camera(&self, id: &str) -> Option<CameraEntry> {
@@ -9041,6 +9154,8 @@ impl ServerState {
             .cameras
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.webrtc
+            .configure_live_audio(source_ip, entry.configuration.live_audio);
         let changed_groups;
         let volume_groups;
         if let Some(existing) = cameras
@@ -9318,6 +9433,7 @@ fn record_access_audit(
         target_id,
         result,
         client_classification: classification,
+        profile: None,
     });
 }
 
@@ -10028,6 +10144,7 @@ fn expire_event_publications(state: &ServerState) {
 
 fn expire_api_sessions(state: &ServerState) {
     let now_at = Instant::now();
+    state.session_recovery.prune(now_at);
     let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
     let expired = {
         let sessions = state
@@ -10413,7 +10530,11 @@ fn api_preflight(request: &Request, state: &ServerState) -> Response {
         .with_additional_header("Access-Control-Allow-Methods", "POST, OPTIONS")
         .with_additional_header(
             "Access-Control-Allow-Headers",
-            "Authorization, Content-Type, Content-Encoding, Prefer",
+            if request.url() == "/create" {
+                "Authorization, Content-Type, Content-Encoding, Prefer, X-KeepPeek-Previous-Session"
+            } else {
+                "Authorization, Content-Type, Content-Encoding, Prefer"
+            },
         )
 }
 
@@ -10647,6 +10768,10 @@ fn create_api_session(
         Ok(offer) => offer,
         Err(response) => return response,
     };
+    let previous = match session_recovery::requested(request) {
+        Ok(previous) => previous,
+        Err(response) => return response,
+    };
     let session = match state.webrtc.accept_api_offer(offer) {
         Ok(session) => session,
         Err(error) => return api_status(400, &format!("unable to accept SDP offer: {error}")),
@@ -10666,12 +10791,19 @@ fn create_api_session(
         }
     };
     remove_stale_api_sessions(state);
-    if let Err(response) = register_api_session(state, &identity, session.id) {
+    if let Err(response) = register_api_session(state, &identity, session.id, previous) {
         return response;
     }
-    Response::from_data("application/json", compressed)
+    let response = Response::from_data("application/json", compressed)
         .with_status_code(201)
-        .with_additional_header("Content-Encoding", "gzip")
+        .with_additional_header("Content-Encoding", "gzip");
+    if let Some(id) = previous {
+        response
+            .with_additional_header(session_recovery::HEADER, id.to_string())
+            .with_additional_header("Access-Control-Expose-Headers", session_recovery::HEADER)
+    } else {
+        response
+    }
 }
 
 fn decode_api_offer(request: &Request) -> Result<str0m::change::SdpOffer, Response> {
@@ -10754,6 +10886,7 @@ fn register_api_session(
     state: &ServerState,
     identity: &AuthenticatedApiRequest,
     session_id: SessionId,
+    previous: Option<SessionId>,
 ) -> Result<(), Response> {
     let mut owners = state
         .api_session_owners
@@ -10782,18 +10915,27 @@ fn register_api_session(
             "authentication expired during session creation",
         ));
     }
-    owners.insert(
-        session_id,
-        ApiSessionRecord {
-            lifecycle: Arc::default(),
-            principal: identity.principal.clone(),
-            classification: identity.classification,
-            created_at_ms: now_ms,
-            last_activity_at_ms: now_ms,
-            absolute_expires_at_ms,
-            last_activity: now_at,
-        },
-    );
+    let mut record = ApiSessionRecord {
+        lifecycle: Arc::default(),
+        principal: identity.principal.clone(),
+        classification: identity.classification,
+        created_at_ms: now_ms,
+        last_activity_at_ms: now_ms,
+        absolute_expires_at_ms,
+        last_activity: now_at,
+    };
+    if let Some(previous) = previous
+        && !state.session_recovery.restore(
+            previous,
+            &mut record,
+            state.api_session_policy.idle_timeout,
+        )
+    {
+        drop(owners);
+        state.webrtc.close_api_session(session_id);
+        return Err(api_status(401, "the previous session cannot be resumed"));
+    }
+    owners.insert(session_id, record);
     drop(owners);
     state
         .access_metrics
@@ -10896,6 +11038,7 @@ fn delete_owned_api_session(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match owners.get(&session_id) {
             None => {
+                state.session_recovery.cancel(session_id, Some(&identity));
                 return if return_representation {
                     Response::text("deleted").with_status_code(200)
                 } else {
@@ -10926,6 +11069,7 @@ fn delete_owned_api_session(
         return api_status(404, "WebRTC session not found");
     };
     close_api_session(state, session_id);
+    state.session_recovery.cancel(session_id, Some(&identity));
     record_access_audit(
         state,
         i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
@@ -12202,6 +12346,7 @@ fn camera_settings_entry(
         event_pre_recording_duration_secs: configuration.event_pre_recording_duration_secs,
         event_recording_stream: configuration.event_recording_stream,
         recorded_audio: configuration.recorded_audio,
+        live_audio: configuration.live_audio,
         health,
         model: camera.and_then(|camera| camera.info.model.clone()),
     }
@@ -12970,6 +13115,12 @@ fn save_camera_connection_settings(
                     .map(|camera| camera.event_recording_duration_secs)
             })
             .unwrap_or(60),
+        live_audio: recorded_audio_settings::validated(
+            update
+                .live_audio
+                .or_else(|| existing_config.as_ref().map(|c| c.live_audio))
+                .unwrap_or_default(),
+        )?,
         recorded_audio: recorded_audio_settings::merged(
             update.recorded_audio,
             existing_config.as_ref(),
@@ -13099,7 +13250,7 @@ fn start_runtime_camera(
         tracing::warn!(ip = %config.ip, %error, "discovered camera endpoints could not be persisted");
         return None;
     }
-    let profile_privacy = match refresh_runtime_profile_camera_ids(state, config_path) {
+    let before_start = match refresh_runtime_profile_camera_ids(state, config_path) {
         Ok(profile_privacy) => profile_privacy,
         Err(error) => {
             tracing::warn!(ip = %config.ip, %error, "camera profile identity could not be applied live");
@@ -13111,6 +13262,10 @@ fn start_runtime_camera(
         tracing::error!(ip = %camera.config.ip, %error, "camera cannot start with an unavailable volume group registry");
         return None;
     }
+    let mut entry = camera_entry(&camera.config, Some(&camera));
+    entry.groups = groups;
+    // A queued start may outlive this request. Future schedule transitions need the saved endpoints.
+    state.activate_camera_entry(entry);
     let runtime_result = if restart {
         runtime.restart_camera(camera.clone())
     } else {
@@ -13120,20 +13275,60 @@ fn start_runtime_camera(
         tracing::warn!(ip = %config.ip, %error, "camera configuration could not be applied live");
         return None;
     }
-    if let Err(error) = state.privacy.replace_profile_overrides(profile_privacy) {
+    if let Err(error) = before_start.confirm_after_start(state, config_path) {
         tracing::warn!(ip = %config.ip, %error, "camera profile privacy could not finish its transition");
         return None;
     }
-    let mut entry = camera_entry(&camera.config, Some(&camera));
-    entry.groups = groups;
-    state.activate_camera_entry(entry);
     Some(camera.config)
+}
+
+struct RuntimeCameraProfileRefresh {
+    fingerprint: [u8; 32],
+    registry: crate::profiles::ProfileRegistry,
+    ids: crate::keeppeek::CameraProfileIds,
+    applications: Vec<crate::profiles::CameraRuntimeApplication>,
+}
+
+impl RuntimeCameraProfileRefresh {
+    fn confirm_after_start(&self, state: &ServerState, path: &Path) -> anyhow::Result<()> {
+        let config = config::load_config(path)?;
+        anyhow::ensure!(
+            config.runtime_profiles == self.registry
+                && state_store::profiles::camera_fingerprint(&config)? == self.fingerprint,
+            "camera or profile configuration changed during restart"
+        );
+        let runtime = state
+            .camera_runtime
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("camera runtime is unavailable"))?;
+        let observations = runtime.set_runtime_profiles_with_camera_ids(
+            self.registry.clone(),
+            config.camera_profile_identities()?,
+        )?;
+        state_store::profiles::apply_confirmed_privacy(
+            state,
+            &self.registry,
+            &self.ids,
+            &observations,
+            None,
+        )
+    }
+
+    fn apply(&self, state: &ServerState, stopped: Option<IpAddr>) -> anyhow::Result<()> {
+        state_store::profiles::apply_confirmed_privacy(
+            state,
+            &self.registry,
+            &self.ids,
+            &self.applications,
+            stopped,
+        )
+    }
 }
 
 fn refresh_runtime_profile_camera_ids(
     state: &ServerState,
     config_path: &Path,
-) -> anyhow::Result<BTreeMap<String, bool>> {
+) -> anyhow::Result<RuntimeCameraProfileRefresh> {
     let configuration = config::load_config(config_path)?;
     sharing::update_sources(state, &configuration)?;
     let identities = configuration.camera_profile_identities()?;
@@ -13149,10 +13344,20 @@ fn refresh_runtime_profile_camera_ids(
     state
         .privacy
         .replace_profile_overrides(restrictive_privacy)?;
-    if let Some(runtime) = &state.camera_runtime {
-        runtime.set_runtime_profiles_with_camera_ids(configuration.runtime_profiles, identities)?;
-    }
-    Ok(next_privacy)
+    let applications = if let Some(runtime) = &state.camera_runtime {
+        runtime.set_runtime_profiles_with_camera_ids(
+            configuration.runtime_profiles.clone(),
+            identities,
+        )?
+    } else {
+        Vec::new()
+    };
+    Ok(RuntimeCameraProfileRefresh {
+        fingerprint: state_store::profiles::camera_fingerprint(&configuration)?,
+        registry: configuration.runtime_profiles,
+        ids: profile_camera_ids,
+        applications,
+    })
 }
 
 fn runtime_camera_groups(config_path: &Path, camera_ip: IpAddr) -> Option<Vec<String>> {
@@ -13206,25 +13411,29 @@ fn delete_camera_settings(
     let current_revision = camera_configuration_revision(state)?;
     if !expected_configuration_revision.is_empty()
         && expected_configuration_revision != current_revision
+        && configured_camera_present(config_path, ip)?
     {
         return Err(configuration::revision_conflict(
             &current_revision,
             "camera configuration changed before removal; reload current values before retrying",
         ));
     }
-    match config::remove_camera(config_path, ip) {
-        Ok(()) => {
-            camera_metadata::forget_removed_audio(state, camera_id);
-            sharing::refresh_sources(state, config_path)?;
-            reconcile_removed_camera(state, config_path, ip)?;
-            camera_configuration_revision(state)
-        }
-        Err(error) => Err(ControlCommandError::new(
-            proto::ErrorCode::Internal,
-            500,
-            format!("unable to remove camera configuration: {error}"),
-        )),
-    }
+    camera_metadata::forget_removed_audio(state, camera_id);
+    reconcile_removed_camera(state, config_path, ip)?;
+    sharing::refresh_sources(state, config_path)?;
+    camera_configuration_revision(state)
+}
+
+fn configured_camera_present(config_path: &Path, ip: IpAddr) -> Result<bool, ControlCommandError> {
+    config::load_cameras(config_path)
+        .map(|groups| groups.values().flatten().any(|camera| camera.ip == ip))
+        .map_err(|_| {
+            ControlCommandError::new(
+                proto::ErrorCode::Internal,
+                500,
+                "unable to read camera configuration",
+            )
+        })
 }
 
 fn reconcile_removed_camera(
@@ -13237,27 +13446,39 @@ fn reconcile_removed_camera(
             ControlCommandError::new(
                 proto::ErrorCode::Unavailable,
                 503,
-                "camera configuration was removed but its runtime stop could not be confirmed",
+                "camera stop could not be confirmed; retry removal after its workers retire",
             )
         })?;
     }
-    let profile_privacy = refresh_runtime_profile_camera_ids(state, config_path).map_err(|_| {
-        ControlCommandError::new(
-            proto::ErrorCode::Unavailable,
-            503,
-            "camera was removed but profile identity reconciliation could not be confirmed",
-        )
-    })?;
-    state
-        .privacy
-        .replace_profile_overrides(profile_privacy)
+    // Keep the camera and existing privacy holds retryable until stop is confirmed.
+    if configured_camera_present(config_path, ip)? {
+        config::remove_camera(config_path, ip).map_err(|error| {
+            ControlCommandError::new(
+                proto::ErrorCode::Internal,
+                500,
+                format!("unable to remove camera configuration: {error}"),
+            )
+        })?;
+    }
+    if let Some(entry) = state
+        .cameras
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter_mut()
+        .find(|entry| entry.configuration.ip == ip)
+    {
+        entry.runtime_camera = None;
+    }
+    refresh_runtime_profile_camera_ids(state, config_path)
+        .and_then(|refresh| refresh.apply(state, Some(ip)))
         .map_err(|_| {
             ControlCommandError::new(
                 proto::ErrorCode::Unavailable,
                 503,
-                "camera was removed but profile privacy reconciliation could not be confirmed",
+                "camera was removed but profile reconciliation could not be confirmed; retry removal",
             )
         })?;
+    state.webrtc.remove_live_audio(ip);
     state.update_volume_groups(ip, None).map_err(|_| {
         ControlCommandError::new(
             proto::ErrorCode::Unavailable,
@@ -13579,6 +13800,36 @@ mod tests {
                 }
             }
         })
+    }
+
+    #[test]
+    fn pending_scheduled_camera_acknowledgement_leaves_configuration_writable() {
+        let state = media_test_state();
+        let camera = state.cameras.read().unwrap()[0].info.id.clone();
+        state
+            .privacy
+            .replace_profile_overrides(std::collections::BTreeMap::from([(camera.clone(), true)]))
+            .unwrap();
+        let runtime = crate::keeppeek::KeepPeekLoop::new(crate::shutdown::Shutdown::new(), None);
+        let receipt = state
+            .submit_scheduled_camera(&camera, true, &runtime.control())
+            .unwrap()
+            .unwrap();
+        let guard = state
+            .config_update
+            .try_lock()
+            .expect("camera acknowledgement must not hold configuration writes");
+        assert!(matches!(
+            receipt.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        drop(guard);
+        assert!(
+            state
+                .submit_scheduled_camera(&camera, false, &runtime.control())
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -14322,6 +14573,7 @@ mod tests {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
         let mut state = ServerState::empty();
         state.cameras = Arc::new(RwLock::new(vec![camera_entry(&config, None)]));
@@ -14575,6 +14827,7 @@ mod tests {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
         let config = Config::default();
         let storage = StorageConfig::default();
@@ -14668,6 +14921,7 @@ mod tests {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
         let config = Config::default();
         let storage = StorageConfig::default();
@@ -14894,6 +15148,7 @@ mod tests {
         variant_id: &str,
     ) -> proto::SubscribeMedia {
         proto::SubscribeMedia {
+            live_audio_preview_offset_ms: None,
             subscription_id: "front-door-live".to_owned(),
             source_session_id: camera_source_session_id("127.0.0.1", 0),
             kind: kind as i32,
@@ -14901,6 +15156,63 @@ mod tests {
             video_quality: quality as i32,
             variant_id: variant_id.to_owned(),
         }
+    }
+
+    #[test]
+    fn signaling_resumes_only_one_server_confirmed_privacy_retirement() {
+        let state = ServerState::empty();
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+        let offer = gzip_json(&CreateRequest {
+            offer: crate::api::SdpOffer {
+                sdp_type: "offer".into(),
+                sdp: crate::webrtc::test_api_offer().to_sdp_string(),
+            },
+        });
+        let create = |previous: Option<&str>| {
+            let mut headers = vec![("Content-Encoding".into(), "gzip".into())];
+            if let Some(id) = previous {
+                headers.push((session_recovery::HEADER.into(), id.to_owned()));
+            }
+            handle_request(
+                &Request::fake_http("POST", "/create", headers, offer.clone()),
+                &router_tx,
+                &state,
+            )
+        };
+        let opened = create(None);
+        assert_eq!(opened.status_code, 201);
+        let body = response_data(opened);
+        let initial: CreateResponse =
+            serde_json::from_reader(GzDecoder::new(body.as_slice())).unwrap();
+        let id = SessionId::from_u64(initial.session_id.parse().unwrap());
+        assert_eq!(create(Some("00")).status_code, 400);
+        assert_eq!(create(Some(&initial.session_id)).status_code, 401);
+        let original = state.api_session_owners.lock().unwrap()[&id].clone();
+        test_control_handler(state.clone()).session_privacy_retired(id);
+        state.webrtc.close_api_session(id);
+        let resumed = create(Some(&initial.session_id));
+        assert_eq!(resumed.status_code, 201);
+        assert!(resumed.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case(session_recovery::HEADER)
+                && value.as_ref() == initial.session_id
+        }));
+        let body = response_data(resumed);
+        let next: CreateResponse =
+            serde_json::from_reader(GzDecoder::new(body.as_slice())).unwrap();
+        let next_id = SessionId::from_u64(next.session_id.parse().unwrap());
+        assert!(
+            test_control_handler(state.clone())
+                .initial_capabilities(next_id)
+                .is_some()
+        );
+        let record = state.api_session_owners.lock().unwrap()[&next_id].clone();
+        assert_eq!(
+            record.absolute_expires_at_ms,
+            original.absolute_expires_at_ms
+        );
+        assert_eq!(record.last_activity, original.last_activity);
+        assert_eq!(create(Some(&initial.session_id)).status_code, 401);
+        state.webrtc.close_api_session(next_id);
     }
 
     #[test]
@@ -15390,7 +15702,7 @@ mod tests {
         }));
         assert!(allowed.headers.iter().any(|(name, value)| {
             name.eq_ignore_ascii_case("Access-Control-Allow-Headers")
-                && value == "Authorization, Content-Type, Content-Encoding, Prefer"
+                && value == "Authorization, Content-Type, Content-Encoding, Prefer, X-KeepPeek-Previous-Session"
         }));
 
         let unauthenticated = handle_request(
@@ -15897,6 +16209,7 @@ mod tests {
             capabilities.capability_ids,
             [
                 "keeppeek.media-export.v1",
+                "keeppeek.live-audio-timing.v1",
                 "keeppeek.event-search",
                 "keeppeek.event-publication.v1",
                 "stored-media-keyframe-preview.v1",
@@ -20810,7 +21123,7 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
-    fn active_export_fixture(
+    pub(super) fn active_export_fixture(
         state: &ServerState,
         request: &proto::CreateExportJob,
     ) -> ExportJobRecord {
@@ -21937,6 +22250,7 @@ mod tests {
                                 ),
                                 expected_configuration_revision: String::new(),
                                 recorded_audio: None,
+                                live_audio: None,
                             },
                         )),
                     },
@@ -22077,6 +22391,7 @@ mod tests {
                                 event_recording_stream: None,
                                 expected_configuration_revision: String::new(),
                                 recorded_audio: None,
+                                live_audio: None,
                             },
                         )),
                     },
@@ -23367,6 +23682,7 @@ mod tests {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
         let camera_configs = HashMap::from([
             (
@@ -23552,6 +23868,7 @@ mod tests {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
         let camera_configs = HashMap::from([("cameras".to_owned(), vec![camera])]);
 
@@ -23648,6 +23965,7 @@ mod tests {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
         let configs = HashMap::from([("cameras".to_owned(), vec![config.clone()])]);
         let state = ServerState::new(
@@ -23813,6 +24131,7 @@ mod tests {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
         let camera_configs = HashMap::from([("cameras".to_owned(), vec![camera])]);
         let state = ServerState::new(
@@ -23952,6 +24271,7 @@ mod tests {
                 event_pre_recording_duration_secs: 0,
                 event_recording_stream: Default::default(),
                 recorded_audio: Default::default(),
+                live_audio: Default::default(),
             },
             groups: vec!["cameras".to_owned()],
             battery_uid: None,
@@ -24009,6 +24329,7 @@ mod tests {
             event_pre_recording_duration_secs: 0,
             event_recording_stream: Default::default(),
             recorded_audio: Default::default(),
+            live_audio: Default::default(),
         };
         let camera_configs = HashMap::from([
             ("Exterior".to_owned(), vec![front.clone()]),

@@ -1,5 +1,7 @@
-import type { JsonObject } from '@bufbuild/protobuf';
-import type { StateEntry } from './proto/webrtc_pb';
+import { fromJson, toBinary, type JsonObject } from '@bufbuild/protobuf';
+import { StructSchema } from '@bufbuild/protobuf/wkt';
+import { StateStoreErrorCode, type StateEntry } from './proto/webrtc_pb';
+import { StateStoreRequestError } from './state-store-error';
 import { SharedProfileWatch, type ProfileSubscription } from './runtime-profile-shared-watch';
 import type { ControlClientStateStore, StateStoreWatch } from './control-client-state-store';
 import {
@@ -8,10 +10,12 @@ import {
 	observedPartCount,
 	observedPartFromEntry,
 	type ObservedPart,
+	runtimeProfileSelectSchema,
 	runtimeProfilesActiveKey,
 	runtimeProfilesActiveSchema,
 	runtimeProfilesNamespace,
 	runtimeProfilesRegistryKey,
+	runtimeProfileCompactRegistrySchema,
 	runtimeProfilesRegistrySchema,
 	runtimeProfilesStatusKey,
 	runtimeProfileDraftPartSchema,
@@ -34,6 +38,12 @@ import {
 const profilePartFetchConcurrency = 4;
 const registryReadRetries = 2;
 const observedIndices = Array.from({ length: observedPartCount }, (_, index) => index);
+
+type PreparedProfile = {
+	profile: RuntimeProfileRegistry['profiles'][string];
+	partCount: number;
+	digest: string;
+};
 
 export class RuntimeProfilesControlClient {
 	private readonly activeWatch = new SharedProfileWatch<ActiveRuntimeProfile | null>();
@@ -115,20 +125,54 @@ export class RuntimeProfilesControlClient {
 
 	async saveRegistry(registry: RuntimeProfileRegistry): Promise<RuntimeProfileRegistry> {
 		const draftId = crypto.randomUUID();
-		const profiles = Object.fromEntries(
-			Object.entries(registry.profiles).map(([id, profile]) => [
-				id,
-				{ ...profile, revision: nextRevision(profile.revision) }
-			])
+		const current = runtimeProfileManifestFromEntry(
+			await this.stateStore.get(runtimeProfilesNamespace, runtimeProfilesRegistryKey)
 		);
-		const candidate = { ...registry, profiles };
-		const summaries = await Promise.all(
-			Object.values(profiles).map(async (profile) => ({
-				profile,
-				partCount: Math.ceil(Object.keys(profile.cameras).length / maxRuntimeProfilePartCameras),
-				digest: await digestProfile(profile)
-			}))
+		if (
+			current.revision !== registry.revision ||
+			Object.values(registry.profiles).some((candidate) => {
+				const previous = current.profiles[candidate.id];
+				return previous && candidate.revision !== '0' && previous.revision !== candidate.revision;
+			})
+		) {
+			throw new StateStoreRequestError('Runtime profiles changed before saving.', {
+				namespace: runtimeProfilesNamespace,
+				key: runtimeProfilesRegistryKey,
+				code: StateStoreErrorCode.CONFLICT,
+				currentRevision: BigInt(current.revision)
+			});
+		}
+		const summaries = await this.prepareDefinitions(registry, current);
+		await this.stageDraft(draftId, summaries);
+		await this.commitRegistry(draftId, registry, summaries);
+		return this.getRegistry();
+	}
+
+	private prepareDefinitions(
+		registry: RuntimeProfileRegistry,
+		current: RuntimeProfileManifest
+	): Promise<PreparedProfile[]> {
+		return mapBounded(
+			Object.values(registry.profiles),
+			profilePartFetchConcurrency,
+			async (candidate) => {
+				const previous = current.profiles[candidate.id];
+				let profile = { ...candidate, revision: previous?.revision ?? '1' };
+				let digest = await digestProfile(profile);
+				if (previous && digest !== previous.digest) {
+					profile = { ...candidate, revision: nextRevision(previous.revision) };
+					digest = await digestProfile(profile);
+				}
+				return {
+					profile,
+					partCount: Math.ceil(Object.keys(profile.cameras).length / maxRuntimeProfilePartCameras),
+					digest
+				};
+			}
 		);
+	}
+
+	private async stageDraft(draftId: string, summaries: PreparedProfile[]): Promise<void> {
 		const partWrites = summaries.flatMap(({ profile, partCount, digest }) => {
 			const cameraEntries = Object.entries(profile.cameras).sort(([left], [right]) =>
 				left < right ? -1 : left > right ? 1 : 0
@@ -170,10 +214,17 @@ export class RuntimeProfilesControlClient {
 				value: value as JsonObject
 			})
 		);
+	}
+
+	private async commitRegistry(
+		draftId: string,
+		registry: RuntimeProfileRegistry,
+		summaries: PreparedProfile[]
+	): Promise<void> {
 		const value = {
 			draft_id: draftId,
-			revision: candidate.revision,
-			active_profile_id: candidate.active_profile_id,
+			revision: registry.revision,
+			active_profile_id: registry.active_profile_id,
 			profiles: Object.fromEntries(
 				summaries.map(({ profile, partCount, digest }) => [
 					profile.id,
@@ -188,26 +239,91 @@ export class RuntimeProfilesControlClient {
 				])
 			)
 		};
-		await this.stateStore.put(runtimeProfilesNamespace, runtimeProfilesRegistryKey, {
-			schema: runtimeProfilesRegistrySchema,
-			value: value as JsonObject,
-			expectedRevision: BigInt(candidate.revision)
-		});
-		return this.getRegistry();
+		const compact =
+			toBinary(StructSchema, fromJson(StructSchema, value as JsonObject)).byteLength > 16 * 1024;
+		const payload = compact
+			? {
+					...value,
+					profiles: Object.fromEntries(
+						Object.entries(value.profiles).map(([id, { id: _duplicateId, ...fields }]) => [
+							id,
+							fields
+						])
+					)
+				}
+			: value;
+		const put = (schema: string, document: JsonObject) =>
+			this.stateStore.put(runtimeProfilesNamespace, runtimeProfilesRegistryKey, {
+				schema,
+				value: document,
+				expectedRevision: BigInt(registry.revision)
+			});
+		if (compact) {
+			try {
+				await put(runtimeProfileCompactRegistrySchema, payload as JsonObject);
+			} catch (cause) {
+				if (
+					!(cause instanceof StateStoreRequestError) ||
+					cause.code !== StateStoreErrorCode.SCHEMA_INVALID ||
+					cause.namespace !== runtimeProfilesNamespace ||
+					cause.key !== runtimeProfilesRegistryKey
+				)
+					throw cause;
+				await put(runtimeProfilesRegistrySchema, value as JsonObject);
+			}
+		} else {
+			await put(runtimeProfilesRegistrySchema, value as JsonObject);
+		}
 	}
 
-	async activate(profileId: string | null, expectedRevision: string): Promise<string> {
-		return (await this.activateWithHeader(profileId, expectedRevision)).revision;
+	async activate(
+		profileId: string | null,
+		expectedRevision: string,
+		selection?: RuntimeProfileRegistry
+	): Promise<string> {
+		return (await this.activateWithHeader(profileId, expectedRevision, selection)).revision;
 	}
 
 	async activateWithHeader(
 		profileId: string | null,
-		expectedRevision: string
+		expectedRevision: string,
+		selection?: RuntimeProfileRegistry
 	): Promise<ReturnType<typeof runtimeProfileFromEntry>> {
+		let schema = runtimeProfilesActiveSchema;
+		const revision = BigInt(expectedRevision);
+		const value: JsonObject = { profile_id: profileId ?? '' };
+		if (profileId !== null) {
+			const displayed =
+				selection ??
+				runtimeProfileManifestFromEntry(
+					await this.stateStore.get(runtimeProfilesNamespace, runtimeProfilesRegistryKey)
+				);
+			const definition = displayed.profiles[profileId];
+			if (!definition) throw new Error('The selected runtime profile is unavailable.');
+			const digest = 'digest' in definition ? definition.digest : await digestProfile(definition);
+			if (displayed.activation_schema === runtimeProfileSelectSchema) {
+				schema = runtimeProfileSelectSchema;
+				value.definition_revision = definition.revision;
+				value.definition_digest = digest;
+			} else if (selection) {
+				const latest = runtimeProfileManifestFromEntry(
+					await this.stateStore.get(runtimeProfilesNamespace, runtimeProfilesRegistryKey)
+				);
+				const current = latest.profiles[profileId];
+				if (current?.digest !== digest || current.revision !== definition.revision) {
+					throw new StateStoreRequestError('The selected profile changed before activation.', {
+						namespace: runtimeProfilesNamespace,
+						key: runtimeProfilesActiveKey,
+						code: StateStoreErrorCode.CONFLICT,
+						currentRevision: BigInt(latest.revision)
+					});
+				}
+			}
+		}
 		const entry = await this.stateStore.put(runtimeProfilesNamespace, runtimeProfilesActiveKey, {
-			schema: runtimeProfilesActiveSchema,
-			value: { profile_id: profileId ?? '' },
-			expectedRevision: BigInt(expectedRevision)
+			schema,
+			value,
+			expectedRevision: revision
 		});
 		return runtimeProfileFromEntry(entry);
 	}
@@ -355,13 +471,16 @@ export class RuntimeProfilesControlClient {
 			maxEntries: 1,
 			listener: (entries) => {
 				if (!entries.some((entry) => entry.key === runtimeProfilesRegistryKey)) return;
+				const connection = this.connectionGeneration;
 				const requestGeneration = ++generation;
+				const current = () =>
+					connection === this.connectionGeneration && requestGeneration === generation;
 				void this.getRegistry()
 					.then((registry) => {
-						if (requestGeneration === generation) listener(registry);
+						if (current()) listener(registry);
 					})
 					.catch((cause: unknown) => {
-						if (requestGeneration === generation) onError(cause);
+						if (current()) onError(cause);
 					});
 			}
 		});
@@ -503,6 +622,7 @@ export class RuntimeProfilesControlClient {
 			})
 		);
 		return {
+			...(manifest.activation_schema ? { activation_schema: manifest.activation_schema } : {}),
 			revision: manifest.revision,
 			active_profile_id: manifest.active_profile_id,
 			profiles: Object.fromEntries(definitions)

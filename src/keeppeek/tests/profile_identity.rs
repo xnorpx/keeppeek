@@ -39,6 +39,75 @@ fn install_identity_camera(recorder: &mut KeepPeekLoop, ip: &str) -> Camera {
 }
 
 #[test]
+fn returning_to_base_reports_failed_notification_restore_only_for_affected_sources() {
+    let directory = std::env::temp_dir().join(format!(
+        "keeppeek-profile-notifications-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("config.toml");
+    let notifications = crate::notifications::Runtime::open(&path).unwrap();
+    let mut recorder = KeepPeekLoop::new(Shutdown::new(), None);
+    recorder.set_notifications(notifications.handle());
+    let first = install_identity_camera(&mut recorder, "192.0.2.1");
+    let second = install_identity_camera(&mut recorder, "192.0.2.2");
+    let ids = CameraProfileIds::new(BTreeMap::from([
+        (first.config.ip, FIRST_ID.to_owned()),
+        (second.config.ip, SECOND_ID.to_owned()),
+    ]))
+    .unwrap();
+    let mut away = identity_profile();
+    away.profiles
+        .get_mut("away")
+        .unwrap()
+        .cameras
+        .get_mut(FIRST_ID)
+        .unwrap()
+        .notifications_suppressed = Some(true);
+    recorder
+        .apply_runtime_profiles_with_camera_ids(away.clone(), Some(ids))
+        .unwrap();
+    notifications.shutdown();
+    away.revision = 2;
+    away.active_profile_id = None;
+    let failed = recorder.apply_runtime_profiles(away.clone()).unwrap();
+    let affected = failed
+        .iter()
+        .find(|camera| camera.camera_id == FIRST_ID)
+        .unwrap();
+    assert_eq!(
+        affected.state,
+        crate::profiles::RuntimeApplicationState::Degraded
+    );
+    assert!(
+        affected
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("notification runtime")
+    );
+    assert_eq!(
+        failed
+            .iter()
+            .find(|camera| camera.camera_id == SECOND_ID)
+            .unwrap()
+            .state,
+        crate::profiles::RuntimeApplicationState::Applied
+    );
+    let restored = crate::notifications::Runtime::open(&path).unwrap();
+    recorder.set_notifications(restored.handle());
+    assert!(
+        recorder
+            .apply_runtime_profiles(away)
+            .unwrap()
+            .iter()
+            .all(|camera| camera.state == crate::profiles::RuntimeApplicationState::Applied)
+    );
+    restored.shutdown();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn runtime_profile_identity_follows_ip_and_does_not_bind_a_replacement() {
     let mut recorder = KeepPeekLoop::new(Shutdown::new(), None);
     let original = install_identity_camera(&mut recorder, "192.0.2.1");

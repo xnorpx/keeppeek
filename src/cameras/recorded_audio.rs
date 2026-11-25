@@ -1,26 +1,31 @@
-//! Recorded-audio settings preserve explicit zero and per-stream inheritance.
+//! Live and recorded presentation settings preserve explicit zero and per-stream inheritance.
 
 use serde::{Deserialize, Serialize};
 
 /// Maximum absolute recorded-audio correction, in milliseconds.
 pub const MAX_RECORDED_AUDIO_OFFSET_MS: i32 = 5_000;
 
-/// Positive offsets delay audio without changing the stored source recording.
+/// Maximum absolute live listener correction, in milliseconds.
+pub const MAX_LIVE_AUDIO_OFFSET_MS: i32 = 200;
+pub type RecordedAudioSettings = AudioOffsetSettings<MAX_RECORDED_AUDIO_OFFSET_MS>;
+pub type LiveAudioSettings = AudioOffsetSettings<MAX_LIVE_AUDIO_OFFSET_MS>;
+
+/// Signed presentation corrections. Absent profile overrides inherit the camera default.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct RecordedAudioSettings {
+#[serde(deny_unknown_fields)]
+pub struct AudioOffsetSettings<const LIMIT_MS: i32> {
     /// An absent camera default resolves to zero.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_offset_ms: Option<i32>,
     /// An absent main-stream override inherits the camera default.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub main_offset_ms: Option<i32>,
     /// An absent sub-stream override inherits the camera default.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sub_offset_ms: Option<i32>,
 }
 
-impl RecordedAudioSettings {
+impl<const LIMIT_MS: i32> AudioOffsetSettings<LIMIT_MS> {
     pub const fn is_default(&self) -> bool {
         self.default_offset_ms.is_none()
             && self.main_offset_ms.is_none()
@@ -38,8 +43,10 @@ impl RecordedAudioSettings {
         .flatten()
         {
             anyhow::ensure!(
-                (-MAX_RECORDED_AUDIO_OFFSET_MS..=MAX_RECORDED_AUDIO_OFFSET_MS).contains(&value),
-                "recorded audio offset must be between -5000 and 5000 milliseconds"
+                (-LIMIT_MS..=LIMIT_MS).contains(&value),
+                "audio offset must be between {} and {} milliseconds",
+                -LIMIT_MS,
+                LIMIT_MS
             );
         }
         Ok(())
@@ -50,7 +57,7 @@ impl RecordedAudioSettings {
         let stream_offset = match stream_id {
             "main" => self.main_offset_ms,
             "sub" => self.sub_offset_ms,
-            _ => anyhow::bail!("recorded audio correction requires a main or sub stream"),
+            _ => anyhow::bail!("audio correction requires a main or sub stream"),
         };
         Ok(stream_offset.or(self.default_offset_ms).unwrap_or_default())
     }
@@ -98,6 +105,26 @@ mod tests {
     }
 
     #[test]
+    fn invalid_offsets_report_the_configured_bounds() {
+        let live = LiveAudioSettings {
+            default_offset_ms: Some(201),
+            ..Default::default()
+        };
+        let recorded = RecordedAudioSettings {
+            default_offset_ms: Some(5001),
+            ..Default::default()
+        };
+        assert_eq!(
+            live.validate().unwrap_err().to_string(),
+            "audio offset must be between -200 and 200 milliseconds"
+        );
+        assert_eq!(
+            recorded.validate().unwrap_err().to_string(),
+            "audio offset must be between -5000 and 5000 milliseconds"
+        );
+    }
+
+    #[test]
     fn empty_settings_omit_values_but_explicit_zero_remains_serialized() {
         assert!(RecordedAudioSettings::default().is_default());
         assert!(
@@ -119,5 +146,25 @@ mod tests {
         ] {
             assert!(toml::from_str::<RecordedAudioSettings>(invalid).is_err());
         }
+    }
+
+    #[test]
+    fn partial_audio_settings_default_absent_overrides() {
+        let partial: LiveAudioSettings = toml::from_str("default_offset_ms = 50").unwrap();
+        assert_eq!(partial.default_offset_ms, Some(50));
+        assert_eq!(partial.main_offset_ms, None);
+        assert_eq!(partial.sub_offset_ms, None);
+        assert_eq!(partial.effective_offset_ms("main").unwrap(), 50);
+
+        let empty_toml: LiveAudioSettings = toml::from_str("").unwrap();
+        assert_eq!(empty_toml, LiveAudioSettings::default());
+
+        let partial_json: LiveAudioSettings =
+            serde_json::from_str(r#"{"default_offset_ms": 50}"#).unwrap();
+        assert_eq!(partial_json, partial);
+        assert_eq!(
+            serde_json::from_str::<LiveAudioSettings>("{}").unwrap(),
+            LiveAudioSettings::default()
+        );
     }
 }

@@ -36,7 +36,7 @@
 		resolveGlobalKeyboardAction,
 		type KeyboardOverlayMode
 	} from '$lib/keyboard-shortcuts';
-	import type { AccessConnectionState } from '$lib/access';
+	import { workspaceAccessChanged, type AccessConnectionState } from '$lib/access';
 	import type { ServerHealthResponse } from '$lib/types';
 	import { setShellHealthPublisher } from '$lib/shell-health-context';
 
@@ -50,7 +50,7 @@
 	let { children }: { children: Snippet } = $props();
 	const controlClient = setControlClient();
 	const livePeer = setLivePeer({
-		create: (offer) => controlClient.createWebRtcSession(offer),
+		create: (offer, previous) => controlClient.createWebRtcSession(offer, previous),
 		delete: (sessionId, options) => controlClient.deleteWebRtcSession(sessionId, options)
 	});
 	const peekViewState = setPeekViewState();
@@ -62,6 +62,8 @@
 		message: null,
 		generation: 0
 	});
+	let workspaceRevision = $state(0);
+	let recovering = $derived(accessState.status === 'checking' && accessState.session !== null);
 	const reportSession = createReportSession(controlClient, browserLogStore);
 	let reportOpen = $state(false);
 	provideReportContext({
@@ -185,19 +187,39 @@
 		const closeAccessState = controlClient.onAccessState((state) => {
 			const wasAuthenticated = accessState.status === 'authenticated';
 			const previousPrincipalId = accessState.session?.principalId ?? null;
+			const previous = accessState;
+			const authorityChanged = workspaceAccessChanged(
+				previous,
+				state.session,
+				state.cameraSourceIds
+			);
+			if (authorityChanged) workspaceRevision += 1;
 			accessState = state;
-			if (state.status !== 'authenticated' || state.session?.principalId !== previousPrincipalId) {
+			if (!state.session || authorityChanged) {
+				if (previous.session) void livePeer.close().catch(() => undefined);
 				peekViewState.reset();
+			} else if (
+				state.status === 'authenticated' &&
+				previous.session &&
+				(state.cameraSourceIds?.length ?? 0) > (previous.cameraSourceIds?.length ?? 0)
+			) {
+				void peekViewState.refreshCameraInventory(controlClient);
 			}
 			if (
 				state.status !== 'authenticated' ||
-				state.session?.principalId !== previousPrincipalId ||
+				!previous.session ||
+				authorityChanged ||
 				state.session?.role !== 'administrator'
 			) {
 				reportSession.cancel();
 				reportOpen = false;
 			}
 			const authenticated = state.status === 'authenticated';
+			if (
+				authenticated &&
+				(!wasAuthenticated || previousPrincipalId !== state.session?.principalId)
+			)
+				livePeer.resumeRecovery();
 			if (
 				wasAuthenticated !== authenticated ||
 				previousPrincipalId !== (state.session?.principalId ?? null)
@@ -285,7 +307,27 @@
 		);
 	}
 
+	function lockWorkspace(dialog: HTMLDialogElement) {
+		// A native modal also locks portaled controls and dialogs already in the top layer.
+		const previous = document.activeElement;
+		dialog.showModal();
+		return () => {
+			dialog.close();
+			queueMicrotask(() => {
+				if (previous instanceof HTMLElement && previous.isConnected) {
+					previous.focus({ preventScroll: true });
+				}
+			});
+		};
+	}
+
 	function handleGlobalKeyboard(event: KeyboardEvent): void {
+		if (recovering) {
+			if (event.key === 'Escape') event.preventDefault();
+			event.stopImmediatePropagation();
+			return;
+		}
+		if (accessState.status !== 'authenticated') return;
 		const action = resolveGlobalKeyboardAction(event, {
 			overlay: keyboardOverlay,
 			navigationPending: navigationChordPending,
@@ -465,7 +507,17 @@
 
 {#if verificationWindow}
 	<AdministratorVerificationWindow />
-{:else if accessState.status === 'authenticated'}
+{:else if accessState.status === 'authenticated' || recovering}
+	{#if recovering}
+		<dialog
+			{@attach lockWorkspace}
+			aria-label="Checking access"
+			oncancel={(event) => event.preventDefault()}
+			class="m-auto rounded-md border border-hairline bg-background p-4 text-sm text-foreground shadow-lg backdrop:bg-black/40"
+		>
+			<p role="status">Reconnecting. Checking access…</p>
+		</dialog>
+	{/if}
 	{#if controlClient.externalAuthentication.error}
 		<p
 			role="alert"
@@ -479,6 +531,8 @@
 	{/if}
 	<Tooltip.Provider delayDuration={0}>
 		<div
+			inert={recovering}
+			aria-busy={recovering}
 			data-keyboard-ready={keyboardReady}
 			class="min-h-svh bg-background text-foreground md:grid md:grid-cols-[64px_minmax(0,1fr)]"
 		>
@@ -696,11 +750,13 @@
 						? 'live-surface'
 						: 'workspace-surface'}"
 				>
-					{#if liveViewActive}
-						<PeekPage view={viewerActive ? 'viewer' : 'dashboard'} />
-					{:else}
-						{@render children()}
-					{/if}
+					{#key workspaceRevision}
+						{#if liveViewActive}
+							<PeekPage view={viewerActive ? 'viewer' : 'dashboard'} />
+						{:else}
+							{@render children()}
+						{/if}
+					{/key}
 				</main>
 			</div>
 
@@ -715,7 +771,7 @@
 	</Tooltip.Provider>
 
 	<KeyboardOverlay
-		mode={keyboardOverlay}
+		mode={recovering ? null : keyboardOverlay}
 		pathname={page.url.pathname}
 		onclose={() => (keyboardOverlay = null)}
 		onnavigate={navigateFromKeyboard}

@@ -57,6 +57,29 @@ function mockWall(page: Page, options: MockControlPeerOptions = {}) {
 	});
 }
 
+test('retries refused wall media for an authorized User without administrator health access', async ({
+	page
+}) => {
+	let allow = false;
+	const controls = await mockWall(page, {
+		cameras: cameras.slice(0, 1),
+		accessRole: 'user',
+		accessLocal: false,
+		healthError: 'Administrator access required',
+		mediaAdmissionError: () => (allow ? null : 'Stream capacity reached')
+	});
+	await page.goto('/');
+	await expect.poll(() => controls.mediaSubscriptions.length).toBeGreaterThan(0);
+	const refused = controls.mediaSubscriptions.length;
+	const tile = page.locator('[data-peek-camera]').first();
+	await expect(tile).toHaveAttribute('data-peek-admission', 'unavailable');
+	allow = true;
+	await expect
+		.poll(() => controls.mediaSubscriptions.length, { timeout: 15000 })
+		.toBeGreaterThan(refused);
+	await expect(tile).toHaveAttribute('data-peek-admission', 'admitted');
+});
+
 test('saves appearance on the selected server dashboard and discards previews independently', async ({
 	page
 }) => {
@@ -379,4 +402,21 @@ test('wake lock follows user intent, visibility, and navigation without changing
 	await page.keyboard.press('Escape');
 	await page.getByRole('link', { name: 'Keep', exact: true }).click();
 	await expect.poll(counts).toEqual({ requests: 2, releases: 2 });
+});
+
+test('confirmed additional camera grants update the mounted Peek wall in place', async ({
+	page
+}) => {
+	const [first, added] = cameras;
+	const controls = await mockControlPeer(page, { cameras: [first], health: mixedHealth });
+	await page.goto('/');
+	const previous = page.locator(`[data-peek-camera="${first.id}"]`);
+	await expect(previous).toBeVisible();
+	const original = await previous.elementHandle();
+	const granted = page.locator(`[data-peek-camera="${added.id}"]`);
+	await expect(granted).toHaveCount(0);
+	await controls.publishCapabilities([], [first, added]);
+	await expect(granted).toBeVisible();
+	await expect(granted.locator('[data-camera-id]')).toHaveAttribute('data-stream', 'sub');
+	expect(await previous.evaluate((current, before) => current === before, original)).toBe(true);
 });

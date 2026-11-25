@@ -102,9 +102,73 @@
 			'main'
 		);
 	});
+	type LivePreview = { cameraId: string; stream: 'main' | 'sub'; offset: number };
+	let livePreview = $state.raw<LivePreview | null>(null);
+	const previewLifetime = $derived({
+		cameraId,
+		available: previewAvailable,
+		controller: new AbortController()
+	});
+	$effect.pre(() => {
+		const { controller } = previewLifetime;
+		return () => controller.abort();
+	});
+	$effect(() => {
+		if (
+			livePreview &&
+			(!previewAvailable ||
+				livePreview.cameraId !== cameraId ||
+				livePeer.track(livePreview.cameraId)?.restoredSavedTiming)
+		)
+			livePreview = null;
+	});
+	function cameraPlan(id: string, preview: LivePreview | null) {
+		return {
+			cameraId: id,
+			quality: 'auto' as const,
+			...(preview?.cameraId === id
+				? { variantId: preview.stream, liveAudioPreviewOffsetMs: preview.offset }
+				: {})
+		};
+	}
 	let livePlans = $derived(
-		previewAvailable && camera !== null ? [{ cameraId: camera.id, quality: 'auto' as const }] : []
+		previewAvailable && camera?.id === cameraId ? [cameraPlan(cameraId, livePreview)] : []
 	);
+	async function previewLiveAudio(stream: 'main' | 'sub', offset: number | null) {
+		if (!camera) throw new Error('The live camera is unavailable.');
+		if (
+			offset === null &&
+			(!previewAvailable || !livePeer.sessionId || !livePeer.track(camera.id)?.subscribed)
+		) {
+			livePeer.cancelDisconnectedPreview(camera.id);
+			livePreview = null;
+			return;
+		}
+		if (!previewAvailable) throw new Error('The live camera is unavailable.');
+		const id = camera.id;
+		const lifetime = previewLifetime;
+		const previous = livePreview;
+		const candidate = offset === null ? null : { cameraId: id, stream, offset };
+		try {
+			void livePeer
+				.resumeAudioPlayback()
+				.catch((error) => console.warn('Audio playback could not resume', error));
+			await livePeer.configure([cameraPlan(id, candidate)]);
+			if (lifetime.controller.signal.aborted || lifetime !== previewLifetime) return;
+			if (!previewAvailable) throw new Error('The live camera is unavailable.');
+			if (offset !== null && livePeer.track(id)?.liveAudioPreviewOffsetMs !== offset)
+				throw new Error('Reconnect the camera before previewing timing.');
+			livePreview = candidate;
+		} catch (cause) {
+			if (!lifetime.controller.signal.aborted && lifetime === previewLifetime) {
+				livePreview = previous;
+				await livePeer.configure(livePlans).catch((restoreError) => {
+					console.warn('Unable to restore the previous camera preview', restoreError);
+				});
+			}
+			throw cause;
+		}
+	}
 	let capabilityItems = $derived.by(() => {
 		const capabilities = camera?.capabilities;
 		if (!capabilities) return [];
@@ -120,16 +184,20 @@
 	});
 
 	onMount(() => {
+		const releasePeer = livePeer.hold();
 		const media = window.matchMedia('(max-width: 767px)');
 		const update = () => (mobileViewport = media.matches);
 		update();
 		media.addEventListener('change', update);
-		return () => media.removeEventListener('change', update);
+		return () => {
+			media.removeEventListener('change', update);
+			releasePeer();
+		};
 	});
 
 	$effect(() => {
 		if (loading) return;
-		void livePeer.configure(livePlans).catch((cause) => {
+		void livePeer.configure(livePlans, 'reconcile').catch((cause) => {
 			console.error('Unable to configure Camera live preview', cause);
 		});
 	});
@@ -314,7 +382,8 @@
 
 	async function saveRecordedAudio(
 		settings: RecordedAudioConfiguration,
-		revision: string
+		revision: string,
+		kind: 'live_audio' | 'recorded_audio' = 'recorded_audio'
 	): Promise<CameraSettings> {
 		const target = cameraSettings;
 		const id = cameraId;
@@ -322,7 +391,7 @@
 		savingRecordedAudio = true;
 		try {
 			const result = await controlClient.updateCamera(target.ip, {
-				recorded_audio: settings,
+				[kind]: settings,
 				expected_configuration_revision: revision
 			});
 			if (result.camera.id !== target.id) throw new Error('Unexpected camera settings response.');
@@ -622,13 +691,27 @@
 							oncancel={closeConfiguration}
 							onsave={saveConfiguration}
 						/>
-						<div class="mt-4">
+						<div class="mt-4 space-y-4">
 							{#key cameraSettings.id}
 								<RecordedAudioSettings
 									camera={cameraSettings}
 									disabled={savingConfiguration || savingPrivacy || savingRecordedAudio}
 									onsave={saveRecordedAudio}
 								/>
+								{#if serverCapabilities.supports('keeppeek.live-audio-timing.v1')}
+									<RecordedAudioSettings
+										kind="live"
+										camera={cameraSettings}
+										disabled={savingConfiguration || savingPrivacy || savingRecordedAudio}
+										appliedPreview={livePeer.track(cameraSettings.id)?.liveAudioPreviewOffsetMs}
+										previewRequested={livePreview?.cameraId === cameraSettings.id}
+										onpreview={previewAvailable || livePreview?.cameraId === cameraSettings.id
+											? previewLiveAudio
+											: undefined}
+										onsave={(settings, revision) =>
+											saveRecordedAudio(settings, revision, 'live_audio')}
+									/>
+								{/if}
 							{/key}
 						</div>
 						<div id="privacy" class="mt-4">
@@ -1148,13 +1231,27 @@
 							{/each}
 						</div>
 						{#if cameraSettings}
-							<div class="mt-4">
+							<div class="mt-4 space-y-4">
 								{#key cameraSettings.id}
 									<RecordedAudioSettings
 										camera={cameraSettings}
 										disabled={savingConfiguration || savingPrivacy || savingRecordedAudio}
 										onsave={saveRecordedAudio}
 									/>
+									{#if serverCapabilities.supports('keeppeek.live-audio-timing.v1')}
+										<RecordedAudioSettings
+											kind="live"
+											camera={cameraSettings}
+											disabled={savingConfiguration || savingPrivacy || savingRecordedAudio}
+											appliedPreview={livePeer.track(cameraSettings.id)?.liveAudioPreviewOffsetMs}
+											previewRequested={livePreview?.cameraId === cameraSettings.id}
+											onpreview={previewAvailable || livePreview?.cameraId === cameraSettings.id
+												? previewLiveAudio
+												: undefined}
+											onsave={(settings, revision) =>
+												saveRecordedAudio(settings, revision, 'live_audio')}
+										/>
+									{/if}
 								{/key}
 							</div>
 						{/if}

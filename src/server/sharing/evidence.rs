@@ -3,6 +3,7 @@ use crate::shares::{ExportBinding, IssuerBinding};
 use crate::storage::{catalog::readers::LeaseSet, volumes::root::OwnedFile};
 
 pub(in crate::server) struct ValidatedEvidence {
+    pub(in crate::server) permit: crate::privacy::MediaPermit,
     pub binding: ExportBinding,
     pub camera_name: String,
     pub has_gaps: bool,
@@ -189,14 +190,16 @@ fn live_evidence(
     }
     let current_source = source(state, binding.source_identity)?;
     let camera_name = camera_label(state, &current_source)?;
-    if privacy_active_for_media(state, &current_source)? {
-        return Err(denied());
-    }
+    let permit = state
+        .privacy
+        .media_permit(current_source.as_str().into())
+        .ok_or_else(denied)?;
     let now_ms = i64::try_from(unix_time_ms()).map_err(|_| unavailable())?;
     if now_ms >= binding.available_until_ms {
         return Err(denied());
     }
     Ok(ValidatedEvidence {
+        permit,
         binding,
         camera_name,
         has_gaps: !record.job.missing_ranges.is_empty(),
