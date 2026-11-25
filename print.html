@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-4a591bf1.js";
+            window.path_to_searchindex_js = "searchindex-c5027d61.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-6871163b.js"></script>
@@ -2939,9 +2939,11 @@ usable source. This diagnostic setting is outside the two-file configuration ZIP
 the configuration directory if you need it during a recovery rehearsal. Source:
 <a href="https://github.com/xnorpx/keeppeek/blob/main/src/logging.rs">logging service</a>.</p>
 <h2 id="bug-reporting-service"><a class="header" href="#bug-reporting-service">Bug reporting service</a></h2>
-<p>The optional <code>[reporting]</code> section configures the recorder’s reporting service. Omit it to keep
-bug reports local. The configuration loader validates the section. Remote submission is pending
-recorder integration.</p>
+<p>The optional <code>[reporting]</code> section configures the recorder’s HTTPS reporting service. Omit it to
+keep bug reports local-only. When configured, KeepPeek exposes service availability on
+<code>GET /reporting/status</code>, issues short-lived single-report upload grants on <code>POST /reporting/grants</code>,
+and records non-sensitive lifecycle audit events on <code>POST /reporting/audit</code>. Every reporting
+endpoint requires Administrator authorization and the existing secure remote-access classification.</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -2955,7 +2957,9 @@ recorder integration.</p>
 </table>
 </div>
 <p>Keep the reusable credential in <code>secrets.toml</code>. The loader preserves the reference in
-<code>config.toml</code> and validates its syntax without resolving it at recorder startup.</p>
+<code>config.toml</code> and validates its syntax without resolving it at recorder startup. The recorder
+resolves the secret only when forwarding a confirmed grant request to <code>POST {origin}/v1/reports</code>
+and registers both the resolved credential and issued grant token for log redaction.</p>
 <h2 id="operational-events"><a class="header" href="#operational-events">Operational events</a></h2>
 <p>Type: <code>OperationalEventsConfig</code>, section <code>[operational_events]</code>.</p>
 <div class="table-wrapper">
@@ -5919,6 +5923,49 @@ from a suspected cause and provide a bounded way to collect the next observation
 <p>After reproducing the defect, open <strong>Settings &gt; Logs &amp; diagnostics &gt; Download diagnostics</strong>. Attach
 the generated <code>keeppeek-diagnostics-*.json.gz</code> file under <strong>Diagnostics package and sanitized
 evidence</strong> so the package contains the relevant retained server and browser logs.</p>
+<h2 id="in-app-bug-reporting-administrators"><a class="header" href="#in-app-bug-reporting-administrators">In-app bug reporting (Administrators)</a></h2>
+<p>Administrators can also start a bounded report session from <strong>Settings</strong> or <strong>Settings &gt; Logs</strong> by
+selecting <strong>Report a bug</strong>:</p>
+<ol>
+<li>Review what will be collected and choose <strong>Collect logs only</strong> or <strong>Record screen</strong>. Screen
+recording uses <code>getDisplayMedia({ video: true, audio: false })</code> and never requests a webcam,
+microphone, system audio, or tab audio.</li>
+<li>Reproduce the defect while navigating normally inside KeepPeek. A persistent indicator displays
+elapsed time, recorded bytes, <strong>Stop</strong>, and <strong>Cancel</strong>. Sessions stop automatically at 5 minutes
+or 100 MiB of screen media, and total uploads are capped at 128 MiB.</li>
+<li>Review the exact scrubbed issue text, browser and server log counts, UTC interval, evidence
+warnings (such as active filters, buffer eviction, stream gaps, or recorder restarts detected via
+<code>LogSnapshot.generation</code>), artifact sizes, retention window, and private screen preview. You can
+exclude or discard the screen recording before sharing.</li>
+<li>Confirm once more to submit when <code>[reporting]</code> is configured in <code>config.toml</code>, or download the
+scrubbed diagnostics package, optional screen recording, and report notes locally. Local
+downloads remain available whenever remote submission is unconfigured or fails.</li>
+</ol>
+<h3 id="browser-capability-matrix"><a class="header" href="#browser-capability-matrix">Browser capability matrix</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Capability</th><th>Behavior when supported</th><th>Behavior when unavailable or denied</th></tr>
+</thead>
+<tbody>
+<tr><td><code>navigator.mediaDevices.getDisplayMedia</code></td><td>Offers <strong>Record screen</strong> after explicit consent (video-only).</td><td><strong>Record screen</strong> is disabled or permission denial falls back to logs-only collection.</td></tr>
+<tr><td><code>MediaRecorder</code> + supported VP8/WebM or MP4 codec</td><td>Encodes bounded chunks up to 5 minutes / 100 MiB.</td><td><strong>Record screen</strong> is disabled; logs-only reporting stays available.</td></tr>
+<tr><td><code>CompressionStream('gzip')</code></td><td>Produces gzip-compressed <code>keeppeek-diagnostics-*.json.gz</code>.</td><td>Discloses that the diagnostics package is unavailable and preserves report notes and any recording.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="manual-real-browser-current-tab-capture-smoke-procedure"><a class="header" href="#manual-real-browser-current-tab-capture-smoke-procedure">Manual real-browser current-tab capture smoke procedure</a></h3>
+<p>Because browser permission pickers cannot be fully verified by DOM mocks, verify display capture in
+a real desktop browser when qualifying a release:</p>
+<ol>
+<li>Sign in as an Administrator over HTTPS or localhost, open <strong>Settings</strong>, and select <strong>Report a bug</strong>.</li>
+<li>Select <strong>Record screen</strong>, choose the current KeepPeek tab in the browser picker, and confirm no
+microphone, webcam, or audio permission prompt appears.</li>
+<li>Navigate to <strong>Settings &gt; Logs</strong>, confirm the persistent indicator stays visible with updating
+elapsed time and byte count, then end sharing from either the browser banner or <strong>Stop</strong>.</li>
+<li>Confirm the review dialog opens with a playable preview, download the recording, and inspect it
+with <code>ffprobe</code> to verify one video stream and zero audio streams.</li>
+</ol>
 <p>If the package cannot be generated or attached, state the exact reason. Missing diagnostics do not
 block submission, but a report without enough evidence may be closed as <code>needs more info</code>.</p>
 <p>Add focused timestamps, screenshots, stack traces, protocol fixtures, or small log excerpts when

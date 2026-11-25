@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-4a591bf1.js";
+            window.path_to_searchindex_js = "searchindex-c5027d61.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-6871163b.js"></script>
@@ -1019,9 +1019,11 @@ usable source. This diagnostic setting is outside the two-file configuration ZIP
 the configuration directory if you need it during a recovery rehearsal. Source:
 <a href="https://github.com/xnorpx/keeppeek/blob/main/src/logging.rs">logging service</a>.</p>
 <h2 id="bug-reporting-service"><a class="header" href="#bug-reporting-service">Bug reporting service</a></h2>
-<p>The optional <code>[reporting]</code> section configures the recorder’s reporting service. Omit it to keep
-bug reports local. The configuration loader validates the section. Remote submission is pending
-recorder integration.</p>
+<p>The optional <code>[reporting]</code> section configures the recorder’s HTTPS reporting service. Omit it to
+keep bug reports local-only. When configured, KeepPeek exposes service availability on
+<code>GET /reporting/status</code>, issues short-lived single-report upload grants on <code>POST /reporting/grants</code>,
+and records non-sensitive lifecycle audit events on <code>POST /reporting/audit</code>. Every reporting
+endpoint requires Administrator authorization and the existing secure remote-access classification.</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -1035,7 +1037,9 @@ recorder integration.</p>
 </table>
 </div>
 <p>Keep the reusable credential in <code>secrets.toml</code>. The loader preserves the reference in
-<code>config.toml</code> and validates its syntax without resolving it at recorder startup.</p>
+<code>config.toml</code> and validates its syntax without resolving it at recorder startup. The recorder
+resolves the secret only when forwarding a confirmed grant request to <code>POST {origin}/v1/reports</code>
+and registers both the resolved credential and issued grant token for log redaction.</p>
 <h2 id="operational-events"><a class="header" href="#operational-events">Operational events</a></h2>
 <p>Type: <code>OperationalEventsConfig</code>, section <code>[operational_events]</code>.</p>
 <div class="table-wrapper">
