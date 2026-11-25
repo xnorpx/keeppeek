@@ -60,8 +60,10 @@ pub(crate) use health::{RecordingHealthRegistry, RecordingStreamHealthSnapshot};
 pub use identity::RecordingStreamIdentity;
 pub use media_objects::{EncodedEventKeyframe, EventKeyframeLookup};
 pub use search::{
-    DEFAULT_PREVIEW_AFTER_MS, DEFAULT_PREVIEW_BEFORE_MS, EncodedEventPreview, EventEmbedding,
+    DEFAULT_PREVIEW_AFTER_MS, DEFAULT_PREVIEW_BEFORE_MS, EncodedEventPreview,
+    EventAdvancedSearchQuery, EventEmbedding, EventEmbeddingInput, EventEmbeddingProvenance,
     EventImageFilter, EventMetadataQuery, EventSearch, EventSearchField, EventSearchHit,
-    EventSearchPage, EventSearchTerm, EventSemanticSearchQuery, EventTextSearchQuery,
+    EventSearchPage, EventSearchPlannerDiagnostics, EventSearchSemanticSummary, EventSearchTerm,
+    EventSemanticRanking, EventSemanticSearchQuery, EventTextSearchQuery,
 };
 pub use segment::RecordingFrame;

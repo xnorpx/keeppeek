@@ -5624,7 +5624,12 @@ fn control_data_group(command: Option<&crate::api::proto::request::Command>) -> 
                 Action::CancelMedia(cancel) => {
                     Some(format!("event-search-media:{}", cancel.transfer_id))
                 }
-                Action::ReplaceTerms(_) | Action::SetEmbedding(_) => None,
+                Action::ReplaceTerms(_)
+                | Action::SetEmbedding(_)
+                | Action::DeleteEmbedding(_)
+                | Action::ListSavedSearches(_)
+                | Action::SaveSearch(_)
+                | Action::DeleteSavedSearch(_) => None,
             }
         }
         _ => None,

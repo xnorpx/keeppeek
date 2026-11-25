@@ -1,13 +1,18 @@
 use super::{
-    ControlCommandError, ServerState, cancel_event_search_task, fetch_event_search_media,
-    query_events, replace_event_search_terms, set_event_search_embedding, start_event_search_media,
-    start_event_search_query, validate_client_id,
+    ControlCommandError, ServerState, cancel_event_search_task, delete_event_search_embedding,
+    fetch_event_search_media, query_events, replace_event_search_terms, saved_searches,
+    set_event_search_embedding, start_event_search_media, start_event_search_query,
+    validate_client_id,
 };
 use crate::{
+    access::AccessRole,
     api::proto::{self, event_search_command, ok as control_ok},
     webrtc::{OutboundDataMessage, SessionId},
 };
 use std::sync::atomic::Ordering;
+
+pub(super) const ADVANCED_CAPABILITY_ID: &str = "keeppeek.event-search.advanced.v1";
+pub(super) const SEMANTIC_CAPABILITY_ID: &str = "keeppeek.event-search.semantic.v1";
 
 pub(super) fn dispatch(
     state: &ServerState,
@@ -29,6 +34,17 @@ pub(super) fn dispatch(
         }
         Some(event_search_command::Action::SetEmbedding(request)) => {
             set_event_search_embedding(state, &request)?;
+            Ok((
+                Some(control_ok::Result::EventSearchMutation(
+                    proto::EventSearchMutationResult {
+                        event_id: request.event_id,
+                    },
+                )),
+                Vec::new(),
+            ))
+        }
+        Some(event_search_command::Action::DeleteEmbedding(request)) => {
+            delete_event_search_embedding(state, &request)?;
             Ok((
                 Some(control_ok::Result::EventSearchMutation(
                     proto::EventSearchMutationResult {
@@ -73,6 +89,27 @@ pub(super) fn dispatch(
             );
             Ok((None, Vec::new()))
         }
+        Some(event_search_command::Action::ListSavedSearches(request)) => {
+            let result = saved_searches::list(state, principal, &request)?;
+            Ok((
+                Some(control_ok::Result::SavedEventSearchResult(result)),
+                Vec::new(),
+            ))
+        }
+        Some(event_search_command::Action::SaveSearch(request)) => {
+            let result = saved_searches::save(state, principal, &request)?;
+            Ok((
+                Some(control_ok::Result::SavedEventSearchResult(result)),
+                Vec::new(),
+            ))
+        }
+        Some(event_search_command::Action::DeleteSavedSearch(request)) => {
+            let result = saved_searches::delete(state, principal, &request)?;
+            Ok((
+                Some(control_ok::Result::SavedEventSearchResult(result)),
+                Vec::new(),
+            ))
+        }
         None => Err(ControlCommandError::new(
             proto::ErrorCode::InvalidRequest,
             400,
@@ -93,14 +130,34 @@ fn query(
         .as_ref()
         .map(|context| super::event_workflow::query_filter(principal, context))
         .transpose()?;
+    let is_admin = principal.role == AccessRole::Administrator;
+    let policy_revision = principal
+        .credential_binding()
+        .map_or(0, |(_, revision)| revision);
     if state.webrtc.has_api_session(session_id) {
-        let delivery = start_event_search_query(state, session_id, request, access, workflow)?;
+        let delivery = start_event_search_query(
+            state,
+            session_id,
+            request,
+            access,
+            workflow,
+            is_admin,
+            policy_revision,
+        )?;
         return Ok((
             Some(control_ok::Result::EventSearchDelivery(delivery)),
             Vec::new(),
         ));
     }
-    let (delivery, messages) = query_events(state, request, &access, workflow)?;
+    let (delivery, messages) = query_events(
+        state,
+        request,
+        &access,
+        workflow,
+        is_admin,
+        policy_revision,
+        None,
+    )?;
     Ok((
         Some(control_ok::Result::EventSearchDelivery(delivery)),
         messages,
