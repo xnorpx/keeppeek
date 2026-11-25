@@ -103,7 +103,11 @@ fn enable_windows_ctrl_c() {
     // inherit ignored Ctrl+C delivery even after registering a console handler.
     // SAFETY: Passing `None` with `false` clears only the calling process's inherited
     // `IGNORE_CTRL_C` attribute; no callback pointer is registered or dereferenced.
-    let _ = unsafe { windows::Win32::System::Console::SetConsoleCtrlHandler(None, false) };
+    if let Err(error) =
+        unsafe { windows::Win32::System::Console::SetConsoleCtrlHandler(None, false) }
+    {
+        tracing::warn!(%error, "unable to clear inherited Ctrl+C ignore attribute");
+    }
 }
 
 #[cfg(test)]

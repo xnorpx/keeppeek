@@ -289,16 +289,20 @@ fn render_until_closed(
             last = Instant::now();
             redraw = false;
         }
-        if let Ok(first) = receiver.recv_timeout(Duration::from_millis(100)) {
-            let rows = data.snapshot.as_ref().map_or(0, |snap| snap.rows.len());
-            for command in std::iter::once(first).chain(receiver.try_iter().take(31)) {
-                match command {
-                    Input::Rows(n) => nav.step(n, rows),
-                    Input::Pages(n) => nav.step(n * nav.page as isize, rows),
-                    Input::Resize => {}
+        match receiver.recv_timeout(Duration::from_millis(100)) {
+            Ok(first) => {
+                let rows = data.snapshot.as_ref().map_or(0, |snap| snap.rows.len());
+                for command in std::iter::once(first).chain(receiver.try_iter().take(31)) {
+                    match command {
+                        Input::Rows(n) => nav.step(n, rows),
+                        Input::Pages(n) => nav.step(n * nav.page as isize, rows),
+                        Input::Resize => {}
+                    }
                 }
+                redraw = true;
             }
-            redraw = true;
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
     Ok(())
