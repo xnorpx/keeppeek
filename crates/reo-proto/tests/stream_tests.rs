@@ -24,6 +24,70 @@ fn talk_ability_response(channel: u8) -> Vec<u8> {
     response
 }
 
+#[test]
+fn read_only_speaker_ability_requires_matching_request_header_and_extension() {
+    use session::{BcSession, Command, Event, Input, Output, SessionState};
+    let now = Instant::now();
+    for (header_channel, xml_channel, matched_request, expected) in [
+        (3, 3, true, true),
+        (2, 3, true, false),
+        (3, 2, true, false),
+        (3, 3, false, false),
+    ] {
+        let mut session = BcSession::default_client(now);
+        assert!(
+            session
+                .handle_input(Input::Command(Command::ReadTalkAbility { channel: 3 }))
+                .is_err()
+        );
+        session.set_state(SessionState::Connected);
+        session
+            .handle_input(Input::Command(Command::ReadTalkAbility { channel: 3 }))
+            .unwrap();
+        let sent = drain_tcp_sends(&mut session);
+        let (header, len) = PacketHeader::parse(&sent).unwrap();
+        assert_eq!(header.msg_id, COMMAND_TALK_CAPABILITIES);
+        assert_eq!(header.channel_id(), 3);
+        assert_eq!(sent.len(), len + header.body_len as usize);
+        let payload = talk_ability_response(xml_channel);
+        let extension = payload
+            .windows(6)
+            .position(|part| part == b"<body>")
+            .unwrap() as u32;
+        let mut reply = make_wire_message(
+            COMMAND_TALK_CAPABILITIES,
+            &payload,
+            make_status(BC_CLASS_MODERN_EXT, 200),
+            Some(extension),
+        );
+        reply[12] = header_channel;
+        let number = if matched_request {
+            header.message_number()
+        } else {
+            0
+        };
+        reply[14..16].copy_from_slice(&number.to_le_bytes());
+        session.handle_input(Input::TcpData(now, &reply)).unwrap();
+        let mut buffer = [0; 4096];
+        let mut verified = false;
+        loop {
+            match session.poll_output(&mut buffer).unwrap() {
+                Output::Event(Event::ReadTalkAbility(value)) => {
+                    assert_eq!(
+                        value.select_adpcm(3).unwrap().audio_profile.sample_rate,
+                        16000
+                    );
+                    verified = true;
+                }
+                Output::Event(_) => {}
+                Output::Timeout(_) => break,
+                Output::TcpSend { .. } => panic!("read-only discovery sent another command"),
+            }
+        }
+        assert_eq!(verified, expected);
+    }
+}
+
 // ── Wire message helpers ─────────────────────────────────────────────
 
 /// Build a complete wire message with BC header + body.

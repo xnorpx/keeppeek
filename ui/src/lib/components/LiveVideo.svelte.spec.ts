@@ -7,10 +7,14 @@ import {
 	LiveQualitySelectionReason,
 	type LiveQualityDiagnostics
 } from '$lib/proto/webrtc_pb';
+import type { CameraAudioAssets } from '$lib/stream-peer.svelte';
 import '../../app.css';
 
 const state = vi.hoisted(() => ({
 	estimate: null as number | null,
+	cameraAudioAssets: {} as Record<string, CameraAudioAssets>,
+	playQuickReply: vi.fn(),
+	playChime: vi.fn(),
 	quality: undefined as LiveQualityDiagnostics | undefined,
 	requestedQuality: 'high' as 'auto' | 'high'
 }));
@@ -29,6 +33,9 @@ vi.mock('$lib/stream-peer-context', () => ({
 		markPlaying: () => {},
 		resumeAudioPlayback: async () => {},
 		sessionId: 'session-network',
+		cameraAudioAssets: state.cameraAudioAssets,
+		playQuickReply: state.playQuickReply,
+		playChime: state.playChime,
 		get estimatedBitrateBps() {
 			return state.estimate;
 		},
@@ -38,6 +45,25 @@ vi.mock('$lib/stream-peer-context', () => ({
 }));
 
 import LiveVideo from './LiveVideo.svelte';
+
+it('plays advertised doorbell assets independently of microphone support', async () => {
+	state.cameraAudioAssets['front-door'] = {
+		twoWayAudio: false,
+		quickReplies: [{ id: '2', label: 'Delivery' }],
+		chimes: [{ id: 'hall', label: 'Hallway' }]
+	};
+	try {
+		const { container } = await render(LiveVideo, { cameraId: 'front-door', stream: 'main' });
+		expect(container.querySelector('[aria-label="Talk to front-door"]')).toBeNull();
+		await page.getByLabelText('Play doorbell sound').click();
+		await page.getByRole('button', { name: 'Delivery' }).click();
+		await page.getByRole('button', { name: 'Hallway' }).click();
+		expect(state.playQuickReply).toHaveBeenCalledWith('front-door', '2');
+		expect(state.playChime).toHaveBeenCalledWith('front-door', 'hall');
+	} finally {
+		delete state.cameraAudioAssets['front-door'];
+	}
+});
 
 describe('Live network estimate diagnostics', () => {
 	it.each([

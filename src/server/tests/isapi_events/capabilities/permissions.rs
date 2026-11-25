@@ -88,3 +88,88 @@ fn native_refresh_excludes_cameras_outside_the_receiving_users_access() {
     );
     assert_eq!(delivered_event(&notifications[1]).source_id, "native-front");
 }
+
+#[test]
+fn single_camera_capabilities_match_the_scoped_snapshot_without_touching_session_activity() {
+    let state = live_state();
+    let mut other = state.camera_entries().remove(0);
+    other.info.id = "private-back".to_owned();
+    other.configuration.ip = "192.0.2.2".parse().unwrap();
+    state.upsert_camera(other);
+    let session_id = SessionId::from_u64(115);
+    let _queue = restricted_queue(&state, session_id);
+    let handler = test_control_handler(state.clone());
+    let snapshot = handler.initial_capabilities(session_id).unwrap();
+    let activity = state.api_session_owners.lock().unwrap()[&session_id].last_activity;
+    assert_eq!(snapshot.cameras.len(), 1);
+    assert_eq!(
+        handler.camera_capability(session_id, "native-front"),
+        Some(snapshot.cameras[0].clone())
+    );
+    assert!(
+        handler
+            .camera_capability(session_id, "private-back")
+            .is_none()
+    );
+    assert_eq!(
+        activity,
+        state.api_session_owners.lock().unwrap()[&session_id].last_activity
+    );
+    state
+        .api_session_owners
+        .lock()
+        .unwrap()
+        .get_mut(&session_id)
+        .unwrap()
+        .absolute_expires_at_ms = 0;
+    assert!(
+        handler
+            .camera_capability(session_id, "native-front")
+            .is_none()
+    );
+}
+
+#[test]
+fn camera_capability_delta_checks_group_membership_on_the_current_inventory_entry() {
+    let state = live_state();
+    let session_id = SessionId::from_u64(116);
+    let issued = restricted_test_user(&state);
+    let mut entry = state.camera("native-front").unwrap();
+    entry.groups = vec!["entrances".to_owned()];
+    state.upsert_camera(entry);
+    state
+        .access_manager
+        .set_camera_access(
+            issued.metadata.id,
+            issued.metadata.revision,
+            crate::access::CameraAccess {
+                all_cameras: false,
+                camera_ids: Vec::new(),
+                group_ids: vec!["entrances".to_owned()],
+            },
+        )
+        .unwrap();
+    bind_credential_test_session(&state, session_id, issued.access_key);
+    let handler = test_control_handler(state.clone());
+    assert!(
+        handler
+            .camera_capability(session_id, "native-front")
+            .is_some()
+    );
+    // Leave the socket open to exercise the actual delivery-time lookup even
+    // when a changed source no longer belongs to this viewer's group.
+    state
+        .cameras
+        .write()
+        .unwrap()
+        .iter_mut()
+        .find(|camera| camera.info.id == "native-front")
+        .unwrap()
+        .groups
+        .clear();
+    assert!(
+        handler
+            .camera_capability(session_id, "native-front")
+            .is_none()
+    );
+}

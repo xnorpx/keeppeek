@@ -486,6 +486,13 @@ pub struct AudioConfig {
     pub bitrate_kbps: Option<u32>,
 }
 
+fn onvif_audio_rate_hz(kilohertz: i32) -> Option<u32> {
+    u32::try_from(kilohertz)
+        .ok()
+        .filter(|rate| *rate > 0)
+        .and_then(|rate| rate.checked_mul(1_000))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AudioEncoding {
     G711,
@@ -1061,7 +1068,7 @@ fn query_onvif(config: &CameraConfig) -> anyhow::Result<Camera> {
                     };
                     AudioConfig {
                         encoding,
-                        sample_rate: Some(a.sample_rate as u32),
+                        sample_rate: onvif_audio_rate_hz(a.sample_rate),
                         bitrate_kbps: Some(a.bitrate as u32),
                     }
                 });
@@ -1589,6 +1596,15 @@ fn merge_reolink_profiles(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn onvif_audio_sample_rates_are_declared_in_kilohertz() {
+        assert_eq!(super::onvif_audio_rate_hz(48), Some(48_000));
+        assert_eq!(super::onvif_audio_rate_hz(8), Some(8_000));
+        for invalid in [-1, 0, i32::MAX] {
+            assert_eq!(super::onvif_audio_rate_hz(invalid), None);
+        }
+    }
+
     use super::*;
 
     #[test]

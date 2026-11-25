@@ -26,6 +26,7 @@ pub enum Error {
 struct ActiveTalkback {
     owner: SessionId,
     target: proto::TalkbackTarget,
+    sources: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -57,6 +58,7 @@ impl Registry {
         *active = Some(ActiveTalkback {
             owner,
             target: target.clone(),
+            sources: active_source_ids.clone(),
         });
         Ok(state(owner, target, active_source_ids))
     }
@@ -84,6 +86,49 @@ impl Registry {
             .is_some_and(|current| current.owner == owner)
         {
             *active = None;
+        }
+    }
+
+    pub(super) fn retire_source(&self, source: &str, webrtc: &WebRtc) {
+        self.retire_source_inner(source, None, webrtc);
+    }
+
+    pub(super) fn retire_source_for_owner(
+        &self,
+        source: &str,
+        expected_owner: SessionId,
+        webrtc: &WebRtc,
+    ) {
+        self.retire_source_inner(source, Some(expected_owner), webrtc);
+    }
+
+    fn retire_source_inner(
+        &self,
+        source: &str,
+        expected_owner: Option<SessionId>,
+        webrtc: &WebRtc,
+    ) {
+        let mut active = self.active.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(talk) = active.as_mut() else { return };
+        if expected_owner.is_some_and(|owner| talk.owner != owner) {
+            return;
+        }
+        let Some(index) = talk.sources.iter().position(|id| id == source) else {
+            return;
+        };
+        let owner = talk.owner;
+        webrtc.live().retire_talkback_source(source, owner);
+        talk.sources.remove(index);
+        let mut remaining = state(owner, talk.target.clone(), talk.sources.clone());
+        remaining.failed_source_ids.push(source.to_owned());
+        if talk.sources.is_empty() {
+            *active = None;
+        }
+        let notice = proto::Notification {
+            event: Some(proto::notification::Event::TalkbackState(remaining)),
+        };
+        if !matches!(webrtc.try_enqueue_api_notification(owner, notice), Ok(true)) {
+            webrtc.request_api_session_close(owner);
         }
     }
 }
@@ -235,5 +280,29 @@ mod tests {
                 .is_ok()
         );
         assert!(registry.stop(SessionId::from_u64(2), &webrtc).is_ok());
+    }
+
+    #[test]
+    fn retire_source_for_owner_ignores_stale_owner_and_retires_current_owner() {
+        let registry = Registry::default();
+        let webrtc = WebRtc::new();
+        let cameras = [camera("front", &[], true), camera("side", &[], true)];
+        let target = target(proto::talkback_target::Selection::All(
+            proto::AllTalkbackTargets {},
+        ));
+        let stale_owner = SessionId::from_u64(1);
+        let current_owner = SessionId::from_u64(2);
+        registry
+            .start(current_owner, target, &cameras, &webrtc)
+            .unwrap();
+
+        registry.retire_source_for_owner("front", stale_owner, &webrtc);
+        assert!(webrtc.live().talkback_is_armed("front"));
+        assert!(webrtc.live().talkback_is_armed("side"));
+
+        registry.retire_source_for_owner("front", current_owner, &webrtc);
+        assert!(!webrtc.live().talkback_is_armed("front"));
+        assert!(webrtc.live().talkback_is_armed("side"));
+        registry.stop_for_session(current_owner, &webrtc);
     }
 }
