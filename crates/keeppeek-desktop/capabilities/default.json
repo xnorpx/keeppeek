@@ -1,0 +1,8 @@
+{
+	"$schema": "https://schema.tauri.app/config/2/capability",
+	"identifier": "default",
+	"description": "Allow only the bundled KeepPeek Desktop launcher window to invoke desktop connection commands.",
+	"local": true,
+	"windows": ["main"],
+	"permissions": ["core:event:default", "core:window:allow-set-title"]
+}

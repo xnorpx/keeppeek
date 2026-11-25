@@ -7,6 +7,7 @@ description = "KeepPeek compatibility adapter for transitive chrono 0.4 dependen
 
 [features]
 default = ["sad-chrono/default"]
+alloc = ["sad-chrono/alloc"]
 clock = ["sad-chrono/clock"]
 serde = ["sad-chrono/serde"]
 std = ["sad-chrono/std"]

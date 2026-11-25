@@ -133,6 +133,9 @@ pub struct Config {
     #[serde(default)]
     pub direct_card: DirectCardConfig,
 
+    #[serde(default, skip_serializing_if = "DesktopConfig::is_empty")]
+    pub desktop: DesktopConfig,
+
     #[serde(default)]
     pub storage: StorageToml,
 
@@ -475,6 +478,57 @@ impl DirectCardConfig {
             if !unique.insert(origin) {
                 anyhow::bail!("direct card origin appears more than once: {origin}");
             }
+        }
+        Ok(())
+    }
+}
+
+const MAX_DESKTOP_SERVER_URL_BYTES: usize = 512;
+
+/// Desktop client connection settings stored under `[desktop]` in `config.toml`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DesktopConfig {
+    /// Canonical HTTP(S) origin of the KeepPeek server for `keeppeek-desktop`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_url: Option<String>,
+}
+
+impl DesktopConfig {
+    /// Returns true when no desktop client setting is configured.
+    pub const fn is_empty(&self) -> bool {
+        self.server_url.is_none()
+    }
+
+    /// Validates that any configured desktop server URL is a canonical HTTP(S) origin.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `server_url` exceeds 512 bytes, contains credentials, path,
+    /// query, or fragment components, or is not a canonical HTTP(S) origin.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let Some(server_url) = self.server_url.as_deref() else {
+            return Ok(());
+        };
+        if server_url.is_empty() || server_url.len() > MAX_DESKTOP_SERVER_URL_BYTES {
+            anyhow::bail!(
+                "desktop server_url must be between 1 and {MAX_DESKTOP_SERVER_URL_BYTES} bytes"
+            );
+        }
+        let url = Url::parse(server_url)
+            .map_err(|error| anyhow::anyhow!("invalid desktop server_url: {error}"))?;
+        if !matches!(url.scheme(), "http" | "https")
+            || url.path() != "/"
+            || url.query().is_some()
+            || url.fragment().is_some()
+            || !url.username().is_empty()
+            || url.password().is_some()
+        {
+            anyhow::bail!("desktop server_url must contain only an HTTP(S) scheme and authority");
+        }
+        let canonical = url.origin().ascii_serialization();
+        if canonical == "null" || canonical != server_url {
+            anyhow::bail!("desktop server_url must use its canonical exact origin: {canonical}");
         }
         Ok(())
     }
@@ -1044,6 +1098,7 @@ impl Default for Config {
             reporting: None,
             external_auth: None,
             direct_card: DirectCardConfig::default(),
+            desktop: DesktopConfig::default(),
             storage: StorageToml::default(),
             battery_wake: BatteryWakeConfig::default(),
             logging: LoggingConfig::default(),
@@ -1461,6 +1516,7 @@ fn load_from_path(path: PathBuf) -> anyhow::Result<(Config, PathBuf)> {
     }
     cfg.access.validate()?;
     cfg.direct_card.validate()?;
+    cfg.desktop.validate()?;
     cfg.operational_events.validate()?;
     cfg.privacy.validate()?;
     cfg.event_forwarder.mqtt.validate()?;
@@ -1909,6 +1965,7 @@ fn validated_configuration_table_with_secrets(
     config.access.validate()?;
     crate::access::validate_configuration(root)?;
     config.direct_card.validate()?;
+    config.desktop.validate()?;
     config.battery_wake.validate()?;
     config.operational_events.validate()?;
     config.privacy.validate()?;
@@ -2526,6 +2583,7 @@ pub(crate) fn is_reserved_section(namespace: &str) -> bool {
             | "storage"
             | "battery_wake"
             | "direct_card"
+            | "desktop"
             | "homekit"
             | "logging"
             | "operational_events"
@@ -5538,5 +5596,50 @@ mod tests {
             config.schedule_for("side", "192.0.2.11").unwrap().timezone,
             "UTC"
         );
+    }
+
+    #[test]
+    fn desktop_section_is_reserved_and_validates_canonical_origins() {
+        assert!(is_reserved_section("desktop"));
+
+        DesktopConfig::default().validate().unwrap();
+        DesktopConfig {
+            server_url: Some("http://127.0.0.1:8081".to_owned()),
+        }
+        .validate()
+        .unwrap();
+        DesktopConfig {
+            server_url: Some("https://nvr.example.com".to_owned()),
+        }
+        .validate()
+        .unwrap();
+
+        for invalid in [
+            "",
+            "http://127.0.0.1:8081/",
+            "http://127.0.0.1:8081/peek",
+            "http://user:pass@127.0.0.1:8081",
+            "https://nvr.example.com:443",
+            "https://NVR.EXAMPLE.COM",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            &format!("https://{}.example.com", "a".repeat(520)),
+        ] {
+            let config = DesktopConfig {
+                server_url: Some(invalid.to_owned()),
+            };
+            assert!(
+                config.validate().is_err(),
+                "expected invalid desktop server_url to fail: {invalid}"
+            );
+        }
+
+        let unknown: Result<DesktopConfig, _> = toml::from_str(
+            r#"
+                server_url = "http://127.0.0.1:8081"
+                unexpected = true
+            "#,
+        );
+        assert!(unknown.is_err());
     }
 }

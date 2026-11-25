@@ -381,6 +381,14 @@ jobs:
               & sc.exe delete $serviceName
             }
           }
+      - name: Verify Windows desktop binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & 'target/debug/keeppeek-desktop.exe' --help
+          if ($LASTEXITCODE -ne 0) {
+            throw 'keeppeek-desktop.exe --help failed'
+          }
       - name: Verify macOS app service installation
         if: runner.os == 'macOS'
         shell: bash
@@ -402,6 +410,21 @@ jobs:
           plutil -lint "$app/Contents/Info.plist"
           KEEPPEEK_NO_UI=1 "$app/Contents/MacOS/KeepPeek"
           launchctl print "gui/$(id -u)/com.keeppeek"
+      - name: Verify macOS desktop app bundle
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          desktop_app="$RUNNER_TEMP/KeepPeek Desktop.app"
+          rm -rf "$desktop_app"
+          mkdir -p "$desktop_app/Contents/MacOS" "$desktop_app/Contents/Resources"
+          cp installer/macos/desktop/Info.plist "$desktop_app/Contents/Info.plist"
+          cp target/debug/keeppeek-desktop "$desktop_app/Contents/MacOS/keeppeek-desktop"
+          cp crates/keeppeek-desktop/icons/icon.icns "$desktop_app/Contents/Resources/KeepPeekDesktop.icns"
+          chmod 755 "$desktop_app/Contents/MacOS/keeppeek-desktop"
+          plutil -lint "$desktop_app/Contents/Info.plist"
+          "$desktop_app/Contents/MacOS/keeppeek-desktop" --help
+          rm -rf "$desktop_app"
 
   rust-test:
     name: Rust Test (${{ matrix.os }}, ${{ matrix.suite }})
@@ -553,7 +576,7 @@ jobs:
       - working-directory: ui
         run: bun install --no-save --registry=https://registry.npmjs.org/
       - name: Build Windows binaries
-        run: cargo build --locked --bin keeppeek --bin keeppeek-service
+        run: cargo build --locked --bin keeppeek --bin keeppeek-service -p keeppeek-desktop
       - name: Sign in to Azure
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
         env:
@@ -572,13 +595,14 @@ jobs:
           files: |
             ${{ github.workspace }}\target\debug\keeppeek.exe
             ${{ github.workspace }}\target\debug\keeppeek-service.exe
+            ${{ github.workspace }}\target\debug\keeppeek-desktop.exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
       - name: Verify Windows binary signatures
         shell: pwsh
         run: |
-          foreach ($path in 'target/debug/keeppeek.exe', 'target/debug/keeppeek-service.exe') {
+          foreach ($path in 'target/debug/keeppeek.exe', 'target/debug/keeppeek-service.exe', 'target/debug/keeppeek-desktop.exe') {
             $signature = Get-AuthenticodeSignature $path
             if ($signature.Status -ne 'Valid') {
               throw "$path has invalid signature status: $($signature.Status)"
@@ -612,13 +636,32 @@ jobs:
           if (-not (Test-Path $installer)) {
             throw "Installer was not created at $installer"
           }
+
+          & 'C:\Program Files (x86)\NSIS\makensis.exe' `
+            '/DARCH=x86_64' `
+            "/DBUILD_DIR=$buildDirectory" `
+            "/DOUT_DIR=$outputDirectory" `
+            '/DVERSION=0.0.0' `
+            '/DVERSION_RESOURCE=0.0.0.0' `
+            installer/keeppeek-desktop.nsi
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to build the KeepPeek Desktop installer'
+          }
+
+          $desktopInstaller = Join-Path $outputDirectory 'keeppeek-desktop-0.0.0-windows-x86_64-installer.exe'
+          "desktop_installer=$desktopInstaller" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          if (-not (Test-Path $desktopInstaller)) {
+            throw "Desktop installer was not created at $desktopInstaller"
+          }
       - name: Sign Windows installer
         uses: Azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
           signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
           certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
-          files: ${{ steps.windows-installer.outputs.installer }}
+          files: |
+            ${{ steps.windows-installer.outputs.installer }}
+            ${{ steps.windows-installer.outputs.desktop_installer }}
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
@@ -626,13 +669,16 @@ jobs:
         shell: pwsh
         env:
           INSTALLER: ${{ steps.windows-installer.outputs.installer }}
+          DESKTOP_INSTALLER: ${{ steps.windows-installer.outputs.desktop_installer }}
         run: |
-          $signature = Get-AuthenticodeSignature $env:INSTALLER
-          if ($signature.Status -ne 'Valid') {
-            throw "$env:INSTALLER has invalid signature status: $($signature.Status)"
-          }
-          if ($null -eq $signature.TimestamperCertificate) {
-            throw "$env:INSTALLER does not have an RFC 3161 timestamp"
+          foreach ($path in $env:INSTALLER, $env:DESKTOP_INSTALLER) {
+            $signature = Get-AuthenticodeSignature $path
+            if ($signature.Status -ne 'Valid') {
+              throw "$path has invalid signature status: $($signature.Status)"
+            }
+            if ($null -eq $signature.TimestamperCertificate) {
+              throw "$path does not have an RFC 3161 timestamp"
+            }
           }
 
   ui-static:

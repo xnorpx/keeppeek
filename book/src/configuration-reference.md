@@ -57,6 +57,7 @@ Root fields must appear before a table header or they belong to that table.
 | `[reporting]`                                      | `reporting::Settings`                               | Optional bug reporting service settings               |
 | `[access]`                                         | `AccessConfig`                                      | Administrator security policy                         |
 | `[direct_card]`                                    | `DirectCardConfig`                                  | Exact browser-origin allowlist                        |
+| `[desktop]`                                        | `DesktopConfig`                                     | Optional default server URL for KeepPeek Desktop      |
 | `[storage]`                                        | `StorageToml`                                       | Recording paths, retention, and safety                |
 | `[battery_wake]`                                   | `BatteryWakeConfig`                                 | Reolink battery-camera wake service                   |
 | `[logging]`                                        | `LoggingConfig`                                     | Service log destination                               |
@@ -217,6 +218,14 @@ Type: `DirectCardConfig`, section `[direct_card]`.
 | Field             | Type          | Default | Validation and meaning                                                                                                                      |
 | ----------------- | ------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `allowed_origins` | `Vec<String>` | `[]`    | Unique canonical exact HTTP(S) origins, such as `"https://ha.example"`. No credentials, path, query, fragment, wildcard, or trailing slash. |
+
+### Desktop client settings
+
+Type: `DesktopConfig`, section `[desktop]`. Unknown fields in `[desktop]` are rejected. KeepPeek Desktop stores its saved server target here instead of creating a separate settings file.
+
+| Field        | Type              | Default | Validation and meaning                                                                                                                                                        |
+| ------------ | ----------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server_url` | optional `String` | Absent  | Canonical exact HTTP(S) origin, 1 to 512 UTF-8 bytes, such as `"http://127.0.0.1:8081"` or `"https://nvr.example"`. No credentials, path, query, fragment, or trailing slash. |
 
 ## Guest review deployment policy
 

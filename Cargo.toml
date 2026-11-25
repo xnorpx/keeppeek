@@ -3,6 +3,7 @@ members = [
   ".",
   "crates/chunked-transfer",
   "crates/isapi",
+  "crates/keeppeek-desktop",
   "crates/mp4",
   "crates/onvif/onvif",
   "crates/onvif/schema",

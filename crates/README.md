@@ -17,6 +17,14 @@ These are some of the crates KeepPeek depends on. A few are forks, usually becau
 Thank you to the original authors, maintainers, and everyone who contributed to these projects. The
 local forks retain their upstream authorship and licenses.
 
+## KeepPeek Desktop
+
+[keeppeek-desktop](keeppeek-desktop/) provides the native Tauri v2 desktop client for Windows and
+macOS. It connects to an independently managed local or remote KeepPeek server, stores its optional
+default origin under `[desktop].server_url` in `config.toml`, enforces strict launcher CSP and
+navigation allowlists, and keeps all platform-independent validation and security tests runnable on
+Linux, macOS, and Windows.
+
 ## ISAPI
 
 [isapi](isapi/README.md) implements Hikvision/Annke HTTP event parsing in plain

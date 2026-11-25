@@ -4,7 +4,9 @@
 > The active [Alpha gate](https://github.com/xnorpx/keeppeek/issues/145) tracks promotion evidence.
 
 Choose the installation that fits the host. Linux has first-class Docker support; macOS and Windows
-use native packages and service integration.
+use native packages and service integration. On Windows and macOS, you can also install
+[KeepPeek Desktop](./desktop-app.md) to open an existing local or remote KeepPeek server in a
+dedicated desktop window.
 
 ## Before installation
 
