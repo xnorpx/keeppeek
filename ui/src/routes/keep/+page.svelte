@@ -167,6 +167,7 @@
 	let audioPreviewOpen = $state(false);
 	let audioPreviewBusy = $state(false);
 	let audioPreviewSupported = $state(false);
+	let liveAudioSupported = $state(false);
 	let playbackAudioUnsubscribe: (() => void) | null = null;
 	let requestedPlaybackVariant = $state<RecordedQualityPreference>('auto');
 	let selectedPlaybackVariant = $state<RecordedStreamId | null>(null);
@@ -468,6 +469,7 @@
 				capabilityActions.shareRecordingRange.capability
 			);
 			audioPreviewSupported = capabilityIds.includes('keeppeek.recorded-audio.v1');
+			liveAudioSupported = capabilityIds.includes('keeppeek.live-audio-timing.v1');
 			eventSearchAvailable = capabilityIds.includes('keeppeek.event-search');
 			eventWorkflowAvailable = capabilityIds.includes(EVENT_WORKFLOW_CAPABILITY);
 			if (capabilityIds.length === 0) {
@@ -2893,6 +2895,7 @@
 		timing={recordedAudio}
 		name={`${selectedCamera?.name ?? cameraId} / ${selected?.stream ?? ''}`}
 		disabled={scrubbing}
+		{liveAudioSupported}
 		onapply={applyRecordedAudioPreview}
 		onclose={() => (audioPreviewOpen = false)}
 	/>

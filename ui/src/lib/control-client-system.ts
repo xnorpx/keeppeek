@@ -540,7 +540,19 @@ export function serverHealth(
 				subscribers: numeric(source.subscribers),
 				bitrate_bps: optionalNumber(source.bitrateBps),
 				has_keyframe: source.hasKeyframe,
-				keyframe_age_ms: optionalNumber(source.keyframeAgeMs)
+				keyframe_age_ms: optionalNumber(source.keyframeAgeMs),
+				live_audio: source.liveAudio
+					? {
+							configured_offset_ms: source.liveAudio.configuredOffsetMs,
+							applied_offset_ms: source.liveAudio.appliedOffsetMs,
+							preview: source.liveAudio.preview,
+							held_audio_bytes: source.liveAudio.heldAudioBytes,
+							held_video_bytes: source.liveAudio.heldVideoBytes,
+							held_video_frames: source.liveAudio.heldVideoFrames,
+							capacity_drops: numeric(source.liveAudio.capacityDrops),
+							expired_drops: numeric(source.liveAudio.expiredDrops)
+						}
+					: null
 			}))
 		},
 		cameras: health.cameras.map(cameraHealth),

@@ -60,6 +60,7 @@ import {
 	HealthIssueSnapshotSchema,
 	HealthProfileSummarySchema,
 	HealthTotalsSnapshotSchema,
+	LiveAudioTimingSchema,
 	LogBufferStatsSchema,
 	LoadHealthSnapshotSchema,
 	LoggingSettingsResultSchema,
@@ -124,7 +125,8 @@ import {
 	type Ok,
 	VideoDataFormatSchema,
 	VideoDataFrameSchema,
-	WebRtcHealthSnapshotSchema
+	WebRtcHealthSnapshotSchema,
+	WebRtcSourceHealthSnapshotSchema
 } from './proto/webrtc_pb';
 
 const api = vi.hoisted(() => {
@@ -1002,7 +1004,27 @@ class FakeDataChannel {
 										webrtc: create(WebRtcHealthSnapshotSchema, {
 											activeSessions: 1n,
 											multiTrackSessions: 1n,
-											multiTracks: 2n
+											multiTracks: 2n,
+											sources: [
+												create(WebRtcSourceHealthSnapshotSchema, {
+													cameraIp: '192.0.2.10',
+													stream: 'main',
+													subscribers: 2n,
+													bitrateBps: 4_000_000n,
+													hasKeyframe: true,
+													keyframeAgeMs: 250n,
+													liveAudio: create(LiveAudioTimingSchema, {
+														configuredOffsetMs: -80,
+														appliedOffsetMs: -80,
+														preview: false,
+														heldAudioBytes: 0,
+														heldVideoBytes: 65_536,
+														heldVideoFrames: 4,
+														capacityDrops: 1n,
+														expiredDrops: 2n
+													})
+												})
+											]
 										}),
 										cameras: [
 											create(CameraHealthSnapshotSchema, {
@@ -2669,7 +2691,31 @@ describe('ControlClient', () => {
 				},
 				demand: { active_streams: 1, total_viewers: 2 }
 			},
-			webrtc: { active_sessions: 1, browser_sessions: 1, browser_tracks: 2 },
+			webrtc: {
+				active_sessions: 1,
+				browser_sessions: 1,
+				browser_tracks: 2,
+				sources: [
+					{
+						camera_ip: '192.0.2.10',
+						stream: 'main',
+						subscribers: 2,
+						bitrate_bps: 4_000_000,
+						has_keyframe: true,
+						keyframe_age_ms: 250,
+						live_audio: {
+							configured_offset_ms: -80,
+							applied_offset_ms: -80,
+							preview: false,
+							held_audio_bytes: 0,
+							held_video_bytes: 65_536,
+							held_video_frames: 4,
+							capacity_drops: 1,
+							expired_drops: 2
+						}
+					}
+				]
+			},
 			cameras: [
 				{
 					id: 'front-door',

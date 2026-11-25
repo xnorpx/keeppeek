@@ -659,6 +659,9 @@ impl ReolinkLoop {
         active_motion: &mut HashMap<String, String>,
     ) -> anyhow::Result<()> {
         reset_stream_bindings(streams);
+        if let Some(live) = &self.live {
+            live.reset_camera_timing(self.camera_ip);
+        }
         let camera_id = self.camera_ip.to_string();
         if let Some(storage) = &self.storage {
             storage.reset_event_recording(&camera_id);

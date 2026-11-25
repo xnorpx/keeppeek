@@ -701,6 +701,12 @@ impl RtspLoop {
         if let Some(storage) = &self.storage {
             storage.reset_event_recording(&self.camera_ip.to_string());
         }
+        if let Some(live) = &self.live {
+            live.reset_stream_timing(Source {
+                camera_ip: self.camera_ip,
+                stream: self.stream,
+            });
+        }
         video_timestamps.begin_session();
         audio_timestamps.begin_session();
 

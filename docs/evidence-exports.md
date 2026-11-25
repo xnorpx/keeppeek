@@ -23,7 +23,8 @@ partial files in that job's isolated directory are removed during recovery.
 ## Duplicate ranges
 
 The output identity consists of source, stream, requested range, effective partial-range behavior,
-and timestamp burn-in behavior. Event labels and generated filenames are not identity.
+timestamp burn-in behavior, and the captured recorded-audio timing snapshot. Event labels and
+generated filenames are not identity.
 
 - An identical running job is returned instead of starting duplicate work.
 - An identical ready artifact is offered for reuse in Keep, with a separate **Create fresh export**
@@ -31,6 +32,27 @@ and timestamp burn-in behavior. Event labels and generated filenames are not ide
 - Other active or ready ranges that overlap the draft are shown as advisory history.
 - Partial, failed, cancelled, expired, missing, and differently configured artifacts are never
   silently substituted.
+
+## Recorded-audio timing
+
+New exports capture the camera's effective saved `recorded_audio` offset for the actually stored
+recording stream, along with a timing configuration fingerprint. Temporary playback previews in Keep
+do not change export timing.
+
+- Source recordings and original catalog timestamps are never modified when configuration changes or
+  when an export runs.
+- Nonzero correction remuxes AAC audio without re-encoding by mapping decode timestamps in the audio
+  timescale, fetching bounded neighboring audio context (at most 32 extra periods, 64 MiB of indexed
+  edge ranges, and 512 total source periods), and clipping complete leading audio samples whose
+  corrected decode or presentation time precedes zero.
+- Nonzero correction requires AAC audio with zero audio composition offset; no-audio ranges,
+  all-clipped ranges, non-zero AAC composition offsets, unsupported codecs, overlapping source
+  periods, and conflicting period metadata fail explicitly before publication.
+- Retrying a job retains its originally captured timing snapshot even if camera settings change or
+  the server restarts. If the camera's recording stream changes before retry, retry fails with a
+  conflict before retiring the previous attempt.
+- Historical export jobs without a timing snapshot remain unknown in the UI and export without
+  inventing timing metadata.
 
 Event detail opens Keep with the main stream, the exact event identity and timestamp, 15 seconds of
 pre-event and post-event context, and a return URL. The range remains editable and is capped at two

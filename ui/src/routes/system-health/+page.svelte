@@ -104,6 +104,11 @@
 	);
 	let rankedFindings = $derived(health ? rankHealthFindings(health) : []);
 	let primaryFinding = $derived(rankedFindings[0] ?? null);
+	let showSourceLiveAudio = $derived(
+		health?.webrtc.sources.some(
+			(source) => source.live_audio !== null && source.live_audio !== undefined
+		) ?? false
+	);
 	$effect(() => {
 		const sessionId = livePeer.sessionId;
 		const receiverKey = clientTracks
@@ -1284,7 +1289,9 @@
 											class="px-3 py-2">Subscribers</th
 										><th class="px-3 py-2">Source bitrate</th><th class="px-3 py-2">Keyframe</th><th
 											class="px-3 py-2">Age</th
-										></tr
+										>{#if showSourceLiveAudio}<th class="px-3 py-2">Live timing</th><th
+												class="px-3 py-2">Timing queue</th
+											><th class="px-3 py-2">Timing drops</th>{/if}</tr
 									></thead
 								>
 								<tbody class="divide-y"
@@ -1298,7 +1305,20 @@
 												>{source.keyframe_age_ms === null
 													? '—'
 													: formatAge(source.keyframe_age_ms)}</td
-											></tr
+											>{#if showSourceLiveAudio}<td class="px-3 py-2 font-mono"
+													>{#if source.live_audio}{source.live_audio.applied_offset_ms === 0
+															? '0 ms'
+															: source.live_audio.applied_offset_ms > 0
+																? `Audio +${source.live_audio.applied_offset_ms} ms`
+																: `Video +${-source.live_audio.applied_offset_ms} ms`}{:else}—{/if}</td
+												><td class="px-3 py-2 font-mono"
+													>{#if source.live_audio}Audio {source.live_audio.held_audio_bytes} B · Video
+														{source.live_audio.held_video_bytes} B ({source.live_audio
+															.held_video_frames} frames){:else}—{/if}</td
+												><td class="px-3 py-2 font-mono"
+													>{#if source.live_audio}{source.live_audio.capacity_drops} capacity · {source
+															.live_audio.expired_drops} expired{:else}—{/if}</td
+												>{/if}</tr
 										>{/each}</tbody
 								>
 							</table>

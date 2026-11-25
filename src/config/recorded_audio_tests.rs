@@ -240,3 +240,48 @@ fn invalid_writer_candidate_leaves_file_and_reload_unchanged() {
     assert_eq!(std::fs::read(&fixture.path).unwrap(), before);
     assert_eq!(fixture.camera().recorded_audio, original);
 }
+
+#[test]
+fn live_audio_round_trips_inheritance_zero_partial_reset_and_rejects_invalid_writes() {
+    let fixture = Fixture::new(
+        "[cameras.front.live_audio]\ndefault_offset_ms=-120\nmain_offset_ms=0\nsub_offset_ms=80",
+    );
+    let mut camera = fixture.camera();
+    assert_eq!(camera.live_audio.effective_offset_ms("main").unwrap(), 0);
+    assert_eq!(camera.live_audio.effective_offset_ms("sub").unwrap(), 80);
+
+    camera.live_audio.sub_offset_ms = None;
+    upsert_camera(&fixture.path, &camera).unwrap();
+    let restored = fixture.camera().live_audio;
+    assert_eq!(restored, camera.live_audio);
+    assert_eq!(restored.effective_offset_ms("main").unwrap(), 0);
+    assert_eq!(restored.effective_offset_ms("sub").unwrap(), -120);
+    let saved = fixture.raw()["cameras"]["front"]["live_audio"]
+        .as_table()
+        .unwrap()
+        .clone();
+    assert!(!saved.contains_key("sub_offset_ms"));
+    assert_eq!(saved["main_offset_ms"].as_integer(), Some(0));
+
+    let before = std::fs::read(&fixture.path).unwrap();
+    camera.live_audio.default_offset_ms = Some(201);
+    assert!(upsert_camera(&fixture.path, &camera).is_err());
+    assert_eq!(std::fs::read(&fixture.path).unwrap(), before);
+
+    camera.live_audio = crate::cameras::LiveAudioSettings::default();
+    upsert_camera(&fixture.path, &camera).unwrap();
+    assert!(
+        !fixture.raw()["cameras"]["front"]
+            .as_table()
+            .unwrap()
+            .contains_key("live_audio")
+    );
+    assert_eq!(
+        fixture
+            .camera()
+            .live_audio
+            .effective_offset_ms("main")
+            .unwrap(),
+        0
+    );
+}
