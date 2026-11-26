@@ -11,7 +11,9 @@ import {
 	ExternalAuthenticationConfigurationSchema,
 	ExternalAuthenticationResultSchema,
 	ExternalIdentityListSchema,
-	BrowserSessionListSchema
+	BrowserSessionListSchema,
+	type UsageReportingCommand,
+	type UsageReportingResult
 } from '../../src/lib/proto/webrtc_pb';
 import {
 	create,
@@ -492,6 +494,9 @@ export type MockControlPeerOptions = {
 	configurationExportDocument?: string;
 	configurationApplyConflictRevision?: string;
 	configurationApplyGate?: Promise<void>;
+	onUsageReportingCommand?: (
+		command: UsageReportingCommand
+	) => UsageReportingResult | Promise<UsageReportingResult>;
 };
 
 function encodedOk(requestId: bigint, result?: Ok['result']): number[] {
@@ -1228,6 +1233,23 @@ export async function mockControlPeer(
 					case: 'importPreview',
 					value: protoConfigurationImportPreview(options.configurationImportPreview)
 				});
+			}
+		}
+		if (request.command.case === 'usageReportingCommand') {
+			if (!options.onUsageReportingCommand) {
+				return encodedError(request.requestId, 'usage reporting handler is not configured');
+			}
+			try {
+				const value = await options.onUsageReportingCommand(request.command.value);
+				return encodedOk(request.requestId, {
+					case: 'usageReportingResult',
+					value
+				});
+			} catch (cause) {
+				return encodedError(
+					request.requestId,
+					cause instanceof Error ? cause.message : 'usage reporting command failed'
+				);
 			}
 		}
 		if (request.command.case === 'subscribeMedia') {

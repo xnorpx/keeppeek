@@ -55,6 +55,7 @@ Root fields must appear before a table header or they belong to that table.
 | Root fields                                        | `Config`                                            | Operator settings                                     |
 | `[sharing]`                                        | `sharing::SharingConfig`                            | Guest review deployment policy; server-owned revision |
 | `[reporting]`                                      | `reporting::Settings`                               | Optional bug reporting service settings               |
+| `[usage_reporting]`                                | `usage_reporting::UsageReportingConfig`             | Opt-in privacy-preserving usage reporting consent     |
 | `[access]`                                         | `AccessConfig`                                      | Administrator security policy                         |
 | `[direct_card]`                                    | `DirectCardConfig`                                  | Exact browser-origin allowlist                        |
 | `[desktop]`                                        | `DesktopConfig`                                     | Optional default server URL for KeepPeek Desktop      |
@@ -875,6 +876,28 @@ Keep the reusable credential in `secrets.toml`. The loader preserves the referen
 `config.toml` and validates its syntax without resolving it at recorder startup. The recorder
 resolves the secret only when forwarding a confirmed grant request to `POST {origin}/v1/reports`
 and registers both the resolved credential and issued grant token for log redaction.
+
+## Usage reporting
+
+The optional `[usage_reporting]` section stores explicit Administrator opt-in consent for
+privacy-preserving usage reporting. Every category defaults to `false`, so fresh installations and
+upgrades generate no telemetry installation ID, start no recurring telemetry collection worker, and
+make zero receiver requests.
+
+| Field                           | Type            | Default | Meaning                                                                                     |
+| ------------------------------- | --------------- | ------- | ------------------------------------------------------------------------------------------- |
+| `basic`                         | `bool`          | `false` | Enable basic system data. Required before enabling any additional reporting category.       |
+| `camera_compatibility`          | `bool`          | `false` | Enable aggregated, normalized camera compatibility counts (requires `basic = true`).        |
+| `feature_adoption`              | `bool`          | `false` | Enable coarse recording-mode, storage/retention bucket, and integration adoption summaries. |
+| `consented_disclosure_revision` | `u32`           | `0`     | Disclosure revision accepted by an Administrator (`1` required when `basic = true`).        |
+| `receiver_origin`               | Optional string | Absent  | Canonical HTTPS origin (`<= 512` bytes, no path or credentials) for the telemetry receiver. |
+
+Dedicated telemetry installation identities, proof tokens, send schedules, and bounded pending
+deletions (`<= 16` entries) are persisted separately in the private application-owned runtime record
+(`.keeppeek-usage-reporting-state.json` beside `config.toml`) only after explicit opt-in. They are
+excluded from `config.toml` backups and from general `StateStore` namespaces so restores do not
+clone one installation's proof token across machines. See
+[usage reporting](https://github.com/xnorpx/keeppeek/blob/main/docs/usage-reporting.md).
 
 ## Operational events
 

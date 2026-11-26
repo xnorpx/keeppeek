@@ -1,0 +1,28 @@
+[package]
+name = "usage-reporting-receiver"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+description = "Publishable privacy-preserving receiver and k-anonymous aggregator for KeepPeek usage reporting"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.6", default-features = false, features = [
+  "std",
+  "derive",
+  "help",
+  "usage",
+] }
+pollster = "1.0.1"
+rouille = { path = "../../crates/rouille" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151" }
+sha2 = "0.11"
+subtle = "2"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+turso = { version = "=0.8.3", default-features = false }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[lints]
+workspace = true

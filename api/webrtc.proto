@@ -53,6 +53,7 @@ message Request {
     ArchiveCommand archive_command = 30;
     ShareCommand share_command = 31;
     ActivityAnalyticsCommand activity_analytics_command = 32;
+    UsageReportingCommand usage_reporting_command = 33;
   }
   reserved 19, 20;
   reserved "recording_command", "live_session_command";
@@ -3164,6 +3165,7 @@ message Ok {
     StoredFrameStepResult stored_frame_step_result = 46;
     SavedEventSearchResult saved_event_search_result = 47;
     ActivityAnalyticsResult activity_analytics_result = 50;
+    UsageReportingResult usage_reporting_result = 51;
   }
   reserved 17, 18;
   reserved "recording_activity_result", "live_session_result";
@@ -5079,4 +5081,126 @@ message ActivitySummaryResponse {
   ActivitySourceHealthSummary source_health = 26;
   string provenance_notice = 27;
   bool exact = 28;
+}
+
+// Administrator-only opt-in usage reporting controls. Clients must require keeppeek.usage-reporting.v1.
+message UsageReportingCommand {
+  oneof action {
+    GetUsageReporting get = 1;
+    UpdateUsageReporting update = 2;
+    PreviewUsageReporting preview = 3;
+    ResetUsageReportingIdentity reset_identity = 4;
+    DeleteUsageReportingData delete_data = 5;
+  }
+}
+
+message GetUsageReporting {}
+
+message UpdateUsageReporting {
+  string expected_configuration_revision = 1;
+  bool basic = 2;
+  bool camera_compatibility = 3;
+  bool feature_adoption = 4;
+  uint32 accepted_disclosure_revision = 5;
+}
+
+message PreviewUsageReporting {
+  bool basic = 1;
+  bool camera_compatibility = 2;
+  bool feature_adoption = 3;
+  uint32 disclosure_revision = 4;
+}
+
+message ResetUsageReportingIdentity {
+  string expected_configuration_revision = 1;
+}
+
+message DeleteUsageReportingData {
+  string expected_configuration_revision = 1;
+}
+
+enum UsageReportingLifecycleState {
+  USAGE_REPORTING_LIFECYCLE_STATE_UNSPECIFIED = 0;
+  USAGE_REPORTING_LIFECYCLE_STATE_DISABLED = 1;
+  USAGE_REPORTING_LIFECYCLE_STATE_SCHEDULED = 2;
+  USAGE_REPORTING_LIFECYCLE_STATE_SENDING = 3;
+  USAGE_REPORTING_LIFECYCLE_STATE_SUCCEEDED = 4;
+  USAGE_REPORTING_LIFECYCLE_STATE_FAILED = 5;
+  USAGE_REPORTING_LIFECYCLE_STATE_DELETION_PENDING = 6;
+}
+
+enum UsageReportingFailureKind {
+  USAGE_REPORTING_FAILURE_KIND_UNSPECIFIED = 0;
+  USAGE_REPORTING_FAILURE_KIND_NONE = 1;
+  USAGE_REPORTING_FAILURE_KIND_RECEIVER_UNCONFIGURED = 2;
+  USAGE_REPORTING_FAILURE_KIND_PAYLOAD_TOO_LARGE = 3;
+  USAGE_REPORTING_FAILURE_KIND_VALIDATION_FAILED = 4;
+  USAGE_REPORTING_FAILURE_KIND_NETWORK_UNAVAILABLE = 5;
+  USAGE_REPORTING_FAILURE_KIND_DNS_FAILED = 6;
+  USAGE_REPORTING_FAILURE_KIND_TLS_FAILED = 7;
+  USAGE_REPORTING_FAILURE_KIND_TIMEOUT = 8;
+  USAGE_REPORTING_FAILURE_KIND_RATE_LIMITED = 9;
+  USAGE_REPORTING_FAILURE_KIND_RECEIVER_REJECTED = 10;
+  USAGE_REPORTING_FAILURE_KIND_RECEIVER_UNAVAILABLE = 11;
+  USAGE_REPORTING_FAILURE_KIND_INVALID_RESPONSE = 12;
+  USAGE_REPORTING_FAILURE_KIND_DELETION_FAILED = 13;
+  USAGE_REPORTING_FAILURE_KIND_STORAGE_ERROR = 14;
+}
+
+message UsageReportingConsent {
+  bool basic = 1;
+  bool camera_compatibility = 2;
+  bool feature_adoption = 3;
+  uint32 consented_disclosure_revision = 4;
+}
+
+message UsageReportingDisclosure {
+  uint32 current_disclosure_revision = 1;
+  string schema_version = 2;
+  string receiver_origin = 3;
+  string schema_url = 4;
+  string documentation_url = 5;
+  string aggregate_data_url = 6;
+  string receiver_source_url = 7;
+  uint32 max_retention_days = 8;
+  uint32 aggregate_min_installations = 9;
+  uint32 max_payload_bytes = 10;
+  bool renewal_required = 11;
+  repeated string pending_renewal_fields = 12;
+}
+
+message UsageReportingDeliveryStatus {
+  UsageReportingLifecycleState state = 1;
+  optional int64 last_attempt_at_ms = 2;
+  optional int64 last_success_at_ms = 3;
+  optional int64 next_scheduled_at_ms = 4;
+  UsageReportingFailureKind last_failure = 5;
+  uint32 pending_deletion_count = 6;
+  bool identity_configured = 7;
+  optional int64 last_deletion_attempt_at_ms = 8;
+  optional int64 last_deletion_success_at_ms = 9;
+  UsageReportingFailureKind last_deletion_failure = 10;
+}
+
+message UsageReportingState {
+  string configuration_revision = 1;
+  UsageReportingConsent consent = 2;
+  UsageReportingDisclosure disclosure = 3;
+  UsageReportingDeliveryStatus status = 4;
+}
+
+message UsageReportingPreview {
+  string payload_json = 1;
+  uint32 payload_bytes = 2;
+  uint32 max_payload_bytes = 3;
+  bool uses_placeholder_identity = 4;
+  bool valid = 5;
+  UsageReportingFailureKind validation_error = 6;
+}
+
+message UsageReportingResult {
+  oneof result {
+    UsageReportingState state = 1;
+    UsageReportingPreview preview = 2;
+  }
 }

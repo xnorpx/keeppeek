@@ -1962,3 +1962,37 @@ within current retention and authorization scope, never authoritative identity o
 `EventMetadataSearch` adds `confidence_bands` (field `10`, repeated `EventConfidenceBand`) and
 `include_missing_zone` (field `11`, `bool`) so every analytics bucket and breakdown row opens an
 exact server-filtered Events query without client-side full-history filtering.
+
+## Usage reporting
+
+`keeppeek.usage-reporting.v1` advertises `UsageReportingCommand` (request tag 33) and
+`UsageReportingResult` (ok tag 51). Every action requires Administrator authorization; User and
+unauthenticated sessions are rejected server-side with `REJECTED`.
+
+- `UsageReportingCommand.get` returns `UsageReportingState`: current `configuration_revision`,
+  saved category consent (`basic`, `camera_compatibility`, `feature_adoption`,
+  `consented_disclosure_revision`), informed-consent disclosure metadata (`receiver_origin`,
+  published schema/documentation/aggregate/receiver links, `max_retention_days = 60`,
+  `aggregate_min_installations = 10`, `max_payload_bytes = 65536`, and `renewal_required` with
+  `pending_renewal_fields`), and bounded non-sensitive `UsageReportingDeliveryStatus`.
+- `UsageReportingCommand.update` requires a matching `expected_configuration_revision`, enforces
+  that `basic` is enabled before `camera_compatibility` or `feature_adoption`, validates
+  `accepted_disclosure_revision` for opt-in or disclosure renewal, atomically writes
+  `[usage_reporting]` to `config.toml`, generates a dedicated telemetry UUID only on explicit
+  opt-in, and immediately stops sends plus attempts bounded receiver deletion when all categories
+  are turned off.
+- `UsageReportingCommand.preview` builds `UsageReportingPreview` from existing authoritative
+  snapshots without probing cameras/storage/network, generating a persisted UUID, or sending a
+  report. `payload_json` is bounded to at most 65,536 UTF-8 bytes and matches the exact serialized
+  v1 telemetry wire format defined outside `api/` in `schemas/usage-reporting/v1.schema.json`.
+- `UsageReportingCommand.reset_identity` requires a matching `expected_configuration_revision`,
+  rotates the dedicated telemetry UUID and proof token, queues deletion of the prior installation
+  row (capped at 16 pending deletions; returns an error rather than dropping undeleted rows), and
+  attempts immediate bounded receiver deletion.
+- `UsageReportingCommand.delete_data` requires a matching `expected_configuration_revision` and
+  explicitly retries any pending receiver deletions without starting a hidden periodic collector
+  when disabled.
+
+Delivery status and errors use closed `UsageReportingLifecycleState` and
+`UsageReportingFailureKind` enums and never expose proof tokens, pending-deletion UUIDs, raw
+receiver response bodies, or sensitive configuration values.
