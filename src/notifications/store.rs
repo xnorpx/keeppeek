@@ -88,6 +88,7 @@ pub(super) struct Store {
     config_update: Arc<Mutex<()>>,
     state: Arc<Mutex<RuntimeState>>,
     pub(super) profile_suppressed_sources: Arc<RwLock<BTreeSet<String>>>,
+    pub(super) cloud: Option<super::cloud::CloudSignalRuntime>,
 }
 
 impl Store {
@@ -119,6 +120,7 @@ impl Store {
             config_update,
             state: Arc::new(Mutex::new(RuntimeState::new(rules))),
             profile_suppressed_sources: Arc::new(RwLock::new(BTreeSet::new())),
+            cloud: None,
         };
         if migrate_legacy {
             let mut state = store.lock_state();
@@ -369,7 +371,7 @@ impl Store {
                 match action.channel {
                     Channel::Push => has_pushover = true,
                     Channel::Webhook => has_webhook = true,
-                    Channel::Browser | Channel::Forwarder => {}
+                    Channel::Browser | Channel::Forwarder | Channel::KeeppeekService => {}
                 }
             }
         }
@@ -432,6 +434,10 @@ impl Store {
         )?;
         *rules = canonical_rules;
         Ok(())
+    }
+
+    pub(super) fn attach_cloud(&mut self, cloud: super::cloud::CloudSignalRuntime) {
+        self.cloud = Some(cloud);
     }
 
     pub(super) fn lock_state(&self) -> MutexGuard<'_, RuntimeState> {
@@ -589,7 +595,10 @@ fn remove_file_if_exists(path: &Path) -> std::io::Result<()> {
 fn resolve_rule_destinations(path: &Path, rule: &Rule) -> anyhow::Result<Rule> {
     let mut resolved = rule.clone();
     for action in &mut resolved.actions {
-        action.destination = crate::config::resolve_secret_references(path, &action.destination)?;
+        if action.destination.contains("{secret:") {
+            action.destination =
+                crate::config::resolve_secret_references(path, &action.destination)?;
+        }
     }
     Ok(resolved)
 }

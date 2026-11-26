@@ -1996,3 +1996,26 @@ unauthenticated sessions are rejected server-side with `REJECTED`.
 Delivery status and errors use closed `UsageReportingLifecycleState` and
 `UsageReportingFailureKind` enums and never expose proof tokens, pending-deletion UUIDs, raw
 receiver response bodies, or sensitive configuration values.
+
+## Cloud mobile push signaling
+
+`keeppeek.cloud-notifications.v1` advertises `CloudNotificationCommand` (request tag 34) and
+`CloudNotificationResult` (success tag 52). The server advertises this capability only when the
+bounded cloud-signaling runtime and durable state are available. Settings default to
+`enabled = false` and `image_previews_enabled = false`.
+
+| Action            | Authorization                     | Result and bounds                                                                                                                        |
+| ----------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `get_settings`    | Administrator                     | Current `revision`, `enabled`, and `image_previews_enabled`; contains no secrets, NVR ID, or service origin                              |
+| `update_settings` | Administrator                     | Optimistic `expected_revision` match; atomically persists both booleans; rejects `image_previews_enabled = true` if disabled or unpaired |
+| `get_status`      | Administrator                     | Bounded `CloudNotificationState`, rolling hour/day accepted and suppressed counts, timestamps, and closed `CloudNotificationFailureCode` |
+| `test`            | Administrator                     | Sends one separately rate-limited (exact rolling 3/hour) signed test signal without affecting production event counters                  |
+| `resolve`         | Authenticated paired mobile token | Maps one exact 16-byte `cloud_event_id` to the current event revision and canonical still-image descriptor while previews are enabled    |
+
+`ResolveCloudNotification` requires an active paired-mobile credential bound to the current NVR ID
+and current camera authorization for the event source. Disabled signaling, disabled previews,
+unknown or expired aliases, wrong endpoint kind, wrong NVR ID, and unauthorized cameras fail with
+the same generic error. Still-image bytes travel only through existing authenticated event media
+delivery (`EventSearchCommand.fetch_media`); Keeppeek Service never receives media bytes, media
+URLs, attachment descriptors, local event IDs, camera metadata, or free text. Video, animated
+image, and audio notification previews are unsupported.

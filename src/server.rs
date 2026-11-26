@@ -96,6 +96,7 @@ mod camera_control;
 mod camera_discovery;
 mod camera_metadata;
 mod camera_permissions;
+mod cloud_notifications;
 mod configuration;
 mod event_publication;
 mod event_search;
@@ -489,6 +490,9 @@ fn required_access_role(command: Option<&control_request::Command>) -> AccessRol
             | Some(notification_rule_command::Action::ClearScope(_)) => AccessRole::User,
             _ => AccessRole::Administrator,
         },
+        Some(control_request::Command::CloudNotificationCommand(command)) => {
+            cloud_notifications::required_role(command)
+        }
         Some(control_request::Command::ServerCommand(command)) => match command.action {
             Some(server_command::Action::GetAccessSession(_)) => AccessRole::User,
             _ => AccessRole::Administrator,
@@ -558,6 +562,7 @@ const fn access_operation(command: Option<&control_request::Command>) -> &'stati
         Some(control_request::Command::StorageVolumeCommand(_)) => "storage_volumes",
         Some(control_request::Command::ArchiveCommand(_)) => "archive",
         Some(control_request::Command::NotificationRuleCommand(_)) => "notification_rule",
+        Some(control_request::Command::CloudNotificationCommand(_)) => "cloud_notification",
         Some(control_request::Command::ConfigurationCommand(_)) => "configuration",
         None => "missing_command",
     }
@@ -700,6 +705,9 @@ fn sensitive_administrator_operation(
         Some(control_request::Command::ShareCommand(command)) => sharing::audit_operation(command),
         Some(control_request::Command::UsageReportingCommand(command)) => {
             usage_reporting::audit_operation(command)
+        }
+        Some(control_request::Command::CloudNotificationCommand(command)) => {
+            cloud_notifications::audit_operation(command)
         }
         Some(control_request::Command::PublishEvent(_)) => Some("event_publish"),
         Some(control_request::Command::EventPublicationCommand(command)) => {
@@ -892,6 +900,10 @@ impl ControlRequestHandler for ServerControlHandler {
                     Some(control_request::Command::NotificationRuleCommand(command)) => self
                         .handle_notification_rules(session_id, command)
                         .map(Some),
+                    Some(control_request::Command::CloudNotificationCommand(command)) => {
+                        cloud_notifications::dispatch(&self.state, session_id, &principal, command)
+                            .map(Some)
+                    }
                     Some(control_request::Command::ConfigurationCommand(command)) => {
                         self.handle_configuration(session_id, &principal, command)
                     }
@@ -1475,6 +1487,9 @@ fn server_capability_ids(state: &ServerState) -> Vec<String> {
     }
     if state.notifications.is_some() {
         capability_ids.push("keeppeek.rules.v1".to_owned());
+        if state.cloud_notifications.is_some() && state.camera_config_path.is_some() {
+            capability_ids.push(cloud_notifications::CAPABILITY_ID.to_owned());
+        }
     }
     if let Ok(catalog) = event_search_catalog(state) {
         if state.camera_config_path.is_some() {
@@ -8937,6 +8952,7 @@ pub struct ServerState {
     analytics: analytics::Runtime,
     usage_reporting: usage_reporting::Runtime,
     notifications: Option<NotificationHandle>,
+    cloud_notifications: Option<crate::notifications::cloud::CloudSignalRuntime>,
     event_forwarder: Option<EventForwarderHandle>,
     started_at: Instant,
 }
@@ -9134,6 +9150,7 @@ impl ServerState {
             analytics: analytics::Runtime::new(config.analytics.clone()),
             usage_reporting: usage_reporting::Runtime::new(config.usage_reporting.clone()),
             notifications: None,
+            cloud_notifications: None,
             event_forwarder: None,
             started_at: Instant::now(),
         }
@@ -9664,6 +9681,14 @@ impl ServerState {
 
     pub(crate) fn with_notifications(mut self, notifications: NotificationHandle) -> Self {
         self.notifications = Some(notifications);
+        self
+    }
+
+    pub(crate) fn with_cloud_notifications(
+        mut self,
+        cloud_notifications: crate::notifications::cloud::CloudSignalRuntime,
+    ) -> Self {
+        self.cloud_notifications = Some(cloud_notifications);
         self
     }
 
@@ -12465,6 +12490,10 @@ fn prometheus_metrics(router_tx: &FacadeSender<RouterMessage>, state: &ServerSta
             recording: recording.as_ref().ok(),
             backup,
             notifications,
+            cloud_notifications: state.cloud_notifications.as_ref().map(|cloud| {
+                let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
+                cloud.metrics_snapshot(now_ms)
+            }),
             mqtt: mqtt.as_ref(),
             external_analysis: Some(external_analysis),
             analytics: state.analytics.metric_snapshot(state),
@@ -14637,7 +14666,7 @@ mod tests {
         );
     }
 
-    fn test_control_handler(state: ServerState) -> ServerControlHandler {
+    pub(super) fn test_control_handler(state: ServerState) -> ServerControlHandler {
         let (_router, router_tx) = crate::runtime::Router::new().unwrap();
         ServerControlHandler::new(state, router_tx)
     }
@@ -14793,7 +14822,7 @@ mod tests {
         state
     }
 
-    fn test_session_record(
+    pub(super) fn test_session_record(
         principal: ApiPrincipal,
         address: IpAddr,
         reason: ClientClassificationReason,

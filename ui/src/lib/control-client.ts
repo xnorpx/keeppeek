@@ -90,6 +90,13 @@ import type {
 } from './access';
 import { workspaceAccessChanged } from './access';
 import { NotificationControlClient } from './control-client-notifications';
+import {
+	CloudNotificationControlClient,
+	type CloudNotificationContext,
+	type CloudNotificationSettings,
+	type CloudNotificationStatus,
+	type CloudNotificationTestResult
+} from './control-client-cloud-notifications';
 import { replaceKnownCamera } from './camera-inventory';
 import { SystemControlClient, healthProfile, numeric } from './control-client-system';
 import { ConfigurationControlClient } from './control-client-configuration';
@@ -688,6 +695,7 @@ export class ControlClient {
 	};
 	#accessStateListeners = new Set<AccessStateListener>();
 	#notifications = new NotificationControlClient((command) => this.request(command));
+	#cloudNotifications = new CloudNotificationControlClient((command) => this.request(command));
 	readonly sharing = new SharingControlClient((command, timeout) => this.request(command, timeout));
 	readonly usageReporting = new UsageReportingControlClient((command, timeout) =>
 		this.request(command, timeout)
@@ -1657,6 +1665,30 @@ export class ControlClient {
 
 	async listNotificationRules(): Promise<NotificationRuleRecord[]> {
 		return this.#notifications.listRules();
+	}
+
+	async getCloudNotificationSettings(): Promise<CloudNotificationSettings> {
+		return this.#cloudNotifications.getSettings();
+	}
+
+	async updateCloudNotificationSettings(
+		expectedRevision: bigint,
+		enabled: boolean,
+		imagePreviewsEnabled: boolean
+	): Promise<CloudNotificationSettings> {
+		return this.#cloudNotifications.updateSettings(expectedRevision, enabled, imagePreviewsEnabled);
+	}
+
+	async getCloudNotificationStatus(): Promise<CloudNotificationStatus> {
+		return this.#cloudNotifications.getStatus();
+	}
+
+	async testCloudNotification(): Promise<CloudNotificationTestResult> {
+		return this.#cloudNotifications.sendTest();
+	}
+
+	async resolveCloudNotification(cloudEventId: Uint8Array): Promise<CloudNotificationContext> {
+		return this.#cloudNotifications.resolve(cloudEventId);
 	}
 
 	async saveNotificationRuleDraft(

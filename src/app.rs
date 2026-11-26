@@ -283,10 +283,33 @@ pub fn run_with_dashboard(
         .with_backup_manager(backup_manager)
         .with_recording_health(recording_health.clone())
         .with_battery_wake(battery_wake.as_ref().map(BatteryWakeService::handle));
-    let notification_runtime = NotificationRuntime::open_with_config_update(
+    let cloud_notifications = match crate::notifications::cloud::CloudSignalRuntime::open(
+        config_path.to_path_buf(),
+        &storage_config.long_term_path.join("cloud-notifications.db"),
+        cfg.cloud_notifications.clone(),
+        i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+        )
+        .unwrap_or(i64::MAX),
+    ) {
+        Ok(runtime) => Some(runtime),
+        Err(error) => {
+            tracing::warn!(
+                event = "cloud_notification_runtime_unavailable",
+                error = %error,
+                "cloud notifications runtime unavailable; capability remains disabled"
+            );
+            None
+        }
+    };
+    let notification_runtime = NotificationRuntime::open_with_config_update_and_cloud(
         config_path,
         server_state.configuration_update_lock(),
         Some(event_store.clone()),
+        cloud_notifications.clone(),
     )?;
     let notification_handle = notification_runtime.handle();
     let notification_health = NotificationHealthMonitor::start(
@@ -294,9 +317,12 @@ pub fn run_with_dashboard(
         notification_handle.clone(),
         shutdown.clone(),
     )?;
-    let server_state = server_state
+    let mut server_state = server_state
         .with_notifications(notification_handle.clone())
         .with_event_forwarder(event_forwarder_handle.clone());
+    if let Some(cloud_runtime) = cloud_notifications {
+        server_state = server_state.with_cloud_notifications(cloud_runtime);
+    }
 
     let (mut router, router_tx) = Router::new()?;
     for camera in cameras.values() {

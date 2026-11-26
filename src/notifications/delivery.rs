@@ -608,7 +608,7 @@ impl Workers {
                 Channel::Browser => Box::new(BrowserProvider),
                 Channel::Push => Box::new(PushoverProvider::new()),
                 Channel::Webhook => Box::new(WebhookProvider::new()),
-                Channel::Forwarder => Box::new(UnavailableProvider),
+                Channel::Forwarder | Channel::KeeppeekService => Box::new(UnavailableProvider),
             };
             threads.push(
                 std::thread::Builder::new()

@@ -91,6 +91,11 @@ struct QuantileLabels {
     quantile: String,
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct CloudNotificationStateLabels {
+    state: String,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AccessMetricsSnapshot {
     pub(crate) authentication_successes: u64,
@@ -194,6 +199,7 @@ pub struct HealthMetricSnapshots<'a> {
     pub recording: Option<&'a RecordingCoverageMetricSnapshot>,
     pub backup: Option<BackupMetricsSnapshot>,
     pub notifications: Option<NotificationMetricsSnapshot>,
+    pub cloud_notifications: Option<crate::notifications::cloud::CloudMetricsSnapshot>,
     pub mqtt: Option<&'a MqttStatus>,
     pub external_analysis: Option<ExternalAnalysisMetricsSnapshot>,
     pub analytics: Option<AnalyticsMetricsSnapshot>,
@@ -212,11 +218,12 @@ pub fn encode_health_with_events(
         recording,
         backup,
         notifications,
+        cloud_notifications,
         mqtt,
         external_analysis,
         analytics,
     } = snapshots;
-    if event_reports.is_empty() && analytics.is_none() {
+    if event_reports.is_empty() && analytics.is_none() && cloud_notifications.is_none() {
         return encode_health_metrics(
             health,
             access,
@@ -238,6 +245,9 @@ pub fn encode_health_with_events(
     );
     if let Some(analytics) = analytics {
         register_analytics_metrics(&mut registry, analytics);
+    }
+    if let Some(cloud) = cloud_notifications {
+        register_cloud_notification_metrics(&mut registry, cloud);
     }
     if !event_reports.is_empty() {
         events::register(&mut registry, health, event_reports);
@@ -1006,6 +1016,59 @@ fn register_external_analysis_gauges(
         ),
     ] {
         register_gauge(registry, name, help, value);
+    }
+}
+
+fn register_cloud_notification_metrics(
+    registry: &mut Registry,
+    snapshot: crate::notifications::cloud::CloudMetricsSnapshot,
+) {
+    if let Some(state) = snapshot.state {
+        let state_gauge = Family::<CloudNotificationStateLabels, Gauge>::default();
+        state_gauge
+            .get_or_create(&CloudNotificationStateLabels {
+                state: state.as_str().to_owned(),
+            })
+            .set(1);
+        registry.register(
+            "cloud_notification_state",
+            "Current bounded Keeppeek Service cloud notification state",
+            state_gauge,
+        );
+    }
+    for (name, help, value) in [
+        (
+            "cloud_notification_signals_enqueued",
+            "Cloud notification signals staged by the notification runtime",
+            snapshot.signals_enqueued,
+        ),
+        (
+            "cloud_notification_signals_replaced",
+            "Pending cloud notification signals replaced by a newer logical event",
+            snapshot.signals_replaced,
+        ),
+        (
+            "cloud_notification_signals_attempted",
+            "Outbound Keeppeek Service signal HTTP attempts",
+            snapshot.signals_attempted,
+        ),
+        (
+            "cloud_notification_signals_accepted",
+            "Keeppeek Service signal requests accepted with HTTP 202",
+            snapshot.signals_accepted,
+        ),
+        (
+            "cloud_notification_signals_failed",
+            "Keeppeek Service signal requests ending in failure",
+            snapshot.signals_failed,
+        ),
+        (
+            "cloud_notification_signals_suppressed",
+            "Cloud notification signals suppressed, expired, or replaced",
+            snapshot.signals_suppressed,
+        ),
+    ] {
+        register_counter(registry, name, help, value);
     }
 }
 

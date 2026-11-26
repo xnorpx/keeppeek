@@ -155,6 +155,18 @@ impl<'de> Deserialize<'de> for AccessKey {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EndpointKind {
+    #[default]
+    Standard,
+    PairedMobile,
+}
+
+const fn is_standard_endpoint(kind: &EndpointKind) -> bool {
+    matches!(kind, EndpointKind::Standard)
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AccessRole {
@@ -532,6 +544,10 @@ struct StoredCredential {
     revision: u64,
     legacy: bool,
     initial_secret_pending: bool,
+    #[serde(default, skip_serializing_if = "is_standard_endpoint")]
+    endpoint_kind: EndpointKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    paired_nvr_id: Option<String>,
 }
 
 impl StoredCredential {
@@ -892,6 +908,8 @@ impl AccessManager {
             revision: 1,
             legacy: false,
             initial_secret_pending: false,
+            endpoint_kind: EndpointKind::Standard,
+            paired_nvr_id: None,
         };
         let metadata = credential.metadata();
         self.mutate_catalog(|catalog| {
@@ -911,6 +929,82 @@ impl AccessManager {
             metadata,
             access_key,
         })
+    }
+
+    /// Creates a credential bound to a paired mobile endpoint for one specific NVR ID.
+    #[cfg(test)]
+    pub fn create_paired_mobile_credential(
+        &self,
+        name: &str,
+        description: Option<&str>,
+        role: AccessRole,
+        paired_nvr_id: &str,
+        expires_at_ms: Option<i64>,
+        now: i64,
+    ) -> anyhow::Result<IssuedCredential> {
+        let name = validated_name(name)?;
+        let description = validated_description(description)?;
+        let nvr_bytes = crate::config::cloud_notifications::parse_nvr_id(paired_nvr_id)?;
+        let canonical_nvr_id = Uuid::from_bytes(nvr_bytes).hyphenated().to_string();
+        if expires_at_ms.is_some_and(|expires_at| expires_at <= now) {
+            anyhow::bail!("credential expiry must be in the future");
+        }
+        let access_key = AccessKey::generate();
+        let credential = StoredCredential {
+            id: Uuid::new_v4(),
+            name,
+            description,
+            role,
+            camera_access: Some(CameraAccess::unrestricted()),
+            verifier: access_key.fingerprint(),
+            created_at_ms: now,
+            rotated_at_ms: None,
+            last_used_at_ms: None,
+            expires_at_ms,
+            disabled: false,
+            revoked_at_ms: None,
+            revision: 1,
+            legacy: false,
+            initial_secret_pending: false,
+            endpoint_kind: EndpointKind::PairedMobile,
+            paired_nvr_id: Some(canonical_nvr_id),
+        };
+        let metadata = credential.metadata();
+        self.mutate_catalog(|catalog| {
+            if catalog.credentials.len() >= MAX_CREDENTIALS {
+                anyhow::bail!("credential limit reached");
+            }
+            if catalog.credentials.iter().any(|existing| {
+                existing.revoked_at_ms.is_none()
+                    && existing.name.eq_ignore_ascii_case(&credential.name)
+            }) {
+                anyhow::bail!("an active credential already uses that name");
+            }
+            catalog.credentials.push(credential);
+            Ok(())
+        })?;
+        Ok(IssuedCredential {
+            metadata,
+            access_key,
+        })
+    }
+
+    /// Returns the bound canonical NVR ID only when the credential is an active paired mobile endpoint.
+    pub(crate) fn paired_mobile_nvr_binding(
+        &self,
+        id: Uuid,
+        revision: u64,
+        now: i64,
+    ) -> Option<String> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .catalog
+            .credentials
+            .iter()
+            .find(|credential| credential.id == id && credential.is_active(revision, now))
+            .filter(|credential| credential.endpoint_kind == EndpointKind::PairedMobile)
+            .and_then(|credential| credential.paired_nvr_id.clone())
     }
 
     pub(crate) fn rotate_credential(&self, id: Uuid, now: i64) -> anyhow::Result<IssuedCredential> {
@@ -1236,6 +1330,8 @@ fn legacy_credential(access_key: AccessKey, created_at_ms: i64) -> StoredCredent
         revision: 1,
         legacy: true,
         initial_secret_pending: true,
+        endpoint_kind: EndpointKind::Standard,
+        paired_nvr_id: None,
     }
 }
 
@@ -1294,6 +1390,18 @@ fn validate_catalog(catalog: &AccessCatalog) -> anyhow::Result<()> {
         }
         if credential.revision == 0 {
             anyhow::bail!("access credential revision must be nonzero");
+        }
+        match (
+            credential.endpoint_kind,
+            credential.paired_nvr_id.as_deref(),
+        ) {
+            (EndpointKind::Standard, None) => {}
+            (EndpointKind::PairedMobile, Some(nvr_id)) => {
+                crate::config::cloud_notifications::parse_nvr_id(nvr_id)?;
+            }
+            _ => {
+                anyhow::bail!("paired mobile endpoint binding is inconsistent");
+            }
         }
     }
     Ok(())

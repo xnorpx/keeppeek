@@ -418,6 +418,7 @@ impl Store {
                 &logical_id,
                 existing,
                 attachment_path,
+                self.cloud.as_ref(),
                 summary,
             );
             return;
@@ -452,8 +453,14 @@ impl Store {
                 Some(candidate.revision),
             );
         }
-        let queued =
-            Self::create_new_notification(state, rule, candidate, &logical_id, attachment_path);
+        let queued = Self::create_new_notification(
+            state,
+            rule,
+            candidate,
+            &logical_id,
+            attachment_path,
+            self.cloud.as_ref(),
+        );
         summary.created = summary.created.saturating_add(1);
         summary.queued_attempts = summary.queued_attempts.saturating_add(queued);
     }
@@ -464,6 +471,7 @@ impl Store {
         candidate: &Candidate,
         logical_id: &LogicalId,
         attachment_path: Option<String>,
+        cloud: Option<&super::cloud::CloudSignalRuntime>,
     ) -> u32 {
         let (title, body) = render_logical(rule, candidate);
         Self::insert_new_logical(
@@ -486,6 +494,7 @@ impl Store {
                 attachment_path: attachment_path.as_deref(),
                 replacement: false,
             },
+            cloud,
         )
     }
 
@@ -590,6 +599,10 @@ impl Store {
         );
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "existing notification update requires state, rule, candidate, cloud handle, and summary"
+    )]
     fn process_existing(
         state: &mut RuntimeState,
         rule: &Rule,
@@ -597,6 +610,7 @@ impl Store {
         logical_id: &LogicalId,
         existing: StoredLogical,
         attachment_path: Option<String>,
+        cloud: Option<&super::cloud::CloudSignalRuntime>,
         summary: &mut ProcessSummary,
     ) {
         if candidate.revision <= existing.highest_revision {
@@ -663,6 +677,7 @@ impl Store {
             attachment_path,
             tracked_operational_event,
             late,
+            cloud,
         );
         summary.replaced = summary.replaced.saturating_add(1);
         summary.queued_attempts = summary.queued_attempts.saturating_add(queued);
@@ -708,6 +723,10 @@ impl Store {
         logical.attachment_path = attachment_path;
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "replacement requires logical state, rule, candidate, flags, and optional cloud target"
+    )]
     fn replace_existing(
         state: &mut RuntimeState,
         rule: &Rule,
@@ -716,6 +735,7 @@ impl Store {
         attachment_path: Option<String>,
         tracked_operational_event: bool,
         late: bool,
+        cloud: Option<&super::cloud::CloudSignalRuntime>,
     ) -> u32 {
         let (title, body) = render_logical(rule, candidate);
         let logical = state
@@ -760,6 +780,7 @@ impl Store {
                 attachment_path: attachment_path.as_deref(),
                 replacement: true,
             },
+            cloud,
         )
     }
 
@@ -930,10 +951,11 @@ impl Store {
         rule: &Rule,
         candidate: &Candidate,
         context: EnqueueContext<'_>,
+        cloud: Option<&super::cloud::CloudSignalRuntime>,
     ) -> u32 {
         let mut queued = 0_u32;
         for (index, action) in rule.actions.iter().enumerate() {
-            if Self::enqueue_action(state, rule, candidate, &context, index, action) {
+            if Self::enqueue_action(state, rule, candidate, &context, index, action, cloud) {
                 queued = queued.saturating_add(1);
             }
         }
@@ -947,7 +969,12 @@ impl Store {
         context: &EnqueueContext<'_>,
         index: usize,
         action: &Action,
+        cloud: Option<&super::cloud::CloudSignalRuntime>,
     ) -> bool {
+        if action.channel == Channel::KeeppeekService {
+            Self::enqueue_cloud_action(state, rule, candidate, context, action, cloud);
+            return false;
+        }
         let rejection = if !action.enabled {
             return false;
         } else if context.replacement
@@ -990,6 +1017,46 @@ impl Store {
         );
         Self::consume_channel_rate_limits(state, rule, candidate, action.channel);
         true
+    }
+
+    fn enqueue_cloud_action(
+        state: &mut RuntimeState,
+        rule: &Rule,
+        candidate: &Candidate,
+        context: &EnqueueContext<'_>,
+        action: &Action,
+        cloud: Option<&super::cloud::CloudSignalRuntime>,
+    ) {
+        if !action.enabled || candidate.lifecycle == Lifecycle::Test {
+            return;
+        }
+        if Self::channel_rate_limited(state, rule, candidate, Channel::KeeppeekService) {
+            Self::record_history(
+                state,
+                history_entry(
+                    context.logical_id,
+                    &rule.id,
+                    candidate,
+                    "rate_limited",
+                    Some(Channel::KeeppeekService.as_str()),
+                    None,
+                ),
+            );
+            return;
+        }
+        let queued = cloud.is_some_and(|runtime| {
+            runtime.stage_logical_event(
+                context.logical_id.as_str(),
+                &rule.id,
+                &candidate.source_identity,
+                &candidate.source_id,
+                candidate.revision,
+                candidate.occurred_at_ms,
+            )
+        });
+        if queued {
+            Self::consume_channel_rate_limits(state, rule, candidate, Channel::KeeppeekService);
+        }
     }
 
     fn build_outbox_item(

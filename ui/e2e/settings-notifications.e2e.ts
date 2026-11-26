@@ -289,3 +289,243 @@ test('notification rule editor remains usable on mobile', async ({ page }) => {
 		.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
 		.toBe(true);
 });
+
+test('cloud mobile push signaling stays unavailable without keeppeek.cloud-notifications.v1', async ({
+	page
+}) => {
+	const fixtures = notificationFixtures();
+	const requests = await mockControlPeer(page, {
+		runtimeConfiguration: config,
+		health: { system: { disks: [] }, storage: { catalog: null } },
+		capabilityIds: ['keeppeek.rules.v1'],
+		notificationRules: fixtures.rules,
+		notificationInbox: fixtures.inbox,
+		notificationHistory: fixtures.history
+	});
+
+	await page.goto('/settings#notifications');
+	await expect(page.getByTestId('cloud-push-unavailable')).toBeVisible();
+	expect(requests.cloudNotificationActions).toEqual([]);
+});
+
+test('cloud mobile push signaling covers states, preview gating, conflict reload, test limit, and keeppeek_service rule action on desktop', async ({
+	page
+}) => {
+	await page.setViewportSize({ width: 1440, height: 900 });
+	const fixtures = notificationFixtures();
+	const nextEligibleAtMs = Date.UTC(2026, 8, 19, 13, 0, 0);
+	const requests = await mockControlPeer(page, {
+		runtimeConfiguration: config,
+		health: { system: { disks: [] }, storage: { catalog: null } },
+		capabilityIds: ['keeppeek.rules.v1', 'keeppeek.cloud-notifications.v1'],
+		notificationRules: fixtures.rules,
+		notificationInbox: fixtures.inbox,
+		notificationHistory: fixtures.history,
+		cloudNotificationSettings: {
+			revision: 1n,
+			enabled: false,
+			imagePreviewsEnabled: false
+		},
+		cloudNotificationStatusSequence: [
+			{
+				state: 'disabled',
+				paired: false,
+				pending: false,
+				acceptedLastHour: 0,
+				acceptedLastDay: 0,
+				suppressedLastHour: 0,
+				suppressedLastDay: 0,
+				nextEligibleAtMs: null,
+				lastAcceptedAtMs: null,
+				lastFailure: 'none'
+			},
+			{
+				state: 'unpaired',
+				paired: false,
+				pending: false,
+				acceptedLastHour: 0,
+				acceptedLastDay: 0,
+				suppressedLastHour: 0,
+				suppressedLastDay: 0,
+				nextEligibleAtMs: null,
+				lastAcceptedAtMs: null,
+				lastFailure: 'none'
+			},
+			{
+				state: 'throttled',
+				paired: true,
+				pending: true,
+				acceptedLastHour: 120,
+				acceptedLastDay: 240,
+				suppressedLastHour: 9,
+				suppressedLastDay: 42,
+				nextEligibleAtMs,
+				lastAcceptedAtMs: Date.UTC(2026, 8, 19, 12, 30, 0),
+				lastFailure: 'service_limit'
+			},
+			{
+				state: 'ready',
+				paired: true,
+				pending: false,
+				acceptedLastHour: 120,
+				acceptedLastDay: 240,
+				suppressedLastHour: 9,
+				suppressedLastDay: 42,
+				nextEligibleAtMs: null,
+				lastAcceptedAtMs: Date.UTC(2026, 8, 19, 12, 30, 0),
+				lastFailure: 'none'
+			},
+			{
+				state: 'backing_off',
+				paired: true,
+				pending: true,
+				acceptedLastHour: 120,
+				acceptedLastDay: 240,
+				suppressedLastHour: 10,
+				suppressedLastDay: 43,
+				nextEligibleAtMs,
+				lastAcceptedAtMs: Date.UTC(2026, 8, 19, 12, 30, 0),
+				lastFailure: 'local_limit'
+			},
+			{
+				state: 'unavailable',
+				paired: true,
+				pending: false,
+				acceptedLastHour: 120,
+				acceptedLastDay: 240,
+				suppressedLastHour: 10,
+				suppressedLastDay: 43,
+				nextEligibleAtMs: null,
+				lastAcceptedAtMs: Date.UTC(2026, 8, 19, 12, 30, 0),
+				lastFailure: 'credential_rejected'
+			}
+		],
+		cloudNotificationTestResults: [
+			{
+				accepted: false,
+				nextEligibleAtMs,
+				failure: 'local_limit'
+			}
+		]
+	});
+
+	await page.goto('/settings#notifications');
+	const cloudRegion = page.getByRole('region', { name: 'Bounded mobile push signaling' });
+	await expect(cloudRegion).toBeVisible();
+	await expect(cloudRegion.getByTestId('cloud-push-state')).toHaveText('DISABLED');
+
+	const previewToggle = cloudRegion.getByRole('checkbox', {
+		name: /Allow private direct still-image previews/i
+	});
+	await expect(previewToggle).toBeDisabled();
+
+	await cloudRegion.getByRole('button', { name: 'Refresh cloud status' }).click();
+	await expect(cloudRegion.getByTestId('cloud-push-state')).toHaveText('UNPAIRED');
+	await expect(previewToggle).toBeDisabled();
+
+	await cloudRegion.getByRole('button', { name: 'Refresh cloud status' }).click();
+	await expect(cloudRegion.getByTestId('cloud-push-state')).toHaveText('THROTTLED');
+	await expect(cloudRegion.getByText('120 / 240')).toBeVisible();
+	await expect(cloudRegion.getByText('9 / 42')).toBeVisible();
+
+	// Keyboard accessibility: focus and toggle with Space, then enable preview opt-in and save.
+	const enableToggle = cloudRegion.getByRole('checkbox', {
+		name: /Enable Keeppeek Service signaling/i
+	});
+	await enableToggle.focus();
+	await page.keyboard.press('Space');
+	await expect(enableToggle).toBeChecked();
+	await expect(previewToggle).toBeEnabled();
+	await previewToggle.check();
+	await cloudRegion.getByRole('button', { name: 'Save cloud settings' }).click();
+	await expect(cloudRegion.getByTestId('cloud-push-state')).toHaveText('READY');
+
+	// Separate 3/hr test limit surfaces truthfully without claiming phone display.
+	await cloudRegion.getByRole('button', { name: /Send test signal/i }).click();
+	await expect(cloudRegion.getByTestId('cloud-push-state')).toHaveText('BACKING OFF');
+	await expect(cloudRegion.getByTestId('cloud-push-test-summary')).toContainText(
+		'Local pacing limit'
+	);
+
+	// Refresh to unavailable (credential rejected) state.
+	await cloudRegion.getByRole('button', { name: 'Refresh cloud status' }).click();
+	await expect(cloudRegion.getByTestId('cloud-push-state')).toHaveText('UNAVAILABLE');
+	await expect(cloudRegion).toContainText('Pairing credential rejected (repair required)');
+
+	// Verify #134 rule editor exposes keeppeek_service channel with disabled managed destination.
+	const rulesRegion = page.getByRole('region', { name: 'Notification rules' });
+	await rulesRegion.getByRole('button', { name: 'Add rule' }).click();
+	const editor = rulesRegion.getByRole('dialog');
+	await editor.getByRole('combobox', { name: 'Channel' }).first().selectOption('keeppeek_service');
+	await expect(editor.getByRole('textbox', { name: 'Keeppeek Service' })).toBeDisabled();
+	await expect(
+		editor.getByRole('combobox', { name: 'Attachment' }).first().locator('option[value="required"]')
+	).toBeDisabled();
+	await editor.getByRole('button', { name: 'Close rule editor' }).click();
+
+	await expect.poll(() => requests.cloudNotificationActions).toContain('updateSettings');
+	await expect.poll(() => requests.cloudNotificationActions).toContain('test');
+	await expect
+		.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
+		.toBe(true);
+});
+
+test('cloud mobile push signaling reloads on revision conflict and fits mobile width without overflow', async ({
+	page
+}) => {
+	await page.setViewportSize({ width: 390, height: 844 });
+	const fixtures = notificationFixtures();
+	await mockControlPeer(page, {
+		runtimeConfiguration: config,
+		health: { system: { disks: [] }, storage: { catalog: null } },
+		capabilityIds: ['keeppeek.rules.v1', 'keeppeek.cloud-notifications.v1'],
+		notificationRules: fixtures.rules,
+		notificationInbox: fixtures.inbox,
+		notificationHistory: fixtures.history,
+		cloudNotificationSettings: {
+			revision: 4n,
+			enabled: false,
+			imagePreviewsEnabled: false
+		},
+		cloudNotificationConflictOnSave: true,
+		cloudNotificationStatusSequence: [
+			{
+				state: 'disabled',
+				paired: true,
+				pending: false,
+				acceptedLastHour: 1,
+				acceptedLastDay: 5,
+				suppressedLastHour: 0,
+				suppressedLastDay: 2,
+				nextEligibleAtMs: null,
+				lastAcceptedAtMs: null,
+				lastFailure: 'none'
+			},
+			{
+				state: 'throttled',
+				paired: true,
+				pending: true,
+				acceptedLastHour: 120,
+				acceptedLastDay: 500,
+				suppressedLastHour: 4,
+				suppressedLastDay: 19,
+				nextEligibleAtMs: Date.UTC(2026, 8, 19, 13, 0, 0),
+				lastAcceptedAtMs: null,
+				lastFailure: 'local_limit'
+			}
+		]
+	});
+
+	await page.goto('/settings#notifications');
+	const cloudRegion = page.getByRole('region', { name: 'Bounded mobile push signaling' });
+	await expect(cloudRegion).toBeVisible();
+	await cloudRegion.getByRole('checkbox', { name: /Enable Keeppeek Service signaling/i }).check();
+	await cloudRegion.getByRole('button', { name: 'Save cloud settings' }).click();
+
+	// Conflict reloads authoritative state from server cleanly.
+	await expect(cloudRegion.getByTestId('cloud-push-state')).toHaveText('THROTTLED');
+	await expect(cloudRegion.getByText('120 / 500')).toBeVisible();
+	await expect
+		.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
+		.toBe(true);
+});

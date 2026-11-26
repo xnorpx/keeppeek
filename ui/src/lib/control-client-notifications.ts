@@ -400,7 +400,13 @@ function notificationSeverity(value: string): NotificationSeverity {
 }
 
 function notificationChannel(value: string): NotificationChannel {
-	if (value === 'browser' || value === 'push' || value === 'webhook' || value === 'forwarder') {
+	if (
+		value === 'browser' ||
+		value === 'push' ||
+		value === 'webhook' ||
+		value === 'forwarder' ||
+		value === 'keeppeek_service'
+	) {
 		return value;
 	}
 	throw new Error(`Server returned unsupported notification channel '${value}'.`);

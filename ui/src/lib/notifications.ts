@@ -98,7 +98,7 @@ export type NotificationTrigger =
 
 export type NotificationSeverity = 'info' | 'warning' | 'critical';
 export type NotificationStage = 'preliminary' | 'enriched' | 'recovery';
-export type NotificationChannel = 'browser' | 'push' | 'webhook' | 'forwarder';
+export type NotificationChannel = 'browser' | 'push' | 'webhook' | 'forwarder' | 'keeppeek_service';
 export type NotificationAttachmentPolicy = 'never' | 'when_available' | 'required';
 export type PushoverPriority = -2 | -1 | 0 | 1 | 2;
 export type PushoverPublicConfig = {
