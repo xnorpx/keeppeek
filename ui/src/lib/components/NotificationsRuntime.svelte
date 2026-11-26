@@ -97,7 +97,11 @@
 	onMount(() => {
 		browserPermission = 'Notification' in window ? Notification.permission : 'unsupported';
 		void reload(true);
-		const interval = window.setInterval(() => void reload(false), 5_000);
+		const interval = window.setInterval(() => {
+			if (document.visibilityState === 'visible' || browserPermission === 'granted') {
+				void reload(false);
+			}
+		}, 5_000);
 		return () => window.clearInterval(interval);
 	});
 

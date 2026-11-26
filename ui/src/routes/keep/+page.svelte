@@ -23,7 +23,10 @@
 		StoredMediaPlayback,
 		StoredMediaStartupPhase
 	} from '$lib/control-client';
-	import { decodeEventKeyframePreview } from '$lib/event-keyframe-preview';
+	import {
+		decodeEventKeyframeBitmap,
+		decodeEventKeyframePreview
+	} from '$lib/event-keyframe-preview';
 	import { emitTimelinePerformanceEvent } from '$lib/timeline-observability';
 	import {
 		TimelineRepository,
@@ -211,12 +214,29 @@
 	let eventSearchAvailable = $state(false);
 	let eventWorkflowAvailable = $state(false);
 	let stillPreviewUrl = $state<string | null>(null);
+	let stillPreviewBitmap = $state.raw<ImageBitmap | null>(null);
+	let scrubPreviewCanvas = $state<HTMLCanvasElement | null>(null);
 	let selectedOperationalEventId = $state<string | null>(null);
 	let previewVersion = 0;
 	let previewController: AbortController | null = null;
+	const MAX_SCRUB_PREVIEW_CACHE = 96;
 	const keyframePreviewCache = new Map<string, string>();
+	const scrubBitmapCache = new Map<string, ImageBitmap>();
+	const scrubIntervalCache = new Map<
+		string,
+		Array<{ startMs: number; endMs: number; cacheKey: string }>
+	>();
+	let scrubInFlightTarget: { cameraId: string; stream: string; requestedMs: number } | null = null;
 	let keyFrameUnsubscribe: (() => void) | null = null;
 	let scrubbing = $state(false);
+	$effect(() => {
+		const bitmap = stillPreviewBitmap;
+		const canvas = scrubPreviewCanvas;
+		if (!bitmap || !canvas) return;
+		if (canvas.width !== bitmap.width) canvas.width = bitmap.width;
+		if (canvas.height !== bitmap.height) canvas.height = bitmap.height;
+		canvas.getContext('2d')?.drawImage(bitmap, 0, 0);
+	});
 	$effect.pre(() => {
 		const element = video;
 		const cursor = storedPlayback;
@@ -225,6 +245,8 @@
 		return untrack(() => frames.follow(element, cursor));
 	});
 	let scrubTargetMs: number | null = null;
+	let lastScrubbedTargetMs: number | null = null;
+	let scrubHitClientCache = false;
 	let scrubPump: { version: number; done: Promise<void> } | null = null;
 	let scrubVersion = 0;
 	let scrubPlayIntent = false;
@@ -286,6 +308,7 @@
 		playbackNoticeVisible &&
 			!(decodedVideoWidth > 0 && decodedVideoHeight > 0) &&
 			!stillPreviewUrl &&
+			!stillPreviewBitmap &&
 			!cameraSwitchFrameUrl
 	);
 
@@ -517,6 +540,10 @@
 			if (cameraSwitchFrameUrl) URL.revokeObjectURL(cameraSwitchFrameUrl);
 			previewController?.abort();
 			for (const url of keyframePreviewCache.values()) URL.revokeObjectURL(url);
+			keyframePreviewCache.clear();
+			for (const bitmap of scrubBitmapCache.values()) bitmap.close();
+			scrubBitmapCache.clear();
+			scrubIntervalCache.clear();
 			recordingLoadController?.abort();
 			targetLoadController?.abort();
 			playbackOpenController?.abort();
@@ -605,10 +632,13 @@
 				reviewRoute = { ...route, cameraId };
 				return;
 			}
-			await loadRouteRecordings(route, version);
+			const recordingsPromise = loadRouteRecordings(route, version);
+			const routeEventPromise =
+				cameraSwitchVersion === switchVersion ? loadRouteEvent(route, version) : Promise.resolve();
+			await recordingsPromise;
 			if (version !== routeVersion) return;
-			if (cameraSwitchVersion === switchVersion) await loadRouteEvent(route, version);
-			await healthPromise;
+			await routeEventPromise;
+			void healthPromise;
 		} catch (cause) {
 			if (version === routeVersion)
 				error = cause instanceof Error ? cause.message : 'Failed to open Keep';
@@ -693,6 +723,9 @@
 		playbackVersion += 1;
 		scrubVersion += 1;
 		scrubTargetMs = null;
+		lastScrubbedTargetMs = null;
+		scrubHitClientCache = false;
+		stillPreviewBitmap = null;
 		scrubOpenController?.abort();
 		scrubOpenController = null;
 		scrubbing = false;
@@ -979,15 +1012,18 @@
 	}
 
 	function showNearestCachedPreview(timestampMs: number): void {
-		const cachedPreview = events
-			.filter((event) => event.thumbnail_url)
-			.toSorted(
-				(left, right) =>
-					Math.abs(left.start_time_ms - timestampMs) - Math.abs(right.start_time_ms - timestampMs)
-			)[0];
-		if (cachedPreview && Math.abs(cachedPreview.start_time_ms - timestampMs) <= 30_000) {
-			stillPreviewUrl = cachedPreview.thumbnail_url;
+		if (scrubbing && stillPreviewBitmap !== null) return;
+		let nearestUrl: string | null = null;
+		let nearestDistance = 30_001;
+		for (const event of events) {
+			if (!event.thumbnail_url) continue;
+			const distance = Math.abs(event.start_time_ms - timestampMs);
+			if (distance < nearestDistance) {
+				nearestDistance = distance;
+				nearestUrl = event.thumbnail_url;
+			}
 		}
+		if (nearestUrl) stillPreviewUrl = nearestUrl;
 	}
 
 	function recordingEventFromHit(hit: EventPreviewHit): RecordingEvent {
@@ -1074,12 +1110,27 @@
 	async function renderStoredKeyFrame(preview: StoredMediaKeyFramePreview): Promise<void> {
 		if (preview.storedMediaId !== storedPlayback?.id) return;
 		const version = ++previewVersion;
-		const cacheKey = `${cameraId}:${stream}:${preview.timestampMs}:${preview.codec}:${preview.configurationRevision}`;
-		const cached = keyframePreviewCache.get(cacheKey);
-		if (cached) {
+		const cacheKey = `${cameraId}:${stream}:${preview.timestampMs}:${preview.codec}:${preview.width}x${preview.height}`;
+		const cachedBitmap = scrubBitmapCache.get(cacheKey);
+		if (cachedBitmap) {
+			scrubBitmapCache.delete(cacheKey);
+			scrubBitmapCache.set(cacheKey, cachedBitmap);
+			stillPreviewBitmap = cachedBitmap;
+			stillPreviewUrl = null;
+			emitTimelinePerformanceEvent('ScrubPreviewRendered', {
+				sourceId: cameraId,
+				cursorId: preview.storedMediaId,
+				generation: String(preview.generation),
+				cache: 'memory'
+			});
+			return;
+		}
+		const cachedUrl = keyframePreviewCache.get(cacheKey);
+		if (cachedUrl) {
 			keyframePreviewCache.delete(cacheKey);
-			keyframePreviewCache.set(cacheKey, cached);
-			stillPreviewUrl = cached;
+			keyframePreviewCache.set(cacheKey, cachedUrl);
+			stillPreviewBitmap = null;
+			stillPreviewUrl = cachedUrl;
 			emitTimelinePerformanceEvent('ScrubPreviewRendered', {
 				sourceId: cameraId,
 				cursorId: preview.storedMediaId,
@@ -1089,19 +1140,56 @@
 			return;
 		}
 		try {
-			const url = await decodeEventKeyframePreview(preview);
-			if (version !== previewVersion || preview.storedMediaId !== storedPlayback?.id) {
-				URL.revokeObjectURL(url);
-				return;
+			if (typeof createImageBitmap !== 'undefined') {
+				const bitmap = await decodeEventKeyframeBitmap(preview);
+				if (version !== previewVersion || preview.storedMediaId !== storedPlayback?.id) {
+					bitmap.close();
+					return;
+				}
+				const previous = scrubBitmapCache.get(cacheKey);
+				if (previous && previous !== bitmap && previous !== stillPreviewBitmap) previous.close();
+				scrubBitmapCache.delete(cacheKey);
+				scrubBitmapCache.set(cacheKey, bitmap);
+				while (scrubBitmapCache.size > MAX_SCRUB_PREVIEW_CACHE) {
+					const oldest = scrubBitmapCache.entries().next().value as
+						[string, ImageBitmap] | undefined;
+					if (!oldest) break;
+					scrubBitmapCache.delete(oldest[0]);
+					if (oldest[1] !== stillPreviewBitmap) oldest[1].close();
+				}
+				stillPreviewBitmap = bitmap;
+				stillPreviewUrl = null;
+				if (
+					scrubInFlightTarget &&
+					scrubInFlightTarget.cameraId === cameraId &&
+					scrubInFlightTarget.stream === stream &&
+					scrubInFlightTarget.requestedMs >= preview.timestampMs
+				) {
+					rememberScrubInterval(
+						cameraId,
+						stream,
+						preview.timestampMs,
+						scrubInFlightTarget.requestedMs,
+						cacheKey
+					);
+				}
+			} else {
+				const url = await decodeEventKeyframePreview(preview);
+				if (version !== previewVersion || preview.storedMediaId !== storedPlayback?.id) {
+					URL.revokeObjectURL(url);
+					return;
+				}
+				keyframePreviewCache.set(cacheKey, url);
+				while (keyframePreviewCache.size > MAX_SCRUB_PREVIEW_CACHE) {
+					const oldest = keyframePreviewCache.entries().next().value as
+						[string, string] | undefined;
+					if (!oldest) break;
+					keyframePreviewCache.delete(oldest[0]);
+					URL.revokeObjectURL(oldest[1]);
+				}
+				stillPreviewBitmap = null;
+				stillPreviewUrl = url;
 			}
-			keyframePreviewCache.set(cacheKey, url);
-			while (keyframePreviewCache.size > 32) {
-				const oldest = keyframePreviewCache.entries().next().value as [string, string] | undefined;
-				if (!oldest) break;
-				keyframePreviewCache.delete(oldest[0]);
-				URL.revokeObjectURL(oldest[1]);
-			}
-			stillPreviewUrl = url;
 			emitTimelinePerformanceEvent('ScrubPreviewRendered', {
 				sourceId: cameraId,
 				cursorId: preview.storedMediaId,
@@ -1110,6 +1198,7 @@
 			});
 		} catch {
 			if (version === previewVersion) {
+				stillPreviewBitmap = null;
 				stillPreviewUrl = null;
 				const playback = storedPlayback;
 				if (scrubbing && playback?.id === preview.storedMediaId) {
@@ -1149,6 +1238,48 @@
 		return done;
 	}
 
+	function rememberScrubInterval(
+		sourceId: string,
+		streamId: string,
+		startMs: number,
+		endMs: number,
+		cacheKey: string
+	): void {
+		const bucketKey = `${sourceId}:${streamId}`;
+		const entries = scrubIntervalCache.get(bucketKey) ?? [];
+		const existing = entries.find((entry) => entry.cacheKey === cacheKey);
+		if (existing) {
+			existing.startMs = Math.min(existing.startMs, startMs);
+			existing.endMs = Math.max(existing.endMs, endMs);
+		} else {
+			entries.push({ startMs, endMs, cacheKey });
+			while (entries.length > MAX_SCRUB_PREVIEW_CACHE) entries.shift();
+		}
+		scrubIntervalCache.set(bucketKey, entries);
+	}
+
+	function lookupCachedScrubBitmap(
+		sourceId: string,
+		streamId: string,
+		requestedMs: number
+	): ImageBitmap | null {
+		const entries = scrubIntervalCache.get(`${sourceId}:${streamId}`);
+		if (!entries) return null;
+		for (let index = entries.length - 1; index >= 0; index -= 1) {
+			const entry = entries[index]!;
+			if (requestedMs < entry.startMs || requestedMs > entry.endMs) continue;
+			const bitmap = scrubBitmapCache.get(entry.cacheKey);
+			if (!bitmap) {
+				entries.splice(index, 1);
+				continue;
+			}
+			scrubBitmapCache.delete(entry.cacheKey);
+			scrubBitmapCache.set(entry.cacheKey, bitmap);
+			return bitmap;
+		}
+		return null;
+	}
+
 	async function drainTimelineScrub(version: number): Promise<void> {
 		while (scrubTargetMs !== null && version === scrubVersion) {
 			const timestampMs = scrubTargetMs;
@@ -1156,14 +1287,44 @@
 			const target = recordingTarget(orderedSegments, timestampMs);
 			if (!target) return;
 			const requestedTimestampMs = target.segment.start_time_ms + target.offsetSeconds * 1_000;
+			if (!scrubUsesFragmentFallback) {
+				const cachedBitmap = lookupCachedScrubBitmap(
+					cameraId,
+					target.segment.stream,
+					requestedTimestampMs
+				);
+				if (cachedBitmap) {
+					previewVersion += 1;
+					stillPreviewBitmap = cachedBitmap;
+					stillPreviewUrl = null;
+					lastScrubbedTargetMs = null;
+					scrubHitClientCache = true;
+					emitTimelinePerformanceEvent('ScrubPreviewRendered', {
+						sourceId: cameraId,
+						cursorId: storedPlayback?.id ?? 'cached',
+						generation: 'cached',
+						cache: 'memory'
+					});
+					continue;
+				}
+			}
 			const playback = await ensureScrubPlayback(target.segment, requestedTimestampMs, version);
 			if (!playback || version !== scrubVersion) return;
 			if (scrubTargetMs !== null) continue;
+			scrubHitClientCache = false;
+			scrubInFlightTarget = {
+				cameraId,
+				stream: target.segment.stream,
+				requestedMs: requestedTimestampMs
+			};
 			await playback.seek(requestedTimestampMs);
 			if (version !== scrubVersion) return;
-			playbackUrl = playback.url;
-			playbackAnchorMs = playback.anchorTimeMs;
-			pendingSeekSeconds = playback.initialOffsetSeconds;
+			lastScrubbedTargetMs = requestedTimestampMs;
+			if (scrubUsesFragmentFallback) {
+				playbackUrl = playback.url;
+				playbackAnchorMs = playback.anchorTimeMs;
+				pendingSeekSeconds = playback.initialOffsetSeconds;
+			}
 		}
 	}
 
@@ -1243,6 +1404,8 @@
 	function beginTimelineScrub(timestampMs: number): void {
 		cancelFrameResume();
 		scrubVersion += 1;
+		lastScrubbedTargetMs = null;
+		scrubHitClientCache = false;
 		scrubOpenController?.abort();
 		clearPlaybackStartupTimer();
 		scrubPlayIntent = playbackIntent();
@@ -1258,9 +1421,37 @@
 
 	async function finishTimelineScrub(timestampMs: number): Promise<void> {
 		const version = scrubVersion;
-		await queueTimelineScrub(timestampMs);
-		await scrubPump?.done;
+		while (scrubPump && version === scrubVersion) {
+			await scrubPump.done;
+		}
 		if (version !== scrubVersion) return;
+		const target = recordingTarget(orderedSegments, timestampMs);
+		const requestedTimestampMs = target
+			? target.segment.start_time_ms + target.offsetSeconds * 1_000
+			: timestampMs;
+		const alreadyScrubbed =
+			scrubTargetMs === null &&
+			!scrubHitClientCache &&
+			lastScrubbedTargetMs !== null &&
+			Math.abs(lastScrubbedTargetMs - requestedTimestampMs) < 1;
+		if (!alreadyScrubbed && target && (storedPlayback !== null || playerError === null)) {
+			scrubTargetMs = null;
+			scrubHitClientCache = false;
+			try {
+				const synced = await ensureScrubPlayback(target.segment, requestedTimestampMs, version);
+				if (!synced || version !== scrubVersion) return;
+				await synced.seek(requestedTimestampMs);
+				if (version !== scrubVersion) return;
+				lastScrubbedTargetMs = requestedTimestampMs;
+			} catch (cause) {
+				if (version === scrubVersion) {
+					clearColdSeek();
+					playerError = storedPlaybackError(cause);
+					scrubbing = false;
+				}
+				return;
+			}
+		}
 		const playback = storedPlayback;
 		if (!playback) {
 			scrubbing = false;
@@ -1274,6 +1465,8 @@
 		pendingPlay = scrubPlayIntent;
 		playing = scrubPlayIntent;
 		scrubbing = false;
+		lastScrubbedTargetMs = null;
+		scrubHitClientCache = false;
 		if (selected) observePlaybackStartup(playback, playbackVersion, selected, timestampMs);
 		await tick();
 		applyPendingSeek();
@@ -1284,6 +1477,8 @@
 		scrubOpenController?.abort();
 		scrubOpenController = null;
 		scrubTargetMs = null;
+		lastScrubbedTargetMs = null;
+		scrubHitClientCache = false;
 		scrubbing = false;
 		playing = scrubPlayIntent;
 		if (storedPlayback && selected) {
@@ -1362,6 +1557,7 @@
 	}
 
 	function clearStillPreview(): void {
+		if (scrubbing && !scrubUsesFragmentFallback) return;
 		if (storedPlayback) {
 			emitTimelinePerformanceEvent('ReplayFirstFrame', {
 				sourceId: cameraId,
@@ -1373,6 +1569,7 @@
 		previewVersion += 1;
 		previewController?.abort();
 		previewController = null;
+		stillPreviewBitmap = null;
 		stillPreviewUrl = null;
 		clearColdSeek();
 		releaseSecondaryLoads();
@@ -1742,6 +1939,7 @@
 	}
 
 	function handlePlayerError(event: Event) {
+		if (scrubbing && !scrubUsesFragmentFallback) return;
 		const media = event.currentTarget;
 		const segment = selected;
 		if (!(media instanceof HTMLVideoElement) || !segment) return;
@@ -1940,6 +2138,16 @@
 		try {
 			await playback.seek(timestampMs);
 		} catch (cause) {
+			if (
+				version === playbackVersion &&
+				playback === storedPlayback &&
+				cause instanceof Error &&
+				cause.message.includes('timestamp is unavailable') &&
+				!recordingCoverage.some((range) => timestampInRange(timestampMs, range))
+			) {
+				void loadExactTarget(timestampMs, pendingPlay);
+				return;
+			}
 			rejectPlaybackSeek(playback, version, cause);
 			return;
 		}
@@ -2232,6 +2440,19 @@
 				clearColdSeek();
 				playerError = 'No indexed footage is available near that time.';
 			}
+			return;
+		}
+		const availableSegment = orderedSegments.find(
+			(segment) => timestampMs >= segment.start_time_ms && timestampMs < segment.end_time_ms
+		);
+		if (availableSegment) {
+			targetLoadVersion += 1;
+			targetLoadController?.abort();
+			void selectSegment(
+				availableSegment,
+				(timestampMs - availableSegment.start_time_ms) / 1_000,
+				play
+			);
 			return;
 		}
 		void loadExactTarget(timestampMs, play);
@@ -3181,7 +3402,7 @@
 										: 16 / 9}
 									controlsPosition="top-left"
 								>
-									{#key selected.url}
+									{#key storedPlayback?.id ?? selected.url}
 										<!-- svelte-ignore a11y_media_has_caption (security camera recordings do not include caption tracks) -->
 										<video
 											bind:this={video}
@@ -3219,7 +3440,14 @@
 											></canvas>
 										{/if}
 									{/key}
-									{#if stillPreviewUrl}
+									{#if stillPreviewBitmap}
+										<canvas
+											bind:this={scrubPreviewCanvas}
+											data-keep-scrub-preview
+											aria-hidden="true"
+											class="pointer-events-none absolute inset-0 z-10 size-full bg-black object-contain"
+										></canvas>
+									{:else if stillPreviewUrl}
 										<img
 											src={stillPreviewUrl}
 											alt=""

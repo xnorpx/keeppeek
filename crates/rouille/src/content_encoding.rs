@@ -29,6 +29,69 @@ use crate::Request;
 use crate::Response;
 use crate::input;
 
+/// Supported HTTP response content encodings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Encoding {
+    /// Brotli (`br`) compression.
+    #[cfg(feature = "brotli")]
+    Brotli,
+    /// Gzip (`gzip`) compression.
+    #[cfg(feature = "gzip")]
+    Gzip,
+}
+
+impl Encoding {
+    /// Returns the HTTP `Content-Encoding` header token for this encoding.
+    #[must_use]
+    pub const fn as_header_value(self) -> &'static str {
+        match self {
+            #[cfg(feature = "brotli")]
+            Self::Brotli => "br",
+            #[cfg(feature = "gzip")]
+            Self::Gzip => "gzip",
+        }
+    }
+}
+
+/// Returns the preferred supported content encoding requested by the client.
+#[must_use]
+pub fn preferred_encoding(request: &Request) -> Option<Encoding> {
+    let encoding_preference = ["br", "gzip", "x-gzip", "identity"];
+    let accept_encoding_header = request.header("Accept-Encoding").unwrap_or("");
+    let preferred_index = input::priority_header_preferred(
+        accept_encoding_header,
+        encoding_preference.iter().copied(),
+    )?;
+    match encoding_preference[preferred_index] {
+        #[cfg(feature = "brotli")]
+        "br" => Some(Encoding::Brotli),
+        #[cfg(feature = "gzip")]
+        "gzip" | "x-gzip" => Some(Encoding::Gzip),
+        _ => None,
+    }
+}
+
+/// Compresses a byte slice once using the requested encoding.
+#[must_use]
+pub fn compress_bytes(encoding: Encoding, data: &[u8]) -> Vec<u8> {
+    match encoding {
+        #[cfg(feature = "brotli")]
+        Encoding::Brotli => {
+            use brotli::enc::reader::CompressorReader;
+            use std::io::Read;
+
+            let mut reader = CompressorReader::new(data, 4096, 5, 22);
+            let mut out = Vec::with_capacity(data.len() / 3);
+            reader
+                .read_to_end(&mut out)
+                .expect("in-memory Brotli compression must not fail");
+            out
+        }
+        #[cfg(feature = "gzip")]
+        Encoding::Gzip => deflate::deflate_bytes_gzip(data),
+    }
+}
+
 /// Applies content encoding to the response.
 ///
 /// Analyzes the `Accept-Encoding` header of the request. If one of the encodings is recognized and

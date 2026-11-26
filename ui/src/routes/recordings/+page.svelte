@@ -65,7 +65,9 @@
 		const unsubscribe = controlClient.onAccessState((access) => {
 			administrator = access.session?.role === 'administrator';
 		});
-		const timer = window.setInterval(() => (refreshRequest += 1), 30_000);
+		const timer = window.setInterval(() => {
+			if (document.visibilityState === 'visible') refreshRequest += 1;
+		}, 30_000);
 		return () => {
 			unsubscribe();
 			window.clearInterval(timer);

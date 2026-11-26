@@ -112,6 +112,14 @@ impl Connection {
         }
     }
 
+    pub(crate) fn set_nodelay(&self, nodelay: bool) -> std::io::Result<()> {
+        match self {
+            Self::Tcp(stream) => stream.set_nodelay(nodelay),
+            #[cfg(unix)]
+            Self::Unix(_) => Ok(()),
+        }
+    }
+
     // Share one OS socket so request-scoped options reach the writer on Windows.
     pub(crate) fn try_clone(&self) -> std::io::Result<Self> {
         match self {

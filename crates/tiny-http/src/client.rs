@@ -59,12 +59,13 @@ impl ClientConnection {
         let remote_addr = read_socket.peer_addr();
         let secure = read_socket.secure();
 
-        let mut source = SequentialReaderBuilder::new(BufReader::with_capacity(1024, read_socket));
+        let mut source =
+            SequentialReaderBuilder::new(BufReader::with_capacity(8 * 1024, read_socket));
         let first_header = source.next().unwrap();
 
         Self {
             source,
-            sink: SequentialWriterBuilder::new(BufWriter::with_capacity(1024, write_socket)),
+            sink: SequentialWriterBuilder::new(BufWriter::with_capacity(16 * 1024, write_socket)),
             remote_addr,
             next_header_source: first_header,
             no_more_requests: false,

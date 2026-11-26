@@ -191,6 +191,53 @@ impl Manager {
             .canonicalize()?)
     }
 
+    /// Checks a batch of owned locations while validating each volume root directory once.
+    pub(crate) fn has_owned_batch(
+        &self,
+        locations: &[Option<&super::super::catalog::locations::Location>],
+    ) -> Vec<bool> {
+        let mut results = vec![false; locations.len()];
+        let mut by_volume: std::collections::BTreeMap<usize, Vec<(usize, &str, &str, u64)>> =
+            std::collections::BTreeMap::new();
+        for (index, location) in locations.iter().enumerate() {
+            let Some(location) = location else {
+                continue;
+            };
+            if location.generation != 1 {
+                continue;
+            }
+            let Some(volume_index) = self
+                .inner
+                .configuration
+                .volumes
+                .iter()
+                .position(|volume| volume.id.as_str() == location.volume)
+            else {
+                continue;
+            };
+            by_volume.entry(volume_index).or_default().push((
+                index,
+                location.relative_key.as_str(),
+                location.file_identity.as_str(),
+                location.bytes,
+            ));
+        }
+        for (volume_index, group) in by_volume {
+            let Ok(root) = self.inner.root(volume_index) else {
+                continue;
+            };
+            let items: Vec<_> = group
+                .iter()
+                .map(|&(_, key, identity, bytes)| (key, identity, bytes))
+                .collect();
+            let valid = root.has_owned_batch(&items);
+            for ((index, _, _, _), is_valid) in group.into_iter().zip(valid) {
+                results[index] = is_valid;
+            }
+        }
+        results
+    }
+
     /// Copies an owned object to its resolved destination and publishes its stable identity.
     /// The old copy remains owned until a separate reader-aware retirement completes.
     ///

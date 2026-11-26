@@ -22,10 +22,6 @@
 	import { browserLogStore, initializeBrowserLogging } from '$lib/browser-logs';
 	import { createReportSession } from '$lib/report-session.svelte';
 	import { provideReportContext } from '$lib/report-context';
-	import ReportBugWorkflow from '$lib/components/ReportBugWorkflow.svelte';
-	import KeyboardOverlay from '$lib/components/KeyboardOverlay.svelte';
-	import ExternalSignIn from '$lib/components/ExternalSignIn.svelte';
-	import AdministratorVerificationWindow from '$lib/components/AdministratorVerificationWindow.svelte';
 	import { isAdministratorVerificationWindow } from '$lib/external-authentication.svelte';
 	import MobileNavigation from '$lib/components/MobileNavigation.svelte';
 	import MobileSettingsHeader from '$lib/components/MobileSettingsHeader.svelte';
@@ -76,6 +72,14 @@
 	});
 
 	let keyboardOverlay = $state<KeyboardOverlayMode>(null);
+	let KeyboardOverlayComponent = $state.raw<
+		typeof import('$lib/components/KeyboardOverlay.svelte').default | null
+	>(null);
+	let keyboardOverlayLoadStarted = false;
+	let ReportBugWorkflowComponent = $state.raw<
+		typeof import('$lib/components/ReportBugWorkflow.svelte').default | null
+	>(null);
+	let reportWorkflowLoadStarted = false;
 	let keyboardReady = $state(false);
 	let navigationChordPending = $state(false);
 	let railFocusIndex = $state(0);
@@ -146,6 +150,37 @@
 	}
 
 	$effect(() => {
+		if (keyboardOverlay === null || keyboardOverlayLoadStarted) return;
+		keyboardOverlayLoadStarted = true;
+		void import('$lib/components/KeyboardOverlay.svelte').then(
+			({ default: component }) => {
+				KeyboardOverlayComponent = component;
+			},
+			() => {
+				keyboardOverlayLoadStarted = false;
+			}
+		);
+	});
+
+	$effect(() => {
+		if (
+			!administrator ||
+			(!reportOpen && reportSession.phase === 'idle') ||
+			reportWorkflowLoadStarted
+		)
+			return;
+		reportWorkflowLoadStarted = true;
+		void import('$lib/components/ReportBugWorkflow.svelte').then(
+			({ default: component }) => {
+				ReportBugWorkflowComponent = component;
+			},
+			() => {
+				reportWorkflowLoadStarted = false;
+			}
+		);
+	});
+
+	$effect(() => {
 		if (accessState.status !== 'authenticated') {
 			shellHealth = null;
 			return;
@@ -158,7 +193,10 @@
 			return;
 		const controller = new AbortController();
 		const requestVersion = ++shellHealthRequestVersion;
+		let inFlight = false;
 		const refresh = async () => {
+			if (inFlight) return;
+			inFlight = true;
 			try {
 				const health = await controlClient.getHealth(controller.signal);
 				if (!controller.signal.aborted && requestVersion === shellHealthRequestVersion) {
@@ -168,11 +206,20 @@
 				if (!controller.signal.aborted && requestVersion === shellHealthRequestVersion) {
 					shellHealth = null;
 				}
+			} finally {
+				inFlight = false;
 			}
 		};
+		const onVisibility = () => {
+			if (document.visibilityState === 'visible') void refresh();
+		};
+		document.addEventListener('visibilitychange', onVisibility);
 		void refresh();
-		const timer = window.setInterval(() => void refresh(), shellHealthRefreshIntervalMs);
+		const timer = window.setInterval(() => {
+			if (document.visibilityState === 'visible') void refresh();
+		}, shellHealthRefreshIntervalMs);
 		return () => {
+			document.removeEventListener('visibilitychange', onVisibility);
 			controller.abort();
 			window.clearInterval(timer);
 		};
@@ -506,7 +553,9 @@
 </script>
 
 {#if verificationWindow}
-	<AdministratorVerificationWindow />
+	{#await import('$lib/components/AdministratorVerificationWindow.svelte') then { default: AdministratorVerificationWindow }}
+		<AdministratorVerificationWindow />
+	{/await}
 {:else if accessState.status === 'authenticated' || recovering}
 	{#if recovering}
 		<dialog
@@ -526,8 +575,8 @@
 			{controlClient.externalAuthentication.error}
 		</p>
 	{/if}
-	{#if administrator}
-		<ReportBugWorkflow session={reportSession} bind:open={reportOpen} />
+	{#if administrator && ReportBugWorkflowComponent}
+		<ReportBugWorkflowComponent session={reportSession} bind:open={reportOpen} />
 	{/if}
 	<Tooltip.Provider delayDuration={0}>
 		<div
@@ -692,7 +741,7 @@
 						<span class="hidden text-sm font-semibold md:inline">{currentRoute.label}</span>
 						<a
 							href={resolve('/settings#runtime-profiles')}
-							class="ml-auto rounded-sm border border-border px-2 py-1 text-xs focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+							class="ml-auto min-w-16 rounded-sm border border-border px-2 py-1 text-center text-xs focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
 							aria-label="Active camera profile {shellProfileLabel}; {shellDegradedCameras === null
 								? 'application status pending'
 								: `${shellDegradedCameras} cameras degraded`}"
@@ -770,12 +819,14 @@
 		</div>
 	</Tooltip.Provider>
 
-	<KeyboardOverlay
-		mode={recovering ? null : keyboardOverlay}
-		pathname={page.url.pathname}
-		onclose={() => (keyboardOverlay = null)}
-		onnavigate={navigateFromKeyboard}
-	/>
+	{#if KeyboardOverlayComponent}
+		<KeyboardOverlayComponent
+			mode={recovering ? null : keyboardOverlay}
+			pathname={page.url.pathname}
+			onclose={() => (keyboardOverlay = null)}
+			onnavigate={navigateFromKeyboard}
+		/>
+	{/if}
 
 	{#if navigationChordPending}
 		<div
@@ -801,10 +852,12 @@
 		</div>
 	{/if}
 {:else}
-	<ExternalSignIn
-		authentication={controlClient.externalAuthentication}
-		state={accessState}
-		onsignin={(accessKey) => controlClient.signIn(accessKey)}
-		onretry={() => controlClient.checkAccess()}
-	/>
+	{#await import('$lib/components/ExternalSignIn.svelte') then { default: ExternalSignIn }}
+		<ExternalSignIn
+			authentication={controlClient.externalAuthentication}
+			state={accessState}
+			onsignin={(accessKey) => controlClient.signIn(accessKey)}
+			onretry={() => controlClient.checkAccess()}
+		/>
+	{/await}
 {/if}

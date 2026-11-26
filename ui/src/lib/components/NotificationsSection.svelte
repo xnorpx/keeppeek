@@ -9,14 +9,7 @@
 	import MailIcon from '@lucide/svelte/icons/mail';
 	import MonitorIcon from '@lucide/svelte/icons/monitor';
 	import RadioTowerIcon from '@lucide/svelte/icons/radio-tower';
-	import NotificationsPaperFrame from './NotificationsPaperFrame.svelte';
 	import NotificationsRuntime from './NotificationsRuntime.svelte';
-
-	type Props = {
-		paperFrame?: boolean;
-	};
-
-	let { paperFrame = false }: Props = $props();
 
 	const evidence = notificationsEvidence();
 	const capabilities = useCapabilityState();
@@ -36,9 +29,7 @@
 	} as const;
 </script>
 
-{#if paperFrame}
-	<NotificationsPaperFrame />
-{:else if runtimeSupported}
+{#if runtimeSupported}
 	<NotificationsRuntime />
 {:else}
 	<section

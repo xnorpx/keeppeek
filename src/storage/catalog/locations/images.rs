@@ -164,22 +164,124 @@ pub(in crate::storage::catalog) async fn lookup(
     event: &str,
     attachment: &str,
 ) -> anyhow::Result<Option<Location>> {
-    let mut rows = connection.query("SELECT object_id FROM storage_event_images WHERE event_id=?1 AND attachment_id=?2 AND active=1", (event,attachment)).await?;
+    let mut rows = connection
+        .query(
+            "SELECT i.object_id, a.volume_id, a.generation, a.relative_key,
+                    a.location_revision, a.bytes, a.file_identity, a.digest
+             FROM storage_event_images AS i
+             LEFT JOIN storage_volume_allocations AS a
+               ON a.kind = 'thumbnail'
+              AND a.object_id = i.object_id
+              AND a.state = 'published'
+              AND NOT EXISTS (
+                  SELECT 1 FROM storage_volume_moves AS m
+                  WHERE m.source_operation = a.operation
+                    AND m.phase IN ('published', 'retiring', 'complete')
+              )
+             WHERE i.event_id = ?1 AND i.attachment_id = ?2 AND i.active = 1",
+            (event, attachment),
+        )
+        .await?;
     let Some(row) = rows.next().await? else {
         return Ok(None);
     };
-    let object = Object {
-        kind: Kind::Thumbnail,
-        id: row.get(0)?,
-    };
-    drop(rows);
-    let Reply::Location(location) = ownership::lookup(connection, &object).await? else {
-        anyhow::bail!("invalid image location reply");
-    };
-    if location.is_some() {
-        return Ok(location);
+    let object_id: String = row.get(0)?;
+    if let Some(location) = location_from_joined_row(&row, &object_id, 1)? {
+        return Ok(Some(location));
     }
-    pressure::retired_location(connection, &object.id).await
+    drop(rows);
+    pressure::retired_location(connection, &object_id).await
+}
+
+pub(in crate::storage::catalog) async fn lookup_batch(
+    connection: &turso::Connection,
+    pairs: &[(String, String)],
+) -> anyhow::Result<Vec<Option<Location>>> {
+    if pairs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut values = String::new();
+    let mut params = Vec::<turso::Value>::with_capacity(pairs.len() * 3);
+    for (index, (event_id, attachment_id)) in pairs.iter().enumerate() {
+        if index > 0 {
+            values.push(',');
+        }
+        values.push_str("(?, ?, ?)");
+        params.push(turso::Value::Integer(i64::try_from(index)?));
+        params.push(turso::Value::Text(event_id.clone()));
+        params.push(turso::Value::Text(attachment_id.clone()));
+    }
+    let sql = format!(
+        "WITH requested(request_index, event_id, attachment_id) AS (VALUES {values})
+         SELECT r.request_index, i.object_id, a.volume_id, a.generation, a.relative_key,
+                a.location_revision, a.bytes, a.file_identity, a.digest
+         FROM requested AS r
+         JOIN storage_event_images AS i
+           ON i.event_id = r.event_id
+          AND i.attachment_id = r.attachment_id
+          AND i.active = 1
+         LEFT JOIN storage_volume_allocations AS a
+           ON a.kind = 'thumbnail'
+          AND a.object_id = i.object_id
+          AND a.state = 'published'
+          AND NOT EXISTS (
+              SELECT 1 FROM storage_volume_moves AS m
+              WHERE m.source_operation = a.operation
+                AND m.phase IN ('published', 'retiring', 'complete')
+          )"
+    );
+    let mut results = vec![None; pairs.len()];
+    let mut retired_candidates = Vec::new();
+    let mut rows = connection
+        .query(sql, turso::params_from_iter(params))
+        .await?;
+    while let Some(row) = rows.next().await? {
+        let index = usize::try_from(row.get::<i64>(0)?)?;
+        let object_id: String = row.get(1)?;
+        if let Some(location) = location_from_joined_row(&row, &object_id, 2)? {
+            if let Some(slot) = results.get_mut(index) {
+                *slot = Some(location);
+            }
+        } else {
+            retired_candidates.push((index, object_id));
+        }
+    }
+    drop(rows);
+    for (index, object_id) in retired_candidates {
+        if let Some(slot) = results.get_mut(index) {
+            *slot = pressure::retired_location(connection, &object_id).await?;
+        }
+    }
+    Ok(results)
+}
+
+fn location_from_joined_row(
+    row: &turso::Row,
+    object_id: &str,
+    offset: usize,
+) -> anyhow::Result<Option<Location>> {
+    let Some(volume) = row.get::<Option<String>>(offset)? else {
+        return Ok(None);
+    };
+    let relative_key = row.get::<String>(offset + 2)?;
+    super::validate_key(&relative_key)?;
+    let digest: [u8; 32] = row
+        .get::<Vec<u8>>(offset + 6)?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("invalid location digest"))?;
+    Ok(Some(Location {
+        object: Object {
+            kind: Kind::Thumbnail,
+            id: object_id.to_owned(),
+        },
+        volume,
+        generation: super::to_u64(row.get::<i64>(offset + 1)?, "volume generation")?,
+        relative_key,
+        revision: super::to_u64(row.get::<i64>(offset + 3)?, "location revision")?,
+        bytes: super::to_u64(row.get::<i64>(offset + 4)?, "location bytes")?,
+        file_identity: row.get::<String>(offset + 5)?,
+        digest,
+    }))
 }
 
 pub(in crate::storage::catalog) async fn reconcile(

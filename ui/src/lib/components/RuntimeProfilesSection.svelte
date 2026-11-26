@@ -482,7 +482,7 @@
 		</p>
 	</header>
 
-	<div class="space-y-5 p-5">
+	<div class="min-h-[120px] space-y-5 p-5">
 		{#if loading}
 			<p role="status" aria-busy="true" class="text-sm text-text-muted">
 				Loading runtime profiles…

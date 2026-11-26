@@ -62,7 +62,7 @@ use crate::{
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use hmac::{Hmac, KeyInit, Mac};
-use include_dir::{Dir, File as EmbeddedFile, include_dir};
+use include_dir::{Dir, include_dir};
 use prost::Message as _;
 use rouille::{Request, Response, ResponseBody, Server, router};
 use serde::{Deserialize, Serialize};
@@ -148,6 +148,7 @@ mod storage_volumes;
 mod stored_frame_step;
 mod stored_media;
 mod talkback;
+mod ui_assets;
 
 pub(crate) fn migrate_peek_layout_configuration(
     config_path: &Path,
@@ -4597,25 +4598,8 @@ fn stored_media_batch(
             "stored media time is out of range",
         )
     })?;
-    let (selected, _selected_lease) = catalog
-        .leased_media_fragments_in_range(
-            request.recording_stream_id,
-            request.requested_time_ms,
-            lookup_end,
-        )
-        .map_err(|error| stored_catalog_error("locate stored media fragment", error))?;
-    let selected = selected
-        .into_iter()
-        .max_by_key(|fragment| fragment.start_ms)
-        .ok_or_else(|| {
-            ControlCommandError::new(
-                proto::ErrorCode::NotFound,
-                404,
-                "stored media timestamp is unavailable",
-            )
-        })?;
     if request.mode == proto::StoredMediaMode::Scrub {
-        return encode_stored_media_keyframe(state, request, &selected);
+        return encode_stored_media_keyframe(state, request);
     }
     let target_buffer_ms = request.max_buffer_ms.min(STORED_MEDIA_TARGET_BUFFER_MS);
     let buffer_end = request
@@ -4624,13 +4608,27 @@ fn stored_media_batch(
     let delivery_end = request
         .end_time_ms
         .map_or(buffer_end, |end_time_ms| end_time_ms.min(buffer_end));
+    let query_end = delivery_end.max(lookup_end);
     let (mut fragments, _fragment_leases) = catalog
         .leased_media_fragments_in_range(
             request.recording_stream_id,
-            selected.start_ms,
-            delivery_end,
+            request.requested_time_ms,
+            query_end,
         )
         .map_err(|error| stored_catalog_error("query stored media fragments", error))?;
+    let selected = fragments
+        .iter()
+        .filter(|fragment| fragment.start_ms < lookup_end)
+        .max_by_key(|fragment| fragment.start_ms)
+        .cloned()
+        .ok_or_else(|| {
+            ControlCommandError::new(
+                proto::ErrorCode::NotFound,
+                404,
+                "stored media timestamp is unavailable",
+            )
+        })?;
+    fragments.retain(|fragment| fragment.start_ms < delivery_end);
     if fragments.is_empty() {
         fragments.push(selected.clone());
     }
@@ -4647,7 +4645,6 @@ fn stored_media_batch(
 fn encode_stored_media_keyframe(
     state: &ServerState,
     request: StoredMediaBatchRequest<'_>,
-    fragment: &CatalogMediaFragment,
 ) -> Result<StoredMediaBatch, ControlCommandError> {
     let catalog = state.catalog.as_ref().ok_or_else(|| {
         ControlCommandError::new(
@@ -4656,22 +4653,23 @@ fn encode_stored_media_keyframe(
             "recording catalog is unavailable",
         )
     })?;
-    let (location, _location_lease) = catalog
-        .leased_resolve_media_object(
+    let (resolved, _location_lease) = catalog
+        .leased_scrub_keyframe_at(
             request.source_id,
             request.stream_id,
-            Some(request.recording_stream_id),
-            &fragment.recording_id,
-            fragment.sequence,
+            request.recording_stream_id,
+            request.requested_time_ms,
         )
         .map_err(|error| stored_catalog_error("resolve stored media keyframe", error))?
         .ok_or_else(|| {
             ControlCommandError::new(
                 proto::ErrorCode::NotFound,
                 404,
-                "stored media keyframe was not found",
+                "stored media timestamp is unavailable",
             )
         })?;
+    let fragment_start_ms = resolved.fragment_start_ms;
+    let location = resolved.location;
     if location.keyframe_len > MAX_STORED_KEYFRAME_BYTES {
         return Err(ControlCommandError::new(
             proto::ErrorCode::Rejected,
@@ -4679,25 +4677,62 @@ fn encode_stored_media_keyframe(
             "stored media keyframe exceeds 4 MiB",
         ));
     }
-    let initialization = read_stored_range(
-        Path::new(&location.path),
-        location.archive.as_ref(),
+    let cache_key = (
+        location.path.clone(),
         location.initialization_offset,
         location.initialization_len,
-    )?;
-    let fragment_bytes = read_stored_range(
-        Path::new(&location.path),
-        location.archive.as_ref(),
-        location.fragment_offset,
-        location.fragment_len,
-    )?;
-    let format = indexed_video_format(&initialization, Some(&fragment_bytes))?;
-    let payload = read_stored_range(
-        Path::new(&location.path),
-        location.archive.as_ref(),
-        location.keyframe_offset,
-        location.keyframe_len,
-    )?;
+    );
+    let cached_format = if resolved.finalized && location.archive.is_none() {
+        state
+            .stored_keyframe_formats
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(&cache_key))
+    } else {
+        None
+    };
+    let (format, payload) = if let Some(format) = cached_format {
+        let payload = read_stored_range(
+            Path::new(&location.path),
+            None,
+            location.keyframe_offset,
+            location.keyframe_len,
+        )?;
+        (format, payload)
+    } else if location.archive.is_none() {
+        read_local_keyframe_and_format(
+            Path::new(&location.path),
+            &location,
+            resolved.finalized,
+            &state.stored_keyframe_formats,
+        )?
+    } else {
+        let initialization = read_stored_range(
+            Path::new(&location.path),
+            location.archive.as_ref(),
+            location.initialization_offset,
+            location.initialization_len,
+        )?;
+        let format = match indexed_video_format_from_init(&initialization, false)? {
+            Some(format) => format,
+            None => {
+                let fragment_bytes = read_stored_range(
+                    Path::new(&location.path),
+                    location.archive.as_ref(),
+                    location.fragment_offset,
+                    location.fragment_len,
+                )?;
+                indexed_video_format(&initialization, Some(&fragment_bytes))?
+            }
+        };
+        let payload = read_stored_range(
+            Path::new(&location.path),
+            location.archive.as_ref(),
+            location.keyframe_offset,
+            location.keyframe_len,
+        )?;
+        (format, payload)
+    };
     let stream_binding_id = format!("stored:{}:video", request.stored_media_id);
     let configuration = proto::MediaDataConfiguration {
         stream_binding_id: stream_binding_id.clone(),
@@ -4735,7 +4770,7 @@ fn encode_stored_media_keyframe(
                                 frame: Some(proto::VideoDataFrame {
                                     stream_binding_id: stream_binding_id.clone(),
                                     frame_id: request.generation,
-                                    timestamp: Some(millis_timestamp(fragment.start_ms)),
+                                    timestamp: Some(millis_timestamp(fragment_start_ms)),
                                     fragment_index: u32::try_from(chunk_index).unwrap_or(u32::MAX),
                                     fragment_count: chunk_count,
                                     key_frame: true,
@@ -4755,10 +4790,114 @@ fn encode_stored_media_keyframe(
         audio_timing: None,
         identifiers: request.identifiers,
         content_type: format.keyframe_content_type,
-        fragment_time_ms: fragment.start_ms,
-        delivered_through_ms: fragment.start_ms,
+        fragment_time_ms: fragment_start_ms,
+        delivered_through_ms: fragment_start_ms,
         messages,
     })
+}
+
+fn read_local_keyframe_and_format(
+    path: &Path,
+    location: &crate::storage::CatalogMediaObjectLocation,
+    finalized: bool,
+    cache: &Mutex<StoredKeyframeFormatCache>,
+) -> Result<(IndexedVideoFormat, Vec<u8>), ControlCommandError> {
+    stored_read::validate_length(location.initialization_len)?;
+    stored_read::validate_length(location.keyframe_len)?;
+    let mut file = File::open(path).map_err(|error| {
+        ControlCommandError::new(
+            proto::ErrorCode::Internal,
+            500,
+            format!("unable to open indexed recording: {error}"),
+        )
+    })?;
+    let file_len = file
+        .metadata()
+        .map_err(|error| {
+            ControlCommandError::new(
+                proto::ErrorCode::Internal,
+                500,
+                format!("unable to inspect indexed recording: {error}"),
+            )
+        })?
+        .len();
+    let initialization = read_file_range(
+        &mut file,
+        file_len,
+        location.initialization_offset,
+        location.initialization_len,
+    )?;
+    let format = match indexed_video_format_from_init(&initialization, false)? {
+        Some(format) => {
+            if finalized && let Ok(mut guard) = cache.lock() {
+                guard.insert(
+                    (
+                        location.path.clone(),
+                        location.initialization_offset,
+                        location.initialization_len,
+                    ),
+                    format.clone(),
+                );
+            }
+            format
+        }
+        None => {
+            stored_read::validate_length(location.fragment_len)?;
+            let fragment_bytes = read_file_range(
+                &mut file,
+                file_len,
+                location.fragment_offset,
+                location.fragment_len,
+            )?;
+            indexed_video_format(&initialization, Some(&fragment_bytes))?
+        }
+    };
+    let payload = read_file_range(
+        &mut file,
+        file_len,
+        location.keyframe_offset,
+        location.keyframe_len,
+    )?;
+    Ok((format, payload))
+}
+
+fn read_file_range(
+    file: &mut File,
+    file_len: u64,
+    offset: u64,
+    length: u64,
+) -> Result<Vec<u8>, ControlCommandError> {
+    if offset.checked_add(length).is_none_or(|end| end > file_len) {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Internal,
+            500,
+            "stored media byte range exceeds its indexed recording",
+        ));
+    }
+    file.seek(SeekFrom::Start(offset)).map_err(|error| {
+        ControlCommandError::new(
+            proto::ErrorCode::Internal,
+            500,
+            format!("unable to seek indexed recording: {error}"),
+        )
+    })?;
+    let capacity = usize::try_from(length).map_err(|_| {
+        ControlCommandError::new(
+            proto::ErrorCode::Internal,
+            500,
+            "stored media byte range does not fit memory",
+        )
+    })?;
+    let mut payload = vec![0; capacity];
+    file.read_exact(&mut payload).map_err(|error| {
+        let message = if error.kind() == std::io::ErrorKind::UnexpectedEof {
+            "indexed recording byte range was truncated".to_owned()
+        } else {
+            format!("unable to read indexed recording: {error}")
+        };
+        ControlCommandError::new(proto::ErrorCode::Internal, 500, message)
+    })?;
+    Ok(payload)
 }
 
 fn stored_media_continuation_batch(
@@ -5708,6 +5847,7 @@ struct ResolvedEventSearchMediaObject {
     representation: proto::StoredMediaObjectRepresentation,
     content_type: String,
     path: PathBuf,
+    open_file: Option<File>,
     archive: Option<crate::storage::catalog::archive_playback::ArchiveRead>,
     offset: u64,
     length: u64,
@@ -5818,13 +5958,21 @@ fn stream_event_search_media(
             location.initialization_offset,
             location.initialization_len,
         )?;
-        let fragment = read_stored_range(
-            Path::new(&location.path),
-            location.archive.as_ref(),
-            location.fragment_offset,
-            location.fragment_len,
-        )?;
-        let video_format = indexed_video_format(&initialization, Some(&fragment))?;
+        let need_mp4_content_type =
+            representation != proto::StoredMediaObjectRepresentation::EncodedKeyframe;
+        let video_format =
+            match indexed_video_format_from_init(&initialization, need_mp4_content_type)? {
+                Some(format) => format,
+                None => {
+                    let fragment = read_stored_range(
+                        Path::new(&location.path),
+                        location.archive.as_ref(),
+                        location.fragment_offset,
+                        location.fragment_len,
+                    )?;
+                    indexed_video_format(&initialization, Some(&fragment))?
+                }
+            };
         let (offset, length, content_type) = match representation {
             proto::StoredMediaObjectRepresentation::EncodedKeyframe => (
                 location.keyframe_offset,
@@ -5875,6 +6023,7 @@ fn stream_event_search_media(
             representation,
             content_type,
             path: PathBuf::from(location.path),
+            open_file: None,
             archive: location.archive,
             offset,
             length,
@@ -5892,7 +6041,7 @@ fn stream_event_search_media(
         proto::StoredMediaObjectRepresentation::Fmp4Gop => 3,
         proto::StoredMediaObjectRepresentation::Unspecified => 4,
     });
-    for object in objects {
+    for mut object in objects {
         if cancelled.load(Ordering::Acquire) {
             break;
         }
@@ -5907,7 +6056,7 @@ fn stream_event_search_media(
             request,
             object_target,
             &group,
-            &object,
+            &mut object,
             cancelled,
             &mut emit,
         )?;
@@ -5942,8 +6091,8 @@ fn resolve_event_search_attachment(
     })?;
     let event = load_event_search_attachment(store, object)?;
     let descriptor = event_search_attachment_descriptor(&event, object)?;
-    let (path, reader_lease) = store
-        .leased_attachment_path(&event, &object.attachment_id)
+    let (file, length, reader_lease) = store
+        .open_leased_attachment(&event, &object.attachment_id)
         .map_err(|error| stored_catalog_error("resolve event attachment", error))?
         .ok_or_else(|| {
             ControlCommandError::new(
@@ -5952,16 +6101,6 @@ fn resolve_event_search_attachment(
                 "canonical event attachment is unavailable",
             )
         })?;
-    let length = path
-        .metadata()
-        .map_err(|_| {
-            ControlCommandError::new(
-                proto::ErrorCode::Unavailable,
-                503,
-                "canonical event attachment is unavailable",
-            )
-        })?
-        .len();
     if descriptor
         .byte_len
         .is_some_and(|expected| expected != length)
@@ -5982,7 +6121,8 @@ fn resolve_event_search_attachment(
         fragment_sequence: 0,
         representation: proto::StoredMediaObjectRepresentation::EventAttachment,
         content_type: descriptor.content_type,
-        path,
+        path: PathBuf::new(),
+        open_file: Some(file),
         archive: None,
         offset: 0,
         length,
@@ -6076,7 +6216,7 @@ fn stream_event_search_object(
     request: &proto::FetchEventSearchMedia,
     target: DataChannelTarget,
     group: &str,
-    object: &ResolvedEventSearchMediaObject,
+    object: &mut ResolvedEventSearchMediaObject,
     cancelled: &AtomicBool,
     emit: &mut impl FnMut(OutboundDataMessage) -> Result<(), ControlCommandError>,
 ) -> Result<(), ControlCommandError> {
@@ -6132,7 +6272,7 @@ fn stream_event_search_object(
 }
 
 fn open_event_search_object_reader<'a>(
-    object: &ResolvedEventSearchMediaObject,
+    object: &mut ResolvedEventSearchMediaObject,
     cancelled: &'a dyn Fn() -> bool,
 ) -> Result<Box<dyn MediaRead + 'a>, ControlCommandError> {
     let mut file: Box<dyn MediaRead + 'a> = if let Some(archive) = &object.archive {
@@ -6146,6 +6286,8 @@ fn open_event_search_object_reader<'a>(
             )
             .map_err(|error| stored_catalog_error("open archive event media", error))?,
         )
+    } else if let Some(open_file) = object.open_file.take() {
+        Box::new(open_file)
     } else {
         Box::new(File::open(&object.path).map_err(|error| {
             ControlCommandError::new(
@@ -6493,18 +6635,38 @@ fn refresh_event_search_image_availability(
     state: &ServerState,
     hits: &mut [crate::storage::EventSearchHit],
 ) {
-    for hit in hits {
-        hit.image_available = hit
+    let Some(store) = state.events.as_ref() else {
+        for hit in hits {
+            hit.image_available = false;
+        }
+        return;
+    };
+    let mut candidate_indices = Vec::new();
+    let mut requests = Vec::new();
+    for (index, hit) in hits.iter_mut().enumerate() {
+        let supported = hit
             .canonical_attachment
             .as_ref()
-            .is_some_and(crate::storage::metadata::is_supported_event_image)
-            && state.events.as_ref().is_some_and(|store| {
-                store
-                    .thumbnail_path(&hit.source_id, &hit.event_id)
-                    .ok()
-                    .flatten()
-                    .is_some()
-            });
+            .is_some_and(crate::storage::metadata::is_supported_event_image);
+        if !supported {
+            hit.image_available = false;
+            continue;
+        }
+        candidate_indices.push(index);
+        requests.push((
+            hit.event_id.as_str(),
+            hit.canonical_attachment
+                .as_ref()
+                .map(|attachment| attachment.id.as_str()),
+            hit.thumbnail_filename.as_deref(),
+        ));
+    }
+    if requests.is_empty() {
+        return;
+    }
+    let available = store.batch_thumbnail_availability(&requests);
+    for (hit_index, is_available) in candidate_indices.into_iter().zip(available) {
+        hits[hit_index].image_available = is_available;
     }
 }
 
@@ -6642,10 +6804,100 @@ fn event_search_message(
     }
 }
 
+#[derive(Clone)]
 struct IndexedVideoFormat {
     mp4_content_type: String,
     keyframe_content_type: String,
     decoder: mp4::Mp4VideoDecoderConfig,
+}
+
+#[derive(Default)]
+struct StoredKeyframeFormatCache {
+    entries: HashMap<(String, u64, u64), IndexedVideoFormat>,
+    order: std::collections::VecDeque<(String, u64, u64)>,
+}
+
+impl StoredKeyframeFormatCache {
+    const MAX_ENTRIES: usize = 256;
+
+    fn get(&self, key: &(String, u64, u64)) -> Option<IndexedVideoFormat> {
+        self.entries.get(key).cloned()
+    }
+
+    fn insert(&mut self, key: (String, u64, u64), value: IndexedVideoFormat) {
+        if let Some(existing) = self.entries.get_mut(&key) {
+            *existing = value;
+            return;
+        }
+        // ponytail: Bounded FIFO cache for immutable finalized recording headers.
+        while self.entries.len() >= Self::MAX_ENTRIES {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.entries.remove(&oldest);
+        }
+        self.order.push_back(key.clone());
+        self.entries.insert(key, value);
+    }
+}
+
+fn indexed_video_format_from_init(
+    initialization: &[u8],
+    include_mp4_content_type: bool,
+) -> Result<Option<IndexedVideoFormat>, ControlCommandError> {
+    let reader = mp4::Mp4Reader::read_header(
+        Cursor::new(initialization),
+        initialization.len().try_into().unwrap_or(u64::MAX),
+    )
+    .map_err(|error| {
+        ControlCommandError::new(
+            proto::ErrorCode::Internal,
+            500,
+            format!("unable to parse indexed MP4 initialization: {error}"),
+        )
+    })?;
+    for track in reader.tracks().values() {
+        if track.track_type().ok() != Some(mp4::TrackType::Video) {
+            continue;
+        }
+        if track.sample_description_count() > 1 {
+            return Ok(None);
+        }
+        let decoder = track
+            .video_decoder_config_for_description(1)
+            .map_err(|error| {
+                ControlCommandError::new(
+                    proto::ErrorCode::Internal,
+                    500,
+                    format!("unable to read indexed video decoder configuration: {error}"),
+                )
+            })?;
+        if let Some(mut decoder) = decoder {
+            let (coded_width, coded_height) = indexed_video_coded_dimensions(track, 1)?;
+            decoder.width = coded_width;
+            decoder.height = coded_height;
+            let keyframe_content_type = if decoder.codec.starts_with("avc1") {
+                "video/h264; format=avcc"
+            } else {
+                "video/h265; format=hvcc"
+            };
+            let mp4_content_type = if include_mp4_content_type {
+                fragmented_mp4_content_type(initialization)?
+            } else {
+                String::new()
+            };
+            return Ok(Some(IndexedVideoFormat {
+                mp4_content_type,
+                keyframe_content_type: keyframe_content_type.to_owned(),
+                decoder,
+            }));
+        }
+    }
+    Err(ControlCommandError::new(
+        proto::ErrorCode::Internal,
+        500,
+        "indexed MP4 initialization has no supported video track",
+    ))
 }
 
 fn indexed_video_format(
@@ -7031,25 +7283,55 @@ fn query_stored_events(
                     format!("unable to query stored events: {error}"),
                 )
             })?;
-        for event in events {
-            if !event_types.is_empty() && !event_types.contains(&event.kind) {
-                continue;
+        let filtered_events: Vec<_> = events
+            .into_iter()
+            .filter(|event| event_types.is_empty() || event_types.contains(&event.kind))
+            .collect();
+        let mut candidate_indices = Vec::new();
+        let mut requests = Vec::new();
+        for (index, event) in filtered_events.iter().enumerate() {
+            if event
+                .canonical_attachment()
+                .is_some_and(crate::storage::metadata::is_supported_event_image)
+            {
+                candidate_indices.push(index);
+                requests.push((
+                    event.id.as_str(),
+                    event.canonical_attachment_id.as_deref(),
+                    event.thumbnail_filename.as_deref(),
+                ));
             }
+        }
+        let mut availability_flags = vec![false; filtered_events.len()];
+        let mut resolved_paths: Vec<Option<PathBuf>> = vec![None; filtered_events.len()];
+        if !requests.is_empty() {
+            if selection.include_attachments {
+                let paths = store.batch_thumbnail_paths(&requests);
+                for (event_index, path) in candidate_indices.into_iter().zip(paths) {
+                    resolved_paths[event_index] = path;
+                }
+            } else {
+                let available = store.batch_thumbnail_availability(&requests);
+                for (event_index, is_available) in candidate_indices.into_iter().zip(available) {
+                    availability_flags[event_index] = is_available;
+                }
+            }
+        }
+        for (index, event) in filtered_events.into_iter().enumerate() {
             let canonical_descriptor = event.canonical_attachment().cloned();
-            let attachment = canonical_descriptor
-                .as_ref()
-                .filter(|descriptor| crate::storage::metadata::is_supported_event_image(descriptor))
-                .and_then(|_| {
-                    store
-                        .thumbnail_path(&camera.info.id, &event.id)
-                        .ok()
-                        .flatten()
-                })
-                .and_then(|path| {
+            let attachment = if selection.include_attachments {
+                resolved_paths[index].take().and_then(|path| {
                     let byte_len = path.metadata().ok()?.len();
                     Some((path, byte_len))
-                });
-            let image_available = attachment.is_some();
+                })
+            } else {
+                None
+            };
+            let image_available = if selection.include_attachments {
+                attachment.is_some()
+            } else {
+                availability_flags[index]
+            };
             let descriptors = event
                 .attachments
                 .clone()
@@ -8640,6 +8922,7 @@ pub struct ServerState {
     session_recovery: Arc<session_recovery::Directory>,
     http_stream_cancellations: Arc<Mutex<Vec<HttpStreamCancellation>>>,
     stored_media_cursors: Arc<Mutex<HashMap<(SessionId, String), StoredMediaCursor>>>,
+    stored_keyframe_formats: Arc<Mutex<StoredKeyframeFormatCache>>,
     recorded_audio_workers: Arc<AtomicUsize>,
     frame_step_workers: Arc<AtomicUsize>,
     stored_media_cursor_reservations: Arc<Mutex<HashMap<(SessionId, String), uuid::Uuid>>>,
@@ -8832,6 +9115,7 @@ impl ServerState {
             session_recovery: Arc::default(),
             http_stream_cancellations: Arc::new(Mutex::new(Vec::new())),
             stored_media_cursors: Arc::new(Mutex::new(HashMap::new())),
+            stored_keyframe_formats: Arc::new(Mutex::new(StoredKeyframeFormatCache::default())),
             recorded_audio_workers: Arc::new(AtomicUsize::new(0)),
             frame_step_workers: Arc::new(AtomicUsize::new(0)),
             stored_media_cursor_reservations: Arc::new(Mutex::new(HashMap::new())),
@@ -10278,7 +10562,7 @@ fn handle_request(
         },
         (GET) (/metrics) => {
             authenticated_api_request(request, state, false, AccessRole::Administrator, |_| {
-                prometheus_metrics(router_tx, state)
+                prometheus_metrics(request, router_tx, state)
             })
         },
         (GET) (/recording-coverage) => {
@@ -12107,7 +12391,11 @@ fn append_server_health_issues(
     }
 }
 
-fn prometheus_metrics(router_tx: &FacadeSender<RouterMessage>, state: &ServerState) -> Response {
+fn prometheus_metrics(
+    request: &Request,
+    router_tx: &FacadeSender<RouterMessage>,
+    state: &ServerState,
+) -> Response {
     let health = server_health(router_tx, state);
     let recording =
         recording_coverage::metric_snapshot(state, &health, unix_time_ms()).map_err(|error| {
@@ -12155,9 +12443,13 @@ fn prometheus_metrics(router_tx: &FacadeSender<RouterMessage>, state: &ServerSta
         },
         &event_reports,
     ) {
-        Ok(metrics) => Response::from_data(
-            "text/plain; version=0.0.4; charset=utf-8",
-            metrics.into_bytes(),
+        Ok(metrics) => rouille::content_encoding::apply(
+            request,
+            Response::from_data(
+                "text/plain; version=0.0.4; charset=utf-8",
+                metrics.into_bytes(),
+            )
+            .with_unique_header("Vary", "Accept-Encoding"),
         ),
         Err(error) => {
             tracing::error!(%error, "unable to encode Prometheus metrics");
@@ -13689,33 +13981,7 @@ fn unix_time_ms() -> u64 {
 }
 
 fn serve_ui(request: &Request) -> Response {
-    if request.method() != "GET" {
-        return service_error(404, "not found");
-    }
-
-    let path = request.url();
-    UI_ASSETS
-        .get_file(path.trim_start_matches('/'))
-        .map_or_else(
-            || {
-                embedded_ui_file(
-                    UI_ASSETS
-                        .get_file("index.html")
-                        .expect("the compiled UI must include index.html"),
-                )
-                .with_no_cache()
-            },
-            |file| embedded_ui_file(file).with_public_cache(3_600),
-        )
-}
-
-fn embedded_ui_file(file: &EmbeddedFile<'_>) -> Response {
-    let content_type = file
-        .path()
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map_or("application/octet-stream", rouille::extension_to_mime);
-    Response::from_data(content_type, file.contents())
+    ui_assets::serve(request)
 }
 
 fn query_router(

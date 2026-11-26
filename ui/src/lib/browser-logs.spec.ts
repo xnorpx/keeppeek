@@ -102,6 +102,20 @@ describe('BrowserLogStore', () => {
 
 		expect(store.snapshot()[0].message).toBe('still available');
 	});
+
+	it('evicts oldest entries to enforce the UTF-8 byte budget without drift', () => {
+		const storage = new MemoryStorage();
+		const store = new BrowserLogStore({ storage, maxEntries: 100, maxBytes: 420 });
+		for (let index = 0; index < 12; index += 1) {
+			store.append('info', 'browser.test', [`entry-${index}-${'x'.repeat(30)}`]);
+		}
+
+		const stored = storage.getItem('keeppeek.browser-logs.v1') ?? '';
+		expect(new TextEncoder().encode(stored).byteLength).toBeLessThanOrEqual(420);
+		const restored = new BrowserLogStore({ storage, maxEntries: 100, maxBytes: 420 });
+		expect(restored.snapshot()).toEqual(store.snapshot());
+		expect(restored.snapshot().at(-1)?.message).toContain('entry-11-');
+	});
 });
 
 describe('Owned browser logging lifecycle', () => {

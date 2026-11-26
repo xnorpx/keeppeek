@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { setAppearanceState } from '$lib/appearance-context';
-	import AppearanceSystemSection from '$lib/components/AppearanceSystemSection.svelte';
+	import AppearanceSystemPaperFrame from '$lib/components/AppearanceSystemPaperFrame.svelte';
 	import type { ServerHealthResponse } from '$lib/types';
 
 	setAppearanceState();
@@ -34,12 +34,11 @@
 	data-paper-scenario="settings.desktop.appearance-system-logs"
 	class="h-[581px] w-[1440px] overflow-hidden bg-ground [font-synthesis:none]"
 >
-	<AppearanceSystemSection
+	<AppearanceSystemPaperFrame
 		{health}
 		onrestart={() => {}}
-		paperFrame
-		timeZoneOverride="Europe/Stockholm"
-		reducedMotionOverride
+		browserTimeZone="Europe/Stockholm"
+		prefersReducedMotion
 		{logLines}
 		logsLive
 		logTarget="rtsp"

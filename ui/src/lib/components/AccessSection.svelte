@@ -7,198 +7,217 @@
 	import CircleAlertIcon from '@lucide/svelte/icons/circle-alert';
 	import KeyRoundIcon from '@lucide/svelte/icons/key-round';
 	import MinusIcon from '@lucide/svelte/icons/minus';
+	import ShieldAlertIcon from '@lucide/svelte/icons/shield-alert';
 	import ShieldIcon from '@lucide/svelte/icons/shield';
 	import UserRoundIcon from '@lucide/svelte/icons/user-round';
 	import UsersIcon from '@lucide/svelte/icons/users';
-	import AccessPaperFrame from './AccessPaperFrame.svelte';
 	import AccessRuntime from './AccessRuntime.svelte';
 	import ExternalAuthenticationSection from './ExternalAuthenticationSection.svelte';
 	import SharedAccessKeyControl from './SharedAccessKeyControl.svelte';
 
 	type Props = {
-		paperFrame?: boolean;
 		controller?: ControlClient;
 		onrevealaccesskey?: () => Promise<string>;
 		onrotateaccesskey?: () => Promise<string>;
 	};
 
-	let { paperFrame = false, controller, onrevealaccesskey, onrotateaccesskey }: Props = $props();
+	let { controller, onrevealaccesskey, onrotateaccesskey }: Props = $props();
 
 	const evidence = accessEvidence();
 </script>
 
-{#if paperFrame}
-	<AccessPaperFrame />
-{:else}
-	<section
-		id="access"
-		class="scroll-mt-4 overflow-hidden rounded-md border border-hairline bg-surface"
-		aria-labelledby="access-heading"
+<section
+	id="access"
+	data-mobile-access={controller ? '' : undefined}
+	class="scroll-mt-4 overflow-hidden {controller
+		? 'max-md:min-h-[660px] md:rounded-md md:border md:border-hairline md:bg-surface'
+		: 'rounded-md border border-hairline bg-surface'}"
+	aria-labelledby="access-heading"
+>
+	{#if controller}
+		<div class="border-b border-hairline bg-healthy/5 p-4 md:hidden">
+			<div class="flex gap-2.5">
+				<ShieldAlertIcon class="mt-0.5 size-3.5 shrink-0 text-healthy" />
+				<div class="min-w-0">
+					<h2 class="text-sm leading-4 font-semibold">Access policy active</h2>
+					<p class="mt-1 text-xs leading-[18px] text-text-muted">
+						Credentials, roles, sessions, and audit are enforced by the recorder.
+					</p>
+				</div>
+			</div>
+		</div>
+	{/if}
+	<header
+		class="{controller
+			? 'hidden md:flex'
+			: 'flex'} flex-wrap items-end justify-between gap-4 border-b border-hairline px-5 py-5"
 	>
-		<header
-			class="flex flex-wrap items-end justify-between gap-4 border-b border-hairline px-5 py-5"
-		>
-			<div class="max-w-2xl">
-				<p class="font-mono text-2xs tracking-caps text-primary-soft">ACCESS & ROLES</p>
-				<h2 id="access-heading" class="mt-1 text-xl font-semibold">Remote access and roles</h2>
-				<p class="mt-1 text-sm leading-6 text-text-muted">
-					Users may view and operate cameras. Administrators may also configure the recorder and
-					manage credentials, sessions, and security audit records.
-				</p>
-			</div>
-			<div class="flex flex-wrap gap-2">
-				<CapabilityGate {...capabilityActions.inviteSomeone} />
-				<CapabilityGate {...capabilityActions.newAccessToken} />
-			</div>
-		</header>
+		<div class="max-w-2xl">
+			<p class="font-mono text-2xs tracking-caps text-primary-soft">ACCESS & ROLES</p>
+			<h2 id="access-heading" class="mt-1 text-xl font-semibold">Remote access and roles</h2>
+			<p class="mt-1 text-sm leading-6 text-text-muted">
+				Users may view and operate cameras. Administrators may also configure the recorder and
+				manage credentials, sessions, and security audit records.
+			</p>
+		</div>
+		<div class="flex flex-wrap gap-2">
+			<CapabilityGate {...capabilityActions.inviteSomeone} />
+			<CapabilityGate {...capabilityActions.newAccessToken} />
+		</div>
+	</header>
 
-		<div class="border-b border-hairline bg-activity/5 px-5 py-4">
-			<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-				<div class="flex max-w-3xl gap-3">
-					<CircleAlertIcon class="mt-0.5 size-4 shrink-0 text-activity" />
-					<div>
-						<p class="text-sm font-semibold">Server-authoritative access policy</p>
+	<div
+		class="{controller ? 'hidden md:block' : ''} border-b border-hairline bg-activity/5 px-5 py-4"
+	>
+		<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+			<div class="flex max-w-3xl gap-3">
+				<CircleAlertIcon class="mt-0.5 size-4 shrink-0 text-activity" />
+				<div>
+					<p class="text-sm font-semibold">Server-authoritative access policy</p>
+					<p class="mt-1 text-xs leading-5 text-text-muted">
+						Local policy resolves to Administrator. Remote sessions bind a named bearer credential
+						or external identity, its role, and server-enforced camera grants.
+					</p>
+				</div>
+			</div>
+			<CapabilityGate {...capabilityActions.enableRemoteSignIn} class="shrink-0" />
+		</div>
+	</div>
+
+	<div class="{controller ? 'hidden md:block' : ''} border-b border-hairline p-5">
+		<div class="mb-3 flex flex-wrap items-end justify-between gap-2">
+			<div>
+				<h3 class="text-base font-semibold">Target role matrix</h3>
+				<p class="mt-1 text-xs text-text-muted">Enforced centrally by the server</p>
+			</div>
+			<span class="font-mono text-2xs tracking-caps text-activity">TARGET · IDENTITY.V1</span>
+		</div>
+		<div class="overflow-x-auto border-y border-hairline">
+			<table class="w-full min-w-[44rem] text-left text-xs">
+				<thead class="bg-raised text-text-faint">
+					<tr>
+						<th class="px-3 py-2 font-mono text-2xs tracking-caps">ACTION</th>
+						<th class="w-36 px-3 py-2 text-center font-mono text-2xs tracking-caps">KIND</th>
+						<th class="w-36 px-3 py-2 text-center font-mono text-2xs tracking-caps"
+							>ADMINISTRATOR</th
+						>
+						<th class="w-36 px-3 py-2 text-center font-mono text-2xs tracking-caps">USER</th>
+					</tr>
+				</thead>
+				<tbody class="divide-y divide-hairline">
+					{#each evidence.permissions as permission (permission.label)}
+						<tr>
+							<td class="px-3 py-2.5">
+								<span>{permission.label}</span>
+								{#if permission.requiresCapability}<span
+										class="ml-2 font-mono text-2xs text-text-faint"
+										>REQUIRES {permission.requiresCapability}</span
+									>{/if}
+							</td>
+							<td class="px-3 py-2.5 text-center font-mono text-2xs text-text-faint uppercase"
+								>{permission.kind}</td
+							>
+							<td class="px-3 py-2.5"
+								><CheckIcon
+									class="mx-auto size-4 text-healthy"
+									aria-label="Administrator target allows"
+								/></td
+							>
+							<td class="px-3 py-2.5">
+								{#if permission.user}
+									<CheckIcon class="mx-auto size-4 text-healthy" aria-label="User target allows" />
+								{:else}
+									<MinusIcon
+										class="mx-auto size-4 text-text-faint"
+										aria-label="User target excludes"
+									/>
+								{/if}
+							</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		</div>
+	</div>
+
+	{#if controller}
+		<!-- Keep one mounted runtime across responsive breakpoints so open dialogs and drafts survive resize. -->
+		<div class="flex flex-col">
+			<div class="order-2 min-w-0 md:order-1">
+				<ExternalAuthenticationSection {controller} />
+			</div>
+			<div class="order-1 min-w-0 md:order-2">
+				<AccessRuntime {controller} {onrevealaccesskey} />
+			</div>
+		</div>
+	{:else}<div class="grid lg:grid-cols-2">
+			<div class="space-y-4 border-b border-hairline p-5 lg:border-r lg:border-b-0">
+				<div class="flex flex-wrap items-baseline justify-between gap-2">
+					<h3 class="flex items-center gap-2 text-base font-semibold">
+						<UsersIcon class="size-4" /> People & sessions
+					</h3>
+					<span class="font-mono text-2xs tracking-caps text-text-faint">COUNT UNAVAILABLE</span>
+				</div>
+				<div
+					class="grid min-h-36 place-items-center rounded-sm border border-dashed border-hairline-strong bg-raised/40 p-4 text-center"
+				>
+					<div class="max-w-sm">
+						<UserRoundIcon class="mx-auto size-6 text-text-faint" />
+						<p class="mt-2 text-sm font-medium">Identity directory unavailable</p>
 						<p class="mt-1 text-xs leading-5 text-text-muted">
-							Local policy resolves to Administrator. Remote sessions bind a named bearer credential
-							or external identity, its role, and server-enforced camera grants.
+							No people, assigned roles, invitations, sign-in sessions, last-seen times, or current
+							identity are returned by any endpoint.
 						</p>
 					</div>
 				</div>
-				<CapabilityGate {...capabilityActions.enableRemoteSignIn} class="shrink-0" />
+				<CapabilityGate
+					{...capabilityActions.managePeopleAndSessions}
+					class="w-full justify-start"
+				/>
+			</div>
+
+			<div class="space-y-4 p-5">
+				<div class="flex flex-wrap items-baseline justify-between gap-2">
+					<h3 class="flex items-center gap-2 text-base font-semibold">
+						<KeyRoundIcon class="size-4" /> Access tokens
+					</h3>
+					<span class="font-mono text-2xs tracking-caps text-text-faint">COUNT UNAVAILABLE</span>
+				</div>
+				{#if onrevealaccesskey && onrotateaccesskey}
+					<SharedAccessKeyControl onreveal={onrevealaccesskey} onrotate={onrotateaccesskey} />
+				{/if}
+				<div
+					class="grid min-h-36 place-items-center rounded-sm border border-dashed border-hairline-strong bg-raised/40 p-4 text-center"
+				>
+					<div class="max-w-sm">
+						<ShieldIcon class="mx-auto size-6 text-text-faint" />
+						<p class="mt-2 text-sm font-medium">Token registry unavailable</p>
+						<p class="mt-1 text-xs leading-5 text-text-muted">
+							Named token list, create, scope, owner, last-use, revocation history, and audit
+							evidence remain unavailable. The shared bootstrap key above is the only implemented
+							key control.
+						</p>
+					</div>
+				</div>
+				<CapabilityGate {...capabilityActions.manageAccessTokens} class="w-full justify-start" />
 			</div>
 		</div>
 
-		<div class="border-b border-hairline p-5">
-			<div class="mb-3 flex flex-wrap items-end justify-between gap-2">
-				<div>
-					<h3 class="text-base font-semibold">Target role matrix</h3>
-					<p class="mt-1 text-xs text-text-muted">Enforced centrally by the server</p>
-				</div>
-				<span class="font-mono text-2xs tracking-caps text-activity">TARGET · IDENTITY.V1</span>
+		<footer class="grid gap-3 border-t border-hairline bg-raised/40 px-5 py-4 sm:grid-cols-3">
+			<div>
+				<p class="font-mono text-2xs tracking-caps text-text-faint">IMPLEMENTED LOOPBACK MODEL</p>
+				<p class="mt-1 text-xs text-text-muted">Administrator without sign-in</p>
 			</div>
-			<div class="overflow-x-auto border-y border-hairline">
-				<table class="w-full min-w-[44rem] text-left text-xs">
-					<thead class="bg-raised text-text-faint">
-						<tr>
-							<th class="px-3 py-2 font-mono text-2xs tracking-caps">ACTION</th>
-							<th class="w-36 px-3 py-2 text-center font-mono text-2xs tracking-caps">KIND</th>
-							<th class="w-36 px-3 py-2 text-center font-mono text-2xs tracking-caps"
-								>ADMINISTRATOR</th
-							>
-							<th class="w-36 px-3 py-2 text-center font-mono text-2xs tracking-caps">USER</th>
-						</tr>
-					</thead>
-					<tbody class="divide-y divide-hairline">
-						{#each evidence.permissions as permission (permission.label)}
-							<tr>
-								<td class="px-3 py-2.5">
-									<span>{permission.label}</span>
-									{#if permission.requiresCapability}<span
-											class="ml-2 font-mono text-2xs text-text-faint"
-											>REQUIRES {permission.requiresCapability}</span
-										>{/if}
-								</td>
-								<td class="px-3 py-2.5 text-center font-mono text-2xs text-text-faint uppercase"
-									>{permission.kind}</td
-								>
-								<td class="px-3 py-2.5"
-									><CheckIcon
-										class="mx-auto size-4 text-healthy"
-										aria-label="Administrator target allows"
-									/></td
-								>
-								<td class="px-3 py-2.5">
-									{#if permission.user}
-										<CheckIcon
-											class="mx-auto size-4 text-healthy"
-											aria-label="User target allows"
-										/>
-									{:else}
-										<MinusIcon
-											class="mx-auto size-4 text-text-faint"
-											aria-label="User target excludes"
-										/>
-									{/if}
-								</td>
-							</tr>
-						{/each}
-					</tbody>
-				</table>
+			<div>
+				<p class="font-mono text-2xs tracking-caps text-text-faint">IMPLEMENTED REMOTE MODEL</p>
+				<p class="mt-1 text-xs text-text-muted">One shared Bearer key</p>
 			</div>
-		</div>
-
-		{#if controller}
-			<ExternalAuthenticationSection {controller} />
-			<AccessRuntime {controller} {onrevealaccesskey} />
-		{:else}<div class="grid lg:grid-cols-2">
-				<div class="space-y-4 border-b border-hairline p-5 lg:border-r lg:border-b-0">
-					<div class="flex flex-wrap items-baseline justify-between gap-2">
-						<h3 class="flex items-center gap-2 text-base font-semibold">
-							<UsersIcon class="size-4" /> People & sessions
-						</h3>
-						<span class="font-mono text-2xs tracking-caps text-text-faint">COUNT UNAVAILABLE</span>
-					</div>
-					<div
-						class="grid min-h-36 place-items-center rounded-sm border border-dashed border-hairline-strong bg-raised/40 p-4 text-center"
-					>
-						<div class="max-w-sm">
-							<UserRoundIcon class="mx-auto size-6 text-text-faint" />
-							<p class="mt-2 text-sm font-medium">Identity directory unavailable</p>
-							<p class="mt-1 text-xs leading-5 text-text-muted">
-								No people, assigned roles, invitations, sign-in sessions, last-seen times, or
-								current identity are returned by any endpoint.
-							</p>
-						</div>
-					</div>
-					<CapabilityGate
-						{...capabilityActions.managePeopleAndSessions}
-						class="w-full justify-start"
-					/>
-				</div>
-
-				<div class="space-y-4 p-5">
-					<div class="flex flex-wrap items-baseline justify-between gap-2">
-						<h3 class="flex items-center gap-2 text-base font-semibold">
-							<KeyRoundIcon class="size-4" /> Access tokens
-						</h3>
-						<span class="font-mono text-2xs tracking-caps text-text-faint">COUNT UNAVAILABLE</span>
-					</div>
-					{#if onrevealaccesskey && onrotateaccesskey}
-						<SharedAccessKeyControl onreveal={onrevealaccesskey} onrotate={onrotateaccesskey} />
-					{/if}
-					<div
-						class="grid min-h-36 place-items-center rounded-sm border border-dashed border-hairline-strong bg-raised/40 p-4 text-center"
-					>
-						<div class="max-w-sm">
-							<ShieldIcon class="mx-auto size-6 text-text-faint" />
-							<p class="mt-2 text-sm font-medium">Token registry unavailable</p>
-							<p class="mt-1 text-xs leading-5 text-text-muted">
-								Named token list, create, scope, owner, last-use, revocation history, and audit
-								evidence remain unavailable. The shared bootstrap key above is the only implemented
-								key control.
-							</p>
-						</div>
-					</div>
-					<CapabilityGate {...capabilityActions.manageAccessTokens} class="w-full justify-start" />
-				</div>
+			<div>
+				<p class="font-mono text-2xs tracking-caps text-text-faint">AUDIT TRAIL</p>
+				<p class="mt-1 text-xs text-text-muted">
+					Unavailable in both documented and current contracts
+				</p>
 			</div>
-
-			<footer class="grid gap-3 border-t border-hairline bg-raised/40 px-5 py-4 sm:grid-cols-3">
-				<div>
-					<p class="font-mono text-2xs tracking-caps text-text-faint">IMPLEMENTED LOOPBACK MODEL</p>
-					<p class="mt-1 text-xs text-text-muted">Administrator without sign-in</p>
-				</div>
-				<div>
-					<p class="font-mono text-2xs tracking-caps text-text-faint">IMPLEMENTED REMOTE MODEL</p>
-					<p class="mt-1 text-xs text-text-muted">One shared Bearer key</p>
-				</div>
-				<div>
-					<p class="font-mono text-2xs tracking-caps text-text-faint">AUDIT TRAIL</p>
-					<p class="mt-1 text-xs text-text-muted">
-						Unavailable in both documented and current contracts
-					</p>
-				</div>
-			</footer>
-		{/if}
-	</section>
-{/if}
+		</footer>
+	{/if}
+</section>

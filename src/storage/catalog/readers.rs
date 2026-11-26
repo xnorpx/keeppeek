@@ -158,6 +158,12 @@ pub(super) enum Request {
         id: String,
         sequence: u64,
     },
+    ScrubKeyframe {
+        source: String,
+        stream: String,
+        recording_stream: String,
+        time_ms: i64,
+    },
     Snapshots(BTreeSet<Key>),
     Export(String),
     ArchiveExport {
@@ -177,6 +183,7 @@ pub(super) enum Reply {
     FrameCatalogRevision(u64),
     Fragments(Vec<CatalogMediaFragment>, LeaseSet),
     Object(Option<(CatalogMediaObjectLocation, LeaseSet)>),
+    ScrubKeyframe(Option<(super::CatalogScrubKeyframe, LeaseSet)>),
     Snapshots(LeaseSet),
     Image(Option<(super::locations::Location, LeaseSet)>),
     Export(Option<(super::locations::Location, LeaseSet)>),
@@ -328,6 +335,24 @@ impl RecordingCatalogHandle {
         }
     }
 
+    pub(crate) fn leased_scrub_keyframe_at(
+        &self,
+        source: &str,
+        stream: &str,
+        recording_stream: &str,
+        time_ms: i64,
+    ) -> anyhow::Result<Option<(super::CatalogScrubKeyframe, LeaseSet)>> {
+        match self.read_lease(Request::ScrubKeyframe {
+            source: source.to_owned(),
+            stream: stream.to_owned(),
+            recording_stream: recording_stream.to_owned(),
+            time_ms,
+        })? {
+            Reply::ScrubKeyframe(keyframe) => Ok(keyframe),
+            _ => anyhow::bail!("unexpected scrub keyframe reader reply"),
+        }
+    }
+
     pub(crate) fn lease_media_fragments(
         &self,
         fragments: &[CatalogMediaFragment],
@@ -475,6 +500,38 @@ pub(super) async fn execute(
                 "archive recording location changed"
             );
             Ok(Reply::Object(Some((object, registry.acquire(owned)?))))
+        }
+        Request::ScrubKeyframe {
+            source,
+            stream,
+            recording_stream,
+            time_ms,
+        } => {
+            let resolved = super::resolve_scrub_keyframe(
+                connection,
+                &source,
+                &stream,
+                &recording_stream,
+                time_ms,
+            )
+            .await?;
+            let Some(resolved) = resolved else {
+                return Ok(Reply::ScrubKeyframe(None));
+            };
+            let path = resolved.location.archive.as_ref().map_or_else(
+                || resolved.location.path.clone(),
+                |archive| archive.path().to_string_lossy().into_owned(),
+            );
+            let keys = BTreeSet::from([(resolved.location.recording_id.clone(), path)]);
+            let owned = owned_locations(connection, keys.clone()).await?;
+            anyhow::ensure!(
+                resolved.location.archive.is_none() || owned == keys,
+                "archive recording location changed"
+            );
+            Ok(Reply::ScrubKeyframe(Some((
+                resolved,
+                registry.acquire(owned)?,
+            ))))
         }
         Request::Snapshots(keys) => {
             let keys = owned_locations(connection, keys).await?;

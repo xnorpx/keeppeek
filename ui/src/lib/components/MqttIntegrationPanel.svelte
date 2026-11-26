@@ -36,6 +36,7 @@
 	let integration = $state.raw<MqttIntegration | null>(null);
 	let draft = $state<Draft | null>(null);
 	let loading = $state(true);
+	let loadInFlight = false;
 	let saving = $state(false);
 	let testing = $state(false);
 	let editing = $state(false);
@@ -58,7 +59,9 @@
 			loading = true;
 			void load(true);
 		}
-		const interval = window.setInterval(() => void load(false), 5_000);
+		const interval = window.setInterval(() => {
+			if (document.visibilityState === 'visible') void load(false);
+		}, 5_000);
 		return () => window.clearInterval(interval);
 	});
 
@@ -85,6 +88,8 @@
 	}
 
 	async function load(initializeDraft: boolean): Promise<void> {
+		if (loadInFlight && !initializeDraft) return;
+		loadInFlight = true;
 		try {
 			const next = await controlClient.getMqttIntegration();
 			integration = next;
@@ -95,6 +100,7 @@
 				error = cause instanceof Error ? cause.message : 'MQTT integration is unavailable.';
 			}
 		} finally {
+			loadInFlight = false;
 			if (initializeDraft) loading = false;
 		}
 	}

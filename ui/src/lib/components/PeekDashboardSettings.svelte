@@ -229,9 +229,15 @@
 	</header>
 
 	{#if loading}
-		<div class="space-y-3 p-5" aria-label="Loading dashboards">
-			<Skeleton class="h-9 w-72 max-w-full" />
-			<Skeleton class="h-14 w-full" />
+		<div
+			class="flex min-h-[61px] items-center justify-between gap-3 border-b border-hairline bg-raised/30 px-5 py-3"
+			aria-label="Loading dashboards"
+		>
+			<div class="space-y-1.5">
+				<Skeleton class="h-4 w-36" />
+				<Skeleton class="h-3.5 w-44" />
+			</div>
+			<Skeleton class="h-8 w-20" />
 		</div>
 	{:else if error && !registry}
 		<div class="flex flex-wrap items-center justify-between gap-3 p-5" role="status">

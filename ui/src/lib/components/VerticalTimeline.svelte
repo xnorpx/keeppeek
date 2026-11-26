@@ -1,3 +1,12 @@
+<script module lang="ts">
+	const timeFormatter = new Intl.DateTimeFormat(undefined, {
+		hour: '2-digit',
+		minute: '2-digit',
+		hour12: false,
+		timeZone: 'UTC'
+	});
+</script>
+
 <script lang="ts">
 	import { tick } from 'svelte';
 	import type { RecordingEvent, RecordingSegment } from '$lib/types';
@@ -60,12 +69,6 @@
 	const EVENT_CLUSTER_GAP = 72;
 	const ARROW_SCROLL_PX = 72;
 	const INITIAL_VIEWPORT_EXTENT_PX = 400;
-	const timeFormatter = new Intl.DateTimeFormat(undefined, {
-		hour: '2-digit',
-		minute: '2-digit',
-		hour12: false,
-		timeZone: 'UTC'
-	});
 
 	type EventCluster = {
 		event: RecordingEvent;
@@ -138,14 +141,19 @@
 	let timelineDurationMs = $derived(Math.max(1, timelineEndMs - timelineStartMs));
 	let timelineHeight = $derived((pixelsPerHour * timelineDurationMs) / (60 * MINUTE_MS));
 	let renderExtentPx = $derived(viewportExtentPx || INITIAL_VIEWPORT_EXTENT_PX);
-	let renderTopPx = $derived(Math.max(0, viewportTopPx - renderExtentPx));
-	let renderBottomPx = $derived(Math.min(timelineHeight, viewportTopPx + renderExtentPx * 2));
-	let renderStartMs = $derived(timestampAtTop(renderBottomPx));
-	let renderEndMs = $derived(timestampAtTop(renderTopPx));
-	let viewportStartMs = $derived(
-		timestampAtTop(Math.min(timelineHeight, viewportTopPx + viewportExtentPx))
+	let clampedViewportTopPx = $derived(
+		Math.max(0, Math.min(Math.max(0, timelineHeight - renderExtentPx), viewportTopPx))
 	);
-	let viewportEndMs = $derived(timestampAtTop(Math.max(0, viewportTopPx)));
+	let renderTopPx = $derived(Math.max(0, clampedViewportTopPx - renderExtentPx));
+	let renderBottomPx = $derived(
+		Math.min(timelineHeight, clampedViewportTopPx + renderExtentPx * 2)
+	);
+	let renderStartMs = $derived(timestampAtTop(renderBottomPx));
+	let renderEndMs = $derived(Math.max(renderStartMs + 1, timestampAtTop(renderTopPx)));
+	let viewportStartMs = $derived(
+		timestampAtTop(Math.min(timelineHeight, clampedViewportTopPx + viewportExtentPx))
+	);
+	let viewportEndMs = $derived(timestampAtTop(Math.max(0, clampedViewportTopPx)));
 	let availability = $derived(buildTimelineAvailability(segments, renderStartMs, renderEndMs));
 	let isLiveDay = $derived(effectiveNowMs >= dayStartMs && effectiveNowMs < dayEndMs);
 	let ticks = $derived.by(() => {
@@ -377,8 +385,11 @@
 	}
 
 	function syncViewport(node: HTMLDivElement): void {
-		viewportTopPx = node.scrollTop;
-		viewportExtentPx = node.clientHeight;
+		const nextTop = node.scrollTop;
+		const nextExtent = node.clientHeight;
+		if (viewportTopPx === nextTop && viewportExtentPx === nextExtent) return;
+		viewportTopPx = nextTop;
+		viewportExtentPx = nextExtent;
 	}
 
 	function handleScroll(event: Event): void {
@@ -436,7 +447,7 @@
 		return () => cancelAnimationFrame(frame);
 	});
 
-	$effect(() => {
+	$effect.pre(() => {
 		const node = scroller;
 		if (!node) return;
 		const update = () => syncViewport(node);

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import EventSourcesSection from '$lib/components/EventSourcesSection.svelte';
+	import EventSourcesPaperFrame from '$lib/components/EventSourcesPaperFrame.svelte';
 	import type { ServerHealthResponse } from '$lib/types';
 
 	const health = {
@@ -22,5 +22,5 @@
 	data-paper-scenario="settings.desktop.event-sources"
 	class="h-[1048px] w-[1440px] overflow-hidden bg-ground [font-synthesis:none]"
 >
-	<EventSourcesSection {health} paperFrame />
+	<EventSourcesPaperFrame {health} />
 </main>

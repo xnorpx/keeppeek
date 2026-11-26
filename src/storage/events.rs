@@ -75,7 +75,8 @@ impl std::error::Error for PublishedImageCommitError {
 }
 
 impl EventStore {
-    pub(crate) fn from_storage(
+    /// Creates an event store bound to the configured managed storage volumes.
+    pub fn from_storage(
         catalog: RecordingCatalogHandle,
         storage: &super::engine::StorageConfig,
     ) -> anyhow::Result<Self> {
@@ -223,6 +224,18 @@ impl EventStore {
         }
         self.enforce_thumbnail_limit()?;
         Ok(())
+    }
+
+    /// Atomically commits an event revision together with its validated JPEG image.
+    pub fn commit_event_image(
+        &self,
+        publication_id: &str,
+        event: TimelineEvent,
+        jpeg: &[u8],
+    ) -> anyhow::Result<()> {
+        self.commit_published_image(publication_id, event, jpeg)
+            .map(|_| ())
+            .map_err(anyhow::Error::from)
     }
 
     pub(crate) fn commit_published_image(
@@ -434,6 +447,103 @@ impl EventStore {
             return Ok(None);
         }
         Ok(Some(candidate))
+    }
+
+    /// Checks canonical image availability in bounded catalog batches instead of per-event queries.
+    pub(crate) fn batch_thumbnail_availability(
+        &self,
+        items: &[(&str, Option<&str>, Option<&str>)],
+    ) -> Vec<bool> {
+        let mut results = vec![false; items.len()];
+        let named = self.resolve_named_image_batch(items);
+        let named_valid = self.volume_storage.as_ref().map(|manager| {
+            let locations: Vec<_> = named.iter().map(Option::as_ref).collect();
+            manager.has_owned_batch(&locations)
+        });
+        for (index, (event_id, _, legacy_filename)) in items.iter().enumerate() {
+            if !safe_event_id(event_id) {
+                continue;
+            }
+            if named.get(index).and_then(Option::as_ref).is_some() {
+                results[index] = named_valid
+                    .as_ref()
+                    .and_then(|flags| flags.get(index).copied())
+                    .unwrap_or(false);
+                continue;
+            }
+            results[index] = legacy_filename
+                .is_some_and(|filename| self.legacy_thumbnail_path(filename).is_some());
+        }
+        results
+    }
+
+    /// Resolves canonical thumbnail paths in bounded catalog batches for timeline/event responses.
+    pub(crate) fn batch_thumbnail_paths(
+        &self,
+        items: &[(&str, Option<&str>, Option<&str>)],
+    ) -> Vec<Option<PathBuf>> {
+        let mut results = vec![None; items.len()];
+        let named = self.resolve_named_image_batch(items);
+        for (index, (event_id, _, legacy_filename)) in items.iter().enumerate() {
+            if !safe_event_id(event_id) {
+                continue;
+            }
+            if let Some(location) = named.get(index).and_then(Option::as_ref) {
+                results[index] = self
+                    .volume_storage
+                    .as_ref()
+                    .and_then(|manager| manager.owned_path(location).ok());
+                continue;
+            }
+            results[index] =
+                legacy_filename.and_then(|filename| self.legacy_thumbnail_path(filename));
+        }
+        results
+    }
+
+    fn resolve_named_image_batch(
+        &self,
+        items: &[(&str, Option<&str>, Option<&str>)],
+    ) -> Vec<Option<super::catalog::locations::Location>> {
+        let mut resolved = vec![None; items.len()];
+        if self.volume_storage.is_none() || items.is_empty() {
+            return resolved;
+        }
+        let mut requested = Vec::new();
+        for (index, (event_id, attachment_id, _)) in items.iter().enumerate() {
+            if let Some(attachment) = attachment_id
+                && safe_event_id(event_id)
+                && !attachment.is_empty()
+                && attachment.len() <= 256
+                && !attachment.chars().any(char::is_control)
+            {
+                requested.push((index, ((*event_id).to_owned(), (*attachment).to_owned())));
+            }
+        }
+        // ponytail: Reuse bounded batches of 256 through the existing volume location actor.
+        for chunk in requested.chunks(256) {
+            let pairs = chunk.iter().map(|(_, pair)| pair.clone()).collect();
+            let Ok(super::catalog::locations::Reply::ImageLocations(locations)) = self
+                .catalog
+                .volume_location(super::catalog::locations::Request::Images(pairs))
+            else {
+                continue;
+            };
+            for ((index, _), location) in chunk.iter().zip(locations) {
+                resolved[*index] = location;
+            }
+        }
+        resolved
+    }
+
+    fn legacy_thumbnail_path(&self, filename: &str) -> Option<PathBuf> {
+        if !safe_image_filename(filename) {
+            return None;
+        }
+        let candidate = self.thumbnail_root.join(filename).canonicalize().ok()?;
+        candidate
+            .starts_with(&self.thumbnail_root)
+            .then_some(candidate)
     }
 
     fn enforce_thumbnail_limit(&self) -> anyhow::Result<()> {

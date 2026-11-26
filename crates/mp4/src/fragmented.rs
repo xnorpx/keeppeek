@@ -653,10 +653,17 @@ pub fn normalize_fragment_sample_description_indices(fragment: &[u8]) -> Result<
         ));
     }
     let mut moof = MoofBox::read_box(&mut reader, header.size)?;
+    let mut modified = false;
     for traf in &mut moof.trafs {
-        if traf.tfhd.flags & TfhdBox::FLAG_SAMPLE_DESCRIPTION_INDEX != 0 {
+        if traf.tfhd.flags & TfhdBox::FLAG_SAMPLE_DESCRIPTION_INDEX != 0
+            && traf.tfhd.sample_description_index != Some(1)
+        {
             traf.tfhd.sample_description_index = Some(1);
+            modified = true;
         }
+    }
+    if !modified {
+        return Ok(fragment.to_vec());
     }
     let mut normalized = Vec::with_capacity(fragment.len());
     moof.write_box(&mut normalized)?;
