@@ -34,7 +34,7 @@ pub enum Framing {
     /// This is self-describing, so `extra_data` is empty/unneeded.
     Adts,
 }
-use super::{AudioParameters, CodecItem};
+use super::{AudioParameters, CodecItem, FmtpParser};
 use crate::{Error, codec::DepacketizeError, error::ErrorInt, rtp::ReceivedPacket};
 use std::{
     fmt::Debug,
@@ -197,6 +197,63 @@ impl AudioSpecificConfig {
             sampling_frequency_index,
         })
     }
+
+    /// Builds a 7-byte ADTS header for the given raw frame size.
+    ///
+    /// Fails if this configuration or frame length does not fit in the ADTS bit fields.
+    fn adts_header(&self, aac_frame_len: usize) -> Result<[u8; 7], String> {
+        let profile = match self.audio_object_type {
+            1..=4 => self.audio_object_type - 1,
+            o => {
+                return Err(format!(
+                    "audio_object_type {o} can't be represented in ADTS"
+                ));
+            }
+        };
+        let freq_index = match self.sampling_frequency_index {
+            i @ 0x0..=0xc => i,
+            _ => {
+                return Err(format!(
+                    "sampling frequency {} can't be represented in ADTS",
+                    self.parameters.clock_rate
+                ));
+            }
+        };
+        let channel_config = match self.parameters.codec {
+            super::AudioParametersCodec::Aac { channels_config_id } => channels_config_id.get(),
+            _ => unreachable!("AAC config must carry AAC codec metadata"),
+        };
+        let adts_frame_len = match u16::try_from(7 + aac_frame_len) {
+            Ok(l) if l < (1 << 13) => l,
+            _ => {
+                return Err(format!(
+                    "{aac_frame_len}-byte AAC frame is too large for ADTS"
+                ));
+            }
+        };
+        Ok([
+            0xFF,
+            0xF1,
+            (profile << 6) | (freq_index << 2) | (channel_config >> 2),
+            ((channel_config & 0x3) << 6) | ((adts_frame_len >> 11) as u8),
+            (adts_frame_len >> 3) as u8,
+            ((adts_frame_len & 0x7) << 5) as u8 | 0x1F,
+            0xFC,
+        ])
+    }
+
+    fn wrap_frame_data(&self, framing: Framing, raw: Bytes) -> Result<Bytes, String> {
+        match framing {
+            Framing::Raw => Ok(raw),
+            Framing::Adts => {
+                let header = self.adts_header(raw.len())?;
+                let mut buf = BytesMut::with_capacity(header.len() + raw.len());
+                buf.extend_from_slice(&header);
+                buf.extend_from_slice(&raw);
+                Ok(buf.freeze())
+            }
+        }
+    }
 }
 
 /// Returns an MP4AudioSampleEntry (`mp4a`) box as in ISO/IEC 14496-14 section 5.6.1.
@@ -308,16 +365,8 @@ fn parse_format_specific_params(
     let mut size_length = None;
     let mut index_length = None;
     let mut index_delta_length = None;
-    for p in format_specific_params.split(';') {
-        let p = p.trim();
-        if p.is_empty() {
-            // Reolink cameras leave a trailing ';'.
-            continue;
-        }
-        let (key, value) = p
-            .split_once('=')
-            .ok_or_else(|| format!("bad format-specific-param {p}"))?;
-        match &key.to_ascii_lowercase()[..] {
+    for (attr, value) in FmtpParser::new(format_specific_params) {
+        match &attr.to_ascii_lowercase()[..] {
             "config" => {
                 config = Some(
                     hex::decode(value)
@@ -498,39 +547,6 @@ impl Depacketizer {
         }
     }
 
-    /// Builds a 7-byte ADTS fixed+variable header for the given frame size.
-    ///
-    /// See ISO/IEC 13818-7 section 6.2.
-    fn adts_header(&self, aac_frame_len: usize) -> [u8; 7] {
-        // ADTS profile is audio_object_type - 1.
-        let profile = self.config.audio_object_type - 1;
-        let freq_index = self.config.sampling_frequency_index;
-        let channel_config = match self.config.parameters.codec {
-            super::AudioParametersCodec::Aac { channels_config_id } => channels_config_id.get(),
-            _ => unreachable!(),
-        };
-        // ADTS frame length = header (7 bytes) + raw AAC frame data.
-        let adts_frame_len = (7 + aac_frame_len) as u16;
-        [
-            // Byte 0: syncword high 8 bits.
-            0xFF,
-            // Byte 1: syncword low 4 bits, ID=0 (MPEG-4), layer=00, protection_absent=1.
-            0xF1,
-            // Byte 2: profile (2 bits), sampling_freq_index (4 bits), private=0,
-            //   channel_config high bit (1 bit).
-            (profile << 6) | (freq_index << 2) | (channel_config >> 2),
-            // Byte 3: channel_config low 2 bits, originality=0, home=0,
-            //   copyright_id=0, copyright_start=0, frame_length high 2 bits.
-            ((channel_config & 0x3) << 6) | ((adts_frame_len >> 11) as u8),
-            // Byte 4: frame_length middle 8 bits.
-            (adts_frame_len >> 3) as u8,
-            // Byte 5: frame_length low 3 bits, buffer_fullness high 5 bits (0x7FF = VBR).
-            ((adts_frame_len & 0x7) << 5) as u8 | 0x1F,
-            // Byte 6: buffer_fullness low 6 bits (0x7FF = VBR), number_of_raw_data_blocks=0.
-            0xFC,
-        ]
-    }
-
     pub(super) const fn parameters(&self) -> Option<super::ParametersRef<'_>> {
         Some(super::ParametersRef::Audio(&self.config.parameters))
     }
@@ -557,7 +573,7 @@ impl Depacketizer {
         let au_headers_length_bits = u16::from_be_bytes([payload[0], payload[1]]);
 
         // AAC-hbr requires 16-bit AU headers: 13-bit size, 3-bit index.
-        if (au_headers_length_bits & 0x7) != 0 {
+        if (au_headers_length_bits & 0xF) != 0 {
             return Err(format!("bad au-headers-length {au_headers_length_bits}"));
         }
         let au_headers_count = au_headers_length_bits >> 4;
@@ -611,6 +627,10 @@ impl Depacketizer {
                             );
                         }
                         frag.buf.extend_from_slice(data);
+                        let data = self.config.wrap_frame_data(
+                            self.framing,
+                            std::mem::take(&mut frag.buf).freeze(),
+                        )?;
                         self.state = DepacketizerState::Ready(super::AudioFrame {
                             packet_timestamp: pkt.timestamp(),
                             ctx: *pkt.ctx(),
@@ -618,7 +638,7 @@ impl Depacketizer {
                             frame_length: NonZeroU32::from(self.config.frame_length),
                             stream_id: pkt.stream_id(),
                             timestamp: pkt.timestamp(),
-                            data: std::mem::take(&mut frag.buf).freeze(),
+                            data,
                         });
                     }
                     std::cmp::Ordering::Greater => return Err("too much data in fragment".into()),
@@ -647,29 +667,14 @@ impl Depacketizer {
         Ok(())
     }
 
-    /// Wraps raw AAC frame data in an ADTS header if configured.
-    fn wrap_frame_data(&self, raw: Bytes) -> Bytes {
-        match self.framing {
-            Framing::Raw => raw,
-            Framing::Adts => {
-                let header = self.adts_header(raw.len());
-                let mut buf = BytesMut::with_capacity(header.len() + raw.len());
-                buf.extend_from_slice(&header);
-                buf.extend_from_slice(&raw);
-                buf.freeze()
-            }
-        }
-    }
-
     pub(super) fn pull(&mut self) -> Option<Result<super::CodecItem, DepacketizeError>> {
         match std::mem::take(&mut self.state) {
             s @ DepacketizerState::Idle { .. } | s @ DepacketizerState::Fragmented(..) => {
                 self.state = s;
                 None
             }
-            DepacketizerState::Ready(mut f) => {
+            DepacketizerState::Ready(f) => {
                 self.state = DepacketizerState::default();
-                f.data = self.wrap_frame_data(f.data);
                 Some(Ok(CodecItem::AudioFrame(f)))
             }
             DepacketizerState::Aggregated(mut agg) => {
@@ -763,9 +768,20 @@ impl Depacketizer {
                             }));
                         }
                     },
-                    data: self.wrap_frame_data(Bytes::copy_from_slice(
-                        &payload[agg.data_off..agg.data_off + size],
-                    )),
+                    data: match self.config.wrap_frame_data(
+                        self.framing,
+                        Bytes::copy_from_slice(&payload[agg.data_off..agg.data_off + size]),
+                    ) {
+                        Ok(d) => d,
+                        Err(description) => {
+                            return Some(Err(DepacketizeError {
+                                pkt_ctx: agg.pkt.ctx,
+                                ssrc: agg.pkt.ssrc(),
+                                sequence_number: agg.pkt.sequence_number(),
+                                description,
+                            }));
+                        }
+                    },
                 };
                 agg.loss = 0;
                 agg.data_off += size;
@@ -1474,5 +1490,74 @@ mod tests {
         assert_eq!(&a.data[..2], &[0xFF, 0xF1]);
         assert_eq!(&a.data[7..], b"foobar");
         assert_eq!(d.pull(), None);
+    }
+
+    #[test]
+    fn bad_au_headers_length() {
+        let mut d = Depacketizer::new(
+            48_000,
+            None,
+            Some(
+                "streamtype=5;profile-level-id=1;mode=AAC-hbr;sizelength=13;\
+                 indexlength=3;indexdeltalength=3;config=1188",
+            ),
+        )
+        .unwrap();
+        let pkt = ReceivedPacketBuilder {
+            ctx: PacketContext::dummy(),
+            stream_id: 0,
+            sequence_number: 0,
+            timestamp: crate::Timestamp {
+                timestamp: 42,
+                clock_rate: NonZeroU32::new(48_000).unwrap(),
+                start: 0,
+            },
+            payload_type: 0,
+            ssrc: 0,
+            mark: true,
+            loss: 0,
+        }
+        .build([
+            0x00, 0x18, // 24 bits (1.5 headers)
+            0x00, 0x20, 0x00, b'a', b's', b'd', b'f',
+        ])
+        .unwrap();
+        let e = d.push(pkt).unwrap_err();
+        assert!(e.contains("bad au-headers-length"), "{e}");
+    }
+
+    #[test]
+    fn adts_unrepresentable() {
+        let mut d = Depacketizer::new(
+            48_000,
+            None,
+            Some(
+                "streamtype=5;profile-level-id=1;mode=AAC-hbr;sizelength=13;\
+                 indexlength=3;indexdeltalength=3;config=b988",
+            ),
+        )
+        .unwrap();
+        d.set_frame_format(crate::codec::FrameFormat::SIMPLE);
+        let pkt = ReceivedPacketBuilder {
+            ctx: PacketContext::dummy(),
+            stream_id: 0,
+            sequence_number: 0,
+            timestamp: crate::Timestamp {
+                timestamp: 42,
+                clock_rate: NonZeroU32::new(48_000).unwrap(),
+                start: 0,
+            },
+            payload_type: 0,
+            ssrc: 0,
+            mark: true,
+            loss: 0,
+        }
+        .build([0x00, 0x10, 0x00, 0x20, b'a', b's', b'd', b'f'])
+        .unwrap();
+        d.push(pkt).unwrap();
+        match d.pull() {
+            Some(Err(e)) => assert!(e.description.contains("audio_object_type 23"), "{e:?}"),
+            o => panic!("{o:?}"),
+        }
     }
 }
