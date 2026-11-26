@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-96b8dfbb.js";
+            window.path_to_searchindex_js = "searchindex-60261846.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-738fe896.js"></script>
@@ -246,6 +246,7 @@ Root fields must appear before a table header or they belong to that table.</p>
 <tr><td><code>[&lt;namespace&gt;.&lt;camera-key&gt;.events]</code></td><td><code>EventConfig</code></td><td>Native camera event selection and filters</td></tr>
 <tr><td><code>[access_credentials]</code></td><td><code>PersistedAccessCatalog</code></td><td>Server-managed credential records</td></tr>
 <tr><td><code>[peek_layouts]</code></td><td><code>StoredRegistry</code></td><td>Server-managed layouts and per-user selection</td></tr>
+<tr><td><code>[saved_event_searches]</code></td><td><code>StoredRegistry</code></td><td>Server-managed owner-scoped saved event searches</td></tr>
 <tr><td><code>[configuration_templates]</code></td><td><code>StoredTemplateDocument</code></td><td>Server-managed camera templates</td></tr>
 <tr><td><code>[notifications]</code></td><td><code>NotificationConfiguration</code></td><td>Server-managed rule drafts and active rules</td></tr>
 <tr><td><code>[runtime_profiles]</code></td><td><code>ProfileRegistry</code></td><td>Server-managed profile definitions and selection</td></tr>
@@ -1222,6 +1223,41 @@ before any policy mutation. Runtime group-membership changes close affected grou
 and cancel their queued work so playback and event subscriptions cannot retain an obsolete grant.
 Grid audiences do not grant camera permissions. Custom roles remain unsupported, and trusted-local
 clients still follow the Administrator policy described above.</p>
+<h2 id="saved-event-searches"><a class="header" href="#saved-event-searches">Saved event searches</a></h2>
+<p>Source: <a href="https://github.com/xnorpx/keeppeek/blob/main/src/server/saved_searches.rs">saved event searches</a>.
+Saved event searches live in <code>config.toml</code> under <code>[saved_event_searches]</code> and use the
+<code>keeppeek.event-search.advanced.v1</code> capability. Manage them through <code>EventSearchCommand</code>
+compare-and-swap operations rather than editing the section manually.</p>
+<p>Type: <code>StoredRegistry</code>, section <code>[saved_event_searches]</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Rule</th></tr>
+</thead>
+<tbody>
+<tr><td><code>schema_version</code></td><td><code>u32</code></td><td>Required; supported value is <code>1</code>.</td></tr>
+<tr><td><code>owners</code></td><td>Map of <code>Vec&lt;StoredSearch&gt;</code></td><td>Keyed by authenticated principal or local workspace ID; max 64 per owner and 1,024 total.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Type: <code>StoredSearch</code>, under <code>[saved_event_searches.owners."&lt;owner-id&gt;"]</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Rule</th></tr>
+</thead>
+<tbody>
+<tr><td><code>id</code></td><td><code>String</code></td><td>Stable UUID unique per owner; 1 to 128 characters.</td></tr>
+<tr><td><code>name</code></td><td><code>String</code></td><td>Nonblank display name; 1 to 128 characters without control characters.</td></tr>
+<tr><td><code>revision</code></td><td><code>u64</code></td><td>Positive monotonic compare-and-swap revision.</td></tr>
+<tr><td><code>expression_version</code></td><td><code>u32</code></td><td>Positive AST version (<code>1</code> editable; unsupported future versions remain readable and non-editable).</td></tr>
+<tr><td><code>expression_json</code></td><td><code>String</code></td><td>Serialized AST draft, at most 32 KiB. Contains no credentials or secret references.</td></tr>
+<tr><td><code>updated_at_ms</code></td><td><code>i64</code></td><td>UTC update timestamp in milliseconds.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Config-only backups validate and include <code>[saved_event_searches]</code> without copying the recording
+catalog database or stored embedding vectors.</p>
 <h2 id="peek-layout-registry"><a class="header" href="#peek-layout-registry">Peek layout registry</a></h2>
 <p>Source: <a href="https://github.com/xnorpx/keeppeek/blob/main/src/server/peek_layouts.rs">layout persistence</a>.
 Layouts use the existing main configuration file and the <code>keeppeek.peek-layouts.v1</code> capability.
