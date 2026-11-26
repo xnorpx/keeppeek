@@ -557,17 +557,19 @@ jobs:
             test "$RUST_TEST_RESULT" = success -o "$RUST_TEST_RESULT" = skipped
           fi
 
-  windows-signing:
-    name: Windows Signing
+  windows-release-build:
+    name: Windows Release Build (${{ matrix.platform }})
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: windows-latest
-    timeout-minutes: 20
-    environment: artifact-signing
-    permissions:
-      contents: read
-      id-token: write
-    env:
-      AZURE_CORE_OUTPUT: none
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows-x86_64
+          - os: windows-11-arm
+            platform: windows-aarch64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -576,13 +578,61 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version-file: ui/.bun-version
-      - working-directory: ui
+      - name: Install UI dependencies
+        working-directory: ui
         run: bun install --no-save --registry=https://registry.npmjs.org/
-      - name: Build Windows binaries
+      - name: Build Windows release binaries
         shell: bash
         run: |
-          cargo build --locked -p keeppeek --bin keeppeek --bin keeppeek-service
-          cargo build --locked -p keeppeek-desktop --bin keeppeek-desktop
+          cargo build --locked --release -p keeppeek --bin keeppeek --bin keeppeek-service
+          cargo build --locked --release -p keeppeek-desktop --bin keeppeek-desktop
+      - name: Upload unsigned Windows release binaries
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: main-unsigned-${{ matrix.platform }}
+          path: |
+            target/release/keeppeek.exe
+            target/release/keeppeek-service.exe
+            target/release/keeppeek-desktop.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  windows-signing:
+    name: Windows Signing (${{ matrix.platform }})
+    needs: [windows-release-build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 25
+    environment: artifact-signing
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZURE_CORE_OUTPUT: none
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x86_64
+            installer_arch: x86_64
+          - platform: windows-aarch64
+            installer_arch: aarch64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          submodules: recursive
+      - name: Download unsigned Windows release binaries
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: main-unsigned-${{ matrix.platform }}
+          path: target/release
+      - name: Compute main build version
+        id: version
+        shell: pwsh
+        run: |
+          $shortSha = $env:GITHUB_SHA.Substring(0, 7)
+          "version=main-$shortSha" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "version_resource=0.0.0.0" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
       - name: Sign in to Azure
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
         env:
@@ -599,16 +649,16 @@ jobs:
           signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
           certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
           files: |
-            ${{ github.workspace }}\target\debug\keeppeek.exe
-            ${{ github.workspace }}\target\debug\keeppeek-service.exe
-            ${{ github.workspace }}\target\debug\keeppeek-desktop.exe
+            ${{ github.workspace }}\target\release\keeppeek.exe
+            ${{ github.workspace }}\target\release\keeppeek-service.exe
+            ${{ github.workspace }}\target\release\keeppeek-desktop.exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
       - name: Verify Windows binary signatures
         shell: pwsh
         run: |
-          foreach ($path in 'target/debug/keeppeek.exe', 'target/debug/keeppeek-service.exe', 'target/debug/keeppeek-desktop.exe') {
+          foreach ($path in 'target/release/keeppeek.exe', 'target/release/keeppeek-service.exe', 'target/release/keeppeek-desktop.exe') {
             $signature = Get-AuthenticodeSignature $path
             if ($signature.Status -ne 'Valid') {
               throw "$path has invalid signature status: $($signature.Status)"
@@ -622,6 +672,10 @@ jobs:
       - name: Extract Windows uninstaller
         id: windows-uninstaller
         shell: pwsh
+        env:
+          ARCH: ${{ matrix.installer_arch }}
+          VERSION: ${{ steps.version.outputs.version }}
+          VERSION_RESOURCE: ${{ steps.version.outputs.version_resource }}
         run: |
           $uninstRoot = Join-Path $env:RUNNER_TEMP 'keeppeek-uninstaller'
           $genDirectory = Join-Path $uninstRoot 'gen'
@@ -632,10 +686,10 @@ jobs:
 
           $uninstaller = Join-Path $uninstDirectory 'uninstall.exe'
           & 'C:\Program Files (x86)\NSIS\makensis.exe' `
-            '/DARCH=x86_64' `
+            "/DARCH=$env:ARCH" `
             "/DOUT_DIR=$genDirectory" `
-            '/DVERSION=0.0.0' `
-            '/DVERSION_RESOURCE=0.0.0.0' `
+            "/DVERSION=$env:VERSION" `
+            "/DVERSION_RESOURCE=$env:VERSION_RESOURCE" `
             '/DWRITE_UNINSTALLER_ONLY' `
             "/DUNINST_OUT=$uninstaller" `
             installer/keeppeek.nsi
@@ -684,25 +738,30 @@ jobs:
         id: windows-installer
         shell: pwsh
         env:
+          ARCH: ${{ matrix.installer_arch }}
+          PLATFORM: ${{ matrix.platform }}
+          VERSION: ${{ steps.version.outputs.version }}
+          VERSION_RESOURCE: ${{ steps.version.outputs.version_resource }}
           SIGNED_UNINSTALLER: ${{ steps.windows-uninstaller.outputs.uninstaller }}
         run: |
-          $buildDirectory = Join-Path $env:GITHUB_WORKSPACE 'target\debug'
-          $outputDirectory = Join-Path $env:RUNNER_TEMP 'keeppeek-installer'
+          $buildDirectory = Join-Path $env:GITHUB_WORKSPACE 'target\release'
+          $outputDirectory = Join-Path $env:RUNNER_TEMP 'keeppeek-signed-artifacts'
           New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
           & 'C:\Program Files (x86)\NSIS\makensis.exe' `
-            '/DARCH=x86_64' `
+            "/DARCH=$env:ARCH" `
             "/DBUILD_DIR=$buildDirectory" `
             "/DOUT_DIR=$outputDirectory" `
-            '/DVERSION=0.0.0' `
-            '/DVERSION_RESOURCE=0.0.0.0' `
+            "/DVERSION=$env:VERSION" `
+            "/DVERSION_RESOURCE=$env:VERSION_RESOURCE" `
             "/DSIGNED_UNINSTALLER=$env:SIGNED_UNINSTALLER" `
             installer/keeppeek.nsi
           if ($LASTEXITCODE -ne 0) {
             throw 'Unable to build the KeepPeek installer'
           }
 
-          $installer = Join-Path $outputDirectory 'keeppeek-0.0.0-windows-x86_64-installer.exe'
+          $installer = Join-Path $outputDirectory "keeppeek-$env:VERSION-$env:PLATFORM-installer.exe"
           "installer=$installer" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "output_dir=$outputDirectory" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           if (-not (Test-Path $installer)) {
             throw "Installer was not created at $installer"
           }
@@ -729,6 +788,44 @@ jobs:
           if ($null -eq $signature.TimestamperCertificate) {
             throw "$env:INSTALLER does not have an RFC 3161 timestamp"
           }
+      - name: Stage signed binaries and SHA-256 checksums
+        shell: pwsh
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          VERSION: ${{ steps.version.outputs.version }}
+          OUTPUT_DIR: ${{ steps.windows-installer.outputs.output_dir }}
+        run: |
+          $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+          $copies = @(
+            @{ Source = 'target/release/keeppeek.exe'; Target = "keeppeek-$env:VERSION-$env:PLATFORM.exe" },
+            @{ Source = 'target/release/keeppeek-service.exe'; Target = "keeppeek-service-$env:VERSION-$env:PLATFORM.exe" },
+            @{ Source = 'target/release/keeppeek-desktop.exe'; Target = "keeppeek-desktop-$env:VERSION-$env:PLATFORM.exe" }
+          )
+          foreach ($item in $copies) {
+            Copy-Item -LiteralPath $item.Source -Destination (Join-Path $env:OUTPUT_DIR $item.Target) -Force
+          }
+
+          $artifacts = @(
+            "keeppeek-$env:VERSION-$env:PLATFORM-installer.exe",
+            "keeppeek-$env:VERSION-$env:PLATFORM.exe",
+            "keeppeek-service-$env:VERSION-$env:PLATFORM.exe",
+            "keeppeek-desktop-$env:VERSION-$env:PLATFORM.exe"
+          )
+          foreach ($name in $artifacts) {
+            $fullPath = Join-Path $env:OUTPUT_DIR $name
+            if (-not (Test-Path -LiteralPath $fullPath)) {
+              throw "Missing expected signed artifact: $fullPath"
+            }
+            $hash = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            [System.IO.File]::WriteAllText("$fullPath.sha256", "$hash  $name`n", $utf8NoBom)
+          }
+      - name: Upload signed Windows artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: keeppeek-main-${{ matrix.platform }}-signed
+          path: ${{ steps.windows-installer.outputs.output_dir }}
+          if-no-files-found: error
+          retention-days: 30
 
   ui-static:
     name: UI (ubuntu-latest)
