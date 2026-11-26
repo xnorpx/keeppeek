@@ -39,6 +39,33 @@ impl EventStore {
         Ok(Some(previous))
     }
 
+    pub(crate) fn open_leased_attachment(
+        &self,
+        event: &TimelineEvent,
+        attachment: &str,
+    ) -> anyhow::Result<
+        Option<(
+            std::fs::File,
+            u64,
+            Option<crate::storage::catalog::readers::LeaseSet>,
+        )>,
+    > {
+        if let Some((location, lease)) = self.catalog.leased_event_image(event, attachment)? {
+            let manager = self
+                .volume_storage
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("image volume runtime unavailable"))?;
+            let owned = manager.open_owned(&location)?;
+            return Ok(Some((owned.into_file(), location.bytes, Some(lease))));
+        }
+        let Some(path) = self.attachment_path(&event.camera_id, &event.id, attachment)? else {
+            return Ok(None);
+        };
+        let file = std::fs::File::open(&path)?;
+        let length = file.metadata()?.len();
+        Ok(Some((file, length, None)))
+    }
+
     pub(crate) fn leased_attachment_path(
         &self,
         event: &TimelineEvent,

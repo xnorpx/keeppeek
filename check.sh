@@ -65,3 +65,4 @@ cd "$repo_dir/ui"
 echo "Running UI Quality checks..."
 bun run quality:check
 bun run test:e2e
+bun run perf:playback:run

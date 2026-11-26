@@ -4282,11 +4282,16 @@ export class StoredMediaPlayback {
 		if (state.playing || this.#generation !== state.generation) this.cancelFrameStep();
 		this.recordedAudio = state.recordedAudio;
 		this.publishArchive(state.archive);
-		if (this.#generation !== 0n && state.generation !== this.#generation) {
+		const nextMode = state.mode as StoredMediaMode;
+		if (
+			nextMode === StoredMediaMode.PLAYBACK &&
+			this.#generation !== 0n &&
+			(state.generation !== this.#generation || this.#mode !== StoredMediaMode.PLAYBACK)
+		) {
 			this.replaceMediaSource();
 		}
 		this.#generation = state.generation;
-		this.#mode = state.mode as StoredMediaMode;
+		this.#mode = nextMode;
 		this.#contentType = state.delivery.contentType;
 		this.reportStartup('metadata', state.delivery.contentType);
 		this.anchorTimeMs = timestampDate(state.fragmentTime).getTime();
@@ -4793,6 +4798,10 @@ export class StoredMediaPlayback {
 	private scheduleSeek(): void {
 		if (this.#seekInFlight || this.#seekTimer || !this.#pendingSeek || this.#closed) return;
 		const delayMs = Math.max(0, 50 - (performance.now() - this.#lastSeekDispatchMs));
+		if (this.#mode === StoredMediaMode.SCRUB && delayMs === 0) {
+			this.dispatchSeek();
+			return;
+		}
 		this.#seekTimer = setTimeout(() => {
 			this.#seekTimer = null;
 			this.dispatchSeek();
@@ -4869,6 +4878,7 @@ export class StoredMediaPlayback {
 
 	private initializeSourceBuffer(): void {
 		if (
+			this.#mode !== StoredMediaMode.PLAYBACK ||
 			this.#sourceBuffer ||
 			!this.#contentType ||
 			this.#mediaSource.readyState !== 'open' ||

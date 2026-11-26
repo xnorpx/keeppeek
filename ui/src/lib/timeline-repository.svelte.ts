@@ -471,6 +471,7 @@ export class TimelineRepository {
 					(task.event.end_time_ms ?? task.event.start_time_ms) + 1
 				),
 				eventTypes: [task.event.kind],
+				includeAvailability: false,
 				includeEvents: true,
 				includeAttachments: true,
 				signal: controller.signal

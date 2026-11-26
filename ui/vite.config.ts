@@ -30,6 +30,21 @@ export default defineConfig({
 			})
 		})
 	],
+	build: {
+		rolldownOptions: {
+			output: {
+				codeSplitting: {
+					groups: [
+						{
+							name: 'lucide-icons',
+							// ponytail: coalesce app icons into one chunk while keeping /share's icon isolated.
+							test: /@lucide[\\/]svelte[\\/]dist[\\/]icons[\\/](?!lock-keyhole)/
+						}
+					]
+				}
+			}
+		}
+	},
 	optimizeDeps: {
 		include: [
 			'bits-ui',
@@ -50,6 +65,8 @@ export default defineConfig({
 			'@lucide/svelte/icons/download',
 			'@lucide/svelte/icons/eye',
 			'@lucide/svelte/icons/eye-off',
+			'@lucide/svelte/icons/file-json',
+			'@lucide/svelte/icons/film',
 			'@lucide/svelte/icons/flask-conical',
 			'@lucide/svelte/icons/hard-drive',
 			'@lucide/svelte/icons/inbox',

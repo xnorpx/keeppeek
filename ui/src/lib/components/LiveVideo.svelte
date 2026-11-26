@@ -1,3 +1,10 @@
+<script module lang="ts">
+	const compactNumber = new Intl.NumberFormat(undefined, {
+		notation: 'compact',
+		maximumFractionDigits: 1
+	});
+</script>
+
 <script lang="ts">
 	import { onMount, type Snippet } from 'svelte';
 	import { observeGridVisibility, type GridTileVisibility } from '$lib/grid-visibility';
@@ -78,11 +85,6 @@
 		decoderImplementation: null,
 		powerEfficientDecoder: null
 	};
-
-	const compactNumber = new Intl.NumberFormat(undefined, {
-		notation: 'compact',
-		maximumFractionDigits: 1
-	});
 
 	type Props = {
 		cameraId: string;

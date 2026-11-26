@@ -56,4 +56,17 @@ describe('buildTimelineAvailability', () => {
 			'Timeline window must have positive duration'
 		);
 	});
+
+	it('merges a full day of one-minute contiguous segments in linear time', () => {
+		const dayStart = 1_700_000_000_000;
+		const segments = Array.from({ length: 1_440 }, (_, index) =>
+			segment(`seg-${index}`, dayStart + index * 60_000, dayStart + (index + 1) * 60_000)
+		);
+
+		const result = buildTimelineAvailability(segments, dayStart, dayStart + 1_440 * 60_000);
+
+		expect(result.available).toHaveLength(1);
+		expect(result.available[0]?.segmentUrls).toHaveLength(1_440);
+		expect(result.gaps).toEqual([]);
+	});
 });

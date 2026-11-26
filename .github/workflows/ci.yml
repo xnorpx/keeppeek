@@ -1041,6 +1041,45 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  ui-playback-performance:
+    name: UI Playback Performance
+    if: always() && (github.event_name == 'push' || needs.changes.outputs.ui_e2e == 'true') && needs.ui-e2e-build.result == 'success'
+    needs: [changes, ui-e2e-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: ui/.bun-version
+      - name: Install UI dependencies
+        run: bun install --no-save --registry=https://registry.npmjs.org/
+      - name: Install Chromium
+        run: bunx playwright install --with-deps chromium
+      - name: Download shared Playwright binaries and fixtures
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ui-e2e-linux
+          path: target
+      - name: Restore executable permissions
+        working-directory: .
+        run: chmod +x target/release/keeppeek target/release/test_camera
+      - name: Run real-database playback performance benchmark
+        run: bun run perf:playback:run
+      - name: Upload playback performance report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ui-playback-performance-report
+          path: |
+            target/keep-performance/playback
+            ui/test-results
+          if-no-files-found: ignore
+          retention-days: 14
+
   home-assistant-container:
     name: Home Assistant Container
     if: always() && (github.event_name == 'push' || needs.changes.outputs.home_assistant == 'true') && needs.ui-e2e-build.result == 'success'
@@ -1181,6 +1220,7 @@ jobs:
         ui-e2e-build,
         ui-authentication-e2e-build,
         ui-e2e,
+        ui-playback-performance,
         ui-windows-build,
         home-assistant-container,
       ]
@@ -1196,6 +1236,7 @@ jobs:
           E2E_BUILD_RESULT: ${{ needs.ui-e2e-build.result }}
           AUTH_E2E_BUILD_RESULT: ${{ needs.ui-authentication-e2e-build.result }}
           E2E_RESULT: ${{ needs.ui-e2e.result }}
+          PLAYBACK_PERF_RESULT: ${{ needs.ui-playback-performance.result }}
           WINDOWS_BUILD_RESULT: ${{ needs.ui-windows-build.result }}
           HOME_ASSISTANT_RESULT: ${{ needs.home-assistant-container.result }}
         run: |
@@ -1203,10 +1244,12 @@ jobs:
             test "$E2E_BUILD_RESULT" = success
             test "$AUTH_E2E_BUILD_RESULT" = success
             test "$E2E_RESULT" = success
+            test "$PLAYBACK_PERF_RESULT" = success
           else
             test "$E2E_BUILD_RESULT" = success -o "$E2E_BUILD_RESULT" = skipped
             test "$AUTH_E2E_BUILD_RESULT" = success -o "$AUTH_E2E_BUILD_RESULT" = skipped
             test "$E2E_RESULT" = success -o "$E2E_RESULT" = skipped
+            test "$PLAYBACK_PERF_RESULT" = success -o "$PLAYBACK_PERF_RESULT" = skipped
           fi
           if [[ "$EVENT_NAME" == "push" || "$UI_CHANGED" == "true" ]]; then
             test "$WINDOWS_BUILD_RESULT" = success
@@ -1422,6 +1465,7 @@ jobs:
         ui-e2e-build,
         ui-authentication-e2e-build,
         ui-e2e,
+        ui-playback-performance,
         ui-windows-build,
         ui-gate,
         coverage,
@@ -1475,6 +1519,7 @@ jobs:
               'UI E2E (2/4)',
               'UI E2E (3/4)',
               'UI E2E (4/4)',
+              'UI Playback Performance',
               'UI Windows Build',
               'UI (windows-latest)',
               'Coverage (Rust + UI)'

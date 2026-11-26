@@ -273,6 +273,7 @@ pub enum Request {
         event: String,
         attachment: String,
     },
+    Images(Vec<(String, String)>),
     ImageRetirement(String),
     ImageRetired(Publication),
     ImageAbandoned(Publication),
@@ -303,6 +304,7 @@ impl Request {
             | Self::RecordingRetention(recordings::Action::Load(_))
             | Self::RecordingRecovery(recording_recovery::Action::Load(_))
             | Self::Image { .. }
+            | Self::Images(_)
             | Self::PendingImage(_)
             | Self::ExportCleanup(
                 export_cleanup::Action::Owned(_) | export_cleanup::Action::Load(_),
@@ -353,6 +355,7 @@ pub enum Reply {
     Revision(u64),
     Reserved { operation: String, bytes: u64 },
     Location(Option<Location>),
+    ImageLocations(Vec<Option<Location>>),
     Usage(Vec<Usage>),
     Bytes(u64),
     Move(Box<moves::Job>),
@@ -566,6 +569,13 @@ fn validate(request: &Request) -> anyhow::Result<()> {
         Request::Image { event, attachment } => {
             identifier(event)?;
             identifier(attachment)?;
+        }
+        Request::Images(pairs) => {
+            anyhow::ensure!(pairs.len() <= 256, "too many image locations requested");
+            for (event, attachment) in pairs {
+                identifier(event)?;
+                identifier(attachment)?;
+            }
         }
         Request::Bind(binding) | Request::CheckBinding(binding) => validate_binding(binding)?,
         Request::SetDraining {
@@ -795,6 +805,9 @@ async fn dispatch(connection: &turso::Connection, request: Request) -> anyhow::R
         }
         Request::Image { event, attachment } => {
             Reply::Location(images::lookup(connection, &event, &attachment).await?)
+        }
+        Request::Images(pairs) => {
+            Reply::ImageLocations(images::lookup_batch(connection, &pairs).await?)
         }
         Request::Revision => Reply::Revision(revision(connection).await?),
     })

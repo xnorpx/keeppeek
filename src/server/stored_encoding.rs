@@ -6,10 +6,81 @@ use crate::storage::{
     catalog::archive_playback::ArchiveRead,
 };
 
+struct SingleDescriptionInit {
+    sample_descriptions: Vec<u32>,
+    initialization: Vec<u8>,
+    content_type: String,
+}
+
+struct LocalSource {
+    path: String,
+    init_offset: u64,
+    init_len: u64,
+    file: File,
+    file_len: u64,
+    initialization: Vec<u8>,
+    single_description: Option<SingleDescriptionInit>,
+}
+
+impl LocalSource {
+    fn open(fragment: &CatalogMediaFragment) -> Result<Self, ControlCommandError> {
+        stored_read::validate_length(fragment.init_len)?;
+        let mut file = File::open(&fragment.path).map_err(|error| {
+            ControlCommandError::new(
+                proto::ErrorCode::Internal,
+                500,
+                format!("unable to open indexed recording: {error}"),
+            )
+        })?;
+        let file_len = file
+            .metadata()
+            .map_err(|error| {
+                ControlCommandError::new(
+                    proto::ErrorCode::Internal,
+                    500,
+                    format!("unable to inspect indexed recording: {error}"),
+                )
+            })?
+            .len();
+        let initialization =
+            read_local_range(&mut file, file_len, fragment.init_offset, fragment.init_len)?;
+        let single_description = parse_single_description_init(&initialization)?;
+        Ok(Self {
+            path: fragment.path.clone(),
+            init_offset: fragment.init_offset,
+            init_len: fragment.init_len,
+            file,
+            file_len,
+            initialization,
+            single_description,
+        })
+    }
+
+    fn matches(&self, fragment: &CatalogMediaFragment) -> bool {
+        self.path == fragment.path
+            && self.init_offset == fragment.init_offset
+            && self.init_len == fragment.init_len
+    }
+
+    fn read_fragment(
+        &mut self,
+        fragment: &CatalogMediaFragment,
+    ) -> Result<Vec<u8>, ControlCommandError> {
+        stored_read::validate_length(fragment.byte_len)?;
+        read_local_range(
+            &mut self.file,
+            self.file_len,
+            fragment.byte_offset,
+            fragment.byte_len,
+        )
+    }
+}
+
 struct ArchiveSource<'a> {
     reader: VerifiedReader<'a>,
     init_offset: u64,
     initialization: Vec<u8>,
+    single_description: Option<SingleDescriptionInit>,
 }
 
 impl<'a> ArchiveSource<'a> {
@@ -17,13 +88,18 @@ impl<'a> ArchiveSource<'a> {
         fragment: &CatalogMediaFragment,
         descriptor: &ArchiveRead,
         work: Work<'a>,
-    ) -> anyhow::Result<Self> {
-        let mut reader = VerifiedReader::new(descriptor.clone(), work)?;
-        let initialization = reader.read_range(fragment.init_offset, fragment.init_len)?;
+    ) -> Result<Self, ControlCommandError> {
+        let mut reader =
+            VerifiedReader::new(descriptor.clone(), work).map_err(stored_read::archive_error)?;
+        let initialization = reader
+            .read_range(fragment.init_offset, fragment.init_len)
+            .map_err(stored_read::archive_error)?;
+        let single_description = parse_single_description_init(&initialization)?;
         Ok(Self {
             reader,
             init_offset: fragment.init_offset,
             initialization,
+            single_description,
         })
     }
 
@@ -40,6 +116,7 @@ struct Encoder<'a> {
     target: DataChannelTarget,
     identifiers: StoredMediaIdentifiers,
     period: Option<StoredMediaPeriodKey>,
+    local_source: Option<LocalSource>,
     archive_source: Option<ArchiveSource<'a>>,
     archive_deadline: Option<Instant>,
     content_type: Option<String>,
@@ -68,6 +145,7 @@ pub(super) fn encode(
         target,
         identifiers,
         period: None,
+        local_source: None,
         archive_source: None,
         archive_deadline: None,
         content_type: None,
@@ -130,12 +208,26 @@ impl Encoder<'_> {
     ) -> Result<StoredMediaPeriod, ControlCommandError> {
         let Some(archive) = &fragment.archive else {
             self.archive_source = None;
-            let path = Path::new(&fragment.path);
-            let initialization =
-                read_stored_range(path, None, fragment.init_offset, fragment.init_len)?;
-            let payload = read_stored_range(path, None, fragment.byte_offset, fragment.byte_len)?;
-            return stored_media_period(&initialization, &payload);
+            self.local_source
+                .take_if(|source| !source.matches(fragment));
+            let source = match &mut self.local_source {
+                Some(source) => source,
+                None => self.local_source.insert(LocalSource::open(fragment)?),
+            };
+            let payload = source.read_fragment(fragment)?;
+            if let Some(single) = &source.single_description {
+                let normalized = mp4::normalize_fragment_sample_description_indices(&payload)
+                    .map_err(|error| stored_mp4_period_error("normalize fragment", error))?;
+                return Ok(StoredMediaPeriod {
+                    sample_descriptions: single.sample_descriptions.clone(),
+                    initialization: single.initialization.clone(),
+                    fragment: normalized,
+                    content_type: single.content_type.clone(),
+                });
+            }
+            return stored_media_period(&source.initialization, &payload);
         };
+        self.local_source = None;
         stored_read::validate_length(fragment.init_len)?;
         stored_read::validate_length(fragment.byte_len)?;
         // Discard the previous initialization and chunk before opening another object.
@@ -150,18 +242,122 @@ impl Encoder<'_> {
                         .get_or_insert_with(|| Instant::now() + Duration::from_secs(30)),
                     cancelled: &|| false,
                 };
-                self.archive_source.insert(
-                    ArchiveSource::open(fragment, archive, work)
-                        .map_err(stored_read::archive_error)?,
-                )
+                self.archive_source
+                    .insert(ArchiveSource::open(fragment, archive, work)?)
             }
         };
         let payload = source
             .reader
             .read_range(fragment.byte_offset, fragment.byte_len)
             .map_err(stored_read::archive_error)?;
+        if let Some(single) = &source.single_description {
+            let normalized = mp4::normalize_fragment_sample_description_indices(&payload)
+                .map_err(|error| stored_mp4_period_error("normalize fragment", error))?;
+            return Ok(StoredMediaPeriod {
+                sample_descriptions: single.sample_descriptions.clone(),
+                initialization: single.initialization.clone(),
+                fragment: normalized,
+                content_type: single.content_type.clone(),
+            });
+        }
         stored_media_period(&source.initialization, &payload)
     }
+}
+
+fn read_local_range(
+    file: &mut File,
+    file_len: u64,
+    offset: u64,
+    length: u64,
+) -> Result<Vec<u8>, ControlCommandError> {
+    if offset.checked_add(length).is_none_or(|end| end > file_len) {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Internal,
+            500,
+            "stored media byte range exceeds its indexed recording",
+        ));
+    }
+    file.seek(SeekFrom::Start(offset)).map_err(|error| {
+        ControlCommandError::new(
+            proto::ErrorCode::Internal,
+            500,
+            format!("unable to seek indexed recording: {error}"),
+        )
+    })?;
+    let capacity = usize::try_from(length).map_err(|_| {
+        ControlCommandError::new(
+            proto::ErrorCode::Internal,
+            500,
+            "stored media byte range does not fit memory",
+        )
+    })?;
+    let mut payload = vec![0; capacity];
+    file.read_exact(&mut payload).map_err(|error| {
+        let message = if error.kind() == std::io::ErrorKind::UnexpectedEof {
+            "indexed recording byte range was truncated".to_owned()
+        } else {
+            format!("unable to read indexed recording: {error}")
+        };
+        ControlCommandError::new(proto::ErrorCode::Internal, 500, message)
+    })?;
+    Ok(payload)
+}
+
+fn parse_single_description_init(
+    initialization: &[u8],
+) -> Result<Option<SingleDescriptionInit>, ControlCommandError> {
+    let reader = mp4::Mp4Reader::read_header(
+        Cursor::new(initialization),
+        initialization.len().try_into().unwrap_or(u64::MAX),
+    )
+    .map_err(|error| stored_mp4_period_error("parse initialization", error))?;
+    let mut tracks = reader.tracks().iter().collect::<Vec<_>>();
+    tracks.sort_unstable_by_key(|(track_id, _)| **track_id);
+    if tracks
+        .iter()
+        .any(|(_, track)| track.sample_description_count() > 1)
+    {
+        return Ok(None);
+    }
+    let mut sample_descriptions = Vec::with_capacity(tracks.len());
+    let mut track_configs = Vec::with_capacity(tracks.len());
+    for (_, track) in tracks {
+        sample_descriptions.push(1);
+        track_configs.push(mp4::FragmentedTrackConfig {
+            track_type: track
+                .track_type()
+                .map_err(|error| stored_mp4_period_error("read track type", error))?,
+            timescale: track.timescale(),
+            language: track.language().to_owned(),
+            sample_descriptions: vec![
+                track
+                    .media_config_for_description(1)
+                    .map_err(|error| stored_mp4_period_error("read sample description", error))?,
+            ],
+        });
+    }
+    let config = mp4::Mp4Config {
+        major_brand: *reader.major_brand(),
+        minor_version: reader.minor_version(),
+        compatible_brands: reader.compatible_brands().to_vec(),
+        timescale: reader.timescale(),
+    };
+    let writer = mp4::FragmentedMp4Writer::write_start_with_sample_descriptions(
+        Cursor::new(Vec::new()),
+        &config,
+        &track_configs,
+    )
+    .map_err(|error| stored_mp4_period_error("write initialization", error))?;
+    let range = writer.initialization();
+    let bytes = writer.into_writer().into_inner();
+    let normalized_init =
+        bytes[range.offset as usize..(range.offset + range.size) as usize].to_vec();
+    let content_type = fragmented_mp4_content_type(&normalized_init)?;
+    Ok(Some(SingleDescriptionInit {
+        sample_descriptions,
+        initialization: normalized_init,
+        content_type,
+    }))
 }
 
 fn increment(value: u64) -> Result<u64, ControlCommandError> {

@@ -10,14 +10,7 @@
 	import MonitorIcon from '@lucide/svelte/icons/monitor';
 	import RadioTowerIcon from '@lucide/svelte/icons/radio-tower';
 	import CloudNotificationSettings from './CloudNotificationSettings.svelte';
-	import NotificationsPaperFrame from './NotificationsPaperFrame.svelte';
 	import NotificationsRuntime from './NotificationsRuntime.svelte';
-
-	type Props = {
-		paperFrame?: boolean;
-	};
-
-	let { paperFrame = false }: Props = $props();
 
 	const evidence = notificationsEvidence();
 	const capabilities = useCapabilityState();
@@ -37,9 +30,7 @@
 	} as const;
 </script>
 
-{#if paperFrame}
-	<NotificationsPaperFrame />
-{:else if runtimeSupported}
+{#if runtimeSupported}
 	<div class="space-y-4">
 		<NotificationsRuntime />
 		<CloudNotificationSettings />

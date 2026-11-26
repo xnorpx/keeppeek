@@ -112,6 +112,40 @@ impl Root {
         Ok(owned)
     }
 
+    /// Checks a batch of owned leaves under this root, validating the root directory once.
+    pub(crate) fn has_owned_batch(&self, items: &[(&str, &str, u64)]) -> Vec<bool> {
+        let mut results = vec![false; items.len()];
+        if items.is_empty() {
+            return results;
+        }
+        if self.revalidate().is_err() || validate_owner(&self.directory, 0o022).is_err() {
+            return results;
+        }
+        let mut options = file_options();
+        #[cfg(windows)]
+        {
+            use cap_std::fs::OpenOptionsExt;
+            use windows::Win32::Storage::FileSystem::FILE_SHARE_READ;
+            options.share_mode(FILE_SHARE_READ.0);
+        }
+        options.write(false);
+        for (index, &(key, expected_identity, expected_bytes)) in items.iter().enumerate() {
+            if validate_key(key).is_err() {
+                continue;
+            }
+            let Ok(file) = self.directory.open_with(key, &options) else {
+                continue;
+            };
+            let file = file.into_std();
+            let valid = file_identity(&file).is_ok_and(|identity| identity == expected_identity)
+                && file
+                    .metadata()
+                    .is_ok_and(|metadata| metadata.len() == expected_bytes);
+            results[index] = valid;
+        }
+        results
+    }
+
     /// Synchronizes the pinned directory after validating its name and permissions.
     ///
     /// # Errors
@@ -183,6 +217,11 @@ impl Root {
 }
 
 impl OwnedFile {
+    /// Consumes a verified read-only owned handle and returns its opened standard file.
+    pub(crate) fn into_file(self) -> File {
+        self.file
+    }
+
     /// Hashes a synchronized prefix without changing the owned file.
     pub(crate) fn prefix_digest(&mut self, bytes: u64) -> anyhow::Result<[u8; 32]> {
         self.revalidate()?;

@@ -21,6 +21,7 @@ clap = { version = "4", default-features = false, features = [
   "help",
 ] }
 ctrlc = { version = "3.5.2" }
+image = { version = "0.25.9", default-features = false, features = ["jpeg"] }
 keeppeek = { path = "../.." }
 mp4 = { path = "../mp4" }
 reo-proto = { path = "../reo-proto" }

@@ -19,7 +19,6 @@
 	import { usageReportingCapability } from '$lib/control-client-usage-reporting';
 	import { capabilityActions } from '$lib/capability-actions';
 	import BackupRestoreSection from '$lib/components/BackupRestoreSection.svelte';
-	import MobileAccessSection from '$lib/components/MobileAccessSection.svelte';
 	import MobileSettingsActionBar from '$lib/components/MobileSettingsActionBar.svelte';
 	import MobileSettingsHeader from '$lib/components/MobileSettingsHeader.svelte';
 	import AppearanceSystemSection from '$lib/components/AppearanceSystemSection.svelte';
@@ -558,18 +557,11 @@
 			</div>
 
 			<div class={mobileSectionClass('access')}>
-				<MobileAccessSection
+				<AccessSection
 					controller={controlClient}
 					onrevealaccesskey={() => controlClient.revealAccessKey()}
 					onrotateaccesskey={() => controlClient.rotateAccessKey()}
 				/>
-				<div class="hidden md:block">
-					<AccessSection
-						controller={controlClient}
-						onrevealaccesskey={() => controlClient.revealAccessKey()}
-						onrotateaccesskey={() => controlClient.rotateAccessKey()}
-					/>
-				</div>
 				{#if administrator && capabilities.supports(capabilityActions.manageGuestLinks.capability)}
 					<GuestSharingSection controller={controlClient} />
 				{/if}

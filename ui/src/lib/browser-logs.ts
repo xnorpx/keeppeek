@@ -5,6 +5,7 @@ const DEFAULT_MAX_ENTRIES = 2_000;
 const DEFAULT_MAX_BYTES = 2 * 1024 * 1024;
 const MAX_VALUE_CHARS = 16_000;
 const consoleMethods = ['debug', 'info', 'log', 'warn', 'error'] as const;
+const utf8Encoder = new TextEncoder();
 
 type ConsoleMethod = (typeof consoleMethods)[number];
 type BrowserLogListener = (entry: BrowserLogEntry | null) => void;
@@ -17,6 +18,9 @@ export interface BrowserLogStoreOptions {
 
 export class BrowserLogStore {
 	private entries: BrowserLogEntry[] = [];
+	private entryJson: string[] = [];
+	private entryBytes: number[] = [];
+	private totalBytes = 2;
 	private listeners = new Set<BrowserLogListener>();
 	private nextSequence = 1;
 	private readonly storage: Storage | null;
@@ -49,7 +53,7 @@ export class BrowserLogStore {
 			...(details.line !== undefined ? { line: details.line } : {})
 		};
 		this.nextSequence += 1;
-		this.entries.push(entry);
+		this.pushSerialized(entry);
 		this.enforceBounds();
 		this.persist();
 		for (const listener of this.listeners) listener(entry);
@@ -67,6 +71,9 @@ export class BrowserLogStore {
 
 	clear(): void {
 		this.entries = [];
+		this.entryJson = [];
+		this.entryBytes = [];
+		this.totalBytes = 2;
 		this.persist();
 		for (const listener of this.listeners) listener(null);
 	}
@@ -76,9 +83,25 @@ export class BrowserLogStore {
 		return () => this.listeners.delete(listener);
 	}
 
+	private pushSerialized(entry: BrowserLogEntry): void {
+		const json = JSON.stringify(entry);
+		const bytes = utf8Encoder.encode(json).byteLength;
+		const separator = this.entries.length > 0 ? 1 : 0;
+		this.entries.push(entry);
+		this.entryJson.push(json);
+		this.entryBytes.push(bytes);
+		this.totalBytes += bytes + separator;
+	}
+
 	private enforceBounds(): void {
-		while (this.entries.length > this.maxEntries || serializedBytes(this.entries) > this.maxBytes) {
+		while (
+			this.entries.length > this.maxEntries ||
+			(this.entries.length > 0 && this.totalBytes > this.maxBytes)
+		) {
 			this.entries.shift();
+			this.entryJson.shift();
+			const removed = this.entryBytes.shift() ?? 0;
+			this.totalBytes -= removed + (this.entries.length > 0 ? 1 : 0);
 		}
 	}
 
@@ -89,18 +112,27 @@ export class BrowserLogStore {
 			if (!stored) return;
 			const entries: unknown = JSON.parse(stored);
 			if (!Array.isArray(entries)) return;
-			this.entries = entries.filter(isBrowserLogEntry).slice(-this.maxEntries);
+			this.entries = [];
+			this.entryJson = [];
+			this.entryBytes = [];
+			this.totalBytes = 2;
+			for (const entry of entries.filter(isBrowserLogEntry).slice(-this.maxEntries)) {
+				this.pushSerialized(entry);
+			}
 			this.enforceBounds();
 			this.nextSequence = (this.entries.at(-1)?.sequence ?? 0) + 1;
 		} catch {
 			this.entries = [];
+			this.entryJson = [];
+			this.entryBytes = [];
+			this.totalBytes = 2;
 		}
 	}
 
 	private persist(): void {
 		if (!this.storage) return;
 		try {
-			this.storage.setItem(STORAGE_KEY, JSON.stringify(this.entries));
+			this.storage.setItem(STORAGE_KEY, `[${this.entryJson.join(',')}]`);
 		} catch {
 			// Keep the in-memory history when storage is unavailable or full.
 		}
@@ -261,10 +293,6 @@ function redactText(value: string): string {
 
 function isSensitiveKey(key: string): boolean {
 	return /password|passwd|secret|token|authorization|credential|api[_-]?key|cookie/i.test(key);
-}
-
-function serializedBytes(value: unknown): number {
-	return new TextEncoder().encode(JSON.stringify(value)).byteLength;
 }
 
 function isBrowserLogEntry(value: unknown): value is BrowserLogEntry {

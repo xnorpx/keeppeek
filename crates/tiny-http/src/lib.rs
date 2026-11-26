@@ -326,6 +326,7 @@ impl Server {
                         } else {
                             CONNECTION_IO_TIMEOUT
                         };
+                        let _ = sock.set_nodelay(true);
                         match sock
                             .set_read_timeout(Some(timeout))
                             .and_then(|()| sock.set_write_timeout(Some(timeout)))

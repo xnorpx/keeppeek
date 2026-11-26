@@ -70,6 +70,7 @@
 	const SEARCH_DEBOUNCE_MS = 250;
 	const MAX_EVENT_KEYFRAME_BYTES = 4 * 1_048_576;
 	const MAX_RETAINED_PAGE_TOKENS = 32;
+	const MAX_EVENT_PREVIEW_CACHE = 96;
 	const eventKinds = ['all', 'person', 'vehicle', 'motion', 'story'] as const;
 	const imageFilters: readonly { value: EventImageFilter; label: string }[] = [
 		{ value: 'all', label: 'Any image' },
@@ -122,6 +123,8 @@
 	let activePreviewCount = 0;
 	const previewKeys = new Set<string>();
 	const previewControllers = new Map<string, AbortController>();
+	const eventPreviewCache = new Map<string, { url: string; blob?: Blob }>();
+	const cachedPreviewUrls = new Set<string>();
 	let previewStates = $state.raw<Record<string, EventPreviewState>>({});
 	const maxConcurrentPreviews = 2;
 	let pageTokens = $state.raw<string[]>(['']);
@@ -353,6 +356,7 @@
 			queueMicrotask(() => {
 				releaseRecordPreviews(detachedRecords);
 				if (detachedSelection) releaseEventPreview(detachedSelection);
+				clearEventPreviewCache();
 			});
 		};
 	});
@@ -502,9 +506,10 @@
 		const detachedSelection = selectedDetachedRecord;
 		records = [];
 		selectedDetachedRecord = null;
-		await tick();
-		releaseRecordPreviews(detachedRecords);
-		if (detachedSelection) releaseEventPreview(detachedSelection);
+		queueMicrotask(() => {
+			releaseRecordPreviews(detachedRecords);
+			if (detachedSelection) releaseEventPreview(detachedSelection);
+		});
 		try {
 			const result = await queryEventPage(filters, token, controller.signal);
 			if (controller.signal.aborted || version !== requestVersion) return;
@@ -652,6 +657,15 @@
 			if (!camera) return [];
 			const previewKeyframe = hit.canonicalAttachment ? undefined : eventPreviewKeyframe(hit);
 			const hasLegacyPreview = hit.canonicalAttachment === null && hit.hasImageAttachment;
+			const cached =
+				hit.canonicalAttachment && hit.imageAvailability !== 'unavailable'
+					? getCachedEventPreview(
+							hit.sourceId,
+							hit.eventId,
+							hit.revision,
+							hit.canonicalAttachment.id
+						)
+					: null;
 			const event: RecordingEvent = {
 				id: hit.eventId,
 				workflow: hit.workflow,
@@ -666,7 +680,8 @@
 				bbox_attachment_id: hit.bboxAttachmentId,
 				zone: hit.zone,
 				text: hit.text,
-				thumbnail_url: null,
+				thumbnail_url: cached?.url ?? null,
+				thumbnail_blob: cached?.blob,
 				attachments: hit.attachments.length
 					? hit.attachments
 					: hasLegacyPreview
@@ -686,7 +701,7 @@
 				rejected_icon_key: hit.rejectedIconKey,
 				image_availability: hit.imageAvailability
 			};
-			return [{ camera, event, previewKeyframe }];
+			return [{ camera, event, previewKeyframe, previewObjectUrl: cached !== null }];
 		});
 	}
 
@@ -912,6 +927,16 @@
 				previewKeys.delete(key);
 				return;
 			}
+			if (record.event.canonical_attachment_id) {
+				rememberCachedEventPreview(
+					record.camera.id,
+					record.event.id,
+					record.event.revision ?? 0,
+					record.event.canonical_attachment_id,
+					url,
+					blob
+				);
+			}
 			records = records.map((candidate) =>
 				eventBrowserRecordKey(candidate) === key
 					? {
@@ -996,13 +1021,78 @@
 		previewStates = { ...previewStates, [key]: state };
 	}
 
+	function eventPreviewCacheKey(
+		sourceId: string,
+		eventId: string,
+		revision: number,
+		attachmentId: string
+	): string {
+		return `${sourceId}:${eventId}:${revision}:${attachmentId}`;
+	}
+
+	function getCachedEventPreview(
+		sourceId: string,
+		eventId: string,
+		revision: number,
+		attachmentId: string
+	): { url: string; blob?: Blob } | null {
+		const cacheKey = eventPreviewCacheKey(sourceId, eventId, revision, attachmentId);
+		const entry = eventPreviewCache.get(cacheKey);
+		if (!entry) return null;
+		eventPreviewCache.delete(cacheKey);
+		eventPreviewCache.set(cacheKey, entry);
+		return entry;
+	}
+
+	function rememberCachedEventPreview(
+		sourceId: string,
+		eventId: string,
+		revision: number,
+		attachmentId: string,
+		url: string,
+		blob?: Blob
+	): void {
+		const cacheKey = eventPreviewCacheKey(sourceId, eventId, revision, attachmentId);
+		const existing = eventPreviewCache.get(cacheKey);
+		if (existing && existing.url !== url) {
+			cachedPreviewUrls.delete(existing.url);
+			if (!isPreviewUrlInUse(existing.url)) URL.revokeObjectURL(existing.url);
+		}
+		eventPreviewCache.delete(cacheKey);
+		eventPreviewCache.set(cacheKey, { url, blob });
+		cachedPreviewUrls.add(url);
+		// ponytail: Bound in-memory event thumbnails to 96 entries across filter/search changes.
+		while (eventPreviewCache.size > MAX_EVENT_PREVIEW_CACHE) {
+			const oldest = eventPreviewCache.entries().next().value as
+				[string, { url: string; blob?: Blob }] | undefined;
+			if (!oldest) break;
+			eventPreviewCache.delete(oldest[0]);
+			cachedPreviewUrls.delete(oldest[1].url);
+			if (!isPreviewUrlInUse(oldest[1].url)) URL.revokeObjectURL(oldest[1].url);
+		}
+	}
+
+	function isPreviewUrlInUse(url: string): boolean {
+		return (
+			selectedDetachedRecord?.event.thumbnail_url === url ||
+			records.some((record) => record.event.thumbnail_url === url)
+		);
+	}
+
+	function clearEventPreviewCache(): void {
+		for (const entry of eventPreviewCache.values()) URL.revokeObjectURL(entry.url);
+		eventPreviewCache.clear();
+		cachedPreviewUrls.clear();
+	}
+
 	function releaseRecordPreviews(current: readonly EventBrowserRecord[]): void {
 		for (const record of current) releaseEventPreview(record);
 	}
 
 	function releaseEventPreview(record: EventBrowserRecord): void {
-		if (record.previewObjectUrl && record.event.thumbnail_url?.startsWith('blob:')) {
-			URL.revokeObjectURL(record.event.thumbnail_url);
+		const url = record.event.thumbnail_url;
+		if (record.previewObjectUrl && url?.startsWith('blob:') && !cachedPreviewUrls.has(url)) {
+			URL.revokeObjectURL(url);
 		}
 	}
 

@@ -300,3 +300,77 @@ and a mobile drag produced at most one, bounding query-triggering work during po
 | Desktop and mobile interactions avoid visible stalls      | Zoom, pan, filter, drag, cold-seek feedback, and long-task collection | Every p95 at or below 31.2 ms; no long tasks observed                                                               |
 | Existing timeline, visual, and Playwright behavior passes | `./check.sh`                                                          | 93 browser/visual tests, 17 compatibility tests, and 127 Playwright tests passed; 2 codec tests skipped as expected |
 | Strategy and before/after evidence are recorded           | This section and generated JSON/Markdown reports                      | Initial-render p95 40.0 to 31.2 ms; desktop nodes 1,944 to 1,430; mobile nodes 326 to 205                           |
+
+## Stored playback, scrubbing, and bunny event corpus
+
+The real-database playback benchmark populates a full KeepPeek `recordings.db` catalog and owned
+named-volume media store with deterministic H.264 recordings and detected-object events, boots the
+release `keeppeek` server, and drives `/keep` and `/events` in headless Chromium through WebRTC,
+Media Source Extensions, and WebCodecs.
+
+### Seed the synthetic bunny database
+
+The generator writes two cameras (`Backyard Garden` and `Front Driveway`), 32 finalized 640x360
+Constrained Baseline H.264 fMP4 recording files across two UTC days (2,112 indexed fragments and
+keyframes covering twelve 5-minute blocks across 24 hours plus a 60-second 15 fps hero segment),
+360 deterministic events (270 bunny detections across named zones such as `garden-bed` and
+`clover-patch`, plus 90 `person`, `vehicle`, and `motion` events), 252 procedural 320x180 JPEG
+thumbnails committed through `EventStore`, structured search terms, and `recording_event_keyframes`
+links.
+
+```sh
+cd ui
+bun run seed:playback
+```
+
+Pass `--serve` to keep a live KeepPeek instance running against the generated corpus for manual
+inspection, or `--dir <path>` to target a specific directory.
+
+### Run the end-to-end playback benchmark
+
+```sh
+cd ui
+bun run perf:playback
+```
+
+Use `bun run perf:playback:run` when `target/release/keeppeek` and `target/release/test_camera`
+are already built (for example in `check.sh`, `check.bat`, and the `ui-playback-performance` CI
+job). The suite measures:
+
+1. Cold `/keep` navigation to first media fragment, first decoded frame, and dense timeline events.
+2. Rapid 16-point timeline playhead dragging (10 cold hours + 6 revisit hours) and release-to-frame
+   playback commit.
+3. Six cross-day timeline event hops, live timeline zoom (`24h` through `15m`) and filter switches,
+   and bounded timeline DOM descendants.
+4. `/events` initial page load, `"bunny"` text search, visible thumbnail loading, `garden-bed` zone
+   filtering, and `Event detail` to `/keep` playback navigation.
+5. Camera switching and 3-second steady-state playback FPS, media advancement, dropped frames, and
+   zero console or network errors.
+
+JSON and Markdown reports are written to `target/keep-performance/playback/<label>.json` and
+`<label>.md` (`latest` by default; override with `KEEPPEEK_PLAYBACK_PERF_LABEL`).
+
+### Reference measurements
+
+Captured on 2026-11-26 on Windows 11 x64 (12 logical CPUs, 15.34 GiB RAM) with release `keeppeek`
+and `test_camera` binaries and pinned headless Chromium against the 2-camera, 32-recording,
+2,112-fragment, 360-event (270 bunnies, 252 thumbnails) corpus:
+
+| Path                                         |         Baseline | Optimized (`verified`) |           Delta |  Local budget |
+| -------------------------------------------- | ---------------: | ---------------------: | --------------: | ------------: |
+| Scrub preview (cold p50 / p95)               | 48.62 / 66.87 ms |       48.77 / 55.82 ms |  +0.3% / -16.5% | p95 <= 250 ms |
+| Scrub preview (revisit p50 / p95)            | 48.60 / 52.08 ms |       15.88 / 20.51 ms | -67.3% / -60.6% | p95 <= 100 ms |
+| Scrub revisit memory cache hits (6 revisits) |            0 / 6 |                  6 / 6 |           +100% |          >= 4 |
+| Scrub release to playing frame               |         49.49 ms |               28.72 ms |          -42.0% |     <= 600 ms |
+| Camera switch to first frame                 |        174.57 ms |              104.82 ms |          -40.0% |   <= 1,200 ms |
+| Events initial page                          |        331.53 ms |              271.30 ms |          -18.2% |   <= 2,500 ms |
+| Events bunny thumbnails (8 visible loaded)   |        149.62 ms |              113.38 ms |          -24.2% |   <= 1,500 ms |
+| Events zone filter (`garden-bed`, 18 cards)  |         75.58 ms |               65.55 ms |          -13.3% |     <= 600 ms |
+| Events detail to Open in Keep first frame    |        116.80 ms |              114.92 ms |           -1.6% |   <= 1,500 ms |
+| Timeline event hop to frame p50              |         75.39 ms |               74.86 ms |           -0.7% | p95 <= 800 ms |
+| Timeline zoom & filter p95 (peak 613 nodes)  |         73.41 ms |               81.41 ms |          +10.9% | p95 <= 150 ms |
+| Steady playback FPS / dropped frames         |    15.33 fps / 0 |             15 fps / 0 |          stable |      >= 8 fps |
+
+Note: cold scrub p50 tracks the 50 ms server seek coalescing contract verified by
+`ui/e2e/keep-timeline.e2e.ts`, while revisiting previously scrubbed positions serves cached
+GPU-backed `ImageBitmap` previews directly in the browser without a server round-trip.

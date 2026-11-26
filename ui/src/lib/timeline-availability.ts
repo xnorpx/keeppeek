@@ -23,22 +23,22 @@ export function buildTimelineAvailability(
 ): TimelineAvailability {
 	if (windowEndMs <= windowStartMs) throw new Error('Timeline window must have positive duration');
 
-	const clipped = segments
-		.flatMap((segment) => {
-			const startMs = Math.max(windowStartMs, segment.start_time_ms);
-			const endMs = Math.min(windowEndMs, segment.end_time_ms);
-			return endMs > startMs ? [{ startMs, endMs, segmentUrls: [segment.url] }] : [];
-		})
-		.toSorted((left, right) => left.startMs - right.startMs);
+	const clipped: Array<{ startMs: number; endMs: number; url: string }> = [];
+	for (const segment of segments) {
+		const startMs = Math.max(windowStartMs, segment.start_time_ms);
+		const endMs = Math.min(windowEndMs, segment.end_time_ms);
+		if (endMs > startMs) clipped.push({ startMs, endMs, url: segment.url });
+	}
+	clipped.sort((left, right) => left.startMs - right.startMs);
 
-	const available: TimelineAvailabilityRange[] = [];
+	const available: Array<{ startMs: number; endMs: number; segmentUrls: string[] }> = [];
 	for (const range of clipped) {
 		const previous = available.at(-1);
 		if (previous !== undefined && range.startMs <= previous.endMs) {
 			previous.endMs = Math.max(previous.endMs, range.endMs);
-			previous.segmentUrls = [...previous.segmentUrls, ...range.segmentUrls];
+			previous.segmentUrls.push(range.url);
 		} else {
-			available.push({ ...range });
+			available.push({ startMs: range.startMs, endMs: range.endMs, segmentUrls: [range.url] });
 		}
 	}
 

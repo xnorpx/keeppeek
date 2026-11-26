@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { setCapabilityState } from '$lib/capability-context';
-	import GroupsSection from '$lib/components/GroupsSection.svelte';
+	import GroupsPaperFrame from '$lib/components/GroupsPaperFrame.svelte';
 
 	type State = 'administration' | 'participant';
 	type Props = { state: State };
@@ -20,5 +20,5 @@
 		? 'h-[416px]'
 		: 'h-[420px]'}"
 >
-	<GroupsSection paperFrame={state} />
+	<GroupsPaperFrame frame={state} />
 </main>

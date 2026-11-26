@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { setCapabilityState } from '$lib/capability-context';
-	import StorageRetentionSection from '$lib/components/StorageRetentionSection.svelte';
+	import StorageRetentionPaperFrame from '$lib/components/StorageRetentionPaperFrame.svelte';
 	import type { SanitizedConfig, ServerHealthResponse } from '$lib/types';
 
 	setCapabilityState(['keeppeek.runtime-config.v1']);
@@ -69,5 +69,5 @@
 	data-paper-scenario="settings.desktop.storage-retention"
 	class="h-[1163px] w-[1440px] overflow-hidden bg-ground [font-synthesis:none]"
 >
-	<StorageRetentionSection {config} {health} onedit={() => {}} paperFrame />
+	<StorageRetentionPaperFrame {config} {health} />
 </main>

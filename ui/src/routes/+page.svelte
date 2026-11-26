@@ -11,6 +11,7 @@
 	import type { LivePeerPlan } from '$lib/stream-peer.svelte';
 	import type { GridTileVisibility } from '$lib/grid-visibility';
 	import { emitTimelinePerformanceEvent } from '$lib/timeline-observability';
+	import { videoFrameIsVisible } from '$lib/video-visibility';
 	import {
 		GridStreamScheduler,
 		type GridStreamGrant,
@@ -647,6 +648,8 @@
 	}
 
 	function handleFocusFramePresented(frame: FocusedLiveFrame): void {
+		const currentTransition = peekViewState.transition;
+		if (focusPreviewPresented && currentTransition?.destination !== 'viewer') return;
 		const camera = focusedCamera;
 		const track = focusedTrack;
 		if (!camera || !track) return;
@@ -672,29 +675,8 @@
 			focusPreviewPresented = true;
 			scheduleLivePlanReconcile();
 		}
-		const currentTransition = peekViewState.transition;
 		if (currentTransition?.destination === 'viewer') {
 			peekViewState.finishTransition(currentTransition);
-		}
-	}
-
-	function videoFrameIsVisible(video: HTMLVideoElement): boolean {
-		if (video.videoWidth <= 0 || video.videoHeight <= 0 || video.readyState < 2) return false;
-		const canvas = document.createElement('canvas');
-		canvas.width = 16;
-		canvas.height = 9;
-		const context = canvas.getContext('2d', { willReadFrequently: true });
-		if (!context) return false;
-		try {
-			context.drawImage(video, 0, 0, canvas.width, canvas.height);
-			const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-			let total = 0;
-			for (let index = 0; index < pixels.length; index += 4) {
-				total += pixels[index] + pixels[index + 1] + pixels[index + 2];
-			}
-			return total / (canvas.width * canvas.height * 3) > 8;
-		} catch {
-			return false;
 		}
 	}
 

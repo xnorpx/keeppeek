@@ -1,7 +1,31 @@
+<script module lang="ts">
+	const compactTimeFormatters = new Map<string, Intl.DateTimeFormat>();
+
+	function getCompactTimeFormatter(
+		timeZone: string | undefined,
+		includeSeconds: boolean
+	): Intl.DateTimeFormat {
+		const key = `${timeZone ?? ''}:${includeSeconds ? 's' : 'm'}`;
+		let formatter = compactTimeFormatters.get(key);
+		if (!formatter) {
+			formatter = new Intl.DateTimeFormat('en-GB', {
+				hour: '2-digit',
+				minute: '2-digit',
+				second: includeSeconds ? '2-digit' : undefined,
+				hour12: false,
+				timeZone
+			});
+			compactTimeFormatters.set(key, formatter);
+		}
+		return formatter;
+	}
+</script>
+
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { onMount } from 'svelte';
 	import { observeGridVisibility, type GridTileVisibility } from '$lib/grid-visibility';
+	import { videoFrameIsVisible } from '$lib/video-visibility';
 	import { videoResolutionMatches } from '$lib/video-resolution';
 	import type { GridTileAdmission } from '$lib/grid-stream-scheduler';
 	import {
@@ -219,13 +243,7 @@
 
 	function formatCompactTime(timestampMs: number | null, includeSeconds: boolean): string {
 		if (timestampMs === null) return '—';
-		return new Intl.DateTimeFormat('en-GB', {
-			hour: '2-digit',
-			minute: '2-digit',
-			second: includeSeconds ? '2-digit' : undefined,
-			hour12: false,
-			timeZone: compactTimeZone
-		}).format(new Date(timestampMs));
+		return getCompactTimeFormatter(compactTimeZone, includeSeconds).format(new Date(timestampMs));
 	}
 
 	function handleFrameActivity(active: boolean): void {
@@ -254,10 +272,12 @@
 			setFrameReady(false);
 			return;
 		}
-		const video = tileElement?.querySelector<HTMLVideoElement>('video');
-		if (!video || !videoFrameIsVisible(video)) {
-			setFrameReady(false);
-			return;
+		if (!hasRecentFrames) {
+			const video = tileElement?.querySelector<HTMLVideoElement>('video');
+			if (!video || !videoFrameIsVisible(video)) {
+				setFrameReady(false);
+				return;
+			}
 		}
 		onframepresented?.(camera.id);
 		setFrameReady(true);
@@ -267,25 +287,6 @@
 		if (hasRecentFrames === ready) return;
 		hasRecentFrames = ready;
 		onframeactivitychange?.(camera.id, ready);
-	}
-
-	function videoFrameIsVisible(video: HTMLVideoElement): boolean {
-		const canvas = document.createElement('canvas');
-		canvas.width = 16;
-		canvas.height = 9;
-		const context = canvas.getContext('2d', { willReadFrequently: true });
-		if (!context) return false;
-		try {
-			context.drawImage(video, 0, 0, canvas.width, canvas.height);
-			const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-			let total = 0;
-			for (let index = 0; index < pixels.length; index += 4) {
-				total += pixels[index] + pixels[index + 1] + pixels[index + 2];
-			}
-			return total / (canvas.width * canvas.height * 3) > 8;
-		} catch {
-			return false;
-		}
 	}
 </script>
 

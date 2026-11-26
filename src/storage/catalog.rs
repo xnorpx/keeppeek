@@ -225,6 +225,13 @@ pub struct CatalogMediaObjectLocation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CatalogScrubKeyframe {
+    pub fragment_start_ms: i64,
+    pub finalized: bool,
+    pub location: CatalogMediaObjectLocation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CatalogCleanupCandidate {
     pub recording_id: String,
     pub stream_id: String,
@@ -467,6 +474,10 @@ enum Command {
     InsertFragmentWithKeyframe {
         fragment: CatalogFragment,
         keyframe: CatalogKeyframe,
+        reply: SyncSender<anyhow::Result<()>>,
+    },
+    InsertFragmentsWithKeyframes {
+        items: Vec<(CatalogFragment, CatalogKeyframe)>,
         reply: SyncSender<anyhow::Result<()>>,
     },
     Relocation {
@@ -989,6 +1000,37 @@ impl RecordingCatalogHandle {
                 keyframe,
                 reply,
             })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
+    /// Inserts a bounded batch of fragments and keyframes for one recording in a single transaction.
+    #[tracing::instrument(level = "trace", skip_all)]
+    pub fn insert_fragments_with_keyframes(
+        &self,
+        items: Vec<(CatalogFragment, CatalogKeyframe)>,
+    ) -> anyhow::Result<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            items.len() <= 4_096,
+            "fragment keyframe batch exceeds bounded limit"
+        );
+        let recording_id = items[0].0.recording_id.as_str();
+        for (fragment, keyframe) in &items {
+            anyhow::ensure!(
+                fragment.recording_id == recording_id
+                    && keyframe.recording_id == recording_id
+                    && fragment.sequence == keyframe.fragment_sequence,
+                "batched keyframes must belong to their inserted recording fragments"
+            );
+        }
+        let (reply, response) = mpsc::sync_channel(1);
+        self.tx
+            .send(Command::InsertFragmentsWithKeyframes { items, reply })
             .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
         response
             .recv()
@@ -1599,7 +1641,7 @@ impl RecordingCatalogHandle {
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
 
-    pub(crate) fn replace_event_search_terms(
+    pub fn replace_event_search_terms(
         &self,
         event_id: &str,
         terms: Vec<EventSearchTerm>,
@@ -1933,6 +1975,12 @@ fn run_catalog(
                     &connection,
                     fragment,
                     keyframe,
+                )));
+            }
+            Command::InsertFragmentsWithKeyframes { items, reply } => {
+                let _ = reply.send(pollster::block_on(insert_fragments_with_keyframes(
+                    &connection,
+                    items,
                 )));
             }
             Command::Relocation { request, reply } => {
@@ -3814,32 +3862,45 @@ async fn insert_fragment_with_keyframe(
     fragment: CatalogFragment,
     keyframe: CatalogKeyframe,
 ) -> anyhow::Result<()> {
+    insert_fragments_with_keyframes(connection, vec![(fragment, keyframe)]).await
+}
+
+async fn insert_fragments_with_keyframes(
+    connection: &turso::Connection,
+    items: Vec<(CatalogFragment, CatalogKeyframe)>,
+) -> anyhow::Result<()> {
+    let Some((first, _)) = items.first() else {
+        return Ok(());
+    };
+    let recording_id = first.recording_id.clone();
     connection.execute_batch("BEGIN IMMEDIATE").await?;
     let result = async {
-        insert_fragment(connection, fragment).await?;
-        connection
-            .execute(
-                "INSERT INTO recording_keyframes (
-                     recording_id, fragment_sequence, byte_offset, byte_len
-                 ) VALUES (?1, ?2, ?3, ?4)",
-                turso::params![
-                    keyframe.recording_id.clone(),
-                    to_i64(keyframe.fragment_sequence, "keyframe fragment sequence")?,
-                    to_i64(keyframe.byte_offset, "keyframe byte offset")?,
-                    to_i64(keyframe.byte_len, "keyframe byte length")?,
-                ],
+        for (fragment, keyframe) in items {
+            insert_fragment(connection, fragment).await?;
+            connection
+                .execute(
+                    "INSERT INTO recording_keyframes (
+                         recording_id, fragment_sequence, byte_offset, byte_len
+                     ) VALUES (?1, ?2, ?3, ?4)",
+                    turso::params![
+                        keyframe.recording_id.clone(),
+                        to_i64(keyframe.fragment_sequence, "keyframe fragment sequence")?,
+                        to_i64(keyframe.byte_offset, "keyframe byte offset")?,
+                        to_i64(keyframe.byte_len, "keyframe byte length")?,
+                    ],
+                )
+                .await?;
+            reconcile_events_for_fragment(
+                connection,
+                &keyframe.recording_id,
+                keyframe.fragment_sequence,
             )
             .await?;
-        reconcile_events_for_fragment(
-            connection,
-            &keyframe.recording_id,
-            keyframe.fragment_sequence,
-        )
-        .await?;
+        }
         let mut rows = connection
             .query(
                 "SELECT finalized FROM recording_files WHERE id = ?1",
-                turso::params![keyframe.recording_id.clone()],
+                turso::params![recording_id.clone()],
             )
             .await?;
         let finalized = rows
@@ -3850,7 +3911,7 @@ async fn insert_fragment_with_keyframe(
             .is_some_and(|value| value != 0);
         drop(rows);
         if finalized {
-            rebuild_recording_coverage(connection, &keyframe.recording_id).await?;
+            rebuild_recording_coverage(connection, &recording_id).await?;
             bump_catalog_revision(connection).await?;
         }
         anyhow::Ok(())
@@ -3963,7 +4024,9 @@ async fn fragments_in_range(
              FROM recording_fragments AS f
              JOIN recording_files AS r ON r.id = f.recording_id
              WHERE r.stream_id = ?1
-                             AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = r.id AND active = 1)
+               AND r.started_at_ms < ?3
+               AND COALESCE(r.ended_at_ms, ?3) > ?2
+               AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = r.id AND active = 1)
                AND f.start_ms < ?3
                AND f.start_ms + f.duration_ms > ?2
              ORDER BY f.start_ms, f.sequence",
@@ -4024,7 +4087,9 @@ pub(super) async fn media_fragments_in_range_with_limit(
              FROM recording_fragments AS f
              JOIN recording_files AS r ON r.id = f.recording_id
              WHERE r.stream_id = ?1
-                             AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = r.id AND active = 1)
+               AND r.started_at_ms < ?3
+               AND COALESCE(r.ended_at_ms, ?3) > ?2
+               AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = r.id AND active = 1)
                AND f.start_ms < ?3
                AND f.start_ms + f.duration_ms > ?2
              ORDER BY f.start_ms, f.sequence LIMIT ?4",
@@ -6951,6 +7016,7 @@ fn event_search_hit(
         has_image_attachment: canonical_attachment.is_some(),
         canonical_attachment,
         attachments,
+        thumbnail_filename: event.thumbnail_filename,
         image_available,
         icon_key: event.icon_key,
         rejected_icon_key: event.rejected_icon_key,
@@ -7182,6 +7248,79 @@ async fn resolve_media_object(
         object.archive = archive_playback::read(connection, &object.recording_id).await?;
     }
     Ok(object)
+}
+
+async fn resolve_scrub_keyframe(
+    connection: &turso::Connection,
+    source_id: &str,
+    logical_stream_id: &str,
+    recording_stream_id: &str,
+    requested_time_ms: i64,
+) -> anyhow::Result<Option<CatalogScrubKeyframe>> {
+    let lookup_end = requested_time_ms
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("scrub media time overflowed"))?;
+    let mut rows = connection
+        .query(
+            "SELECT r.id, f.sequence, f.start_ms, r.finalized, r.path, r.init_offset, r.init_len,
+                    f.byte_offset, f.byte_len, k.byte_offset, k.byte_len
+             FROM recording_fragments AS f
+             JOIN recording_files AS r ON r.id = f.recording_id
+             JOIN recording_keyframes AS k
+               ON k.recording_id = f.recording_id
+              AND k.fragment_sequence = f.sequence
+             WHERE r.stream_id = ?1
+               AND r.started_at_ms < ?3
+               AND COALESCE(r.ended_at_ms, ?3) > ?2
+               AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = r.id AND active = 1)
+               AND f.start_ms < ?3
+               AND f.start_ms + f.duration_ms > ?2
+               AND (
+                   (r.source_id = ?4 AND r.logical_stream_id = ?5)
+                   OR (
+                       r.source_id IS NULL
+                       AND (r.logical_stream_id IS NULL OR r.logical_stream_id = ?5)
+                   )
+               )
+             ORDER BY f.start_ms DESC, f.sequence DESC
+             LIMIT 1",
+            turso::params![
+                recording_stream_id,
+                requested_time_ms,
+                lookup_end,
+                source_id,
+                logical_stream_id,
+            ],
+        )
+        .await?;
+    let mut resolved = rows
+        .next()
+        .await?
+        .map(|row| {
+            Ok::<CatalogScrubKeyframe, anyhow::Error>(CatalogScrubKeyframe {
+                fragment_start_ms: row.get(2)?,
+                finalized: row.get::<i64>(3)? != 0,
+                location: CatalogMediaObjectLocation {
+                    recording_id: row.get(0)?,
+                    fragment_sequence: to_u64(row.get(1)?, "scrub keyframe fragment sequence")?,
+                    path: row.get(4)?,
+                    initialization_offset: to_u64(row.get(5)?, "initialization byte offset")?,
+                    initialization_len: to_u64(row.get(6)?, "initialization byte length")?,
+                    fragment_offset: to_u64(row.get(7)?, "fragment byte offset")?,
+                    fragment_len: to_u64(row.get(8)?, "fragment byte length")?,
+                    keyframe_offset: to_u64(row.get(9)?, "keyframe byte offset")?,
+                    keyframe_len: to_u64(row.get(10)?, "keyframe byte length")?,
+                    archive: None,
+                },
+            })
+        })
+        .transpose()?;
+    drop(rows);
+    if let Some(resolved) = &mut resolved {
+        resolved.location.archive =
+            archive_playback::read(connection, &resolved.location.recording_id).await?;
+    }
+    Ok(resolved)
 }
 
 async fn catalog_stats(connection: &turso::Connection) -> anyhow::Result<CatalogStats> {

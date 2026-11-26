@@ -7,13 +7,19 @@ use crate::{
     webrtc::WebRtcHealth,
 };
 use serde::Serialize;
-use std::{path::Path, time::Instant};
+use std::{
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
 #[cfg(not(windows))]
 use sysinfo::ProcessRefreshKind;
 use sysinfo::{
     Components, CpuRefreshKind, Disks, MemoryRefreshKind, Networks, Pid, ProcessesToUpdate,
     RefreshKind, System,
 };
+
+const SYSTEM_SNAPSHOT_CACHE_TTL: Duration = Duration::from_secs(1);
+const HARDWARE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 pub(crate) const CAMERA_HEALTH_CONTRACT_VERSION: u32 = 1;
 pub(crate) const STREAM_REPORT_FRESHNESS_THRESHOLD_MS: u64 = 30_000;
@@ -463,7 +469,7 @@ pub struct StorageHealth {
     pub(crate) demand: RecordingDemandHealth,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SystemHealth {
     pub host_name: Option<String>,
     pub os_name: Option<String>,
@@ -486,7 +492,7 @@ pub struct SystemHealth {
     pub temperatures: Vec<TemperatureHealth>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ProcessHealth {
     pub pid: u32,
     pub name: Option<String>,
@@ -513,7 +519,7 @@ pub struct ProcessHealth {
     pub total_written_bytes: Option<u64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct MemoryHealth {
     pub total_bytes: u64,
     pub used_bytes: u64,
@@ -522,21 +528,21 @@ pub struct MemoryHealth {
     pub used_swap_bytes: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct LoadHealth {
     pub one_minute: f64,
     pub five_minutes: f64,
     pub fifteen_minutes: f64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CpuHealth {
     pub name: String,
     pub usage_percent: f32,
     pub frequency_mhz: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct NetworkHealth {
     pub name: String,
     pub received_bytes_per_second: u64,
@@ -549,7 +555,7 @@ pub struct NetworkHealth {
     pub total_transmitted_bytes: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DiskHealth {
     pub name: String,
     pub kind: String,
@@ -562,7 +568,7 @@ pub struct DiskHealth {
     pub stores_recordings: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TemperatureHealth {
     pub label: String,
     pub current_celsius: Option<f32>,
@@ -570,13 +576,36 @@ pub struct TemperatureHealth {
     pub critical_celsius: Option<f32>,
 }
 
+struct HostMetadata {
+    host_name: Option<String>,
+    os_name: Option<String>,
+    os_version: Option<String>,
+    kernel_version: Option<String>,
+    physical_cores: Option<usize>,
+}
+
+impl HostMetadata {
+    fn collect() -> Self {
+        Self {
+            host_name: System::host_name().ok(),
+            os_name: System::name().ok(),
+            os_version: System::long_os_version().ok(),
+            kernel_version: System::kernel_version().ok(),
+            physical_cores: System::physical_core_count().ok(),
+        }
+    }
+}
+
 pub struct SystemMonitor {
     system: Option<System>,
     networks: Option<Networks>,
     disks: Option<Disks>,
     components: Option<Components>,
+    metadata: HostMetadata,
     pid: Pid,
     last_refresh: Instant,
+    last_hardware_refresh: Option<Instant>,
+    cached_snapshot: Option<(PathBuf, Instant, SystemHealth)>,
     #[cfg(windows)]
     live_cpu_sample: Option<(u64, Instant)>,
 }
@@ -605,8 +634,11 @@ impl SystemMonitor {
             networks: Networks::new_with_refreshed_list().ok(),
             disks: Disks::new_with_refreshed_list().ok(),
             components: Components::new_with_refreshed_list().ok(),
+            metadata: HostMetadata::collect(),
             pid,
             last_refresh: Instant::now(),
+            last_hardware_refresh: Some(Instant::now()),
+            cached_snapshot: None,
             #[cfg(windows)]
             live_cpu_sample: windows_current_process_cpu_ticks()
                 .map(|ticks| (ticks, Instant::now())),
@@ -614,8 +646,20 @@ impl SystemMonitor {
     }
 
     pub fn snapshot(&mut self, recording_path: &Path) -> SystemHealth {
-        let elapsed = self.last_refresh.elapsed().as_secs_f64().max(0.001);
-        self.last_refresh = Instant::now();
+        let now = Instant::now();
+        let cache_key = recording_path.to_path_buf();
+        if let Some((cached_path, captured_at, cached)) = &self.cached_snapshot
+            && cached_path == &cache_key
+            && now.duration_since(*captured_at) < SYSTEM_SNAPSHOT_CACHE_TTL
+        {
+            return cached.clone();
+        }
+
+        let elapsed = now
+            .duration_since(self.last_refresh)
+            .as_secs_f64()
+            .max(0.001);
+        self.last_refresh = now;
         if let Some(system) = &mut self.system {
             system.refresh_cpu_usage();
             system.refresh_cpu_frequency();
@@ -625,11 +669,18 @@ impl SystemMonitor {
         if let Some(networks) = &mut self.networks {
             networks.refresh(true);
         }
-        if let Some(disks) = &mut self.disks {
-            disks.refresh(true);
-        }
-        if let Some(components) = &mut self.components {
-            components.refresh(true);
+        let refresh_hardware = self
+            .last_hardware_refresh
+            .is_none_or(|previous| now.duration_since(previous) >= HARDWARE_REFRESH_INTERVAL);
+        if refresh_hardware {
+            // ponytail: disks and thermal sensors change slowly and trigger slow OS queries.
+            if let Some(disks) = &mut self.disks {
+                disks.refresh(true);
+            }
+            if let Some(components) = &mut self.components {
+                components.refresh(true);
+            }
+            self.last_hardware_refresh = Some(now);
         }
 
         let system = self.system.as_ref();
@@ -714,16 +765,16 @@ impl SystemMonitor {
             .collect::<Vec<_>>();
         temperatures.sort_unstable_by(|left, right| left.label.cmp(&right.label));
 
-        SystemHealth {
-            host_name: System::host_name().ok(),
-            os_name: System::name().ok(),
-            os_version: System::long_os_version().ok(),
-            kernel_version: System::kernel_version().ok(),
+        let health = SystemHealth {
+            host_name: self.metadata.host_name.clone(),
+            os_name: self.metadata.os_name.clone(),
+            os_version: self.metadata.os_version.clone(),
+            kernel_version: self.metadata.kernel_version.clone(),
             architecture: std::env::consts::ARCH,
             system_uptime_seconds: System::uptime().unwrap_or_default(),
             boot_time_seconds: System::boot_time().unwrap_or_default(),
             logical_cores,
-            physical_cores: System::physical_core_count().ok(),
+            physical_cores: self.metadata.physical_cores,
             cpu_brand: cpus.first().map(|cpu| cpu.brand().to_owned()),
             system_cpu_percent: system.map_or(0.0, System::global_cpu_usage),
             process: ProcessHealth {
@@ -775,7 +826,9 @@ impl SystemMonitor {
             networks,
             disks,
             temperatures,
-        }
+        };
+        self.cached_snapshot = Some((cache_key, now, health.clone()));
+        health
     }
 
     /// Collects only the process CPU, process memory, and host RAM counters used by the live TUI.
@@ -1015,8 +1068,11 @@ mod tests {
             networks: None,
             disks: None,
             components: None,
+            metadata: HostMetadata::collect(),
             pid: Pid::from_u32(std::process::id()),
             last_refresh: Instant::now(),
+            last_hardware_refresh: None,
+            cached_snapshot: None,
             #[cfg(windows)]
             live_cpu_sample: None,
         };
@@ -1025,6 +1081,44 @@ mod tests {
         assert_eq!(snapshot.process.resident_memory_bytes, None);
         assert!(snapshot.networks.is_empty());
         assert!(snapshot.disks.iter().any(|disk| disk.stores_recordings));
+    }
+
+    #[test]
+    fn snapshot_caches_within_ttl_and_refreshes_for_different_recording_path() {
+        let mut monitor = SystemMonitor {
+            system: None,
+            networks: None,
+            disks: None,
+            components: None,
+            metadata: HostMetadata::collect(),
+            pid: Pid::from_u32(std::process::id()),
+            last_refresh: Instant::now(),
+            last_hardware_refresh: None,
+            cached_snapshot: None,
+            #[cfg(windows)]
+            live_cpu_sample: None,
+        };
+        let dir_a = std::env::temp_dir();
+        let first = monitor.snapshot(&dir_a);
+        let second = monitor.snapshot(&dir_a);
+        assert_eq!(first.disks.len(), second.disks.len());
+        assert_eq!(
+            monitor
+                .cached_snapshot
+                .as_ref()
+                .map(|(p, _, _)| p.as_path()),
+            Some(dir_a.as_path())
+        );
+
+        let dir_b = dir_a.join("keeppeek-health-other-path");
+        let _ = monitor.snapshot(&dir_b);
+        assert_eq!(
+            monitor
+                .cached_snapshot
+                .as_ref()
+                .map(|(p, _, _)| p.as_path()),
+            Some(dir_b.as_path())
+        );
     }
 
     #[test]

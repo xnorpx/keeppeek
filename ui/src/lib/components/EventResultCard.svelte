@@ -1,3 +1,23 @@
+<script module lang="ts">
+	const eventTimeFormatter = new Intl.DateTimeFormat(undefined, {
+		year: 'numeric',
+		month: 'short',
+		day: 'numeric',
+		hour: '2-digit',
+		minute: '2-digit',
+		second: '2-digit',
+		timeZone: 'UTC',
+		timeZoneName: 'short'
+	});
+	const paperTimeFormatter = new Intl.DateTimeFormat('en-GB', {
+		timeZone: 'UTC',
+		hour: '2-digit',
+		minute: '2-digit',
+		second: '2-digit',
+		hour12: false
+	});
+</script>
+
 <script lang="ts">
 	import {
 		eventHasImage,
@@ -54,23 +74,6 @@
 		);
 		observer.observe(cardElement);
 		return () => observer.disconnect();
-	});
-	const eventTimeFormatter = new Intl.DateTimeFormat(undefined, {
-		year: 'numeric',
-		month: 'short',
-		day: 'numeric',
-		hour: '2-digit',
-		minute: '2-digit',
-		second: '2-digit',
-		timeZone: 'UTC',
-		timeZoneName: 'short'
-	});
-	const paperTimeFormatter = new Intl.DateTimeFormat('en-GB', {
-		timeZone: 'UTC',
-		hour: '2-digit',
-		minute: '2-digit',
-		second: '2-digit',
-		hour12: false
 	});
 
 	function cameraLabel(): string {

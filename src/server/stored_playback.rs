@@ -437,7 +437,7 @@ pub(super) fn batch(
     timing: &proto::RecordedAudioTiming,
     origin_ms: Option<i64>,
 ) -> Result<StoredMediaBatch, ControlCommandError> {
-    if timing.applied_offset_ms == 0 {
+    if timing.applied_offset_ms == 0 || request.mode == proto::StoredMediaMode::Scrub {
         return stored_media_batch(state, request);
     }
     let catalog = state.catalog.as_ref().ok_or_else(missing)?;
@@ -457,9 +457,6 @@ pub(super) fn batch(
         .into_iter()
         .max_by_key(|fragment| fragment.start_ms)
         .ok_or_else(missing)?;
-    if request.mode == proto::StoredMediaMode::Scrub {
-        return encode_stored_media_keyframe(state, request, &selected);
-    }
     let end = request.requested_time_ms.saturating_add(
         i64::try_from(request.max_buffer_ms.min(STORED_MEDIA_TARGET_BUFFER_MS)).unwrap_or(i64::MAX),
     );

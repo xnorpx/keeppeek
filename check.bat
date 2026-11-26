@@ -58,3 +58,4 @@ cd /d "%~dp0ui" || exit /b 1
 echo Running UI Quality checks...
 call bun run quality:check || exit /b 1
 call bun run test:e2e || exit /b 1
+call bun run perf:playback:run || exit /b 1

@@ -302,6 +302,7 @@ pub struct EventSearchHit {
     pub has_image_attachment: bool,
     pub canonical_attachment: Option<EventAttachment>,
     pub attachments: Vec<EventAttachment>,
+    pub(crate) thumbnail_filename: Option<String>,
     pub image_available: bool,
     pub icon_key: String,
     pub rejected_icon_key: Option<String>,
