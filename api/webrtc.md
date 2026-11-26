@@ -2019,3 +2019,55 @@ the same generic error. Still-image bytes travel only through existing authentic
 delivery (`EventSearchCommand.fetch_media`); Keeppeek Service never receives media bytes, media
 URLs, attachment descriptors, local event IDs, camera metadata, or free text. Video, animated
 image, and audio notification previews are unsupported.
+
+## Bounded timelapse review and export
+
+A recorder advertises `keeppeek.timelapse.v1` when bounded sparse timelapse planning and lazy
+sample delivery are available. It additionally advertises `keeppeek.timelapse-export.v1` when the
+local silent MP4 encoder worker is available. Normal recording and evidence export never require
+`keeppeek.timelapse-export.v1`.
+
+### Sparse planning and lazy sample delivery
+
+Send `StoredMediaCommand.plan_timelapse` (field `9`) with a source ID, stream ID, half-open UTC
+range (`<= 31 days`), cadence (`interval` or `target_sample_count`, yielding `<= 3,600` targets),
+optional tolerance (`default 10 s`, `max 300 s`), optional pagination (`page_size <= 128`,
+`page_token`), and optional `output_preview`. The server returns `Ok.timelapse_plan` (field `48`)
+containing `source_fingerprint`, `catalog_revision`, `TimelapseEstimate`, and an ordered page of
+`TimelapsePlanItem` entries (`TimelapseSample` or explicit `TimelapseGap` with reason `MISSING`,
+`RETAINED`, `PRIVACY`, `UNSUPPORTED_CODEC`, `CORRUPT`, or `OPEN_RECORDING`). Each sample carries
+its exact recording, fragment sequence, sample ordinal, actual UTC timestamp, and an opaque
+`sample_token` bound to `(source_id, stream_id, recording_id, fragment_sequence, sample_ordinal,
+fragment_fingerprint, source_fingerprint)`.
+
+To load thumbnails lazily, send `StoredMediaCommand.fetch_timelapse_samples` (field `10`) with a
+fresh `transfer_id`, source and stream IDs, up to 16 `sample_tokens`, and `reliable-data`. The
+server re-checks camera authorization, active privacy permits, catalog reader leases, and fragment
+fingerprints for every token and returns `Ok.timelapse_sample_delivery` (field `49`) with accepted
+count and per-token rejections. Accepted samples stream on `reliable-data` as
+`StoredMediaMessage.timelapse_sample_chunk` (field `6`, carrying bounded decode-window access units
+in decode order with `target_presentation_rank`, `sample_count`, and `MediaDataConfiguration`),
+terminated by `StoredMediaMessage.timelapse_sample_end` (field `7`). Send
+`StoredMediaCommand.cancel_timelapse_samples` (field `11`) to cancel an in-flight transfer.
+
+### Silent timelapse export and provenance manifest
+
+When `CreateExportJob.timelapse` (field `10`) is absent, `ExportCommand.create` preserves the
+existing two-minute evidence export contract unchanged. When `CreateExportJob.timelapse` is present,
+the server admits a distinct silent timelapse job kind under Administrator authorization:
+
+- Bounds: input range `<= 31 days`, `<= 3,600` samples, `64x64` to `1920x1080` even dimensions,
+  `1..=30` output FPS, `<= 512 MiB` output size, `1` generating timelapse job globally and `1` per
+  requester, and storage safety-reserve headroom enforcement.
+- Missing or unavailable intervals require explicit `allow_partial = true`; expensive jobs require
+  `confirmed_expensive = true`.
+- Deduplication keys include cadence, tolerance, output FPS, dimensions, timestamp overlay,
+  partial-range behavior, and manifest schema version.
+- Completed jobs expose `ExportJob.timelapse` (field `20`) with `silent = true`, `site_timezone`,
+  `source_fingerprint`, `manifest_schema_version = 1`, `manifest_file_name`, `manifest_sha256`, and
+  `manifest_bytes`.
+- `DownloadExport.artifact` (field `3`) selects `EXPORT_ARTIFACT_KIND_MEDIA` (default when
+  unspecified or `1`) for the silent MP4 or `EXPORT_ARTIFACT_KIND_MANIFEST` (`2`) for the
+  SHA-256-verified JSON provenance manifest delivered over `ExportFileChunk` on `reliable-data`.
+  `ExportDownloadResult` reports `artifact` (field `4`), `file_name` (field `5`), and `sha256`
+  (field `6`).

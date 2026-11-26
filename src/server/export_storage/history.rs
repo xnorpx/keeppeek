@@ -41,11 +41,16 @@ pub(in crate::server) fn recover(
                 // The catalog remains authoritative while the volume is unavailable.
                 record.path = None;
             } else {
-                let path = root
-                    .join(&record.job.job_id)
-                    .join(&record.artifact_id)
-                    .join(name);
-                if path.is_file() {
+                let dir = root.join(&record.job.job_id).join(&record.artifact_id);
+                let path = dir.join(name);
+                let manifest_ok = record.job.timelapse.as_ref().is_none_or(|summary| {
+                    summary
+                        .manifest_file_name
+                        .as_deref()
+                        .filter(|manifest| safe_export_path_component(manifest))
+                        .is_some_and(|manifest| dir.join(manifest).is_file())
+                });
+                if path.is_file() && manifest_ok {
                     record.path = Some(path);
                 } else {
                     fail(record, now, "Export artifact is missing; retry the export");

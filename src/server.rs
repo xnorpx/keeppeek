@@ -153,6 +153,9 @@ mod storage_volumes;
 mod stored_frame_step;
 mod stored_media;
 mod talkback;
+mod timelapse;
+#[cfg(test)]
+mod timelapse_tests;
 mod usage_reporting;
 
 pub(crate) fn migrate_peek_layout_configuration(
@@ -1484,6 +1487,10 @@ fn server_capability_ids(state: &ServerState) -> Vec<String> {
     ];
     if state.catalog.is_some() {
         capability_ids.push(stored_frame_step::CAPABILITY_ID.to_owned());
+        capability_ids.push(timelapse::CAPABILITY_ID.to_owned());
+        if state.timelapse.encoder_available() {
+            capability_ids.push(timelapse::EXPORT_CAPABILITY_ID.to_owned());
+        }
     }
     if state.notifications.is_some() {
         capability_ids.push("keeppeek.rules.v1".to_owned());
@@ -3912,6 +3919,7 @@ fn export_requests_match_output(
         && left.end_time == right.end_time
         && left.allow_partial == right.allow_partial
         && left.burn_in_timestamp == right.burn_in_timestamp
+        && left.timelapse == right.timelapse
 }
 
 fn export_requests_match_normalized(
@@ -3927,6 +3935,7 @@ fn export_requests_match_normalized(
         && (existing.request.allow_partial && existing_has_gaps)
             == (requested.allow_partial && requested_has_gaps)
         && existing.request.burn_in_timestamp == requested.burn_in_timestamp
+        && existing.request.timelapse == requested.timelapse
 }
 
 fn spawn_export_worker(
@@ -8909,6 +8918,7 @@ pub struct ServerState {
     stored_media_cursors: Arc<Mutex<HashMap<(SessionId, String), StoredMediaCursor>>>,
     recorded_audio_workers: Arc<AtomicUsize>,
     frame_step_workers: Arc<AtomicUsize>,
+    timelapse: Arc<timelapse::Registry>,
     stored_media_cursor_reservations: Arc<Mutex<HashMap<(SessionId, String), uuid::Uuid>>>,
     ptz_owners: Arc<Mutex<HashMap<String, camera_control::Owner>>>,
     export_jobs: Arc<Mutex<HashMap<String, ExportJobRecord>>>,
@@ -9105,6 +9115,7 @@ impl ServerState {
             stored_media_cursors: Arc::new(Mutex::new(HashMap::new())),
             recorded_audio_workers: Arc::new(AtomicUsize::new(0)),
             frame_step_workers: Arc::new(AtomicUsize::new(0)),
+            timelapse: Arc::new(timelapse::Registry::default()),
             stored_media_cursor_reservations: Arc::new(Mutex::new(HashMap::new())),
             ptz_owners: Arc::new(Mutex::new(HashMap::new())),
             export_jobs: Arc::new(Mutex::new(export_jobs)),
@@ -21432,6 +21443,7 @@ mod tests {
                                 image_availability: proto::EventImageAvailability::Unavailable
                                     as i32,
                             }),
+                            timelapse: None,
                         },
                     )),
                 },
@@ -21535,6 +21547,7 @@ mod tests {
                         proto::DownloadExport {
                             job_id: "export-ready".to_owned(),
                             channel: proto::DataChannelKind::ReliableData as i32,
+                            artifact: 0,
                         },
                     )),
                 },
@@ -21587,6 +21600,7 @@ mod tests {
                         proto::DownloadExport {
                             job_id: "export-ready".to_owned(),
                             channel: proto::DataChannelKind::ReliableData as i32,
+                            artifact: 0,
                         },
                     )),
                 },
@@ -21623,6 +21637,7 @@ mod tests {
                 burn_in_timestamp: false,
                 guest_range_preparation: None,
                 event_seed: None,
+                timelapse: None,
             },
         )
         .unwrap();
@@ -21642,6 +21657,7 @@ mod tests {
                 burn_in_timestamp: true,
                 guest_range_preparation: None,
                 event_seed: None,
+                timelapse: None,
             },
         )
         .unwrap();
@@ -21690,6 +21706,7 @@ mod tests {
                 burn_in_timestamp: false,
                 guest_range_preparation: None,
                 event_seed: None,
+                timelapse: None,
             },
         )
         .unwrap();
@@ -21708,6 +21725,7 @@ mod tests {
                 burn_in_timestamp: false,
                 guest_range_preparation: None,
                 event_seed: None,
+                timelapse: None,
             },
         )
         .unwrap_err();
@@ -21767,6 +21785,7 @@ mod tests {
             burn_in_timestamp: false,
             guest_range_preparation: None,
             event_seed: None,
+            timelapse: None,
         };
         let active = active_export_fixture(&state, &request);
         state
@@ -21806,6 +21825,7 @@ mod tests {
                 proto::DownloadExport {
                     job_id: "active-export".to_owned(),
                     channel: proto::DataChannelKind::ReliableData as i32,
+                    artifact: 0,
                 },
             )
             .unwrap_err()
@@ -21875,6 +21895,7 @@ mod tests {
             burn_in_timestamp: false,
             guest_range_preparation: None,
             event_seed: None,
+            timelapse: None,
         };
         let now_ms = i64::try_from(unix_time_ms()).unwrap();
         state.export_jobs.lock().unwrap().insert(
@@ -21907,6 +21928,7 @@ mod tests {
                     retryable: false,
                     burn_in_timestamp: false,
                     event_seed: None,
+                    timelapse: None,
                 },
                 path: Some(PathBuf::from("private-ready-export.mp4")),
                 cancel: Arc::new(AtomicBool::new(false)),
@@ -21923,6 +21945,7 @@ mod tests {
             proto::DownloadExport {
                 job_id: request.job_id,
                 channel: proto::DataChannelKind::ReliableData as i32,
+                artifact: 0,
             },
         )
         .unwrap_err();
@@ -21948,6 +21971,7 @@ mod tests {
                 burn_in_timestamp: false,
                 guest_range_preparation: None,
                 event_seed: None,
+                timelapse: None,
             };
             let cancel = Arc::new(AtomicBool::new(false));
             let artifact_id = Uuid::new_v4().simple().to_string();
@@ -21981,6 +22005,7 @@ mod tests {
                         retryable: false,
                         burn_in_timestamp: false,
                         event_seed: None,
+                        timelapse: None,
                     },
                     path: None,
                     cancel: cancel.clone(),
@@ -22189,6 +22214,7 @@ mod tests {
             burn_in_timestamp: false,
             guest_range_preparation: None,
             event_seed: None,
+            timelapse: None,
         };
         state.export_jobs.lock().unwrap().insert(
             job_id.to_owned(),
@@ -22220,6 +22246,7 @@ mod tests {
                     retryable: false,
                     burn_in_timestamp: false,
                     event_seed: None,
+                    timelapse: None,
                 },
                 path: Some(artifact.clone()),
                 cancel: Arc::new(AtomicBool::new(false)),
@@ -22283,6 +22310,7 @@ mod tests {
             burn_in_timestamp: false,
             guest_range_preparation: None,
             event_seed: None,
+            timelapse: None,
         };
         let job = |job_id: &str, status: proto::ExportJobStatus, file_name: Option<&str>| {
             proto::ExportJob {
@@ -22305,6 +22333,7 @@ mod tests {
                 retryable: false,
                 burn_in_timestamp: false,
                 event_seed: None,
+                timelapse: None,
             }
         };
         let record =

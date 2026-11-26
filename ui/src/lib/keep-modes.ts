@@ -1,7 +1,7 @@
 import type { RecordingEvent, RecordingSegment } from './types';
 import { buildTimelineAvailability, type TimelineAvailability } from './timeline-availability';
 
-export const keepModes = ['timeline', 'stories', 'swimlanes', 'export'] as const;
+export const keepModes = ['timeline', 'stories', 'swimlanes', 'timelapse', 'export'] as const;
 export type KeepMode = (typeof keepModes)[number];
 
 export type ExportRange = {

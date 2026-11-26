@@ -585,6 +585,7 @@ fn profile_privacy_blocks_an_existing_export_download_after_activation_and_resta
             proto::DownloadExport {
                 job_id: request.job_id.clone(),
                 channel: proto::DataChannelKind::ReliableData as i32,
+                artifact: 0,
             },
         )
     };

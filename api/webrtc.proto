@@ -1184,6 +1184,8 @@ message CreateExportJob {
   optional EventExportSeed event_seed = 8;
   // Negotiated by keeppeek.guest-range.v1. Bound writes to the guest evidence limit.
   optional bool guest_range_preparation = 9;
+  // Negotiated by keeppeek.timelapse.v1 and keeppeek.timelapse-export.v1.
+  optional TimelapseExportOptions timelapse = 10;
 }
 
 message EventExportSeed {
@@ -1212,6 +1214,7 @@ message RetryExportJob {
 message DownloadExport {
   string job_id = 1;
   DataChannelKind channel = 2;
+  ExportArtifactKind artifact = 3;
 }
 
 enum ExportJobStatus {
@@ -1246,6 +1249,8 @@ message ExportJob {
   optional EventExportSeed event_seed = 18;
   // The server captures configured timing once. Retry preserves the original snapshot.
   RecordedAudioTiming recorded_audio = 19;
+  // Present only for silent timelapse export jobs.
+  optional TimelapseJobSummary timelapse = 20;
 }
 
 message ExportMissingRange {
@@ -1261,6 +1266,9 @@ message ExportDownloadResult {
   ExportJob job = 1;
   DataChannelKind channel = 2;
   uint32 chunk_count = 3;
+  ExportArtifactKind artifact = 4;
+  optional string file_name = 5;
+  optional string sha256 = 6;
 }
 
 message EventSearchCommand {
@@ -2228,6 +2236,9 @@ message StoredMediaCommand {
     CancelStoredMediaTimelineQuery cancel_timeline_query = 6;
     RefillStoredMedia refill = 7;
     StepStoredFrame step_frame = 8;
+    PlanTimelapse plan_timelapse = 9;
+    FetchTimelapseSamples fetch_timelapse_samples = 10;
+    CancelTimelapseSamples cancel_timelapse_samples = 11;
   }
 }
 
@@ -3165,6 +3176,8 @@ message Ok {
     ShareResult share_result = 45;
     StoredFrameStepResult stored_frame_step_result = 46;
     SavedEventSearchResult saved_event_search_result = 47;
+    TimelapsePlanResult timelapse_plan = 48;
+    TimelapseSampleDelivery timelapse_sample_delivery = 49;
     ActivityAnalyticsResult activity_analytics_result = 50;
     UsageReportingResult usage_reporting_result = 51;
     CloudNotificationResult cloud_notification_result = 52;
@@ -4295,6 +4308,8 @@ message StoredMediaMessage {
     StoredMediaTimedData timed_data = 3;
     StoredMediaKeyFrame key_frame = 4;
     StoredFrameStepChunk frame_step_chunk = 5;
+    TimelapseSampleChunk timelapse_sample_chunk = 6;
+    TimelapseSampleEnd timelapse_sample_end = 7;
   }
 }
 
@@ -5297,4 +5312,175 @@ message CloudNotificationResult {
     CloudNotificationContext context = 3;
     CloudNotificationTestResult test = 4;
   }
+}
+
+enum ExportArtifactKind {
+  EXPORT_ARTIFACT_KIND_UNSPECIFIED = 0;
+  EXPORT_ARTIFACT_KIND_MEDIA = 1;
+  EXPORT_ARTIFACT_KIND_MANIFEST = 2;
+}
+
+enum TimelapseGapReason {
+  TIMELAPSE_GAP_REASON_UNSPECIFIED = 0;
+  TIMELAPSE_GAP_REASON_MISSING = 1;
+  TIMELAPSE_GAP_REASON_RETAINED = 2;
+  TIMELAPSE_GAP_REASON_PRIVACY = 3;
+  TIMELAPSE_GAP_REASON_UNSUPPORTED_CODEC = 4;
+  TIMELAPSE_GAP_REASON_CORRUPT = 5;
+  TIMELAPSE_GAP_REASON_OPEN_RECORDING = 6;
+}
+
+message TimelapseOutputPreview {
+  uint32 output_fps = 1;
+  uint32 max_width = 2;
+  uint32 max_height = 3;
+  bool timestamp_overlay = 4;
+}
+
+message TimelapseExportOptions {
+  oneof cadence {
+    google.protobuf.Duration interval = 1;
+    uint32 target_sample_count = 2;
+  }
+  optional google.protobuf.Duration tolerance = 3;
+  uint32 output_fps = 4;
+  uint32 max_width = 5;
+  uint32 max_height = 6;
+  bool timestamp_overlay = 7;
+  bool confirmed_expensive = 8;
+  optional string expected_source_fingerprint = 9;
+}
+
+message TimelapseJobSummary {
+  TimelapseExportOptions options = 1;
+  uint32 sample_count = 2;
+  uint32 gap_count = 3;
+  uint64 output_duration_ms = 4;
+  uint32 output_width = 5;
+  uint32 output_height = 6;
+  bool silent = 7;
+  string source_fingerprint = 8;
+  string site_timezone = 9;
+  uint32 manifest_schema_version = 10;
+  optional string manifest_file_name = 11;
+  optional string manifest_sha256 = 12;
+  optional uint64 manifest_bytes = 13;
+}
+
+message PlanTimelapse {
+  string source_id = 1;
+  string stream_id = 2;
+  google.protobuf.Timestamp start_time = 3;
+  google.protobuf.Timestamp end_time = 4;
+  oneof cadence {
+    google.protobuf.Duration interval = 5;
+    uint32 target_sample_count = 6;
+  }
+  optional google.protobuf.Duration tolerance = 7;
+  uint32 page_size = 8;
+  string page_token = 9;
+  optional TimelapseOutputPreview output_preview = 10;
+}
+
+message TimelapseEstimate {
+  uint32 sample_count = 1;
+  uint32 gap_count = 2;
+  uint64 gap_duration_ms = 3;
+  uint64 output_duration_ms = 4;
+  uint64 estimated_source_bytes = 5;
+  uint64 estimated_output_bytes = 6;
+  bool requires_confirmation = 7;
+  bool encoder_available = 8;
+  string site_timezone = 9;
+}
+
+message TimelapseSample {
+  uint32 index = 1;
+  google.protobuf.Timestamp requested_time = 2;
+  google.protobuf.Timestamp actual_time = 3;
+  optional sint64 source_ticks = 4;
+  optional uint32 source_timescale = 5;
+  string recording_id = 6;
+  uint64 fragment_sequence = 7;
+  uint32 sample_ordinal = 8;
+  string codec = 9;
+  uint32 width = 10;
+  uint32 height = 11;
+  uint32 encoded_bytes = 12;
+  bytes sample_token = 13;
+}
+
+message TimelapseGap {
+  google.protobuf.Timestamp start_time = 1;
+  google.protobuf.Timestamp end_time = 2;
+  TimelapseGapReason reason = 3;
+}
+
+message TimelapsePlanItem {
+  oneof entry {
+    TimelapseSample sample = 1;
+    TimelapseGap gap = 2;
+  }
+}
+
+message TimelapsePlanResult {
+  string source_id = 1;
+  string stream_id = 2;
+  google.protobuf.Timestamp requested_start_time = 3;
+  google.protobuf.Timestamp requested_end_time = 4;
+  string source_fingerprint = 5;
+  uint64 catalog_revision = 6;
+  TimelapseEstimate estimate = 7;
+  repeated TimelapsePlanItem items = 8;
+  uint32 total_samples = 9;
+  string next_page_token = 10;
+}
+
+message FetchTimelapseSamples {
+  string transfer_id = 1;
+  string source_id = 2;
+  string stream_id = 3;
+  repeated bytes sample_tokens = 4;
+  DataChannelKind channel = 5;
+}
+
+message CancelTimelapseSamples {
+  string transfer_id = 1;
+}
+
+message TimelapseSampleRejection {
+  bytes sample_token = 1;
+  ErrorCode code = 2;
+  string message = 3;
+  TimelapseGapReason reason = 4;
+}
+
+message TimelapseSampleDelivery {
+  string transfer_id = 1;
+  DataChannelKind channel = 2;
+  uint32 accepted_count = 3;
+  repeated TimelapseSampleRejection rejected = 4;
+}
+
+message TimelapseSampleChunk {
+  string transfer_id = 1;
+  bytes sample_token = 2;
+  google.protobuf.Timestamp actual_time = 3;
+  uint32 decode_index = 4;
+  uint32 presentation_rank = 5;
+  uint32 target_presentation_rank = 6;
+  uint32 sample_count = 7;
+  bool random_access = 8;
+  uint32 chunk_index = 9;
+  uint32 chunk_count = 10;
+  bytes payload = 11;
+  uint32 sample_bytes = 12;
+  MediaDataConfiguration configuration = 13;
+}
+
+message TimelapseSampleEnd {
+  string transfer_id = 1;
+  uint32 delivered_count = 2;
+  bool cancelled = 3;
+  optional string error = 4;
 }

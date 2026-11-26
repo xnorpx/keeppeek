@@ -150,6 +150,11 @@ name = "cloud_notifications"
 harness = false
 test = false
 
+[[bench]]
+name = "timelapse"
+harness = false
+test = false
+
 [dependencies]
 aws-lc-rs = { workspace = true }
 crossterm = { version = "0.29.0", default-features = false, features = [

@@ -249,6 +249,24 @@ export const serverCapabilityCatalog = {
 		unlocks: 'Bookmarks in the event drawer and timeline',
 		whenMissing: 'Existing pins stay visible and protected; new pins cannot be made',
 		failureGuarantee: 'A failed pin never silently leaves its intended span unprotected'
+	},
+	'keeppeek.timelapse.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'Bounded sparse timelapse planning, explicit gap/privacy reporting, and lazy sample delivery',
+		unlocks: 'Sparse timelapse review with Last hour preset and exact Keep seek drill-down',
+		whenMissing: 'Timelapse controls stay unavailable while normal Keep playback remains live',
+		failureGuarantee:
+			'Missing, retained, private, and unsupported intervals remain visible without stale repeats'
+	},
+	'keeppeek.timelapse-export.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'Bounded local silent MP4 timelapse encoding, durable export lifecycle, and SHA-256 provenance manifest',
+		unlocks: 'Silent timelapse MP4 generation and provenance manifest downloads',
+		whenMissing: 'Interactive sparse review stays available while MP4 generation is disabled',
+		failureGuarantee:
+			'Source recordings remain immutable and failed or cancelled jobs remove partial artifacts'
 	}
 } as const satisfies Record<string, ServerCapabilityContract>;
 

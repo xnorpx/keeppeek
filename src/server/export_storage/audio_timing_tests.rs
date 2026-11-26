@@ -135,6 +135,7 @@ fn download(state: &ServerState, id: &str) -> Vec<u8> {
         proto::DownloadExport {
             job_id: id.to_owned(),
             channel: proto::DataChannelKind::ReliableData as i32,
+            artifact: 0,
         },
     )
     .unwrap();

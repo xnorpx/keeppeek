@@ -28,6 +28,8 @@ pub mod segment;
 pub mod short_term;
 #[cfg(test)]
 mod test_media;
+pub mod timelapse;
+pub mod timelapse_encoder;
 pub mod volumes;
 
 const RECORDING_METADATA_BYTES_MAX: u64 = 8 * 1024 * 1024;
@@ -49,8 +51,8 @@ const fn recording_metadata_rotation_due(usage: mp4::FragmentedMetadataUsage) ->
 
 pub use catalog::{
     CatalogEventKeyframeLink, CatalogFragment, CatalogKeyframe, CatalogMediaFragment,
-    CatalogMediaObjectLocation, CatalogRecording, EventKeyframeLocation, RecordingCatalog,
-    RecordingCatalogHandle,
+    CatalogMediaObjectLocation, CatalogRecording, CatalogTimelapseFragment, CatalogTimelapseLookup,
+    EventKeyframeLocation, RecordingCatalog, RecordingCatalogHandle,
 };
 pub use demand::{RecordingDemand, RecordingDemandGuard};
 pub(crate) use engine::RecordingConfiguration;

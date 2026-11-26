@@ -8,14 +8,15 @@ reviewed later. The underlying live evidence dimensions are defined in
 ## Find and play a recording
 
 Open **Keep**, choose the camera and recorded day, then select footage or an event on the timeline.
-The four modes serve different investigations:
+The five modes serve different investigations:
 
-| Mode      | Use it for                                                                          |
-| --------- | ----------------------------------------------------------------------------------- |
-| Timeline  | Follow footage and event intervals around the selected playback time.               |
-| Stories   | Review available event stories and their associated media.                          |
-| Swimlanes | Compare the available camera histories around a common time.                        |
-| Export    | Prepare and inspect an evidence-export job; creation requires Administrator access. |
+| Mode      | Use it for                                                                                |
+| --------- | ----------------------------------------------------------------------------------------- |
+| Timeline  | Follow footage and event intervals around the selected playback time.                     |
+| Stories   | Review available event stories and their associated media.                                |
+| Swimlanes | Compare the available camera histories around a common time.                              |
+| Timelapse | Review sparse sampled frames across a range and export a silent MP4 with a JSON manifest. |
+| Export    | Prepare and inspect an evidence-export job; creation requires Administrator access.       |
 
 Use play/pause, skip, the recording-position slider, volume/mute, speed and fullscreen controls
 below the image. Available stream quality depends on retained media and browser codec support.
@@ -100,9 +101,25 @@ Tap **Playback options** for volume, playback speed, quality, **Copy link to thi
 Back closes the sheet and returns focus to a visible control. Opening a sheet keeps the player
 open. In recording fullscreen, rate and volume remain available beside the player controls.
 
-The compact controls do not remove Timeline, Stories, Swimlanes or Export. Rotate the device or
+The compact controls do not remove Timeline, Stories, Swimlanes, Timelapse or Export. Rotate the device or
 close the sheet to return to the history view. The timeline changes recording time; the separate
 Digital controls above the image change only the inspection crop.
+
+### Review and export a bounded timelapse
+
+Open **Timelapse** in **Keep** to inspect a quiet period without loading every recorded frame.
+Choose **Last 15 min**, **Last hour**, or a bounded **Custom** range (up to 31 days and 3,600
+sampled frames). KeepPeek plans sampled timestamps first and loads visible thumbnails lazily.
+Gaps, retained intervals, privacy windows, open recordings, and unsupported codecs appear as
+explicit gap cards and are never filled with repeated stale frames. Selecting any sampled frame
+opens **Timeline** at its exact recorded source timestamp.
+
+Generating a timelapse MP4 is a separate Administrator action that produces a **silent**
+time-compressed derivative (up to 1920x1080, 1–30 FPS, 512 MiB) rather than continuous source
+evidence. Optional timestamp overlays render in the configured site timezone while the companion
+SHA-256-verified JSON provenance manifest records exact UTC source timestamps, source identities,
+sampling settings, and omitted intervals. Source recordings remain immutable. See
+[Bounded Timelapse Review and Export](https://github.com/xnorpx/keeppeek/blob/main/docs/timelapse.md).
 
 ### Keep the requested UTC time explicit
 
