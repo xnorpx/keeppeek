@@ -435,6 +435,9 @@
 		action.destination_configured = false;
 		action.destination_ref = undefined;
 		action.pushover = channel === 'push' ? createPushoverConfig() : undefined;
+		if (channel === 'keeppeek_service' && action.attachment === 'required') {
+			action.attachment = 'never';
+		}
 	}
 
 	function pushoverConfig(action: NotificationAction): PushoverPublicConfig {
@@ -513,6 +516,7 @@
 	function actionDestinationLabel(channel: NotificationChannel): string {
 		if (channel === 'webhook') return 'Webhook URL';
 		if (channel === 'forwarder') return 'Forwarder target';
+		if (channel === 'keeppeek_service') return 'Keeppeek Service';
 		return 'Current principal';
 	}
 
@@ -1157,9 +1161,9 @@
 													)}
 												class="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
 												><option value="browser">Browser</option><option value="push">Push</option
-												><option value="webhook">Webhook</option><option value="forwarder"
-													>Forwarder</option
-												></select
+												><option value="keeppeek_service">Keeppeek Service</option><option
+													value="webhook">Webhook</option
+												><option value="forwarder">Forwarder</option></select
 											></label
 										>
 									</div>
@@ -1175,11 +1179,18 @@
 											<label class="space-y-1.5 text-xs font-medium"
 												>{actionDestinationLabel(action.channel)}<Input
 													value={action.destination}
-													placeholder={action.destination_configured ? 'Configured' : ''}
+													placeholder={action.channel === 'keeppeek_service'
+														? 'Managed by NVR pairing'
+														: action.destination_configured
+															? 'Configured'
+															: ''}
 													oninput={(event) =>
 														updateActionDestination(action, event.currentTarget.value)}
-													disabled={action.channel === 'browser'}
-													required={action.channel !== 'browser' && !action.destination_configured}
+													disabled={action.channel === 'browser' ||
+														action.channel === 'keeppeek_service'}
+													required={action.channel !== 'browser' &&
+														action.channel !== 'keeppeek_service' &&
+														!action.destination_configured}
 												/></label
 											>
 										{/if}
@@ -1189,7 +1200,9 @@
 												class="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
 												><option value="never">Never</option><option value="when_available"
 													>When available</option
-												><option value="required">Required</option></select
+												><option value="required" disabled={action.channel === 'keeppeek_service'}
+													>Required</option
+												></select
 											></label
 										>
 										<label class="space-y-1.5 text-xs font-medium"

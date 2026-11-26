@@ -56,6 +56,7 @@ Root fields must appear before a table header or they belong to that table.
 | `[sharing]`                                        | `sharing::SharingConfig`                            | Guest review deployment policy; server-owned revision |
 | `[reporting]`                                      | `reporting::Settings`                               | Optional bug reporting service settings               |
 | `[usage_reporting]`                                | `usage_reporting::UsageReportingConfig`             | Opt-in privacy-preserving usage reporting consent     |
+| `[cloud_notifications]`                            | `cloud_notifications::Settings`                     | Optional Keeppeek Service mobile push signaling       |
 | `[access]`                                         | `AccessConfig`                                      | Administrator security policy                         |
 | `[direct_card]`                                    | `DirectCardConfig`                                  | Exact browser-origin allowlist                        |
 | `[desktop]`                                        | `DesktopConfig`                                     | Optional default server URL for KeepPeek Desktop      |
@@ -898,6 +899,32 @@ deletions (`<= 16` entries) are persisted separately in the private application-
 excluded from `config.toml` backups and from general `StateStore` namespaces so restores do not
 clone one installation's proof token across machines. See
 [usage reporting](https://github.com/xnorpx/keeppeek/blob/main/docs/usage-reporting.md).
+
+## Cloud notifications
+
+Type: `cloud_notifications::Settings`, section `[cloud_notifications]`.
+
+The optional `[cloud_notifications]` section configures bounded Keeppeek Service mobile push
+signaling behind capability `keeppeek.cloud-notifications.v1`. Both `enabled` and
+`image_previews_enabled` default to `false`. Enabling `image_previews_enabled` requires both
+`enabled = true` and a complete pairing configuration.
+
+| Field                    | Type            | Default | Validation and meaning                                                                                  |
+| ------------------------ | --------------- | ------- | ------------------------------------------------------------------------------------------------------- |
+| `revision`               | `u64`           | `0`     | Optimistic concurrency revision incremented on every settings mutation.                                 |
+| `enabled`                | `bool`          | `false` | Enables bounded Keeppeek Service signal emission when paired.                                           |
+| `image_previews_enabled` | `bool`          | `false` | Authoritative NVR gate allowing authenticated paired mobile clients to resolve still-image previews.    |
+| `service_origin`         | Optional string | Absent  | Canonical HTTPS origin up to 512 bytes (no path, query, fragment, or credentials); required if paired.  |
+| `nvr_id`                 | Optional string | Absent  | Service-assigned 16-byte opaque NVR UUID/hex identifier; required if paired.                            |
+| `signing_key_version`    | Optional `u32`  | Absent  | Nonzero Ed25519 signing key version (`>= 1`); required if paired.                                       |
+| `signing_key`            | Optional string | Absent  | Single `{secret:KEY}` reference in `secrets.toml` holding the 32-byte Ed25519 seed; required if paired. |
+
+The four pairing fields (`service_origin`, `nvr_id`, `signing_key_version`, `signing_key`) must be
+either all absent (unpaired) or all present (paired). KeepPeek never resolves `signing_key` during
+configuration parsing or serialization, and never returns `service_origin`, `nvr_id`, or signing
+keys in settings, status, logs, or Prometheus metrics. Durable runtime state (aliases, newest-only
+pending/claimed intents, exact rolling 120/hour and 500/day windows, 3/hour test windows, and
+monotonic clock floor) is persisted in `cloud-notifications.db` under `storage.long_term_path`.
 
 ## Operational events
 

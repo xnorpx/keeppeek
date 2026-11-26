@@ -31,6 +31,7 @@ describe('server capability contract', () => {
 			'keeppeek.identity.v1',
 			'keeppeek.camera-access.v1',
 			'keeppeek.rules.v1',
+			'keeppeek.cloud-notifications.v1',
 			'keeppeek.mqtt-forwarder.v1',
 			'keeppeek.peek-layouts.v1',
 			'keeppeek.group-admin.v1',

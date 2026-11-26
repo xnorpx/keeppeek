@@ -147,6 +147,12 @@ import {
 	NotificationRuleRecordSchema,
 	NotificationRuleResultSchema,
 	NotificationTestResultSchema,
+	CloudNotificationFailureCode as ProtoCloudNotificationFailureCode,
+	CloudNotificationResultSchema,
+	CloudNotificationSettingsSchema,
+	CloudNotificationState as ProtoCloudNotificationState,
+	CloudNotificationStatusSchema,
+	CloudNotificationTestResultSchema,
 	PtzCapabilitySchema,
 	PtzPresetSchema,
 	PtzResultSchema,
@@ -232,6 +238,13 @@ import type {
 	NotificationRuleDefinition,
 	NotificationRuleRecord
 } from '../../src/lib/notifications';
+import type {
+	CloudNotificationFailureCode,
+	CloudNotificationSettings,
+	CloudNotificationState,
+	CloudNotificationStatus,
+	CloudNotificationTestResult
+} from '../../src/lib/control-client-cloud-notifications';
 import type {
 	MqttIntegration,
 	MqttSettingsUpdate,
@@ -392,6 +405,7 @@ export type ControlRequests = {
 	exportJobs: ExportControlRequest[];
 	streamProbes: Array<{ ip: string; onvifPort: number | null }>;
 	notificationActions: string[];
+	cloudNotificationActions: string[];
 	mqttUpdates: MqttSettingsUpdate[];
 	mqttTests: MqttSettingsUpdate[];
 	mediaSubscriptions: Array<{
@@ -485,6 +499,10 @@ export type MockControlPeerOptions = {
 	notificationInbox?: NotificationInbox;
 	notificationHistory?: readonly NotificationHistoryGroup[];
 	notificationConflictOnSave?: boolean;
+	cloudNotificationSettings?: CloudNotificationSettings;
+	cloudNotificationStatusSequence?: readonly CloudNotificationStatus[];
+	cloudNotificationTestResults?: readonly CloudNotificationTestResult[];
+	cloudNotificationConflictOnSave?: boolean;
 	configurationSnapshots?: readonly ConfigurationSnapshot[];
 	configurationPlanResult?: ConfigurationPlan;
 	configurationApplyResult?: ConfigurationApplyResult;
@@ -987,6 +1005,7 @@ export async function mockControlPeer(
 		maxConcurrentEventMedia: 0,
 		exportJobs: [],
 		notificationActions: [],
+		cloudNotificationActions: [],
 		mqttUpdates: [],
 		mqttTests: [],
 		mediaSubscriptions: [],
@@ -1019,6 +1038,30 @@ export async function mockControlPeer(
 	const cameraSettingsSequence = (options.cameraSettingsSequence ?? []).map((settings) => [
 		...settings
 	]);
+	let cloudNotificationSettings: CloudNotificationSettings = options.cloudNotificationSettings
+		? { ...options.cloudNotificationSettings }
+		: { revision: 0n, enabled: false, imagePreviewsEnabled: false };
+	const cloudNotificationStatuses = (options.cloudNotificationStatusSequence ?? []).map(
+		(entry) => ({
+			...entry
+		})
+	);
+	let cloudNotificationLastStatus: CloudNotificationStatus = cloudNotificationStatuses[0] ?? {
+		state: 'disabled',
+		paired: false,
+		pending: false,
+		acceptedLastHour: 0,
+		acceptedLastDay: 0,
+		suppressedLastHour: 0,
+		suppressedLastDay: 0,
+		nextEligibleAtMs: null,
+		lastAcceptedAtMs: null,
+		lastFailure: 'none'
+	};
+	const cloudNotificationTests = (options.cloudNotificationTestResults ?? []).map((entry) => ({
+		...entry
+	}));
+	let cloudConflictPending = Boolean(options.cloudNotificationConflictOnSave);
 	let currentCameraSettings = [...(options.cameraSettings ?? [])];
 	let activeDiscoveryId = '';
 	let discoveryComplete = false;
@@ -1622,6 +1665,119 @@ export async function mockControlPeer(
 				});
 			}
 			return encodedError(request.requestId, 'unsupported notification action');
+		}
+		if (request.command.case === 'cloudNotificationCommand') {
+			const action = request.command.value.action;
+			if (!action.case) {
+				return encodedError(request.requestId, 'cloud notification action is required');
+			}
+			requests.cloudNotificationActions.push(action.case);
+			if (action.case === 'getSettings') {
+				return encodedOk(request.requestId, {
+					case: 'cloudNotificationResult',
+					value: create(CloudNotificationResultSchema, {
+						result: {
+							case: 'settings',
+							value: create(CloudNotificationSettingsSchema, {
+								revision: cloudNotificationSettings.revision,
+								enabled: cloudNotificationSettings.enabled,
+								imagePreviewsEnabled: cloudNotificationSettings.imagePreviewsEnabled
+							})
+						}
+					})
+				});
+			}
+			if (action.case === 'updateSettings') {
+				if (
+					cloudConflictPending ||
+					action.value.expectedRevision !== cloudNotificationSettings.revision
+				) {
+					cloudConflictPending = false;
+					cloudNotificationSettings = {
+						...cloudNotificationSettings,
+						revision: cloudNotificationSettings.revision + 1n
+					};
+					return encodedError(request.requestId, 'cloud notification settings revision conflict');
+				}
+				if (action.value.imagePreviewsEnabled && !action.value.enabled) {
+					return encodedError(
+						request.requestId,
+						'image previews cannot be enabled while cloud signaling is disabled'
+					);
+				}
+				cloudNotificationSettings = {
+					revision: cloudNotificationSettings.revision + 1n,
+					enabled: action.value.enabled,
+					imagePreviewsEnabled: action.value.imagePreviewsEnabled
+				};
+				return encodedOk(request.requestId, {
+					case: 'cloudNotificationResult',
+					value: create(CloudNotificationResultSchema, {
+						result: {
+							case: 'settings',
+							value: create(CloudNotificationSettingsSchema, {
+								revision: cloudNotificationSettings.revision,
+								enabled: cloudNotificationSettings.enabled,
+								imagePreviewsEnabled: cloudNotificationSettings.imagePreviewsEnabled
+							})
+						}
+					})
+				});
+			}
+			if (action.case === 'getStatus') {
+				const next = cloudNotificationStatuses.shift();
+				if (next) cloudNotificationLastStatus = next;
+				return encodedOk(request.requestId, {
+					case: 'cloudNotificationResult',
+					value: create(CloudNotificationResultSchema, {
+						result: {
+							case: 'status',
+							value: create(CloudNotificationStatusSchema, {
+								state: protoCloudNotificationState(cloudNotificationLastStatus.state),
+								paired: cloudNotificationLastStatus.paired,
+								pending: cloudNotificationLastStatus.pending,
+								acceptedLastHour: cloudNotificationLastStatus.acceptedLastHour,
+								acceptedLastDay: cloudNotificationLastStatus.acceptedLastDay,
+								suppressedLastHour: cloudNotificationLastStatus.suppressedLastHour,
+								suppressedLastDay: cloudNotificationLastStatus.suppressedLastDay,
+								nextEligibleAt:
+									cloudNotificationLastStatus.nextEligibleAtMs === null
+										? undefined
+										: timestampFromDate(new Date(cloudNotificationLastStatus.nextEligibleAtMs)),
+								lastAcceptedAt:
+									cloudNotificationLastStatus.lastAcceptedAtMs === null
+										? undefined
+										: timestampFromDate(new Date(cloudNotificationLastStatus.lastAcceptedAtMs)),
+								lastFailure: protoCloudNotificationFailure(cloudNotificationLastStatus.lastFailure)
+							})
+						}
+					})
+				});
+			}
+			if (action.case === 'test') {
+				const testResult = cloudNotificationTests.shift() ?? {
+					accepted: true,
+					nextEligibleAtMs: null,
+					failure: 'none'
+				};
+				return encodedOk(request.requestId, {
+					case: 'cloudNotificationResult',
+					value: create(CloudNotificationResultSchema, {
+						result: {
+							case: 'test',
+							value: create(CloudNotificationTestResultSchema, {
+								accepted: testResult.accepted,
+								nextEligibleAt:
+									testResult.nextEligibleAtMs === null
+										? undefined
+										: timestampFromDate(new Date(testResult.nextEligibleAtMs)),
+								failure: protoCloudNotificationFailure(testResult.failure)
+							})
+						}
+					})
+				});
+			}
+			return encodedError(request.requestId, 'unsupported cloud notification action');
 		}
 		if (request.command.case === 'eventSearchCommand') {
 			const action = request.command.value.action;
@@ -4477,4 +4633,42 @@ function protoRuntimeResult(result: SettingsConfigUpdateResponse) {
 		}),
 		restartRequired: result.restart_required
 	});
+}
+
+function protoCloudNotificationState(state: CloudNotificationState): ProtoCloudNotificationState {
+	switch (state) {
+		case 'disabled':
+			return ProtoCloudNotificationState.DISABLED;
+		case 'unpaired':
+			return ProtoCloudNotificationState.UNPAIRED;
+		case 'ready':
+			return ProtoCloudNotificationState.READY;
+		case 'throttled':
+			return ProtoCloudNotificationState.THROTTLED;
+		case 'backing_off':
+			return ProtoCloudNotificationState.BACKING_OFF;
+		case 'unavailable':
+			return ProtoCloudNotificationState.UNAVAILABLE;
+	}
+}
+
+function protoCloudNotificationFailure(
+	code: CloudNotificationFailureCode
+): ProtoCloudNotificationFailureCode {
+	switch (code) {
+		case 'none':
+			return ProtoCloudNotificationFailureCode.NONE;
+		case 'local_limit':
+			return ProtoCloudNotificationFailureCode.LOCAL_LIMIT;
+		case 'service_limit':
+			return ProtoCloudNotificationFailureCode.SERVICE_LIMIT;
+		case 'dependency':
+			return ProtoCloudNotificationFailureCode.DEPENDENCY;
+		case 'credential_rejected':
+			return ProtoCloudNotificationFailureCode.CREDENTIAL_REJECTED;
+		case 'integrity':
+			return ProtoCloudNotificationFailureCode.INTEGRITY;
+		case 'expired':
+			return ProtoCloudNotificationFailureCode.EXPIRED;
+	}
 }

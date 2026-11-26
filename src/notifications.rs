@@ -11,6 +11,10 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub mod cloud;
+pub mod cloud_limits;
+pub mod cloud_protocol;
+pub mod cloud_state;
 mod delivery;
 mod health;
 mod inbox;
@@ -296,6 +300,27 @@ impl Handle {
         }
     }
 
+    /// Enqueues a candidate synchronously, applying channel backpressure instead of dropping.
+    pub fn publish_blocking(&self, candidate: model::Candidate) -> anyhow::Result<()> {
+        self.tx
+            .send(Command::Publish {
+                candidate: Box::new(candidate),
+            })
+            .map_err(|_| anyhow::anyhow!("notification runtime is no longer running"))?;
+        self.metrics
+            .candidates_accepted
+            .fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Returns `(candidates_accepted, candidates_dropped)` counters for diagnostics and benchmarks.
+    pub fn candidate_counts(&self) -> (u64, u64) {
+        (
+            self.metrics.candidates_accepted.load(Ordering::Relaxed),
+            self.metrics.candidates_dropped.load(Ordering::Relaxed),
+        )
+    }
+
     /// Applies profile suppression, canceling the request if it waits too long in the queue.
     /// A request already executing in the notification worker may finish after the timeout.
     pub fn set_profile_suppressed_sources(
@@ -382,6 +407,18 @@ impl Handle {
         reply_rx
             .recv_timeout(COMMAND_TIMEOUT)
             .map_err(|error| anyhow::anyhow!("notification inbox query timed out: {error}"))?
+    }
+
+    pub fn inbox_unrestricted(
+        &self,
+        principal_id: impl Into<String>,
+        limit: usize,
+    ) -> anyhow::Result<Inbox> {
+        self.inbox(
+            principal_id,
+            limit,
+            crate::access::CameraAccess::unrestricted(),
+        )
     }
 
     pub fn history(
@@ -505,6 +542,7 @@ pub struct Runtime {
     handle: Handle,
     thread: Option<std::thread::JoinHandle<()>>,
     deliveries: Option<delivery::Workers>,
+    cloud_worker: Option<cloud::CloudSignalWorker>,
 }
 
 impl Runtime {
@@ -513,12 +551,32 @@ impl Runtime {
         Self::open_with_config_update(path, Arc::new(Mutex::new(())), None)
     }
 
+    pub fn open_with_cloud(path: &Path, cloud: cloud::CloudSignalRuntime) -> anyhow::Result<Self> {
+        Self::open_with_config_update_and_cloud(path, Arc::new(Mutex::new(())), None, Some(cloud))
+    }
+
+    #[cfg(test)]
     pub(crate) fn open_with_config_update(
         path: &Path,
         config_update: Arc<Mutex<()>>,
         events: Option<crate::storage::EventStore>,
     ) -> anyhow::Result<Self> {
-        let store = store::Store::open_with_config_update(path, config_update)?;
+        Self::open_with_config_update_and_cloud(path, config_update, events, None)
+    }
+
+    pub(crate) fn open_with_config_update_and_cloud(
+        path: &Path,
+        config_update: Arc<Mutex<()>>,
+        events: Option<crate::storage::EventStore>,
+        cloud: Option<cloud::CloudSignalRuntime>,
+    ) -> anyhow::Result<Self> {
+        let mut store = store::Store::open_with_config_update(path, config_update)?;
+        let cloud_worker = if let Some(cloud_runtime) = cloud {
+            store.attach_cloud(cloud_runtime.clone());
+            Some(cloud::CloudSignalWorker::start(cloud_runtime)?)
+        } else {
+            None
+        };
         let deliveries = delivery::Workers::start(store.clone(), events)?;
         let (tx, rx) = mpsc::sync_channel(COMMAND_CAPACITY);
         let profile_suppression = Arc::new(Mutex::new(None));
@@ -534,6 +592,7 @@ impl Runtime {
             handle,
             thread: Some(thread),
             deliveries: Some(deliveries),
+            cloud_worker,
         })
     }
 
@@ -546,6 +605,9 @@ impl Runtime {
     }
 
     fn shutdown_inner(&mut self) {
+        if let Some(cloud_worker) = self.cloud_worker.take() {
+            cloud_worker.shutdown();
+        }
         if let Some(deliveries) = self.deliveries.take() {
             deliveries.shutdown();
         }

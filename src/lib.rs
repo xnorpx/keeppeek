@@ -16,7 +16,8 @@ pub mod keeppeek;
 pub mod logging;
 mod media_time;
 pub(crate) mod metrics;
-mod notifications;
+#[doc(hidden)]
+pub mod notifications;
 pub(crate) mod operational_events;
 pub mod privacy;
 pub mod profiles;

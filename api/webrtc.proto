@@ -54,6 +54,7 @@ message Request {
     ShareCommand share_command = 31;
     ActivityAnalyticsCommand activity_analytics_command = 32;
     UsageReportingCommand usage_reporting_command = 33;
+    CloudNotificationCommand cloud_notification_command = 34;
   }
   reserved 19, 20;
   reserved "recording_command", "live_session_command";
@@ -3166,6 +3167,7 @@ message Ok {
     SavedEventSearchResult saved_event_search_result = 47;
     ActivityAnalyticsResult activity_analytics_result = 50;
     UsageReportingResult usage_reporting_result = 51;
+    CloudNotificationResult cloud_notification_result = 52;
   }
   reserved 17, 18;
   reserved "recording_activity_result", "live_session_result";
@@ -5202,5 +5204,97 @@ message UsageReportingResult {
   oneof result {
     UsageReportingState state = 1;
     UsageReportingPreview preview = 2;
+  }
+}
+
+// Controls bounded Keeppeek Service mobile push signaling and private preview resolution.
+message CloudNotificationCommand {
+  oneof action {
+    GetCloudNotificationSettings get_settings = 1;
+    UpdateCloudNotificationSettings update_settings = 2;
+    GetCloudNotificationStatus get_status = 3;
+    TestCloudNotification test = 4;
+    ResolveCloudNotification resolve = 5;
+  }
+}
+
+message GetCloudNotificationSettings {}
+
+message GetCloudNotificationStatus {}
+
+message TestCloudNotification {}
+
+message UpdateCloudNotificationSettings {
+  uint64 expected_revision = 1;
+  bool enabled = 2;
+  bool image_previews_enabled = 3;
+}
+
+message ResolveCloudNotification {
+  // Opaque 16-byte random cloud event alias.
+  bytes cloud_event_id = 1;
+}
+
+message CloudNotificationSettings {
+  uint64 revision = 1;
+  bool enabled = 2;
+  bool image_previews_enabled = 3;
+}
+
+enum CloudNotificationState {
+  CLOUD_NOTIFICATION_STATE_UNSPECIFIED = 0;
+  CLOUD_NOTIFICATION_STATE_DISABLED = 1;
+  CLOUD_NOTIFICATION_STATE_UNPAIRED = 2;
+  CLOUD_NOTIFICATION_STATE_READY = 3;
+  CLOUD_NOTIFICATION_STATE_THROTTLED = 4;
+  CLOUD_NOTIFICATION_STATE_BACKING_OFF = 5;
+  CLOUD_NOTIFICATION_STATE_UNAVAILABLE = 6;
+}
+
+enum CloudNotificationFailureCode {
+  CLOUD_NOTIFICATION_FAILURE_CODE_UNSPECIFIED = 0;
+  CLOUD_NOTIFICATION_FAILURE_CODE_NONE = 1;
+  CLOUD_NOTIFICATION_FAILURE_CODE_LOCAL_LIMIT = 2;
+  CLOUD_NOTIFICATION_FAILURE_CODE_SERVICE_LIMIT = 3;
+  CLOUD_NOTIFICATION_FAILURE_CODE_DEPENDENCY = 4;
+  CLOUD_NOTIFICATION_FAILURE_CODE_CREDENTIAL_REJECTED = 5;
+  CLOUD_NOTIFICATION_FAILURE_CODE_INTEGRITY = 6;
+  CLOUD_NOTIFICATION_FAILURE_CODE_EXPIRED = 7;
+}
+
+message CloudNotificationStatus {
+  CloudNotificationState state = 1;
+  bool paired = 2;
+  bool pending = 3;
+  uint32 accepted_last_hour = 4;
+  uint32 accepted_last_day = 5;
+  uint32 suppressed_last_hour = 6;
+  uint32 suppressed_last_day = 7;
+  optional google.protobuf.Timestamp next_eligible_at = 8;
+  optional google.protobuf.Timestamp last_accepted_at = 9;
+  CloudNotificationFailureCode last_failure = 10;
+}
+
+message CloudNotificationContext {
+  // Opaque 16-byte random cloud event alias.
+  bytes cloud_event_id = 1;
+  string event_id = 2;
+  uint64 revision = 3;
+  optional EventAttachmentDescriptor canonical_attachment = 4;
+  EventImageAvailability image_availability = 5;
+}
+
+message CloudNotificationTestResult {
+  bool accepted = 1;
+  optional google.protobuf.Timestamp next_eligible_at = 2;
+  CloudNotificationFailureCode failure = 3;
+}
+
+message CloudNotificationResult {
+  oneof result {
+    CloudNotificationSettings settings = 1;
+    CloudNotificationStatus status = 2;
+    CloudNotificationContext context = 3;
+    CloudNotificationTestResult test = 4;
   }
 }

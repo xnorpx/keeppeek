@@ -196,6 +196,16 @@ export const serverCapabilityCatalog = {
 		failureGuarantee:
 			'Test failures never enable a rule; retry count and last response remain visible'
 	},
+	'keeppeek.cloud-notifications.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'Bounded Keeppeek Service signaling settings, exact rolling local pacing, test signals, and paired-mobile preview resolution',
+		unlocks: 'Bounded mobile push signaling controls and health state in Settings > Notifications',
+		whenMissing:
+			'Mobile push signaling controls stay unavailable while local rules, Pushover, browser alerts, and MQTT remain independent',
+		failureGuarantee:
+			'Revision conflicts reload authoritative settings; service failures never block local recording or notification channels'
+	},
 	'keeppeek.mqtt-forwarder.v1': {
 		delivery: 'ships',
 		serverOwns:

@@ -1,4 +1,5 @@
 pub use crate::access::AccessKey;
+pub mod cloud_notifications;
 pub(crate) mod metadata;
 #[cfg(test)]
 mod recorded_audio_tests;
@@ -130,6 +131,9 @@ pub struct Config {
 
     #[serde(default)]
     pub usage_reporting: usage_reporting::UsageReportingConfig,
+
+    #[serde(default, skip_serializing_if = "is_default_cloud_notifications")]
+    pub(crate) cloud_notifications: cloud_notifications::Settings,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) external_auth: Option<crate::access::external::Config>,
@@ -1155,6 +1159,10 @@ const fn default_port() -> u16 {
     8081
 }
 
+fn is_default_cloud_notifications(settings: &cloud_notifications::Settings) -> bool {
+    *settings == cloud_notifications::Settings::default()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -1165,6 +1173,7 @@ impl Default for Config {
             sharing: sharing::SharingConfig::default(),
             reporting: None,
             usage_reporting: usage_reporting::UsageReportingConfig::default(),
+            cloud_notifications: cloud_notifications::Settings::default(),
             external_auth: None,
             direct_card: DirectCardConfig::default(),
             desktop: DesktopConfig::default(),
@@ -2083,6 +2092,11 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
         .remove("reporting")
         .map(reporting::parse_settings)
         .transpose()?;
+    let cloud_notifications = runtime
+        .remove("cloud_notifications")
+        .map(cloud_notifications::parse_settings)
+        .transpose()?
+        .unwrap_or_default();
     if let Some(value) = runtime.get_mut("runtime_profiles") {
         *value = runtime_profile_value_without_identity_schema(value)?;
     }
@@ -2101,6 +2115,7 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
     let mut config: Config = resolved.try_into()?;
     config.reporting = reporting;
     config.usage_reporting.validate()?;
+    config.cloud_notifications = cloud_notifications;
     config.runtime_profiles.validate()?;
     config.sharing.validate()?;
     config.storage.validate_pre_recording_budgets()?;
@@ -2653,6 +2668,7 @@ pub(crate) fn is_reserved_section(namespace: &str) -> bool {
             | "sharing"
             | "reporting"
             | "usage_reporting"
+            | "cloud_notifications"
             | "external_auth"
             | "external_identities"
             | "access_credentials"

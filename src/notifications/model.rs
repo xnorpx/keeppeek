@@ -232,6 +232,7 @@ pub enum Channel {
     Push,
     Webhook,
     Forwarder,
+    KeeppeekService,
 }
 
 impl Channel {
@@ -241,6 +242,7 @@ impl Channel {
             Self::Push => "push",
             Self::Webhook => "webhook",
             Self::Forwarder => "forwarder",
+            Self::KeeppeekService => "keeppeek_service",
         }
     }
 }
@@ -548,7 +550,15 @@ fn validate_action(action: &Action) -> anyhow::Result<()> {
         Channel::Forwarder if action.destination.trim().is_empty() => {
             anyhow::bail!("{} actions require a destination", action.channel.as_str());
         }
-        Channel::Browser | Channel::Forwarder => {}
+        Channel::KeeppeekService if !action.destination.is_empty() => {
+            anyhow::bail!(
+                "keeppeek_service actions use paired NVR configuration and must not set a destination"
+            );
+        }
+        Channel::KeeppeekService if action.attachment == AttachmentPolicy::Required => {
+            anyhow::bail!("keeppeek_service actions never transmit media attachments");
+        }
+        Channel::Browser | Channel::Forwarder | Channel::KeeppeekService => {}
     }
     Ok(())
 }

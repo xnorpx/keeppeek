@@ -64,6 +64,7 @@ pub(super) fn dispatch(
             query(state, session_id, principal, request)
         }
         Some(event_search_command::Action::FetchMedia(request)) => {
+            super::cloud_notifications::enforce_mobile_media_preview_gate(state, principal)?;
             if state.webrtc.has_api_session(session_id) {
                 let delivery = start_event_search_media(state, session_id, request)?;
                 return Ok((

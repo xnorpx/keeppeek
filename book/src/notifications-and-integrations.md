@@ -103,6 +103,33 @@ queue records `expired` with reason `outbox_full`. Each action also has its own 
 expiry bounds. Restart is not a recovery strategy for pending delivery: it discards that work and
 can allow replayed events to notify again after deduplication state is cleared.
 
+## Bounded Keeppeek Service mobile push signaling
+
+KeepPeek also supports an optional `keeppeek_service` notification action target gated behind
+`keeppeek.cloud-notifications.v1`. Both cloud signaling and private still-image previews default to
+off (`enabled = false`, `image_previews_enabled = false`) under `[cloud_notifications]` in
+`config.toml`, with the Ed25519 signing seed referenced via `{secret:KEY}` from `secrets.toml`.
+
+When enabled and paired, matched logical events persist one random 128-bit `cloud_event_id` alias
+in durable local storage (`cloud-notifications.db`) and keep at most one claimed/in-flight intent
+and one newest-only pending intent. Non-configurable local ceilings cap output at 1 event every
+30 seconds, GCRA 2 attempts/second (burst 4), exact rolling 120/hour and 500/day, at most 3
+attempts or 5 minutes TTL with exact 109-byte payload reuse, and a separate exact rolling 3/hour
+test-signal budget.
+
+Each outbound signal is an exact 109-byte signed binary body sent over HTTPS without redirects to
+`POST /api/v1/nvr/events`. Keeppeek Service never receives local event IDs, camera names or IDs,
+event types, detection payloads, free text, media URLs, attachment descriptors, or image bytes. If
+still-image previews are enabled, an authenticated paired mobile endpoint bound to the current NVR
+ID may resolve the 16-byte `cloud_event_id` directly at the private NVR and fetch static still
+images (`image/jpeg` or `image/png`) through existing authenticated event media delivery. Video,
+animated image, and audio previews are unsupported.
+
+Configure, inspect bounded health/suppression counters, and send rate-limited test signals in
+**Settings > Notifications**. Signal acceptance confirms Keeppeek Service admission only, not
+provider delivery or mobile display. Recording, event persistence, Pushover, browser alerts, and
+MQTT remain independent.
+
 ## Forward events through MQTT
 
 Open **Settings > Integrations** to configure, test, observe, or disable the MQTT event forwarder.
