@@ -117,11 +117,7 @@ fn resolve_manifest(
         .manifest_sha256
         .as_deref()
         .ok_or_else(|| unavailable("ready timelapse manifest has no checksum"))?;
-    let path = export_attempt_directory(state, &record.job.job_id, &record.artifact_id)
-        .join(manifest_name);
-    let mut file = File::open(&path).map_err(unavailable)?;
-    let length = file.metadata().map_err(unavailable)?.len();
-    let bytes = read(&mut file, length)?;
+    let bytes = manifest_payload(state, &record, manifest_name)?;
     let actual_sha = encode_lower_hex(Sha256::digest(&bytes));
     if actual_sha != expected_sha {
         checksum_failure(state, &record);
@@ -138,6 +134,36 @@ fn resolve_manifest(
         permit,
         artifact: proto::ExportArtifactKind::Manifest,
     })
+}
+
+fn manifest_payload(
+    state: &ServerState,
+    record: &ExportJobRecord,
+    manifest_name: &str,
+) -> Result<Vec<u8>, ControlCommandError> {
+    let manifest_id = super::timelapse::manifest_object_id(&record.artifact_id);
+    if owned(state.catalog.as_ref(), &manifest_id).map_err(unavailable)? {
+        let catalog = state
+            .catalog
+            .as_ref()
+            .ok_or_else(|| unavailable("export catalog unavailable"))?;
+        let (location, _lease) = catalog
+            .leased_export(&manifest_id)
+            .map_err(unavailable)?
+            .ok_or_else(|| unavailable("timelapse manifest location unavailable"))?;
+        let manager = state
+            .storage_config
+            .volume_runtime
+            .as_ref()
+            .ok_or_else(|| unavailable("export volume unavailable"))?;
+        let mut file = manager.open_owned(&location).map_err(unavailable)?;
+        return read(&mut file, location.bytes);
+    }
+    let path = export_attempt_directory(state, &record.job.job_id, &record.artifact_id)
+        .join(manifest_name);
+    let mut file = File::open(&path).map_err(unavailable)?;
+    let length = file.metadata().map_err(unavailable)?.len();
+    read(&mut file, length)
 }
 
 fn resolve(

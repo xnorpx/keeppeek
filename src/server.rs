@@ -4422,6 +4422,13 @@ fn cleanup_export_attempt_artifacts(
     if managed {
         export_storage::retire(state.catalog.as_ref(), artifact_id)
             .map_err(std::io::Error::other)?;
+        let manifest_id = export_storage::timelapse::manifest_object_id(artifact_id);
+        if export_storage::owned(state.catalog.as_ref(), &manifest_id)
+            .map_err(std::io::Error::other)?
+        {
+            export_storage::retire(state.catalog.as_ref(), &manifest_id)
+                .map_err(std::io::Error::other)?;
+        }
     }
     if let Some(worker) = &state.storage_config.volume_mover
         && let Err(error) = worker.scan()

@@ -75,10 +75,18 @@ test('Timelapse review shows presets, explicit gaps, preview, partial policy, se
 	await expect(page.locator('[data-timelapse-custom-end]')).toBeVisible();
 	await page.locator('[data-timelapse-preset="last_hour"]').click();
 
-	// Generate button stays disabled until BOTH partial allowance and expensive confirmation are checked.
-	const generateBtn = page.locator('[data-timelapse-generate]');
-	await expect(generateBtn).toBeDisabled();
+	// Editing settings invalidates confirmation and disables Generate until Preview plan refreshes.
 	await page.locator('[data-timelapse-allow-partial]').check();
+	await page.locator('[data-timelapse-confirm-expensive]').check();
+	const generateBtn = page.locator('[data-timelapse-generate]');
+	await expect(generateBtn).toBeEnabled();
+	await page.locator('[data-timelapse-overlay]').uncheck();
+	await expect(page.locator('[data-timelapse-stale-preview]')).toBeVisible();
+	await expect(generateBtn).toBeDisabled();
+	await page.locator('[data-timelapse-plan-refresh]').click();
+	await expect(page.locator('[data-timelapse-stale-preview]')).toHaveCount(0);
+
+	// Generate button stays disabled until BOTH partial allowance and expensive confirmation are checked.
 	await expect(generateBtn).toBeDisabled();
 	await page.locator('[data-timelapse-confirm-expensive]').check();
 	await expect(generateBtn).toBeEnabled();
@@ -105,6 +113,13 @@ test('Timelapse review shows presets, explicit gaps, preview, partial policy, se
 	await page.locator('[data-timelapse-download-manifest]').click();
 	const manifestFile = await manifestDownload;
 	expect(manifestFile.suggestedFilename()).toContain('.manifest.json');
+
+	// Switching cameras clears the previous camera's activeJob and refreshes cleanly.
+	await page.getByRole('button', { name: 'Next camera, Camera 2' }).click();
+	await expect(page).toHaveURL(/camera=camera-2/);
+	await expect(page.locator('[data-timelapse-active-job]')).toHaveCount(0);
+	await page.getByRole('button', { name: 'Previous camera, Front Door' }).click();
+	await expect(page).toHaveURL(/camera=front-door/);
 
 	// Clicking a sampled frame seeks normal Keep Timeline to its exact source timestamp.
 	await page.locator('[data-timelapse-sample-card]').first().click();

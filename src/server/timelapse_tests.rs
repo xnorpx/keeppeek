@@ -255,6 +255,308 @@ fn server_timelapse_plan_fetch_cancel_and_privacy_enforcement() {
 }
 
 #[test]
+fn server_timelapse_page_token_rejects_mismatched_and_stale_requests() {
+    let base_ms = 1_772_962_200_000_i64;
+    let (root, catalog, state) = setup_timelapse_state(base_ms);
+    let session = SessionId::from_u64(77);
+    let initial = timelapse::handle_plan(
+        &state,
+        session,
+        proto::PlanTimelapse {
+            source_id: "127.0.0.1".to_owned(),
+            stream_id: "main".to_owned(),
+            start_time: Some(millis_timestamp(base_ms)),
+            end_time: Some(millis_timestamp(base_ms + 1_500)),
+            cadence: Some(proto::plan_timelapse::Cadence::Interval(
+                prost_types::Duration {
+                    seconds: 0,
+                    nanos: 500_000_000,
+                },
+            )),
+            tolerance: Some(prost_types::Duration {
+                seconds: 1,
+                nanos: 0,
+            }),
+            page_size: 1,
+            page_token: String::new(),
+            output_preview: Some(proto::TimelapseOutputPreview {
+                output_fps: 10,
+                max_width: 640,
+                max_height: 360,
+                timestamp_overlay: false,
+            }),
+        },
+    )
+    .unwrap();
+    let Some(proto::ok::Result::TimelapsePlan(page1)) = initial.result else {
+        panic!("expected first page");
+    };
+    assert!(!page1.next_page_token.is_empty());
+
+    // Changing cadence while reusing the old page_token must reject with 409 Rejected.
+    let Err(mismatch) = timelapse::handle_plan(
+        &state,
+        session,
+        proto::PlanTimelapse {
+            source_id: "127.0.0.1".to_owned(),
+            stream_id: "main".to_owned(),
+            start_time: Some(millis_timestamp(base_ms)),
+            end_time: Some(millis_timestamp(base_ms + 1_500)),
+            cadence: Some(proto::plan_timelapse::Cadence::TargetSampleCount(1)),
+            tolerance: Some(prost_types::Duration {
+                seconds: 1,
+                nanos: 0,
+            }),
+            page_size: 1,
+            page_token: page1.next_page_token.clone(),
+            output_preview: Some(proto::TimelapseOutputPreview {
+                output_fps: 10,
+                max_width: 640,
+                max_height: 360,
+                timestamp_overlay: false,
+            }),
+        },
+    ) else {
+        panic!("expected mismatched cadence page_token rejection");
+    };
+    assert_eq!(mismatch.code, proto::ErrorCode::Rejected);
+    assert_eq!(mismatch._http_status, 409);
+
+    // Changing output_preview must not return the stale cached estimate.
+    let preview_mismatch = timelapse::handle_plan(
+        &state,
+        session,
+        proto::PlanTimelapse {
+            source_id: "127.0.0.1".to_owned(),
+            stream_id: "main".to_owned(),
+            start_time: Some(millis_timestamp(base_ms)),
+            end_time: Some(millis_timestamp(base_ms + 1_500)),
+            cadence: Some(proto::plan_timelapse::Cadence::Interval(
+                prost_types::Duration {
+                    seconds: 0,
+                    nanos: 500_000_000,
+                },
+            )),
+            tolerance: Some(prost_types::Duration {
+                seconds: 1,
+                nanos: 0,
+            }),
+            page_size: 1,
+            page_token: page1.next_page_token.clone(),
+            output_preview: Some(proto::TimelapseOutputPreview {
+                output_fps: 30,
+                max_width: 1_920,
+                max_height: 1_080,
+                timestamp_overlay: true,
+            }),
+        },
+    )
+    .unwrap();
+    let Some(proto::ok::Result::TimelapsePlan(page2_preview)) = preview_mismatch.result else {
+        panic!("expected page 2 with refreshed estimate");
+    };
+    assert_ne!(
+        page2_preview.estimate.as_ref().unwrap().output_duration_ms,
+        page1.estimate.as_ref().unwrap().output_duration_ms
+    );
+
+    // Evicting cache and passing a fabricated stale fingerprint must reject with 409 Rejected.
+    state.timelapse.close_session(session);
+    let Err(stale) = timelapse::handle_plan(
+        &state,
+        session,
+        proto::PlanTimelapse {
+            source_id: "127.0.0.1".to_owned(),
+            stream_id: "main".to_owned(),
+            start_time: Some(millis_timestamp(base_ms)),
+            end_time: Some(millis_timestamp(base_ms + 1_500)),
+            cadence: Some(proto::plan_timelapse::Cadence::Interval(
+                prost_types::Duration {
+                    seconds: 0,
+                    nanos: 500_000_000,
+                },
+            )),
+            tolerance: Some(prost_types::Duration {
+                seconds: 1,
+                nanos: 0,
+            }),
+            page_size: 1,
+            page_token: "stale-fingerprint:1".to_owned(),
+            output_preview: None,
+        },
+    ) else {
+        panic!("expected stale fingerprint page_token rejection");
+    };
+    assert_eq!(stale.code, proto::ErrorCode::Rejected);
+    assert_eq!(stale._http_status, 409);
+
+    drop(state);
+    catalog.shutdown();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn server_timelapse_export_uses_managed_volume_runtime_archive_and_cleanup() {
+    if !crate::storage::timelapse_encoder::probe_local_encoder("ffmpeg").available {
+        return;
+    }
+    let (root, catalog, manager) =
+        crate::storage::volumes::runtime::tests::fixture(16 * 1024 * 1024).unwrap();
+    let mut state = super::tests::media_test_state();
+    state.storage_config.long_term_path = root.join("legacy");
+    state.storage_config.volume_runtime = Some(Arc::new(manager.clone()));
+    state.storage_config.minimum_free_bytes = 0;
+    state.storage_config.critical_free_bytes = 0;
+    state.storage_config.warning_free_bytes = 0;
+    let base_ms = 1_770_010_000_000_i64;
+    let cam = state.camera("127.0.0.1").unwrap();
+    let stream_id = recording_stream_id(&cam, "main");
+    let media_dir = root.join("recordings");
+    std::fs::create_dir_all(&media_dir).unwrap();
+    let media_path = media_dir.join("timelapse-managed-src.mp4");
+    let (init_len, moof_off, frag_len, dur_ms) =
+        seed_fragmented_h264(&media_dir, &media_path, base_ms);
+    catalog
+        .handle()
+        .upsert_recording(CatalogRecording {
+            id: "rec-tl-managed".to_owned(),
+            stream_id,
+            source_id: Some("127.0.0.1".to_owned()),
+            logical_stream_id: Some("main".to_owned()),
+            started_at_ms: base_ms,
+            ended_at_ms: Some(base_ms + dur_ms as i64),
+            path: media_path.to_string_lossy().into_owned(),
+            init_offset: 0,
+            init_len,
+            finalized: true,
+        })
+        .unwrap();
+    catalog
+        .handle()
+        .insert_fragment(CatalogFragment {
+            recording_id: "rec-tl-managed".to_owned(),
+            sequence: 1,
+            start_ms: base_ms,
+            duration_ms: dur_ms,
+            byte_offset: moof_off,
+            byte_len: frag_len,
+            random_access: true,
+        })
+        .unwrap();
+    let state = state.with_recording_catalog(catalog.handle());
+
+    let req = proto::CreateExportJob {
+        job_id: "tl-managed-1".to_owned(),
+        source_id: "127.0.0.1".to_owned(),
+        stream_id: "main".to_owned(),
+        start_time: Some(millis_timestamp(base_ms)),
+        end_time: Some(millis_timestamp(base_ms + 1_500)),
+        allow_partial: true,
+        burn_in_timestamp: false,
+        event_seed: None,
+        guest_range_preparation: None,
+        timelapse: Some(proto::TimelapseExportOptions {
+            cadence: Some(proto::timelapse_export_options::Cadence::TargetSampleCount(
+                2,
+            )),
+            tolerance: Some(prost_types::Duration {
+                seconds: 1,
+                nanos: 0,
+            }),
+            output_fps: 2,
+            max_width: 320,
+            max_height: 180,
+            timestamp_overlay: false,
+            confirmed_expensive: true,
+            expected_source_fingerprint: None,
+        }),
+    };
+    create_export_job(&state, "owner", req).unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let ready = loop {
+        let current = export_job(&state, "owner", "tl-managed-1").unwrap();
+        if current.status == proto::ExportJobStatus::Ready as i32 {
+            break current;
+        }
+        assert_ne!(
+            current.status,
+            proto::ExportJobStatus::Failed as i32,
+            "managed timelapse export failed: {:?}",
+            current.error
+        );
+        assert!(Instant::now() < deadline, "managed timelapse timed out");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    let artifact_id = state.export_jobs.lock().unwrap()["tl-managed-1"]
+        .artifact_id
+        .clone();
+    let manifest_id = export_storage::timelapse::manifest_object_id(&artifact_id);
+    assert!(export_storage::owned(Some(&catalog.handle()), &artifact_id).unwrap());
+    assert!(export_storage::owned(Some(&catalog.handle()), &manifest_id).unwrap());
+    assert!(
+        state.export_jobs.lock().unwrap()["tl-managed-1"]
+            .path
+            .is_none()
+    );
+    // Staging directory must not leak files under legacy/.exports.
+    let legacy_job_dir = state
+        .storage_config
+        .long_term_path
+        .join(".exports")
+        .join(".timelapse-staging")
+        .join("tl-managed-1");
+    assert!(!legacy_job_dir.exists());
+
+    // Download both managed MP4 and managed manifest JSON through volume_runtime.
+    let (mp4_res, mp4_msgs) = download_export(
+        &state,
+        "owner",
+        proto::DownloadExport {
+            job_id: "tl-managed-1".to_owned(),
+            channel: proto::DataChannelKind::ReliableData as i32,
+            artifact: proto::ExportArtifactKind::Media as i32,
+        },
+    )
+    .unwrap();
+    assert_eq!(mp4_res.sha256, ready.sha256);
+    assert!(!mp4_msgs.is_empty());
+
+    let (man_res, man_msgs) = download_export(
+        &state,
+        "owner",
+        proto::DownloadExport {
+            job_id: "tl-managed-1".to_owned(),
+            channel: proto::DataChannelKind::ReliableData as i32,
+            artifact: proto::ExportArtifactKind::Manifest as i32,
+        },
+    )
+    .unwrap();
+    assert_eq!(man_res.artifact, proto::ExportArtifactKind::Manifest as i32);
+    assert!(!man_msgs.is_empty());
+
+    // Archive lookup finds the finalized managed timelapse MP4 object.
+    assert!(
+        catalog
+            .handle()
+            .leased_export(&artifact_id)
+            .unwrap()
+            .is_some()
+    );
+
+    // Cleanup retires both managed MP4 and managed manifest objects to export retirement.
+    cleanup_export_attempt_artifacts(&state, "tl-managed-1", &artifact_id).unwrap();
+    assert!(catalog.handle().leased_export(&artifact_id).is_err());
+    assert!(catalog.handle().leased_export(&manifest_id).is_err());
+
+    drop(state);
+    drop(manager);
+    catalog.shutdown();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn server_timelapse_export_lifecycle_manifest_download_dedup_and_recovery() {
     let base_ms = 1_772_962_200_000_i64;
     let (root, catalog, state) = setup_timelapse_state(base_ms);

@@ -56,6 +56,7 @@
 	let confirmedExpensive = $state(false);
 
 	let plan = $state.raw<TimelapsePlanResponse | null>(null);
+	let plannedSignature = $state<string | null>(null);
 	let items = $state.raw<TimelapsePlanEntry[]>([]);
 	let nextPageToken = $state('');
 	let loadingPlan = $state(false);
@@ -86,9 +87,26 @@
 		const [w, h] = outputResolution.split('x').map(Number);
 		return { maxWidth: w || 1280, maxHeight: h || 720 };
 	});
+	let currentDraftSignature = $derived(
+		JSON.stringify({
+			sourceId,
+			streamId,
+			preset,
+			customStartInput: preset === 'custom' ? customStartInput : '',
+			customEndInput: preset === 'custom' ? customEndInput : '',
+			cadenceMode,
+			targetSampleCount: Math.max(1, Math.min(3600, Math.round(targetSampleCount))),
+			intervalSeconds: Math.max(1, Math.round(intervalSeconds)),
+			outputFps,
+			outputResolution,
+			timestampOverlay
+		})
+	);
+	let previewStale = $derived(plan !== null && plannedSignature !== currentDraftSignature);
 	let canGenerate = $derived(
 		Boolean(
 			plan &&
+			!previewStale &&
 			plan.estimate.sampleCount > 0 &&
 			plan.estimate.encoderAvailable &&
 			exportCapabilitySupported &&
@@ -164,6 +182,7 @@
 	async function loadPlan(append = false): Promise<void> {
 		if (!sourceId || !timelapseSupported) return;
 		const serial = ++planRequestSerial;
+		const requestSignature = currentDraftSignature;
 		planError = null;
 		if (append) {
 			loadingMore = true;
@@ -195,6 +214,7 @@
 			});
 			if (serial !== planRequestSerial) return;
 			plan = response;
+			plannedSignature = requestSignature;
 			items = append ? [...items, ...response.items] : response.items;
 			nextPageToken = response.nextPageToken;
 		} catch (cause) {
@@ -209,15 +229,16 @@
 	}
 
 	async function refreshHistory(): Promise<void> {
+		const expectedSource = sourceId;
 		try {
 			const jobs = await controlClient.listExports();
-			timelapseJobs = jobs.filter((job) => job.timelapse && job.sourceId === sourceId);
-			if (activeJob) {
+			if (expectedSource !== sourceId) return;
+			timelapseJobs = jobs.filter((job) => job.timelapse && job.sourceId === expectedSource);
+			if (activeJob && activeJob.sourceId === expectedSource) {
 				const updated = timelapseJobs.find((job) => job.id === activeJob?.id);
-				if (updated) activeJob = updated;
+				activeJob = updated ?? timelapseJobs.find((job) => job.status === 'running') ?? null;
 			} else {
-				const running = timelapseJobs.find((job) => job.status === 'running');
-				if (running) activeJob = running;
+				activeJob = timelapseJobs.find((job) => job.status === 'running') ?? null;
 			}
 		} catch {
 			// History load errors do not block interactive sparse review.
@@ -328,15 +349,37 @@
 	$effect(() => {
 		const key = `${sourceId}:${streamId}`;
 		if (!key) return;
-		const nowMs = untrack(() => anchorMs ?? Date.now());
-		customStartInput = toLocalInputValue(nowMs - 60 * 60_000);
-		customEndInput = toLocalInputValue(nowMs);
-		void loadPlan(false);
-		void refreshHistory();
+		untrack(() => {
+			const nowMs = anchorMs ?? Date.now();
+			plan = null;
+			plannedSignature = null;
+			items = [];
+			nextPageToken = '';
+			planError = null;
+			activeJob = null;
+			timelapseJobs = [];
+			exportError = null;
+			allowPartial = false;
+			confirmedExpensive = false;
+			autoplay = false;
+			activeSampleIndex = 0;
+			thumbUrls = {};
+			thumbErrors = {};
+			customStartInput = toLocalInputValue(nowMs - 60 * 60_000);
+			customEndInput = toLocalInputValue(nowMs);
+			void loadPlan(false);
+			void refreshHistory();
+		});
 		return () => {
 			planRequestSerial += 1;
 			queue.reset();
 		};
+	});
+
+	$effect(() => {
+		if (previewStale) {
+			confirmedExpensive = false;
+		}
 	});
 
 	$effect(() => {
@@ -719,6 +762,16 @@
 				<input data-timelapse-overlay type="checkbox" bind:checked={timestampOverlay} />
 				<span>Overlay site-timezone timestamp (UTC provenance kept in manifest)</span>
 			</label>
+			{#if previewStale}
+				<p
+					data-timelapse-stale-preview
+					role="status"
+					class="text-warning rounded-sm border border-dashed border-hairline-strong bg-raised/60 px-2.5 py-2 text-xs"
+				>
+					Settings changed since the last preview. Run Preview plan to refresh estimates and
+					confirmation before generating.
+				</p>
+			{/if}
 			{#if plan && plan.estimate.gapCount > 0}
 				<label class="text-warning flex min-h-11 items-center gap-2 text-xs md:min-h-8">
 					<input data-timelapse-allow-partial type="checkbox" bind:checked={allowPartial} />

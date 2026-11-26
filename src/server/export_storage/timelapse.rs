@@ -137,26 +137,79 @@ fn timelapse_artifact_names(camera: &CameraEntry, start_ms: i64, end_ms: i64) ->
     (file_name, manifest_file_name)
 }
 
+/// Derives the deterministic managed volume object ID for a timelapse provenance manifest.
+pub(in crate::server) fn manifest_object_id(artifact_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"keeppeek.timelapse.manifest.v1\0");
+    hasher.update(artifact_id.as_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    Uuid::from_bytes(bytes).simple().to_string()
+}
+
 pub(super) fn spawn_timelapse_worker(
     state: ServerState,
     request: proto::CreateExportJob,
     prepared: PreparedTimelapse,
 ) {
     let job_id = request.job_id.clone();
+    let artifact_id = prepared.artifact_id.clone();
     let cancel = Arc::clone(&prepared.cancel);
+    let outputs = match prepare_timelapse_outputs(&state, &request, &prepared) {
+        Ok(outputs) => outputs,
+        Err(error) => {
+            fail_export_job(&state, &job_id, &cancel, error.to_string());
+            let _ = cleanup_export_attempt_artifacts(&state, &job_id, &artifact_id);
+            return;
+        }
+    };
+    let state_for_thread = state.clone();
     if let Err(error) = std::thread::Builder::new()
         .name(format!("timelapse-export-{job_id}"))
-        .spawn(move || run_timelapse_worker(state, request, prepared))
+        .spawn(move || run_timelapse_worker(state_for_thread, request, prepared, outputs))
     {
         tracing::error!(%error, %job_id, "failed to spawn timelapse export worker");
-        cancel.store(true, Ordering::Release);
+        fail_export_job(
+            &state,
+            &job_id,
+            &cancel,
+            format!("unable to start timelapse export worker: {error}"),
+        );
+        let _ = cleanup_export_attempt_artifacts(&state, &job_id, &artifact_id);
     }
+}
+
+struct PreparedOutputs {
+    video: super::Output,
+    manifest: Option<super::Output>,
+}
+
+fn prepare_timelapse_outputs(
+    state: &ServerState,
+    request: &proto::CreateExportJob,
+    prepared: &PreparedTimelapse,
+) -> anyhow::Result<PreparedOutputs> {
+    let video = super::prepare(state, request, &prepared.artifact_id, &prepared.file_name)?;
+    let manifest = if video.reservation.is_some() {
+        let manifest_id = manifest_object_id(&prepared.artifact_id);
+        let reserved = super::prepare(state, request, &manifest_id, &prepared.manifest_file_name)?;
+        anyhow::ensure!(
+            reserved.reservation.is_some(),
+            "export volume reservation was unavailable for timelapse manifest"
+        );
+        Some(reserved)
+    } else {
+        None
+    };
+    Ok(PreparedOutputs { video, manifest })
 }
 
 fn run_timelapse_worker(
     state: ServerState,
     request: proto::CreateExportJob,
     prepared: PreparedTimelapse,
+    outputs: PreparedOutputs,
 ) {
     let Some(catalog) = state.catalog.clone() else {
         fail_export_job(
@@ -165,27 +218,20 @@ fn run_timelapse_worker(
             &prepared.cancel,
             "recording catalog is unavailable".to_owned(),
         );
+        let _ = cleanup_export_attempt_artifacts(&state, &request.job_id, &prepared.artifact_id);
         return;
     };
-    let export_root = state.storage_config.long_term_path.join(".exports");
-    let source_identity =
-        super::provenance::source_identity(&state, &request.source_id).map(|id| id.to_string());
-    let encode_req = TimelapseEncodeRequest {
-        export_root,
-        job_id: request.job_id.clone(),
-        artifact_id: prepared.artifact_id.clone(),
-        file_name: prepared.file_name.clone(),
-        manifest_file_name: prepared.manifest_file_name.clone(),
-        source_identity,
-        output_width: prepared.options.max_width,
-        output_height: prepared.options.max_height,
-        output_fps: prepared.options.output_fps,
-        timestamp_overlay: prepared.options.timestamp_overlay,
-        allow_partial: request.allow_partial,
-        confirmed_expensive: prepared.options.confirmed_expensive,
-        max_output_bytes: MAX_OUTPUT_BYTES,
-        ffmpeg_binary: "ffmpeg".to_owned(),
+    let managed = outputs.video.reservation.is_some();
+    let export_root = if managed {
+        state
+            .storage_config
+            .long_term_path
+            .join(".exports")
+            .join(".timelapse-staging")
+    } else {
+        state.storage_config.long_term_path.join(".exports")
     };
+    let encode_req = build_encode_request(&state, &request, &prepared, export_root.clone());
     let deadline = Instant::now() + TIMELAPSE_EXPORT_DEADLINE;
     let state_for_headroom = state.clone();
     let state_for_progress = state.clone();
@@ -201,8 +247,18 @@ fn run_timelapse_worker(
             update_timelapse_progress(&state_for_progress, &job_id_for_progress, done, total);
         },
     );
-    match result {
-        Ok(encoded) => complete_timelapse_job(&state, &request.job_id, &prepared, encoded),
+    let outcome = match result {
+        Ok(encoded) => publish_if_managed(outputs, encoded, &prepared.cancel),
+        Err(error) => Err(error),
+    };
+    if managed {
+        let _ =
+            cleanup_export_attempt_directory(&export_root, &request.job_id, &prepared.artifact_id);
+    }
+    match outcome {
+        Ok((encoded, stored_path)) => {
+            complete_timelapse_job(&state, &request.job_id, &prepared, encoded, stored_path);
+        }
         Err(TimelapseEncodeError::Cancelled) => {
             mark_timelapse_cancelled(&state, &request.job_id, &prepared.artifact_id);
         }
@@ -212,6 +268,101 @@ fn run_timelapse_worker(
             fail_export_job(&state, &request.job_id, &prepared.cancel, error.to_string());
         }
     }
+}
+
+fn build_encode_request(
+    state: &ServerState,
+    request: &proto::CreateExportJob,
+    prepared: &PreparedTimelapse,
+    export_root: PathBuf,
+) -> TimelapseEncodeRequest {
+    let source_identity =
+        super::provenance::source_identity(state, &request.source_id).map(|id| id.to_string());
+    TimelapseEncodeRequest {
+        export_root,
+        job_id: request.job_id.clone(),
+        artifact_id: prepared.artifact_id.clone(),
+        file_name: prepared.file_name.clone(),
+        manifest_file_name: prepared.manifest_file_name.clone(),
+        source_identity,
+        output_width: prepared.options.max_width,
+        output_height: prepared.options.max_height,
+        output_fps: prepared.options.output_fps,
+        timestamp_overlay: prepared.options.timestamp_overlay,
+        allow_partial: request.allow_partial,
+        confirmed_expensive: prepared.options.confirmed_expensive,
+        max_output_bytes: MAX_OUTPUT_BYTES,
+        ffmpeg_binary: "ffmpeg".to_owned(),
+    }
+}
+
+fn publish_if_managed(
+    outputs: PreparedOutputs,
+    encoded: crate::storage::timelapse_encoder::TimelapseEncodeResult,
+    cancel: &AtomicBool,
+) -> Result<
+    (
+        crate::storage::timelapse_encoder::TimelapseEncodeResult,
+        Option<PathBuf>,
+    ),
+    TimelapseEncodeError,
+> {
+    let Some(video_res) = outputs.video.reservation else {
+        let stored_path = Some(encoded.video_path.clone());
+        return Ok((encoded, stored_path));
+    };
+    let manifest_res = outputs
+        .manifest
+        .and_then(|out| out.reservation)
+        .ok_or_else(|| {
+            TimelapseEncodeError::EncodeFailed("missing managed manifest reservation".to_owned())
+        })?;
+    publish_file_to_reservation(&encoded.video_path, video_res, cancel)?;
+    publish_file_to_reservation(&encoded.manifest_path, manifest_res, cancel)?;
+    Ok((encoded, None))
+}
+
+fn publish_file_to_reservation(
+    source_path: &Path,
+    reservation: crate::storage::volumes::runtime::Reservation,
+    cancel: &AtomicBool,
+) -> Result<(), TimelapseEncodeError> {
+    if cancel.load(Ordering::Acquire) {
+        return Err(TimelapseEncodeError::Cancelled);
+    }
+    let mut source = File::open(source_path)
+        .map_err(|error| TimelapseEncodeError::EncodeFailed(error.to_string()))?;
+    let mut target = reservation
+        .open()
+        .map_err(|error| TimelapseEncodeError::EncodeFailed(error.to_string()))?;
+    std::io::copy(&mut source, &mut target)
+        .map_err(|error| TimelapseEncodeError::EncodeFailed(error.to_string()))?;
+    let evidence = target
+        .evidence_with_progress(|_| {
+            anyhow::ensure!(
+                !cancel.load(Ordering::Acquire),
+                "timelapse export cancelled"
+            );
+            Ok(())
+        })
+        .map_err(|error| {
+            if cancel.load(Ordering::Acquire) {
+                TimelapseEncodeError::Cancelled
+            } else {
+                TimelapseEncodeError::EncodeFailed(error.to_string())
+            }
+        })?;
+    super::confirm_publication(
+        || target.publish(evidence.clone()),
+        || cancel.load(Ordering::Acquire),
+    )
+    .map_err(|error| {
+        if cancel.load(Ordering::Acquire) {
+            TimelapseEncodeError::Cancelled
+        } else {
+            TimelapseEncodeError::EncodeFailed(error.to_string())
+        }
+    })
 }
 
 fn update_timelapse_progress(state: &ServerState, job_id: &str, done: u32, total: u32) {
@@ -237,6 +388,7 @@ fn complete_timelapse_job(
     job_id: &str,
     prepared: &PreparedTimelapse,
     encoded: crate::storage::timelapse_encoder::TimelapseEncodeResult,
+    stored_path: Option<PathBuf>,
 ) {
     if prepared.cancel.load(Ordering::Acquire) {
         let _ = cleanup_export_attempt_artifacts(state, job_id, &prepared.artifact_id);
@@ -277,7 +429,7 @@ fn complete_timelapse_job(
         summary.manifest_sha256 = Some(encoded.manifest_sha256);
         summary.manifest_bytes = Some(encoded.manifest_bytes);
     }
-    record.path = Some(encoded.video_path);
+    record.path = stored_path;
     record.updated_at_ms = now;
     record.completed_at_ms = Some(now);
     persist_export_jobs_logged(state, &jobs, "timelapse ready");

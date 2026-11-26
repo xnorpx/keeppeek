@@ -24,10 +24,43 @@ pub(super) struct Registry {
     encoder_available: OnceLock<bool>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PlanCacheKey {
+    session_id: SessionId,
+    source_id: String,
+    stream_id: String,
+    start_ms: i64,
+    end_ms: i64,
+    cadence: TimelapseCadence,
+    tolerance_ms: i64,
+    output_preview: TimelapseOutputPreview,
+    source_fingerprint: String,
+}
+
+impl PlanCacheKey {
+    fn from_request(
+        session_id: SessionId,
+        req: &TimelapsePlanRequest,
+        source_fingerprint: String,
+    ) -> Self {
+        Self {
+            session_id,
+            source_id: req.source_id.clone(),
+            stream_id: req.stream_id.clone(),
+            start_ms: req.start_ms,
+            end_ms: req.end_ms,
+            cadence: req.cadence,
+            tolerance_ms: req.tolerance_ms,
+            output_preview: req.output_preview.clone(),
+            source_fingerprint,
+        }
+    }
+}
+
 #[derive(Default)]
 struct PlanCache {
-    entries: HashMap<(SessionId, String), Arc<TimelapsePlan>>,
-    order: VecDeque<(SessionId, String)>,
+    entries: HashMap<PlanCacheKey, Arc<TimelapsePlan>>,
+    order: VecDeque<PlanCacheKey>,
 }
 
 impl Registry {
@@ -42,8 +75,8 @@ impl Registry {
             .plans
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        cache.entries.retain(|(owner, _), _| *owner != session_id);
-        cache.order.retain(|(owner, _)| *owner != session_id);
+        cache.entries.retain(|key, _| key.session_id != session_id);
+        cache.order.retain(|key| key.session_id != session_id);
         let mut transfers = self
             .transfers
             .lock()
@@ -56,28 +89,28 @@ impl Registry {
         transfers.retain(|(owner, _), _| *owner != session_id);
     }
 
-    fn insert_plan(&self, session_id: SessionId, plan: Arc<TimelapsePlan>) {
+    fn insert_plan(&self, key: PlanCacheKey, plan: Arc<TimelapsePlan>) {
         let mut cache = self
             .plans
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let key = (session_id, plan.source_fingerprint.clone());
         if let std::collections::hash_map::Entry::Occupied(mut entry) =
             cache.entries.entry(key.clone())
         {
             entry.insert(plan);
             return;
         }
+        let session_id = key.session_id;
         let session_count = cache
             .entries
             .keys()
-            .filter(|(owner, _)| *owner == session_id)
+            .filter(|entry| entry.session_id == session_id)
             .count();
         if session_count >= MAX_PLANS_PER_SESSION
             && let Some(pos) = cache
                 .order
                 .iter()
-                .position(|(owner, _)| *owner == session_id)
+                .position(|entry| entry.session_id == session_id)
             && let Some(evicted) = cache.order.remove(pos)
         {
             cache.entries.remove(&evicted);
@@ -93,13 +126,34 @@ impl Registry {
         cache.entries.insert(key, plan);
     }
 
-    fn get_plan(&self, session_id: SessionId, fingerprint: &str) -> Option<Arc<TimelapsePlan>> {
+    fn get_plan(&self, key: &PlanCacheKey) -> Option<Arc<TimelapsePlan>> {
         self.plans
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entries
-            .get(&(session_id, fingerprint.to_owned()))
+            .get(key)
             .cloned()
+    }
+
+    fn find_plan_by_fingerprint(
+        &self,
+        session_id: SessionId,
+        source_id: &str,
+        stream_id: &str,
+        fingerprint: &str,
+    ) -> Option<Arc<TimelapsePlan>> {
+        self.plans
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entries
+            .iter()
+            .find(|(key, _)| {
+                key.session_id == session_id
+                    && key.source_id == source_id
+                    && key.stream_id == stream_id
+                    && key.source_fingerprint == fingerprint
+            })
+            .map(|(_, plan)| Arc::clone(plan))
     }
 }
 
@@ -116,20 +170,9 @@ pub(super) fn handle_plan(
             "recording catalog is unavailable",
         )
     })?;
-    let (offset, cached) = parse_page_token(&request.page_token, state, session_id)?;
-    let plan = if let Some(cached) = cached {
-        cached
-    } else {
-        let plan_req = build_plan_request(state, &camera, &request)?;
-        let cancel = AtomicBool::new(false);
-        let planned = plan_timelapse(catalog, &plan_req, Instant::now() + PLAN_DEADLINE, &cancel)
-            .map_err(|error| {
-            ControlCommandError::new(proto::ErrorCode::InvalidRequest, 400, error.to_string())
-        })?;
-        let arc = Arc::new(planned);
-        state.timelapse.insert_plan(session_id, Arc::clone(&arc));
-        arc
-    };
+    let plan_req = build_plan_request(state, &camera, &request)?;
+    let (expected_fp, offset) = parse_page_token(&request.page_token)?;
+    let plan = resolve_or_compute_plan(state, catalog, session_id, &plan_req, expected_fp)?;
     let page_size = if request.page_size == 0 {
         DEFAULT_PAGE_SIZE
     } else {
@@ -149,6 +192,40 @@ pub(super) fn handle_plan(
         messages: Vec::new(),
         notifications: Vec::new(),
     })
+}
+
+fn resolve_or_compute_plan(
+    state: &ServerState,
+    catalog: &RecordingCatalogHandle,
+    session_id: SessionId,
+    plan_req: &TimelapsePlanRequest,
+    expected_fp: Option<&str>,
+) -> Result<Arc<TimelapsePlan>, ControlCommandError> {
+    if let Some(fp) = expected_fp {
+        let lookup_key = PlanCacheKey::from_request(session_id, plan_req, fp.to_owned());
+        if let Some(cached) = state.timelapse.get_plan(&lookup_key) {
+            return Ok(cached);
+        }
+    }
+    let cancel = AtomicBool::new(false);
+    let planned = plan_timelapse(catalog, plan_req, Instant::now() + PLAN_DEADLINE, &cancel)
+        .map_err(|error| {
+            ControlCommandError::new(proto::ErrorCode::InvalidRequest, 400, error.to_string())
+        })?;
+    if let Some(fp) = expected_fp
+        && planned.source_fingerprint != fp
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "timelapse page token is stale or does not match this request; refresh the plan",
+        ));
+    }
+    let cache_key =
+        PlanCacheKey::from_request(session_id, plan_req, planned.source_fingerprint.clone());
+    let arc = Arc::new(planned);
+    state.timelapse.insert_plan(cache_key, Arc::clone(&arc));
+    Ok(arc)
 }
 
 pub(super) fn handle_fetch_samples(
@@ -433,7 +510,12 @@ fn lookup_sample_for_token(
     }
     let plan = state
         .timelapse
-        .get_plan(session_id, &payload.source_fingerprint)
+        .find_plan_by_fingerprint(
+            session_id,
+            &payload.source_id,
+            &payload.stream_id,
+            &payload.source_fingerprint,
+        )
         .ok_or_else(|| {
             reject_token(
                 token,
@@ -577,13 +659,9 @@ pub(super) fn camera_site_timezone(state: &ServerState, camera_id: &str) -> Stri
     "UTC".to_owned()
 }
 
-fn parse_page_token(
-    token: &str,
-    state: &ServerState,
-    session_id: SessionId,
-) -> Result<(usize, Option<Arc<TimelapsePlan>>), ControlCommandError> {
+fn parse_page_token(token: &str) -> Result<(Option<&str>, usize), ControlCommandError> {
     if token.is_empty() {
-        return Ok((0, None));
+        return Ok((None, 0));
     }
     let Some((fingerprint, offset_str)) = token.split_once(':') else {
         return Err(ControlCommandError::new(
@@ -592,6 +670,13 @@ fn parse_page_token(
             "malformed timelapse page token",
         ));
     };
+    if fingerprint.is_empty() {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "malformed timelapse page token",
+        ));
+    }
     let offset = offset_str.parse::<usize>().map_err(|_| {
         ControlCommandError::new(
             proto::ErrorCode::InvalidRequest,
@@ -599,8 +684,7 @@ fn parse_page_token(
             "malformed timelapse page offset",
         )
     })?;
-    let cached = state.timelapse.get_plan(session_id, fingerprint);
-    Ok((offset, cached))
+    Ok((Some(fingerprint), offset))
 }
 
 fn build_plan_request(

@@ -324,6 +324,7 @@ fn run_incremental_pipeline(
 ) -> Result<TimelapseEncodeResult, TimelapseEncodeError> {
     let temp_mp4 = staging_dir.join("output.tmp.mp4");
     let mut encoder = spawn_silent_encoder(request, encoder_name, &temp_mp4)?;
+    let stderr_drain = spawn_stderr_drain(encoder.stderr.take());
     let mut stdin = encoder
         .stdin
         .take()
@@ -369,9 +370,10 @@ fn run_incremental_pipeline(
     drop(stdin);
     if let Err(error) = stream_res {
         kill_and_reap(&mut encoder);
+        let _ = stderr_drain.join();
         return Err(error);
     }
-    wait_child_bounded(&mut encoder, deadline, cancel, "encoder")?;
+    wait_child_bounded(&mut encoder, stderr_drain, deadline, cancel, "encoder")?;
     publish_artifacts(plan, request, artifact_dir, staging_dir, &temp_mp4, encoded)
 }
 
@@ -569,6 +571,7 @@ fn run_single_sample_decode(
     cancel: &AtomicBool,
 ) -> Result<Vec<u8>, TimelapseEncodeError> {
     let mut child = spawn_sample_decoder(ffmpeg_binary, input_format, output_width, output_height)?;
+    let stderr_drain = spawn_stderr_drain(child.stderr.take());
     let mut stdin = child.stdin.take();
     let writer = thread::spawn(move || {
         if let Some(mut pipe) = stdin.take() {
@@ -596,18 +599,25 @@ fn run_single_sample_decode(
     );
     drop(stdout);
     let _ = writer.join();
-    if let Some(frame) = selected? {
-        // Stop decoder promptly once the target picture has been read.
+    if let Ok(Some(frame)) = selected {
         kill_and_reap(&mut child);
+        let _ = stderr_drain.join();
         return Ok(frame);
     }
-    wait_child_bounded(&mut child, deadline, cancel, "decoder").map_err(|error| match error {
-        TimelapseEncodeError::Cancelled | TimelapseEncodeError::Timeout => error,
-        other => TimelapseEncodeError::DecodeFailed {
-            interval_start_ms,
-            interval_end_ms,
-            detail: other.to_string(),
-        },
+    if let Err(error) = selected {
+        kill_and_reap(&mut child);
+        let _ = stderr_drain.join();
+        return Err(error);
+    }
+    wait_child_bounded(&mut child, stderr_drain, deadline, cancel, "decoder").map_err(|error| {
+        match error {
+            TimelapseEncodeError::Cancelled | TimelapseEncodeError::Timeout => error,
+            other => TimelapseEncodeError::DecodeFailed {
+                interval_start_ms,
+                interval_end_ms,
+                detail: other.to_string(),
+            },
+        }
     })?;
     Err(TimelapseEncodeError::DecodeFailed {
         interval_start_ms,
@@ -773,8 +783,34 @@ fn append_length_prefixed_nalus(
     Ok(())
 }
 
+const MAX_STDERR_CAPTURE_BYTES: usize = 4 * 1_024;
+
+/// Continuously drains child stderr so diagnostic output cannot stall the pipe buffer.
+fn spawn_stderr_drain(stderr: Option<std::process::ChildStderr>) -> thread::JoinHandle<String> {
+    thread::spawn(move || {
+        let Some(mut pipe) = stderr else {
+            return String::new();
+        };
+        let mut captured = Vec::new();
+        let mut chunk = [0u8; 4_096];
+        loop {
+            match pipe.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if captured.len() < MAX_STDERR_CAPTURE_BYTES {
+                        let keep = n.min(MAX_STDERR_CAPTURE_BYTES - captured.len());
+                        captured.extend_from_slice(&chunk[..keep]);
+                    }
+                }
+            }
+        }
+        String::from_utf8_lossy(&captured).into_owned()
+    })
+}
+
 fn wait_child_bounded(
     child: &mut Child,
+    stderr_drain: thread::JoinHandle<String>,
     deadline: Instant,
     cancel: &AtomicBool,
     role: &str,
@@ -782,19 +818,21 @@ fn wait_child_bounded(
     loop {
         if cancel.load(Ordering::Acquire) {
             kill_and_reap(child);
+            let _ = stderr_drain.join();
             return Err(TimelapseEncodeError::Cancelled);
         }
         if Instant::now() >= deadline {
             kill_and_reap(child);
+            let _ = stderr_drain.join();
             return Err(TimelapseEncodeError::Timeout);
         }
         match child.try_wait() {
-            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) if status.success() => {
+                let _ = stderr_drain.join();
+                return Ok(());
+            }
             Ok(Some(status)) => {
-                let mut stderr = String::new();
-                if let Some(mut err_pipe) = child.stderr.take() {
-                    let _ = err_pipe.read_to_string(&mut stderr);
-                }
+                let stderr = stderr_drain.join().unwrap_or_default();
                 return Err(TimelapseEncodeError::EncodeFailed(format!(
                     "{role} exited with {status}: {}",
                     stderr.trim()
@@ -803,6 +841,7 @@ fn wait_child_bounded(
             Ok(None) => thread::sleep(CHILD_POLL_INTERVAL),
             Err(error) => {
                 kill_and_reap(child);
+                let _ = stderr_drain.join();
                 return Err(TimelapseEncodeError::EncodeFailed(error.to_string()));
             }
         }
@@ -822,4 +861,45 @@ fn encode_lower_hex(bytes: &[u8]) -> String {
         output.push(char::from(HEX[(byte & 0x0f) as usize]));
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stderr_drain_prevents_pipe_deadlock_above_os_buffer() {
+        let mut child = if cfg!(windows) {
+            Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    "$line = 'x' * 1024; 1..80 | ForEach-Object { [Console]::Error.WriteLine($line) }",
+                ])
+                .stderr(Stdio::piped())
+                .stdout(Stdio::null())
+                .spawn()
+                .expect("spawn noisy stderr powershell child")
+        } else {
+            Command::new("sh")
+                .args([
+                    "-c",
+                    "i=0; while [ $i -lt 80 ]; do printf '%01024d\\n' $i >&2; i=$((i+1)); done",
+                ])
+                .stderr(Stdio::piped())
+                .stdout(Stdio::null())
+                .spawn()
+                .expect("spawn noisy stderr shell child")
+        };
+        let drain = spawn_stderr_drain(child.stderr.take());
+        let cancel = AtomicBool::new(false);
+        wait_child_bounded(
+            &mut child,
+            drain,
+            Instant::now() + Duration::from_secs(15),
+            &cancel,
+            "noisy-stderr-test",
+        )
+        .expect("child writing >80 KiB to stderr must exit without deadlocking");
+    }
 }

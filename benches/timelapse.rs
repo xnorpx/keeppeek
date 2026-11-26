@@ -24,8 +24,7 @@ fn main() {
     let db_path = root.join("recordings.db");
     let catalog = RecordingCatalog::open(&db_path).unwrap();
     let start_ms = 1_770_000_000_000_i64;
-    let day_ms = 86_400_000_i64;
-    let total_ms = i64::from(DEFAULT_DAYS) * day_ms;
+    let total_ms = i64::from(DEFAULT_DAYS) * 86_400_000_i64;
 
     // Seed 127 cameras x 30 days (target camera at 288 5-minute fragments/day = 8,640 fragments;
     // 126 sibling cameras at 24 hourly fragments/day = 90,720 fragments; 99,360 total).
@@ -38,36 +37,51 @@ fn main() {
     )
     .unwrap();
 
+    let (mut full_scan_ms, mut sparse_lookup_ms) = run_trials(
+        &catalog,
+        &stream_id,
+        start_ms,
+        start_ms + total_ms,
+        &targets,
+    );
+    print_summary(&mut full_scan_ms, &mut sparse_lookup_ms);
+
+    catalog.shutdown();
+    let _ = fs::remove_dir_all(&root);
+}
+
+fn run_trials(
+    catalog: &RecordingCatalog,
+    stream_id: &str,
+    start_ms: i64,
+    end_ms: i64,
+    targets: &[i64],
+) -> (Vec<f64>, Vec<f64>) {
+    let expected_all = (u64::from(DEFAULT_DAYS) * TARGET_FRAGMENTS_PER_DAY) as usize;
     let mut full_scan_ms = Vec::with_capacity(DEFAULT_TRIALS);
     let mut sparse_lookup_ms = Vec::with_capacity(DEFAULT_TRIALS);
     for _ in 0..DEFAULT_TRIALS {
         let t0 = Instant::now();
         let all = catalog
             .handle()
-            .media_fragments_in_range(&stream_id, start_ms, start_ms + total_ms)
+            .media_fragments_in_range(stream_id, start_ms, end_ms)
             .unwrap();
         full_scan_ms.push(t0.elapsed().as_secs_f64() * 1_000.0);
-        assert_eq!(
-            all.len(),
-            (u64::from(DEFAULT_DAYS) * TARGET_FRAGMENTS_PER_DAY) as usize
-        );
+        assert_eq!(all.len(), expected_all);
 
         let t1 = Instant::now();
         let lookup = catalog
             .handle()
-            .timelapse_lookup(
-                &stream_id,
-                start_ms,
-                start_ms + total_ms,
-                &targets,
-                DEFAULT_TOLERANCE_MS,
-            )
+            .timelapse_lookup(stream_id, start_ms, end_ms, targets, DEFAULT_TOLERANCE_MS)
             .unwrap();
         sparse_lookup_ms.push(t1.elapsed().as_secs_f64() * 1_000.0);
         assert_eq!(lookup.candidates.len(), DEFAULT_TARGETS as usize);
         assert!(lookup.candidates.iter().all(Option::is_some));
     }
+    (full_scan_ms, sparse_lookup_ms)
+}
 
+fn print_summary(full_scan_ms: &mut [f64], sparse_lookup_ms: &mut [f64]) {
     full_scan_ms.sort_by(f64::total_cmp);
     sparse_lookup_ms.sort_by(f64::total_cmp);
     println!(
@@ -75,19 +89,16 @@ fn main() {
     );
     println!(
         "baseline_full_scan_ms median={:.3} p95={:.3} max={:.3}",
-        percentile(&full_scan_ms, 50),
-        percentile(&full_scan_ms, 95),
+        percentile(full_scan_ms, 50),
+        percentile(full_scan_ms, 95),
         full_scan_ms[full_scan_ms.len() - 1]
     );
     println!(
         "sparse_timelapse_lookup_ms median={:.3} p95={:.3} max={:.3}",
-        percentile(&sparse_lookup_ms, 50),
-        percentile(&sparse_lookup_ms, 95),
+        percentile(sparse_lookup_ms, 50),
+        percentile(sparse_lookup_ms, 95),
         sparse_lookup_ms[sparse_lookup_ms.len() - 1]
     );
-
-    catalog.shutdown();
-    let _ = fs::remove_dir_all(&root);
 }
 
 fn seed_corpus(

@@ -78,7 +78,7 @@ impl TimelapsePreset {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "mode", content = "value", rename_all = "snake_case")]
 pub enum TimelapseCadence {
     IntervalMs(u64),
@@ -96,7 +96,7 @@ pub enum TimelapseGapReason {
     OpenRecording,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TimelapseOutputPreview {
     pub output_fps: u32,
     pub max_width: u32,

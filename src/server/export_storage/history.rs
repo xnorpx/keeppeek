@@ -23,10 +23,15 @@ pub(in crate::server) fn recover(
     now: i64,
 ) -> anyhow::Result<()> {
     let named = owned(catalog, &record.artifact_id)?;
+    let manifest_id = timelapse::manifest_object_id(&record.artifact_id);
+    let named_manifest = record.job.timelapse.is_some() && owned(catalog, &manifest_id)?;
     match proto::ExportJobStatus::try_from(record.job.status)? {
         proto::ExportJobStatus::Running => {
             if named {
                 retire(catalog, &record.artifact_id)?;
+            }
+            if named_manifest {
+                retire(catalog, &manifest_id)?;
             }
             fail(record, now, "Server restarted before the export completed");
         }
@@ -38,8 +43,17 @@ pub(in crate::server) fn recover(
                 .filter(|name| safe_export_path_component(name))
                 .ok_or_else(|| anyhow::anyhow!("ready export has an invalid file name"))?;
             if named {
-                // The catalog remains authoritative while the volume is unavailable.
-                record.path = None;
+                if record.job.timelapse.is_some() && !named_manifest {
+                    retire(catalog, &record.artifact_id)?;
+                    fail(
+                        record,
+                        now,
+                        "Timelapse manifest artifact is missing; retry the export",
+                    );
+                } else {
+                    // The catalog remains authoritative while the volume is unavailable.
+                    record.path = None;
+                }
             } else {
                 let dir = root.join(&record.job.job_id).join(&record.artifact_id);
                 let path = dir.join(name);
@@ -63,6 +77,9 @@ pub(in crate::server) fn recover(
         _ => {
             if named {
                 retire(catalog, &record.artifact_id)?;
+            }
+            if named_manifest {
+                retire(catalog, &manifest_id)?;
             }
         }
     }
