@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c25f5a4b.js";
+            window.path_to_searchindex_js = "searchindex-cd67e044.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-738fe896.js"></script>
@@ -231,6 +231,7 @@ Root fields must appear before a table header or they belong to that table.</p>
 <tr><td><code>[sharing]</code></td><td><code>sharing::SharingConfig</code></td><td>Guest review deployment policy; server-owned revision</td></tr>
 <tr><td><code>[reporting]</code></td><td><code>reporting::Settings</code></td><td>Optional bug reporting service settings</td></tr>
 <tr><td><code>[usage_reporting]</code></td><td><code>usage_reporting::UsageReportingConfig</code></td><td>Opt-in privacy-preserving usage reporting consent</td></tr>
+<tr><td><code>[cloud_notifications]</code></td><td><code>cloud_notifications::Settings</code></td><td>Optional Keeppeek Service mobile push signaling</td></tr>
 <tr><td><code>[access]</code></td><td><code>AccessConfig</code></td><td>Administrator security policy</td></tr>
 <tr><td><code>[direct_card]</code></td><td><code>DirectCardConfig</code></td><td>Exact browser-origin allowlist</td></tr>
 <tr><td><code>[desktop]</code></td><td><code>DesktopConfig</code></td><td>Optional default server URL for KeepPeek Desktop</td></tr>
@@ -1080,6 +1081,34 @@ deletions (<code>&lt;= 16</code> entries) are persisted separately in the privat
 excluded from <code>config.toml</code> backups and from general <code>StateStore</code> namespaces so restores do not
 clone one installation’s proof token across machines. See
 <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/usage-reporting.md">usage reporting</a>.</p>
+<h2 id="cloud-notifications"><a class="header" href="#cloud-notifications">Cloud notifications</a></h2>
+<p>Type: <code>cloud_notifications::Settings</code>, section <code>[cloud_notifications]</code>.</p>
+<p>The optional <code>[cloud_notifications]</code> section configures bounded Keeppeek Service mobile push
+signaling behind capability <code>keeppeek.cloud-notifications.v1</code>. Both <code>enabled</code> and
+<code>image_previews_enabled</code> default to <code>false</code>. Enabling <code>image_previews_enabled</code> requires both
+<code>enabled = true</code> and a complete pairing configuration.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Validation and meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>revision</code></td><td><code>u64</code></td><td><code>0</code></td><td>Optimistic concurrency revision incremented on every settings mutation.</td></tr>
+<tr><td><code>enabled</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enables bounded Keeppeek Service signal emission when paired.</td></tr>
+<tr><td><code>image_previews_enabled</code></td><td><code>bool</code></td><td><code>false</code></td><td>Authoritative NVR gate allowing authenticated paired mobile clients to resolve still-image previews.</td></tr>
+<tr><td><code>service_origin</code></td><td>Optional string</td><td>Absent</td><td>Canonical HTTPS origin up to 512 bytes (no path, query, fragment, or credentials); required if paired.</td></tr>
+<tr><td><code>nvr_id</code></td><td>Optional string</td><td>Absent</td><td>Service-assigned 16-byte opaque NVR UUID/hex identifier; required if paired.</td></tr>
+<tr><td><code>signing_key_version</code></td><td>Optional <code>u32</code></td><td>Absent</td><td>Nonzero Ed25519 signing key version (<code>&gt;= 1</code>); required if paired.</td></tr>
+<tr><td><code>signing_key</code></td><td>Optional string</td><td>Absent</td><td>Single <code>{secret:KEY}</code> reference in <code>secrets.toml</code> holding the 32-byte Ed25519 seed; required if paired.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The four pairing fields (<code>service_origin</code>, <code>nvr_id</code>, <code>signing_key_version</code>, <code>signing_key</code>) must be
+either all absent (unpaired) or all present (paired). KeepPeek never resolves <code>signing_key</code> during
+configuration parsing or serialization, and never returns <code>service_origin</code>, <code>nvr_id</code>, or signing
+keys in settings, status, logs, or Prometheus metrics. Durable runtime state (aliases, newest-only
+pending/claimed intents, exact rolling 120/hour and 500/day windows, 3/hour test windows, and
+monotonic clock floor) is persisted in <code>cloud-notifications.db</code> under <code>storage.long_term_path</code>.</p>
 <h2 id="operational-events"><a class="header" href="#operational-events">Operational events</a></h2>
 <p>Type: <code>OperationalEventsConfig</code>, section <code>[operational_events]</code>.</p>
 <div class="table-wrapper">

@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c25f5a4b.js";
+            window.path_to_searchindex_js = "searchindex-cd67e044.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-738fe896.js"></script>
@@ -257,6 +257,28 @@ new work and expires its pending attempts.</p>
 queue records <code>expired</code> with reason <code>outbox_full</code>. Each action also has its own attempt, retry and
 expiry bounds. Restart is not a recovery strategy for pending delivery: it discards that work and
 can allow replayed events to notify again after deduplication state is cleared.</p>
+<h2 id="bounded-keeppeek-service-mobile-push-signaling"><a class="header" href="#bounded-keeppeek-service-mobile-push-signaling">Bounded Keeppeek Service mobile push signaling</a></h2>
+<p>KeepPeek also supports an optional <code>keeppeek_service</code> notification action target gated behind
+<code>keeppeek.cloud-notifications.v1</code>. Both cloud signaling and private still-image previews default to
+off (<code>enabled = false</code>, <code>image_previews_enabled = false</code>) under <code>[cloud_notifications]</code> in
+<code>config.toml</code>, with the Ed25519 signing seed referenced via <code>{secret:KEY}</code> from <code>secrets.toml</code>.</p>
+<p>When enabled and paired, matched logical events persist one random 128-bit <code>cloud_event_id</code> alias
+in durable local storage (<code>cloud-notifications.db</code>) and keep at most one claimed/in-flight intent
+and one newest-only pending intent. Non-configurable local ceilings cap output at 1 event every
+30 seconds, GCRA 2 attempts/second (burst 4), exact rolling 120/hour and 500/day, at most 3
+attempts or 5 minutes TTL with exact 109-byte payload reuse, and a separate exact rolling 3/hour
+test-signal budget.</p>
+<p>Each outbound signal is an exact 109-byte signed binary body sent over HTTPS without redirects to
+<code>POST /api/v1/nvr/events</code>. Keeppeek Service never receives local event IDs, camera names or IDs,
+event types, detection payloads, free text, media URLs, attachment descriptors, or image bytes. If
+still-image previews are enabled, an authenticated paired mobile endpoint bound to the current NVR
+ID may resolve the 16-byte <code>cloud_event_id</code> directly at the private NVR and fetch static still
+images (<code>image/jpeg</code> or <code>image/png</code>) through existing authenticated event media delivery. Video,
+animated image, and audio previews are unsupported.</p>
+<p>Configure, inspect bounded health/suppression counters, and send rate-limited test signals in
+<strong>Settings &gt; Notifications</strong>. Signal acceptance confirms Keeppeek Service admission only, not
+provider delivery or mobile display. Recording, event persistence, Pushover, browser alerts, and
+MQTT remain independent.</p>
 <h2 id="forward-events-through-mqtt"><a class="header" href="#forward-events-through-mqtt">Forward events through MQTT</a></h2>
 <p>Open <strong>Settings &gt; Integrations</strong> to configure, test, observe, or disable the MQTT event forwarder.
 It requires an MQTT 5 broker; MQTT 3.1 and 3.1.1 are not fallback protocols.</p>
