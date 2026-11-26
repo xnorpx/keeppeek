@@ -10,6 +10,9 @@ use std::{
 };
 
 mod calibration;
+mod playback_corpus;
+
+pub use playback_corpus::{PlaybackCorpusOptions, seed_playback_corpus};
 
 pub struct RecordingSeedOptions {
     pub calibration: bool,

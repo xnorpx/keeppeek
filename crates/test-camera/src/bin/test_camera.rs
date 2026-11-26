@@ -2,7 +2,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::{net::Ipv4Addr, path::PathBuf, sync::mpsc, time::Duration};
 use test_camera::{
     TestCameraBuilder, Transport,
-    seed::{RecordingSeedOptions, seed_recording},
+    seed::{PlaybackCorpusOptions, RecordingSeedOptions, seed_playback_corpus, seed_recording},
 };
 use tracing_subscriber::EnvFilter;
 
@@ -48,6 +48,8 @@ enum Command {
     ReoProto(CameraArgs),
     /// Seed deterministic recording data for browser tests.
     SeedRecording(SeedRecordingArgs),
+    /// Seed a multi-hour recording and bunny detection corpus for playback benchmarks.
+    SeedPlaybackCorpus(SeedPlaybackCorpusArgs),
 }
 
 #[derive(Debug, Args)]
@@ -121,6 +123,24 @@ struct SeedRecordingArgs {
     age_seconds: u64,
 }
 
+#[derive(Debug, Args)]
+struct SeedPlaybackCorpusArgs {
+    #[arg(long)]
+    source: PathBuf,
+
+    #[arg(long)]
+    config: PathBuf,
+
+    #[arg(long, default_value = "2026-08-15")]
+    date: String,
+
+    #[arg(long, default_value_t = 24)]
+    hours: u32,
+
+    #[arg(long, default_value_t = 180)]
+    events_per_camera: u32,
+}
+
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -144,6 +164,22 @@ fn main() -> anyhow::Result<()> {
                 .join()
                 .map_err(|_| anyhow::anyhow!("recording seed worker panicked"))?
         }
+        Command::SeedPlaybackCorpus(command) => std::thread::Builder::new()
+            .name("playback-corpus-seed".into())
+            .spawn(move || {
+                let _ = &command.config;
+                let (config, config_path) = keeppeek::config::load()?;
+                seed_playback_corpus(&PlaybackCorpusOptions {
+                    source: command.source,
+                    config_path,
+                    storage: config.storage,
+                    date: command.date,
+                    hours: command.hours,
+                    events_per_camera: command.events_per_camera,
+                })
+            })?
+            .join()
+            .map_err(|_| anyhow::anyhow!("playback corpus seed worker panicked"))?,
     }
 }
 

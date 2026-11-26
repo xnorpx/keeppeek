@@ -5366,6 +5366,7 @@ dependencies = [
  "anyhow",
  "clap",
  "ctrlc",
+ "image",
  "keeppeek",
  "mp4",
  "onvif",
