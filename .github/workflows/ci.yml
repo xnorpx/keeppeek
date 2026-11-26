@@ -506,6 +506,7 @@ jobs:
                 -- "${threads[@]}" volume_roots_reject_windows_devices_and_ambiguous_paths \
                 acknowledged_retirement_cleans_receipts_and_retries_without_media_deletion 2>&1 | tee -a rust-test-results.log
               cargo test --locked -p keeppeek --test tui_terminal -- "${threads[@]}" 2>&1 | tee -a rust-test-results.log
+              cargo test --locked -p test-camera --test tui_recording_continuity -- "${threads[@]}" 2>&1 | tee -a rust-test-results.log
             elif [[ "$RUNNER_OS" == "macOS" && "$CI_EVENT_NAME" != "push" ]]; then
               cargo test --locked -p keeppeek --lib "${features[@]}" runtime_profile_ \
                 -- "${threads[@]}" 2>&1 | tee rust-test-results.log
@@ -515,6 +516,8 @@ jobs:
                 -- "${threads[@]}" 2>&1 | tee -a rust-test-results.log
               cargo test --locked -p keeppeek --test tui_terminal "${features[@]}" \
                 -- "${threads[@]}" 2>&1 | tee -a rust-test-results.log
+              cargo test --locked -p test-camera --test tui_recording_continuity \
+                --features keeppeek/macos-test-aws-crypto -- "${threads[@]}" 2>&1 | tee -a rust-test-results.log
             else
               cargo test --locked --all --lib --bins --tests "${features[@]}" -- --skip "$DURABLE_STATE_TESTS" "${threads[@]}" "${post_merge_tests[@]}" 2>&1 | tee rust-test-results.log
             fi
