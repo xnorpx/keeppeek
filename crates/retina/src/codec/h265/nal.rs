@@ -22,7 +22,11 @@ use h264_reader::rbsp::{BitRead, BitReaderError};
 /// Whether a unit type is VCL or non-VCL, as defined in T.REC H.265 Table 7-1.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum UnitTypeClass {
-    Vcl { intra_coded: bool },
+    Vcl {
+        /// True when the unit belongs to an intra random access point (IRAP) picture
+        /// (`BLA_W_LP..=RSV_IRAP_VCL23`).
+        irap: bool,
+    },
     NonVcl,
 }
 
@@ -121,12 +125,6 @@ impl UnitType {
             | Self::RsvVclR13
             | Self::RsvVclN14
             | Self::RsvVclR15
-            | Self::BlaWLp
-            | Self::BlaWRadl
-            | Self::BlaNLp
-            | Self::CraNut
-            | Self::RsvIrapVcl22
-            | Self::RsvIrapVcl23
             | Self::RsvVcl24
             | Self::RsvVcl25
             | Self::RsvVcl26
@@ -134,8 +132,16 @@ impl UnitType {
             | Self::RsvVcl28
             | Self::RsvVcl29
             | Self::RsvVcl30
-            | Self::RsvVcl31 => UnitTypeClass::Vcl { intra_coded: false },
-            Self::IdrWRadl | Self::IdrNLp => UnitTypeClass::Vcl { intra_coded: true },
+            | Self::RsvVcl31 => UnitTypeClass::Vcl { irap: false },
+            // H.265 Table 7-1 classifies BLA_W_LP..=RSV_IRAP_VCL23 as IRAP pictures.
+            Self::BlaWLp
+            | Self::BlaWRadl
+            | Self::BlaNLp
+            | Self::IdrWRadl
+            | Self::IdrNLp
+            | Self::CraNut
+            | Self::RsvIrapVcl22
+            | Self::RsvIrapVcl23 => UnitTypeClass::Vcl { irap: true },
             _ => UnitTypeClass::NonVcl,
         }
     }

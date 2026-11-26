@@ -99,6 +99,33 @@ macro_rules! write_mpeg4_descriptor {
     }};
 }
 
+struct FmtpParser<'a> {
+    params: std::str::Split<'a, char>,
+}
+
+impl<'a> FmtpParser<'a> {
+    fn new(params: &'a str) -> Self {
+        Self {
+            params: params.split(';'),
+        }
+    }
+}
+
+impl<'a> Iterator for FmtpParser<'a> {
+    type Item = (&'a str, &'a str);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let p = loop {
+            let p = self.params.next()?.trim();
+            if p.is_empty() {
+                continue;
+            }
+            break p;
+        };
+        Some(p.split_once('=').unwrap_or((p, "")))
+    }
+}
+
 pub mod aac;
 pub(crate) mod g723;
 pub mod h26x;
@@ -165,11 +192,13 @@ impl FrameFormat {
 /// into frame data.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ParameterSetInsertion {
-    /// Prepend to every key frame. Default.
+    /// Prepend to every key frame (random access point), and to any frame
+    /// that changes the parameters. Default.
     #[default]
     EachKeyFrame,
 
-    /// Prepend only when parameters have changed since the last frame.
+    /// Prepend only to frames that change the parameters, whether or not
+    /// they are key frames.
     OnChange,
 
     /// Never insert in-band; caller retrieves them out-of-band via
@@ -768,12 +797,16 @@ impl VideoFrame {
         &self.end_ctx
     }
 
-    /// Returns if this is a "random access point (RAP)" aka "instantaneous
-    /// decoding refresh (IDR)" picture.
+    /// Returns whether this picture is a random access point (RAP) where decoding can start.
     ///
-    /// The former is defined in ISO/IEC 14496-12; the latter in H.264. Both
-    /// mean that this picture can be decoded without any other AND no pictures
-    /// following this one depend on any pictures before this one.
+    /// This includes:
+    ///
+    /// *   Instantaneous decoding refresh (IDR) pictures in H.264 and H.265.
+    ///     No later picture depends on any picture before an IDR picture.
+    /// *   Open-GOP random access points: H.264 pictures with a recovery point
+    ///     SEI message where `recovery_frame_cnt` is 0, and H.265 IRAP pictures
+    ///     such as CRA and BLA. Leading pictures after an open-GOP RAP may
+    ///     depend on earlier pictures, so a decoder starting here must discard them.
     #[inline]
     pub const fn is_random_access_point(&self) -> bool {
         self.is_random_access_point
@@ -1071,5 +1104,33 @@ mod tests {
         ] {
             log::info!("{name:-40} {size:4}");
         }
+    }
+
+    #[test]
+    fn parse_fmtp() {
+        crate::testutil::init_logging();
+
+        assert_eq!(FmtpParser::new("").collect::<Vec<_>>(), vec![]);
+        assert_eq!(FmtpParser::new(";").collect::<Vec<_>>(), vec![]);
+        assert_eq!(FmtpParser::new(";;").collect::<Vec<_>>(), vec![]);
+        assert_eq!(FmtpParser::new("a=b").collect::<Vec<_>>(), vec![("a", "b")]);
+        assert_eq!(FmtpParser::new("a=").collect::<Vec<_>>(), vec![("a", "")]);
+        assert_eq!(FmtpParser::new("a==").collect::<Vec<_>>(), vec![("a", "=")]);
+        assert_eq!(FmtpParser::new("=a").collect::<Vec<_>>(), vec![("", "a")]);
+        assert_eq!(FmtpParser::new("==a").collect::<Vec<_>>(), vec![("", "=a")]);
+        assert_eq!(FmtpParser::new("=").collect::<Vec<_>>(), vec![("", "")]);
+        assert_eq!(FmtpParser::new("a").collect::<Vec<_>>(), vec![("a", "")]);
+        assert_eq!(
+            FmtpParser::new("a=b=").collect::<Vec<_>>(),
+            vec![("a", "b=")]
+        );
+        assert_eq!(
+            FmtpParser::new("a=b;c=d").collect::<Vec<_>>(),
+            vec![("a", "b"), ("c", "d")]
+        );
+        assert_eq!(
+            FmtpParser::new(";;a=b;cd;e=f==;;").collect::<Vec<_>>(),
+            vec![("a", "b"), ("cd", ""), ("e", "f==")]
+        );
     }
 }

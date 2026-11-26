@@ -9,7 +9,7 @@ pub mod nal;
 
 mod record;
 
-use super::{VideoFrame, VideoParameters};
+use super::{FmtpParser, VideoFrame, VideoParameters};
 use crate::{
     Error,
     codec::{CodecItem, DepacketizeError, h26x::TolerantBitReader},
@@ -225,6 +225,8 @@ impl Depacketizer {
         }
 
         let mut r = Ok(());
+        // A stream joined mid-NAL has no earlier packet from which to count loss.
+        let joining = matches!(self.input_state, DepacketizerInputState::New);
         let mut access_unit =
             match std::mem::replace(&mut self.input_state, DepacketizerInputState::New) {
                 DepacketizerInputState::New => {
@@ -341,6 +343,11 @@ impl Depacketizer {
             }
             48 => {
                 // Aggregation Packet. https://datatracker.ietf.org/doc/html/rfc7798#section-4.4.2
+                if access_unit.in_fu {
+                    return Err(format!(
+                        "Aggregation packet {hdr:?} while fragment in progress"
+                    ));
+                }
                 loop {
                     if data.remaining() < 2 {
                         return Err(format!(
@@ -442,7 +449,7 @@ impl Depacketizer {
                         pieces
                     }
                     (false, false) => {
-                        if loss > 0 {
+                        if loss > 0 || joining {
                             self.pieces.clear();
                             self.nals.clear();
                             self.input_state = DepacketizerInputState::Loss {
@@ -578,11 +585,7 @@ impl Depacketizer {
                 {
                     new_pps = Some(to_bytes(nal.hdr, nal.len, nal_pieces));
                 }
-                u if matches!(
-                    u.unit_type_class(),
-                    nal::UnitTypeClass::Vcl { intra_coded: false }
-                ) =>
-                {
+                u if matches!(u.unit_type_class(), nal::UnitTypeClass::Vcl { irap: false }) => {
                     is_random_access_point = false;
                 }
                 _ => {}
@@ -631,12 +634,11 @@ impl Depacketizer {
         };
 
         // Determine whether to prepend parameter sets.
-        let prepend_params = is_random_access_point
-            && match self.frame_format.parameter_set_insertion {
-                ParameterSetInsertion::EachKeyFrame => true,
-                ParameterSetInsertion::OnChange => has_new_parameters,
-                ParameterSetInsertion::Never => false,
-            };
+        let prepend_params = match self.frame_format.parameter_set_insertion {
+            ParameterSetInsertion::EachKeyFrame => is_random_access_point || has_new_parameters,
+            ParameterSetInsertion::OnChange => has_new_parameters,
+            ParameterSetInsertion::Never => false,
+        };
         if prepend_params && let Some(ref p) = self.parameters {
             // 4-byte prefix + VPS + 4-byte prefix + SPS + 4-byte prefix + PPS
             retained_len += 4 + p.vps_nal.len() + 4 + p.sps_nal.len() + 4 + p.pps_nal.len();
@@ -804,17 +806,16 @@ impl InternalParameters {
         let mut sps_nal = None;
         let mut pps_nal = None;
         let mut vps_nal = None;
-        for p in format_specific_params.split(';') {
-            match p.trim().split_once('=') {
-                Some(("tx-mode", "SRST")) => {}
-                Some(("tx-mode", v)) => {
+        for p in FmtpParser::new(format_specific_params) {
+            match p {
+                ("tx-mode", "SRST") => {}
+                ("tx-mode", v) => {
                     return Err(format!("unsupported/unexpected tx-mode {v}; expected SRST"));
                 }
-                Some(("sprop-vps", v)) => Self::store_sprop_nal("sprop-vps", v, &mut vps_nal)?,
-                Some(("sprop-sps", v)) => Self::store_sprop_nal("sprop-sps", v, &mut sps_nal)?,
-                Some(("sprop-pps", v)) => Self::store_sprop_nal("sprop-pps", v, &mut pps_nal)?,
-                Some((_, _)) => {}
-                None => return Err(format!("key {p} without value")),
+                ("sprop-vps", v) => Self::store_sprop_nal("sprop-vps", v, &mut vps_nal)?,
+                ("sprop-sps", v) => Self::store_sprop_nal("sprop-sps", v, &mut sps_nal)?,
+                ("sprop-pps", v) => Self::store_sprop_nal("sprop-pps", v, &mut pps_nal)?,
+                (_, _) => {}
             }
         }
         let vps_nal = vps_nal.ok_or_else(|| "no vps".to_string())?;
@@ -1527,5 +1528,152 @@ mod tests {
         )
         .unwrap();
         assert_eq!(p.generic_parameters.pixel_dimensions(), (2304, 1296));
+    }
+
+    #[test]
+    fn parse_provision_trailing_semicolon_format_specific_params() {
+        init_logging();
+        let p = super::InternalParameters::parse_format_specific_params(
+            "profile-space=0;\
+             profile-id=1;\
+             tier-flag=0;\
+             level-id=0;\
+             sprop-vps=QAEMAf//AWAAAAMAAAMAAAMAAAMAlqwJ;\
+             sprop-sps=QgEBAWAAAAMAAAMAAAMAAAMAlqACgIAtH+KrTuiS7kIAAAMACACD1gAM3+YAQA==;\
+             sprop-pps=RAHAcvAbJA==;",
+        )
+        .unwrap();
+        assert_eq!(p.generic_parameters.pixel_dimensions(), (1280, 720));
+    }
+
+    #[test]
+    fn irap_random_access() {
+        init_logging();
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let vps_nal = b64
+            .decode("QAEMAf//AWAAAAMAsAAAAwAAAwBarAwAAAMABAAAAwAyqA==")
+            .unwrap();
+        let sps_nal = b64
+            .decode("QgEBAWAAAAMAsAAAAwAAAwBaoAWCAeFja5JFL83BQYFBAAADAAEAAAMADKE=")
+            .unwrap();
+        let pps_nal = b64.decode("RAHA8saNA7NA").unwrap();
+        let sprop = "profile-id=1;sprop-sps=QgEBAWAAAAMAsAAAAwAAAwBaoAWCAeFja5JFL83BQYFBAAADAAEAAAMADKE=;sprop-pps=RAHA8saNA7NA;sprop-vps=QAEMAf//AWAAAAMAsAAAAwAAAwBarAwAAAMABAAAAwAyqA==";
+
+        for (vcl_nal, want_rap) in [
+            (&b"\x2a\x01cra"[..], true),
+            (&b"\x20\x01bla_w_lp"[..], true),
+            (&b"\x22\x01bla_w_radl"[..], true),
+            (&b"\x24\x01bla_n_lp"[..], true),
+            (&b"\x26\x01idr_w_radl"[..], true),
+            (&b"\x28\x01idr_n_lp"[..], true),
+            (&b"\x02\x01trail_r"[..], false),
+            (&b"\x10\x01rasl_n"[..], false),
+        ] {
+            let mut d = super::Depacketizer::new(90_000, Some(sprop)).unwrap();
+            d.set_frame_format(crate::codec::FrameFormat::SIMPLE);
+            d.push(
+                ReceivedPacketBuilder {
+                    ctx: PacketContext::dummy(),
+                    stream_id: 0,
+                    timestamp: crate::Timestamp {
+                        timestamp: 0,
+                        clock_rate: NonZeroU32::new(90_000).unwrap(),
+                        start: 0,
+                    },
+                    ssrc: 0,
+                    sequence_number: 0,
+                    loss: 0,
+                    mark: true,
+                    payload_type: 0,
+                }
+                .build(vcl_nal.iter().copied())
+                .unwrap(),
+            )
+            .unwrap();
+            let frame = match d.pull() {
+                Some(Ok(CodecItem::VideoFrame(frame))) => frame,
+                o => panic!("{o:#?}"),
+            };
+            assert_eq!(
+                frame.is_random_access_point(),
+                want_rap,
+                "NAL header {:02x?}",
+                &vcl_nal[..2]
+            );
+            let mut expected = Vec::new();
+            let param_nals: &[&[u8]] = if want_rap {
+                &[&vps_nal, &sps_nal, &pps_nal]
+            } else {
+                &[]
+            };
+            for nal in param_nals.iter().copied().chain([vcl_nal]) {
+                expected.extend_from_slice(&super::super::h26x::ANNEX_B_START_CODE);
+                expected.extend_from_slice(nal);
+            }
+            assert_eq_hex!(frame.data(), &expected);
+        }
+    }
+
+    #[test]
+    fn join_mid_fu() {
+        init_logging();
+        let mut d = super::Depacketizer::new(90_000, None).unwrap();
+        let pkt = |timestamp, sequence_number, payload: &[u8]| {
+            ReceivedPacketBuilder {
+                ctx: PacketContext::dummy(),
+                stream_id: 0,
+                timestamp: crate::Timestamp {
+                    timestamp,
+                    clock_rate: NonZeroU32::new(90_000).unwrap(),
+                    start: 0,
+                },
+                ssrc: 0,
+                sequence_number,
+                loss: 0,
+                mark: true,
+                payload_type: 96,
+            }
+            .build(payload.iter().copied())
+            .unwrap()
+        };
+        d.push(pkt(0, 0, b"\x62\x01\x41tail")).unwrap();
+        assert_eq!(d.pull(), None);
+        d.push(pkt(3000, 1, b"\x02\x01next")).unwrap();
+        let frame = match d.pull() {
+            Some(Ok(CodecItem::VideoFrame(frame))) => frame,
+            o => panic!("unexpected pull result: {o:?}"),
+        };
+        assert_eq_hex!(frame.data(), b"\x00\x00\x00\x06\x02\x01next");
+    }
+
+    #[test]
+    fn aggregation_packet_during_fragment() {
+        init_logging();
+        let mut d = super::Depacketizer::new(90_000, None).unwrap();
+        let timestamp = crate::Timestamp {
+            timestamp: 0,
+            clock_rate: NonZeroU32::new(90_000).unwrap(),
+            start: 0,
+        };
+        let mut push = |mark: bool, payload: &[u8]| {
+            d.push(
+                ReceivedPacketBuilder {
+                    ctx: PacketContext::dummy(),
+                    stream_id: 0,
+                    timestamp,
+                    ssrc: 0,
+                    sequence_number: 0,
+                    loss: 0,
+                    mark,
+                    payload_type: 0,
+                }
+                .build(payload.iter().copied())
+                .unwrap(),
+            )
+        };
+        push(false, b"\x62\xed\x92").unwrap();
+        push(true, b"\x60\x6f\x00\x04\x04\x41\xe3\x03").unwrap_err();
+        assert_eq!(d.pull(), None);
     }
 }

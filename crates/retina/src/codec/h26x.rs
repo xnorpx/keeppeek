@@ -100,3 +100,63 @@ impl<R: h264_reader::rbsp::BitRead> h264_reader::rbsp::BitRead for TolerantBitRe
         self.inner.finish_sei_payload()
     }
 }
+
+/// [`std::io::BufRead`] adapter over a slice of [`bytes::Bytes`] NAL pieces without copying.
+#[derive(Clone)]
+pub(super) struct PiecesReader<'a> {
+    pieces: &'a [bytes::Bytes],
+    cur: &'a [u8],
+}
+
+impl<'a> PiecesReader<'a> {
+    pub(super) const fn new(pieces: &'a [bytes::Bytes]) -> Self {
+        Self { pieces, cur: &[] }
+    }
+}
+
+impl std::io::Read for PiecesReader<'_> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        use std::io::BufRead as _;
+        let chunk = self.fill_buf()?;
+        let amt = std::cmp::min(out.len(), chunk.len());
+        out[..amt].copy_from_slice(&chunk[..amt]);
+        self.consume(amt);
+        Ok(amt)
+    }
+}
+
+impl std::io::BufRead for PiecesReader<'_> {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        while self.cur.is_empty() {
+            let Some((piece, rest)) = self.pieces.split_first() else {
+                break;
+            };
+            self.cur = piece;
+            self.pieces = rest;
+        }
+        Ok(self.cur)
+    }
+
+    fn consume(&mut self, amt: usize) {
+        self.cur = &self.cur[amt..];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read as _;
+
+    #[test]
+    fn pieces_reader_handles_split_emulation_prevention() {
+        let pieces = [
+            bytes::Bytes::from_static(b"\x01\x00\x00"),
+            bytes::Bytes::from_static(b"\x03\x01\x02\x03\x04"),
+        ];
+        let mut rbsp = Vec::new();
+        h264_reader::rbsp::ByteReader::without_skip(PiecesReader::new(&pieces))
+            .read_to_end(&mut rbsp)
+            .unwrap();
+        assert_eq!(rbsp, b"\x01\x00\x00\x01\x02\x03\x04");
+    }
+}
