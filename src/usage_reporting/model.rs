@@ -399,7 +399,6 @@ pub enum IntegrationId {
     GuestSharing,
     LocalArchive,
     NamedVolumes,
-    BackupRestore,
     BugReporting,
     BatteryWake,
     PrivacySchedules,

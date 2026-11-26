@@ -445,7 +445,6 @@
               "guest_sharing",
               "local_archive",
               "named_volumes",
-              "backup_restore",
               "bug_reporting",
               "battery_wake",
               "privacy_schedules",

@@ -577,6 +577,13 @@ fn build_report_from_state(
         cameras.iter().flat_map(|camera| camera.profiles.iter()),
         state.storage_config.long_term_max_bytes,
     );
+    let (has_notifications_pushover, has_notifications_webhook) =
+        state.notifications.as_ref().map_or(
+            (false, false),
+            crate::notifications::Handle::configured_channel_flags,
+        );
+    let publication_metrics = state.event_publications.metrics_snapshot();
+    let has_external_api_events = publication_metrics.active > 0 || publication_metrics.commits > 0;
     let snapshot = ProjectionSnapshot {
         config: &config,
         health: &health_input,
@@ -585,9 +592,9 @@ fn build_report_from_state(
         estimated_retention_days: estimate.estimated_retention_days,
         is_container: detect_container_runtime(),
         video_accelerations: &[],
-        has_notifications_pushover: state.notifications.is_some(),
-        has_notifications_webhook: false,
-        has_external_api_events: state.events.is_some(),
+        has_notifications_pushover,
+        has_notifications_webhook,
+        has_external_api_events,
     };
     project_report(&snapshot, selection, installation_id, report_sequence)
 }
@@ -863,6 +870,47 @@ receiver_origin = "https://usage.example"
         assert!(preview.uses_placeholder_identity);
         assert!(preview.payload_json.contains(PLACEHOLDER_PREVIEW_UUID));
         assert!(!preview.payload_json.contains("camera_compatibility"));
+
+        // Feature adoption omits notification channels and external API events when unused.
+        let feature_preview = match dispatch(
+            &state,
+            &router_tx,
+            &admin,
+            proto::UsageReportingCommand {
+                action: Some(usage_reporting_command::Action::Preview(
+                    proto::PreviewUsageReporting {
+                        basic: true,
+                        camera_compatibility: false,
+                        feature_adoption: true,
+                        disclosure_revision: 0,
+                    },
+                )),
+            },
+        )
+        .unwrap()
+        {
+            control_ok::Result::UsageReportingResult(proto::UsageReportingResult {
+                result: Some(usage_reporting_result::Result::Preview(value)),
+            }) => value,
+            other => panic!("unexpected preview: {other:?}"),
+        };
+        assert!(feature_preview.valid);
+        assert!(
+            feature_preview
+                .payload_json
+                .contains("\"feature_adoption\"")
+        );
+        assert!(
+            !feature_preview
+                .payload_json
+                .contains("notifications_pushover")
+        );
+        assert!(
+            !feature_preview
+                .payload_json
+                .contains("notifications_webhook")
+        );
+        assert!(!feature_preview.payload_json.contains("external_api_events"));
 
         // Stale revision fails with FailedPrecondition (409).
         let stale = dispatch(

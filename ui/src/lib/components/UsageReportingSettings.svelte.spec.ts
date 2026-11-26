@@ -202,11 +202,22 @@ describe('UsageReportingSettings', () => {
 			.toBeVisible();
 		await expect.element(page.getByText(/Last deletion issue: Network unavailable/i)).toBeVisible();
 
+		// Saving a category change during pending renewal preserves prior consent revision 1.
+		await page.getByLabelText(/Camera compatibility data/i).click();
+		await page.getByRole('button', { name: /Save usage reporting preferences/i }).click();
+		expect(controller.updateConsent).toHaveBeenCalledWith(
+			expect.objectContaining({ cameraCompatibility: true, acceptedDisclosureRevision: 1 }),
+			'rev-1'
+		);
+		await expect
+			.element(page.getByText(/Updated usage reporting disclosure \(revision 2\)/i))
+			.toBeVisible();
+
 		// Keep existing consent leaves renewal banner active and sends prior revision 1.
 		await page.getByRole('button', { name: /Keep existing consent only/i }).click();
 		expect(controller.updateConsent).toHaveBeenCalledWith(
 			expect.objectContaining({ acceptedDisclosureRevision: 1 }),
-			'rev-1'
+			'rev-2'
 		);
 
 		// Accepting updated disclosure advances to revision 2.

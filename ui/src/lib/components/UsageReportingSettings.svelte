@@ -179,14 +179,20 @@
 
 	async function handleSubmit(event: SubmitEvent): Promise<void> {
 		event.preventDefault();
-		const targetRevision = basic
-			? (disclosure?.currentDisclosureRevision ?? 1)
-			: (reportingState?.consent?.consentedDisclosureRevision ?? 0);
+		const priorRevision = reportingState?.consent?.consentedDisclosureRevision ?? 0;
+		const preservePriorConsent = Boolean(basic && disclosure?.renewalRequired);
+		const targetRevision = !basic
+			? priorRevision
+			: preservePriorConsent
+				? priorRevision
+				: (disclosure?.currentDisclosureRevision ?? 1);
 		await saveConsent(
 			targetRevision,
-			basic
-				? 'Usage reporting preferences saved.'
-				: 'Usage reporting disabled. Future reports are stopped and deletion was requested.'
+			!basic
+				? 'Usage reporting disabled. Future reports are stopped and deletion was requested.'
+				: preservePriorConsent
+					? 'Usage reporting preferences saved under prior consent. Newly added fields remain disabled until you accept the updated disclosure.'
+					: 'Usage reporting preferences saved.'
 		);
 	}
 

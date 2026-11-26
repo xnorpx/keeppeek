@@ -137,7 +137,8 @@ export function mobileSettingsFocus(
 	hash: string,
 	backupAvailable = true
 ): MobileSettingsSection | null {
-	const id = hash.startsWith('#') ? hash.slice(1) : hash;
+	const rawId = hash.startsWith('#') ? hash.slice(1) : hash;
+	const id = rawId === 'usage-reporting' ? 'system' : rawId;
 	return (
 		mobileSettingsSections.find(
 			(section) =>

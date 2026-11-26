@@ -13,6 +13,14 @@ import {
 
 const receiverOrigin = 'https://usage-receiver.invalid';
 
+function isReceiverRequest(url: string): boolean {
+	try {
+		return new URL(url).origin === receiverOrigin;
+	} catch {
+		return false;
+	}
+}
+
 const runtimeConfiguration = {
 	host: '0.0.0.0',
 	port: 3000,
@@ -216,7 +224,7 @@ test('default disabled install and non-administrator sessions make zero receiver
 }) => {
 	const receiverRequests: string[] = [];
 	page.on('request', (request) => {
-		if (request.url().startsWith(receiverOrigin)) {
+		if (isReceiverRequest(request.url())) {
 			receiverRequests.push(request.url());
 		}
 	});
@@ -249,7 +257,7 @@ test('administrator can review disclosure, preview JSON, opt in, reset ID, disab
 	await page.setViewportSize({ width: 1440, height: 900 });
 	const receiverRequests: string[] = [];
 	page.on('request', (request) => {
-		if (request.url().startsWith(receiverOrigin)) {
+		if (isReceiverRequest(request.url())) {
 			receiverRequests.push(request.url());
 		}
 	});
@@ -325,8 +333,13 @@ test('renewed consent workflow keeps new fields gated until accepted and works o
 		onUsageReportingCommand: (command) => harness.handler(command)
 	});
 
-	await page.goto('/settings#system');
+	await page.goto('/settings#usage-reporting');
 	await expect(page.getByRole('heading', { name: 'Usage reporting' })).toBeVisible();
+	await expect(page.getByText(/Updated usage reporting disclosure \(revision 2\)/i)).toBeVisible();
+
+	// Saving a category change during pending renewal preserves prior consent revision.
+	await page.getByLabel(/Camera compatibility data/i).check();
+	await page.getByRole('button', { name: /Save usage reporting preferences/i }).click();
 	await expect(page.getByText(/Updated usage reporting disclosure \(revision 2\)/i)).toBeVisible();
 
 	await page.getByRole('button', { name: /Keep existing consent only/i }).click();

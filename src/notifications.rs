@@ -148,6 +148,9 @@ enum Command {
         now_ms: i64,
         reply: SyncSender<anyhow::Result<u64>>,
     },
+    ConfiguredChannelFlags {
+        reply: SyncSender<(bool, bool)>,
+    },
     Shutdown,
 }
 
@@ -244,6 +247,21 @@ impl Handle {
         reply_rx
             .recv_timeout(COMMAND_TIMEOUT)
             .map_err(|error| anyhow::anyhow!("notification rule listing timed out: {error}"))?
+    }
+
+    /// Returns whether active enabled notification rules use Pushover or Webhook channels.
+    pub fn configured_channel_flags(&self) -> (bool, bool) {
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        if self
+            .tx
+            .try_send(Command::ConfiguredChannelFlags { reply: reply_tx })
+            .is_err()
+        {
+            return (false, false);
+        }
+        reply_rx
+            .recv_timeout(COMMAND_TIMEOUT)
+            .unwrap_or((false, false))
     }
 
     pub fn publish(&self, candidate: model::Candidate) {
@@ -674,6 +692,9 @@ fn run(
                 reply,
             } => {
                 let _ = reply.send(store.clear_scope(&principal_id, &scope, now_ms));
+            }
+            Command::ConfiguredChannelFlags { reply } => {
+                let _ = reply.send(store.configured_channel_flags());
             }
             Command::Shutdown => break,
         }

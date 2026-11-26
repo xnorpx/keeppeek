@@ -896,7 +896,8 @@ Dedicated telemetry installation identities, proof tokens, send schedules, and b
 deletions (`<= 16` entries) are persisted separately in the private application-owned runtime record
 (`.keeppeek-usage-reporting-state.json` beside `config.toml`) only after explicit opt-in. They are
 excluded from `config.toml` backups and from general `StateStore` namespaces so restores do not
-clone one installation's proof token across machines. See [usage reporting](../docs/usage-reporting.md).
+clone one installation's proof token across machines. See
+[usage reporting](https://github.com/xnorpx/keeppeek/blob/main/docs/usage-reporting.md).
 
 ## Operational events
 

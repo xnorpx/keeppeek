@@ -5,7 +5,11 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, RwLock, atomic::Ordering},
 };
 
-use super::{NotificationMetrics, decrement_counter, model::Rule, state::RuntimeState};
+use super::{
+    NotificationMetrics, decrement_counter,
+    model::{Channel, Rule},
+    state::RuntimeState,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -348,6 +352,30 @@ impl Store {
             .collect()
     }
 
+    pub(super) fn configured_channel_flags(&self) -> (bool, bool) {
+        let mut has_pushover = false;
+        let mut has_webhook = false;
+        for record in self.lock_state().rules.values() {
+            let Some(active) = &record.active else {
+                continue;
+            };
+            if !active.enabled {
+                continue;
+            }
+            for action in &active.actions {
+                if !action.enabled {
+                    continue;
+                }
+                match action.channel {
+                    Channel::Push => has_pushover = true,
+                    Channel::Webhook => has_webhook = true,
+                    Channel::Browser | Channel::Forwarder => {}
+                }
+            }
+        }
+        (has_pushover, has_webhook)
+    }
+
     fn persist_configured_rules(
         &self,
         rules: &mut BTreeMap<String, RuleRecord>,
@@ -685,8 +713,8 @@ mod tests {
     use crate::notifications::{
         Cooldown, CooldownScope, Stage,
         model::{
-            Action, AttachmentPolicy, Channel, EnrichmentPolicy, FailurePolicy, Filter, Schedule,
-            Template, Trigger,
+            Action, AttachmentPolicy, EnrichmentPolicy, FailurePolicy, Filter, Schedule, Template,
+            Trigger,
         },
         state::{MAX_HISTORY_EVENTS, PendingHistoryEntry},
     };
