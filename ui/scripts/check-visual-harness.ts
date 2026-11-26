@@ -146,10 +146,13 @@ if (
 	!lokiCiRunner.includes("await runLoki('mobile')") ||
 	!lokiCiRunner.includes('http://host.docker.internal:${server.port}') ||
 	!lokiCiRunner.includes("'--requireReference=false'") ||
-	!lokiCiRunner.includes("'--verboseRenderer'")
+	!lokiCiRunner.includes("'--verboseRenderer'") ||
+	!lokiCiRunner.includes("'--chromeConcurrency'") ||
+	!lokiCiRunner.includes("'--chromeRetries'") ||
+	!lokiCiRunner.includes("'--chromeLoadTimeout'")
 ) {
 	throw new Error(
-		'Loki CI must compare desktop and mobile sequentially and capture missing references noninteractively'
+		'Loki CI must compare desktop and mobile sequentially with bounded Chrome retries and noninteractive reference capture'
 	);
 }
 for (const requiredWorkflowText of [
