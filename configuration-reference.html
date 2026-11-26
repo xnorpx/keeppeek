@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-60261846.js";
+            window.path_to_searchindex_js = "searchindex-16306811.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-738fe896.js"></script>
@@ -1636,6 +1636,23 @@ selection over WebRTC CAS). Unknown <code>identity_schema</code> versions fail c
 <code>config.toml</code>. Full configuration backup and restore preserve <code>[runtime_profiles]</code>,
 <code>identity_schema = 1</code>, and camera <code>profile_identity</code> bindings; rolling back to a pre-migration
 binary requires restoring a verified pre-migration configuration backup.</p>
+<h2 id="activity-analytics"><a class="header" href="#activity-analytics">Activity analytics</a></h2>
+<p>Type: <code>AnalyticsConfig</code>, section <code>[analytics]</code>. Controls site display defaults and derived rollup
+storage bounds for bounded event activity summaries. Derived rollup tables live in the recording
+catalog database and can be rebuilt from canonical events without affecting recordings.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Validation and meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>enabled</code></td><td><code>bool</code></td><td><code>true</code></td><td>Enables site activity summary queries and rollup maintenance.</td></tr>
+<tr><td><code>timezone</code></td><td><code>String</code></td><td><code>"UTC"</code></td><td>Recognized IANA timezone used as the default display timezone for civil-time buckets and comparisons.</td></tr>
+<tr><td><code>week_start</code></td><td><code>WeekStart</code></td><td><code>"monday"</code></td><td>First day of the calendar week (<code>"monday"</code> or <code>"sunday"</code>).</td></tr>
+<tr><td><code>max_rollup_rows</code></td><td><code>u64</code></td><td><code>500000</code></td><td>Derived rollup row quota (<code>1000..=5000000</code>). Exceeding the quota degrades analytics without blocking recording.</td></tr>
+</tbody>
+</table>
+</div>
 <h2 id="pending-storage-migration"><a class="header" href="#pending-storage-migration">Pending storage migration</a></h2>
 <p>Type: <code>StorageMigration</code>, section <code>[storage_migration]</code>. The server creates this journal for a
 validated move and consumes it during migration. Do not use it as an alternative storage editor.</p>
