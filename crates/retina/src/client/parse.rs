@@ -75,13 +75,13 @@ static STATIC_PAYLOAD_TYPES: [Option<StaticPayloadType>; 35] = [
     /* 10 */ Some(StaticPayloadType {
         encoding: "l16",
         media: "audio",
-        clock_rate: 441_000,
+        clock_rate: 44_100,
         channels: NonZeroU16::new(2),
     }),
     /* 11 */ Some(StaticPayloadType {
         encoding: "l16",
         media: "audio",
-        clock_rate: 441_000,
+        clock_rate: 44_100,
         channels: NonZeroU16::new(1),
     }),
     /* 12 */ Some(StaticPayloadType {
@@ -207,6 +207,14 @@ fn join_control(base_url: &Url, control: &str) -> Result<Url, String> {
     .map_err(|e| format!("unable to join base url {base_url} with control url {control:?}: {e}"))
 }
 
+/// Returns the clock rate for an encoding whose RTP payload format permits only one rate.
+fn fixed_clock_rate(media: &str, encoding_name: &str) -> Option<u32> {
+    match (media, encoding_name) {
+        ("video", "h264" | "h265") | ("image" | "video", "jpeg") => Some(90_000),
+        _ => None,
+    }
+}
+
 /// Parses a [MediaDescription] to a [Stream].
 /// On failure, returns an error which is expected to be supplemented with
 /// the [MediaDescription] debug string and packed into a `RtspResponseError`.
@@ -321,13 +329,26 @@ fn parse_media(base_url: &Url, media_description: &Media) -> Result<Stream, Stri
         Some(rtpmap) => {
             let (e, rtpmap) = rtpmap
                 .split_once('/')
-                .ok_or_else(|| "invalid rtpmap attribute".to_string())?;
+                .map_or((rtpmap, None), |(e, rest)| (e, Some(rest)));
             encoding_name = e;
-            let (clock_rate_str, channels_str) = rtpmap.find('/').map_or((rtpmap, None), |index| {
-                (&rtpmap[..index], Some(&rtpmap[index + 1..]))
+            let (clock_rate_str, channels_str) = rtpmap.map_or((None, None), |rtpmap| {
+                rtpmap
+                    .split_once('/')
+                    .map_or((Some(rtpmap), None), |(c, channels)| {
+                        (Some(c), Some(channels))
+                    })
             });
-            clock_rate = u32::from_str_radix(clock_rate_str, 10)
-                .map_err(|_| "bad clockrate in rtpmap".to_string())?;
+            let clock_rate_from_rtpmap = clock_rate_str
+                .map(|c| {
+                    u32::from_str_radix(c, 10).map_err(|_| "bad clockrate in rtpmap".to_string())
+                })
+                .transpose()?;
+            clock_rate = match clock_rate_from_rtpmap {
+                Some(c) if c != 0 => c,
+                _ => fixed_clock_rate(&media, &encoding_name.to_ascii_lowercase()).ok_or_else(
+                    || format!("rtpmap has no usable clock rate: {clock_rate_str:?}"),
+                )?,
+            };
             channels = channels_str
                 .map(|c| {
                     u16::from_str_radix(c, 10)
@@ -507,22 +528,23 @@ pub struct SetupResponse {
     pub(crate) server_port: Option<u16>,
 }
 
+/// Parses a `server_port` value into the RTP port.
+///
+/// RFC 2326 section 12.39 makes the port range optional. A single port `P`
+/// selects RTP on `P` and RTCP on `P + 1` per RFC 3550 section 11.
 fn parse_server_port(server_port: &str) -> Result<u16, ()> {
     if let Some((a, b)) = server_port.split_once('-') {
-        let a = u16::from_str_radix(a, 10).map_err(|_| ())?;
-        let b = u16::from_str_radix(b, 10).map_err(|_| ())?;
+        let a = u16::from_str_radix(a.trim(), 10).map_err(|_| ())?;
+        let b = u16::from_str_radix(b.trim(), 10).map_err(|_| ())?;
         if a.checked_add(1) != Some(b) {
-            // It's unclear what a non-consecutive range means.
             return Err(());
         }
         return Ok(a);
     }
 
-    // Not returning a range is allowed by RFC 2326's grammar, but I'm not sure
-    // what it means. RTSP 2.0 allows "RTCP-mux" for using a single port for
-    // both RTP and RTCP, but it's only by client request, and RTSP 1.0 doesn't
-    // reference this.
-    Err(())
+    let a = u16::from_str_radix(server_port.trim(), 10).map_err(|_| ())?;
+    a.checked_add(1).ok_or(())?;
+    Ok(a)
 }
 
 fn parse_session_id(id: &str, session_str: &str) -> Result<Box<str>, String> {
@@ -588,18 +610,26 @@ pub fn parse_setup(response: &crate::rtsp::msg::Response) -> Result<SetupRespons
     let mut source = None;
     let mut server_port = None;
     let transport_str: &str = transport;
+    // RFC 2326 section 4 allows implied linear whitespace around `;` and `=`.
     for part in transport_str.split(';') {
-        if let Some(v) = part.strip_prefix("ssrc=") {
-            let v = v.trim();
-            match u32::from_str_radix(v, 16) {
-                Ok(value) if (5..=8).contains(&v.len()) => ssrc = Some(value),
+        let Some((name, value)) = part.split_once('=') else {
+            continue;
+        };
+        let (name, value) = (name.trim(), value.trim());
+        if name == "ssrc" {
+            match u32::from_str_radix(value, 16) {
+                Ok(parsed) if (5..=8).contains(&value.len()) => ssrc = Some(parsed),
                 _ => warn!("Ignoring nonconforming ssrc in Transport header {transport_str:?}"),
             }
-        } else if let Some(interleaved) = part.strip_prefix("interleaved=") {
-            let mut channels = interleaved.splitn(2, '-');
-            let n = channels.next().expect("splitn returns at least one part");
+        } else if name == "interleaved" {
+            let mut channels = value.splitn(2, '-');
+            let n = channels
+                .next()
+                .expect("splitn returns at least one part")
+                .trim();
             let n = u8::from_str_radix(n, 10).map_err(|_| format!("bad channel number {n}"))?;
             if let Some(m) = channels.next() {
+                let m = m.trim();
                 let m = u8::from_str_radix(m, 10)
                     .map_err(|_| format!("bad second channel number {m}"))?;
                 if n.checked_add(1) != Some(m) {
@@ -607,13 +637,14 @@ pub fn parse_setup(response: &crate::rtsp::msg::Response) -> Result<SetupRespons
                 }
             }
             channel_id = Some(n);
-        } else if let Some(s) = part.strip_prefix("source=") {
+        } else if name == "source" {
             source = Some(
-                s.parse()
-                    .map_err(|_| format!("Transport header has unparseable source {s:?}"))?,
+                value
+                    .parse()
+                    .map_err(|_| format!("Transport header has unparseable source {value:?}"))?,
             );
-        } else if let Some(s) = part.strip_prefix("server_port=") {
-            server_port = Some(parse_server_port(s).map_err(|()| {
+        } else if name == "server_port" {
+            server_port = Some(parse_server_port(value).map_err(|()| {
                 format!("Transport header {:?} has bad server_port", &**transport)
             })?);
         }
@@ -1738,5 +1769,83 @@ mod tests {
             p.streams[0].control,
             Some(Url::parse("rtsp://192.168.1.10:554/stream0/trackID=1").unwrap())
         );
+    }
+
+    #[test]
+    fn static_payload_type_clock_rates() {
+        for (pt, t) in STATIC_PAYLOAD_TYPES.iter().enumerate() {
+            let Some(t) = t else { continue };
+            assert!(
+                [8_000, 11_025, 16_000, 22_050, 44_100, 90_000].contains(&t.clock_rate),
+                "payload type {pt} ({}) has clock rate {}",
+                t.encoding,
+                t.clock_rate,
+            );
+        }
+    }
+
+    #[test]
+    fn rtpmap_without_clock_rate() {
+        init_logging();
+        let url = Url::parse("rtsp://127.0.0.1/").unwrap();
+        let (response, body) = sdp_response(
+            b"v=0\n\
+              m=video 0 RTP/AVP 96\na=rtpmap:96 H264/0\n\
+              m=video 0 RTP/AVP 97\na=rtpmap:97 JPEG\n\
+              m=audio 0 RTP/AVP 98\na=rtpmap:98 L16/0\n",
+        );
+        let p = super::parse_describe(url, &response, &body).unwrap();
+        assert_eq!(p.streams.len(), 2);
+        assert_eq!(p.streams[0].encoding_name(), "h264");
+        assert_eq!(p.streams[0].clock_rate_hz, 90_000);
+        assert_eq!(p.streams[1].encoding_name(), "jpeg");
+        assert_eq!(p.streams[1].clock_rate_hz, 90_000);
+    }
+
+    fn setup_with_transport(transport: &str) -> Result<SetupResponse, String> {
+        let raw =
+            format!("RTSP/1.0 200 OK\r\nCSeq: 2\r\nTransport: {transport}\r\nSession: 1\r\n\r\n");
+        let raw: &'static str = Box::leak(raw.into_boxed_str());
+        parse_setup(&response(raw.as_bytes()).0)
+    }
+
+    #[test]
+    fn setup_single_server_port() {
+        init_logging();
+        let r = setup_with_transport("RTP/AVP;unicast;server_port=6970").unwrap();
+        assert_eq!(r.server_port, Some(6970));
+        let r = setup_with_transport("RTP/AVP;unicast;server_port=65534").unwrap();
+        assert_eq!(r.server_port, Some(65534));
+        setup_with_transport("RTP/AVP;unicast;server_port=65535").unwrap_err();
+        setup_with_transport("RTP/AVP;unicast;server_port=").unwrap_err();
+        setup_with_transport("RTP/AVP;unicast;server_port=x").unwrap_err();
+    }
+
+    #[test]
+    fn setup_server_port_range_strict_cases() {
+        init_logging();
+        let r = setup_with_transport("RTP/AVP;unicast;server_port=6970-6971").unwrap();
+        assert_eq!(r.server_port, Some(6970));
+        setup_with_transport("RTP/AVP;unicast;server_port=6970-6972").unwrap_err();
+        let r = setup_with_transport("RTP/AVP/TCP;unicast;interleaved=2-3;ssrc=0A1B2C3D").unwrap();
+        assert_eq!(r.channel_id, Some(2));
+        assert_eq!(r.ssrc, Some(0x0A1B_2C3D));
+    }
+
+    #[test]
+    fn setup_transport_whitespace_around_separators() {
+        init_logging();
+        let r = setup_with_transport(
+            "RTP/AVP ; unicast ; source = 192.168.1.10 ; server_port = 6970 - 6971 ; ssrc = 0A1B2C3D",
+        )
+        .unwrap();
+        assert_eq!(r.source, Some("192.168.1.10".parse().unwrap()));
+        assert_eq!(r.server_port, Some(6970));
+        assert_eq!(r.ssrc, Some(0x0A1B_2C3D));
+        let r = setup_with_transport("RTP/AVP/TCP ; unicast ; interleaved = 4 - 5 ").unwrap();
+        assert_eq!(r.channel_id, Some(4));
+        let r = setup_with_transport(" source=192.168.1.10 ; server_port=6970-6971").unwrap();
+        assert_eq!(r.source, Some("192.168.1.10".parse().unwrap()));
+        assert_eq!(r.server_port, Some(6970));
     }
 }

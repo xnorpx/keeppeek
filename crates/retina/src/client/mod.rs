@@ -306,10 +306,21 @@ pub(crate) struct StreamStateInit {
 }
 
 /// Username and password credentials for Digest authentication.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// The `Debug` implementation omits the password so credentials do not appear in logs.
+#[derive(Clone, Eq, PartialEq)]
 pub struct Credentials {
     pub username: String,
     pub password: String,
+}
+
+impl std::fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Credentials")
+            .field("username", &self.username)
+            .field("password", &format_args!("<redacted>"))
+            .finish()
+    }
 }
 
 /// A validated RTP or RTCP packet emitted by the internal parser.
@@ -318,4 +329,21 @@ pub struct Credentials {
 pub enum PacketItem {
     Rtp(crate::rtp::ReceivedPacket),
     Rtcp(crate::rtcp::ReceivedCompoundPacket),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Credentials;
+
+    #[test]
+    fn credentials_debug_omits_password() {
+        let creds = Credentials {
+            username: "admin".to_owned(),
+            password: "secret".to_owned(),
+        };
+        assert_eq!(
+            format!("{creds:?}"),
+            r#"Credentials { username: "admin", password: <redacted> }"#
+        );
+    }
 }
