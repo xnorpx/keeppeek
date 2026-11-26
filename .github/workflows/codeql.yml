@@ -1,0 +1,87 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  merge_group:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    name: CodeQL (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    env:
+      # Disable Rust cfg(test) extraction so unit tests in production files do not generate alerts.
+      CODEQL_EXTRACTOR_RUST_OPTION_CARGO_CFG_OVERRIDES: "-test"
+    strategy:
+      fail-fast: false
+      matrix:
+        # ponytail: Skip Swift CodeQL for the single macOS launcher file; add a macOS matrix entry if Swift code grows.
+        include:
+          - language: actions
+            name: Actions
+            build-mode: none
+          - language: javascript-typescript
+            name: JavaScript/TypeScript
+            build-mode: none
+          - language: python
+            name: Python
+            build-mode: none
+          - language: rust
+            name: Rust
+            build-mode: none
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          config: |
+            paths-ignore:
+              - "benches/**"
+              - "**/benches/**"
+              - "tests/**"
+              - "**/tests/**"
+              - "**/tests.rs"
+              - "**/*_tests.rs"
+              - "**/*_tests/**"
+              - "**/test_support.rs"
+              - "**/*_test_support.rs"
+              - "crates/test-camera/**"
+              - "crates/test-frame/**"
+              - "crates/test-hikvision/**"
+              - "crates/**/examples/**"
+              - "ui/e2e/**"
+              - "ui/visual-harness/**"
+              - "ui/**/*.spec.ts"
+              - "ui/**/*.test.ts"
+            # Exclude hard-coded cryptographic value alerts from protocol-fixed wire constants and test fixtures.
+            query-filters:
+              - exclude:
+                  id: rust/hard-coded-cryptographic-value
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
+        with:
+          category: /language:${{ matrix.language }}

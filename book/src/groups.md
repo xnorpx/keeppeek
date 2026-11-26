@@ -42,5 +42,6 @@ this chapter can provide operational setup instructions.
 Talkback sends audio to a supported physical camera. A live participant group would exchange media
 between clients through KeepPeek. Support for one does not imply support for the other.
 
-The current browser Talk control is unavailable. Consult [Camera controls](./camera-controls.md)
-for supported physical camera operations and the availability reason shown for the selected device.
+Browser Talk to a camera speaker is available for supported cameras. Consult
+[Camera controls](./camera-controls.md) for its requirements and the availability reason shown for
+the selected device.

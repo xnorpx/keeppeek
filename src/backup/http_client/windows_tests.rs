@@ -1,9 +1,12 @@
-use super::{LocalAllocation, current_user_sid, security_descriptor, verify_descriptor, wide_path};
+use super::{
+    LocalAllocation, acl_ace_count, allowed_ace, current_user_sid, descriptor_dacl,
+    parse_allowed_ace, security_descriptor, verify_descriptor, wide_path,
+};
 use crate::backup::http_client::{
     create_private_file,
     tests::{SYNTHETIC_ARCHIVE, TestDirectory, export_from_fixture},
 };
-use std::{fs::File, mem, os::windows::io::AsRawHandle, path::Path};
+use std::{fs::File, io, mem, os::windows::io::AsRawHandle, path::Path};
 use windows::{
     Win32::{
         Foundation::HANDLE,
@@ -190,6 +193,7 @@ fn readback_rejects_unprotected_missing_null_and_unexpected_access_rules() {
         format!("O:{owner}D:{grants}"),
         format!("O:{owner}"),
         format!("O:{owner}D:NO_ACCESS_CONTROL"),
+        format!("O:{owner}D:P"),
         format!("O:{owner}D:P(A;;FA;;;WD){grants}"),
         format!("O:{owner}D:P(A;;FA;;;{owner})(A;;FA;;;SY)"),
         format!("O:{owner}D:P(A;ID;FA;;;{owner})(A;;FA;;;SY)(A;;FA;;;BA)"),
@@ -225,4 +229,46 @@ fn readback_accepts_system_owner_with_the_explicit_duplicate_system_grant() {
     let actual =
         security_descriptor("O:S-1-5-18D:P(A;;FA;;;BA)(A;;FA;;;S-1-5-18)(A;;FA;;;SY)").unwrap();
     verify_descriptor(&actual, &expected).unwrap();
+}
+
+#[test]
+fn acl_ace_count_reads_empty_and_populated_dacls() {
+    let owner = current_user_sid().unwrap();
+    let empty = security_descriptor(&format!("O:{owner}D:P")).unwrap();
+    let single = security_descriptor(&format!("O:{owner}D:P(A;;FA;;;{owner})")).unwrap();
+    let private = security_descriptor(&format!(
+        "O:{owner}D:P(A;;FA;;;{owner})(A;;FA;;;SY)(A;;FA;;;BA)"
+    ))
+    .unwrap();
+
+    assert_eq!(acl_ace_count(&descriptor_dacl(&empty).unwrap()).unwrap(), 0);
+    assert_eq!(
+        acl_ace_count(&descriptor_dacl(&single).unwrap()).unwrap(),
+        1
+    );
+    assert_eq!(
+        acl_ace_count(&descriptor_dacl(&private).unwrap()).unwrap(),
+        3
+    );
+}
+
+#[test]
+fn allowed_ace_rejects_out_of_bounds_index_and_null_ace_pointer() {
+    let owner = current_user_sid().unwrap();
+    let empty = security_descriptor(&format!("O:{owner}D:P")).unwrap();
+    let empty_dacl = descriptor_dacl(&empty).unwrap();
+    assert!(allowed_ace(&empty_dacl, 0).is_err());
+
+    let private = security_descriptor(&format!(
+        "O:{owner}D:P(A;;FA;;;{owner})(A;;FA;;;SY)(A;;FA;;;BA)"
+    ))
+    .unwrap();
+    let private_dacl = descriptor_dacl(&private).unwrap();
+    assert!(allowed_ace(&private_dacl, 3).is_err());
+
+    // Passing a null pointer satisfies parse_allowed_ace's safety contract.
+    let error = unsafe { parse_allowed_ace(std::ptr::null_mut(), &private) }
+        .err()
+        .expect("null ACE pointer must fail validation");
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
 }

@@ -65,6 +65,8 @@ export default defineConfig({
 			'@lucide/svelte/icons/download',
 			'@lucide/svelte/icons/eye',
 			'@lucide/svelte/icons/eye-off',
+			'@lucide/svelte/icons/file-json',
+			'@lucide/svelte/icons/film',
 			'@lucide/svelte/icons/flask-conical',
 			'@lucide/svelte/icons/hard-drive',
 			'@lucide/svelte/icons/inbox',
@@ -118,6 +120,7 @@ export default defineConfig({
 			'/logs': apiTarget,
 			'/metrics': apiTarget,
 			'/recording-coverage': apiTarget,
+			'/reporting/': apiTarget,
 			'/api': apiTarget
 		}
 	},

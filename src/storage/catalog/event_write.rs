@@ -84,6 +84,7 @@ pub(super) async fn write(
             .await?;
     }
     retention::event_index::write(connection, event).await?;
+    analytics::delta::sync_event_upsert(connection, event).await?;
     replace_intrinsic_event_terms(connection, &event.id, &event.kind, event.text.as_deref())
         .await?;
     if existing.is_some() {

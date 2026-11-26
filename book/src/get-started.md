@@ -4,7 +4,9 @@
 > The active [Alpha gate](https://github.com/xnorpx/keeppeek/issues/145) tracks promotion evidence.
 
 Choose the installation that fits the host. Linux has first-class Docker support; macOS and Windows
-use native packages and service integration.
+use native packages and service integration. On Windows and macOS, you can also install
+[KeepPeek Desktop](./desktop-app.md) to open an existing local or remote KeepPeek server in a
+dedicated desktop window.
 
 ## Before installation
 
@@ -29,6 +31,14 @@ Use the arrow keys or Page Up and Page Down to select a stream. Press **q** to r
 while the recorder keeps running. Press **Ctrl+C** to request a graceful server shutdown and
 finalize recordings. Resizing the terminal changes the visible rows. After a hard kill, opening
 a new terminal restores the normal display. On Unix you can also run `reset` in the affected shell.
+
+| Environment                                                   | Default (`--tui auto`) | Notes                                                                                       |
+| ------------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------- |
+| Linux, macOS, Windows Terminal / PowerShell foreground TTY    | Dashboard              | Requires interactive stdin, stdout, and stderr (`TERM` set and not `dumb` on Unix).         |
+| SSH with TTY (`ssh -t`) or Docker with TTY (`docker run -it`) | Dashboard              | Interactive pseudo-terminals run the dashboard; pass `--tui never` for plain logs.          |
+| SSH or Docker without TTY, pipes, redirected stdio            | Plain logs             | No terminal escape sequences are emitted; `--tui always` logs one diagnostic and continues. |
+| `keeppeek config ...`, `--help`, `--version`                  | Plain output           | Subcommands and help/version never enter alternate screen even with `--tui always`.         |
+| `keeppeek-service` (Windows) and macOS launch agent           | Plain/service logs     | Service entry points never start the terminal dashboard.                                    |
 
 ## Linux with Docker
 
@@ -77,10 +87,12 @@ when replacing an existing installation.
 
 ## Windows
 
-Windows releases provide signed x86-64 and ARM64 binaries and an installer. Choose the architecture
-that matches the host and run the installer. Select **Run KeepPeek as a Windows service** for
-background operation through the Service Control Manager. The service is named `KeepPeekService`.
-Without that component, run the installed `keeppeek.exe` as a standalone process.
+Windows releases provide Authenticode-signed, RFC 3161 timestamped x86-64 and ARM64 binaries and a single unified signed installer (every published executable, including the installer's `uninstall.exe`, is signed and timestamped):
+
+- **Unified installer (`keeppeek-<version>-windows-<arch>-installer.exe`):** lets you select at least one of **KeepPeek Desktop** (`keeppeek-desktop.exe`), **KeepPeek Server with TUI** (`keeppeek.exe`), and **KeepPeek Windows Service** (`keeppeek-service.exe` / `KeepPeekService`).
+- **Standalone signed binaries and server ZIP:** `keeppeek-<version>-windows-<arch>.exe` (server with TUI), `keeppeek-service-<version>-windows-<arch>.exe` (Windows service), `keeppeek-desktop-<version>-windows-<arch>.exe` (Tauri desktop UI), and `keeppeek-<version>-windows-<arch>.zip`, each with a matching `.sha256` file.
+
+Choose the architecture that matches the host and run `keeppeek-<version>-windows-<arch>-installer.exe`. Select **KeepPeek Desktop** for the [native desktop UI](./desktop-app.md), **KeepPeek Server with TUI** to run `keeppeek.exe` interactively, and/or **KeepPeek Windows Service** for background operation through the Service Control Manager (`KeepPeekService`). For unattended installs, combine `/S` with `/DESKTOP`, `/SERVER`, `/SERVICE`, `/NO_DESKTOP`, `/NO_SERVER`, or `/NO_SERVICE` (at least one component must remain selected).
 
 Open `http://localhost:8081` after startup. To inspect the service from PowerShell:
 

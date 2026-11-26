@@ -2730,7 +2730,20 @@ impl Publisher {
             });
     }
 
-    pub(crate) fn reset_camera(&self, camera_ip: IpAddr) {
+    pub(crate) fn reset_stream_timing(&self, source: Source) {
+        let timing = self
+            .inner
+            .live_timing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&source.camera_ip)
+            .cloned();
+        if let Some(timing) = timing {
+            timing.reset_stream(source.stream);
+        }
+    }
+
+    pub(crate) fn reset_camera_timing(&self, camera_ip: IpAddr) {
         let timing = self
             .inner
             .live_timing
@@ -2741,6 +2754,10 @@ impl Publisher {
         if let Some(timing) = timing {
             timing.reset();
         }
+    }
+
+    pub(crate) fn reset_camera(&self, camera_ip: IpAddr) {
+        self.reset_camera_timing(camera_ip);
         let mut generations = self
             .inner
             .camera_generations
@@ -5058,6 +5075,8 @@ const fn is_background_control_request(request: &crate::api::proto::Request) -> 
             Some(
                 crate::api::proto::stored_media_command::Action::Open(_)
                     | crate::api::proto::stored_media_command::Action::StepFrame(_)
+                    | crate::api::proto::stored_media_command::Action::PlanTimelapse(_)
+                    | crate::api::proto::stored_media_command::Action::FetchTimelapseSamples(_)
                     | crate::api::proto::stored_media_command::Action::Seek(_)
                     | crate::api::proto::stored_media_command::Action::Refill(_)
                     | crate::api::proto::stored_media_command::Action::SetPlayback(_)
@@ -5583,7 +5602,13 @@ fn control_data_group(command: Option<&crate::api::proto::request::Command>) -> 
                 Action::Close(close) => Some(format!("stored:{}", close.stored_media_id)),
                 Action::QueryTimeline(query) => Some(format!("query:{}", query.query_id)),
                 Action::CancelTimelineQuery(cancel) => Some(format!("query:{}", cancel.query_id)),
-                Action::SetPlayback(_) | Action::Refill(_) => None,
+                Action::FetchTimelapseSamples(fetch) => {
+                    Some(format!("timelapse:{}", fetch.transfer_id))
+                }
+                Action::CancelTimelapseSamples(cancel) => {
+                    Some(format!("timelapse:{}", cancel.transfer_id))
+                }
+                Action::PlanTimelapse(_) | Action::SetPlayback(_) | Action::Refill(_) => None,
             }
         }
         crate::api::proto::request::Command::ExportCommand(command) => {
@@ -5607,7 +5632,12 @@ fn control_data_group(command: Option<&crate::api::proto::request::Command>) -> 
                 Action::CancelMedia(cancel) => {
                     Some(format!("event-search-media:{}", cancel.transfer_id))
                 }
-                Action::ReplaceTerms(_) | Action::SetEmbedding(_) => None,
+                Action::ReplaceTerms(_)
+                | Action::SetEmbedding(_)
+                | Action::DeleteEmbedding(_)
+                | Action::ListSavedSearches(_)
+                | Action::SaveSearch(_)
+                | Action::DeleteSavedSearch(_) => None,
             }
         }
         _ => None,
@@ -9055,6 +9085,74 @@ mod tests {
         assert_eq!(timing.report(source.stream).expired_drops, 1);
         timing.set_preview(None);
         assert!(!chunks[0].current(received + Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn live_audio_stream_reconnect_resets_transient_queue_without_losing_offset() {
+        let webrtc = WebRtc::new();
+        let main = Source {
+            camera_ip: test_source().camera_ip,
+            stream: StreamKind::Main,
+        };
+        let sub = Source {
+            stream: StreamKind::Sub,
+            ..main
+        };
+        webrtc.configure_live_audio(
+            main.camera_ip,
+            crate::cameras::LiveAudioSettings {
+                main_offset_ms: Some(-100),
+                sub_offset_ms: Some(-100),
+                ..Default::default()
+            },
+        );
+        let publisher = webrtc.live();
+        let timing = publisher.inner.camera_timing(main.camera_ip);
+        let (mut main_queue, mut sub_queue) = (
+            live_timing::Queue::new(timing.clone()),
+            live_timing::Queue::new(timing),
+        );
+        let ((main_tx, main_rx), (sub_tx, sub_rx)) = (bounded(2), bounded(2));
+        let send = |tx: &Sender<SessionCommand>, source, sequence, at| {
+            tx.send(SessionCommand::Frame {
+                sequence,
+                source,
+                frame: live_frame_at(true, at, 32),
+            })
+            .unwrap();
+        };
+        let before = Instant::now();
+        let delay = Duration::from_millis(100);
+        send(&main_tx, main, 1, before);
+        send(&sub_tx, sub, 1, before);
+        assert!(matches!(
+            next_video_frame(&main_rx, &mut main_queue, before),
+            Err(TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            next_video_frame(&sub_rx, &mut sub_queue, before),
+            Err(TryRecvError::Empty)
+        ));
+        assert_eq!(main_queue.report(main.stream).held_video_bytes, 32);
+        assert_eq!(sub_queue.report(sub.stream).held_video_bytes, 32);
+
+        std::thread::sleep(Duration::from_millis(2));
+        publisher.reset_stream_timing(main);
+        assert_eq!(main_queue.report(main.stream).configured_offset_ms, -100);
+        assert!(matches!(
+            next_video_frame(&main_rx, &mut main_queue, before + delay),
+            Err(TryRecvError::Empty)
+        ));
+        assert_eq!(main_queue.report(main.stream).held_video_bytes, 0);
+        assert!(next_video_frame(&sub_rx, &mut sub_queue, before + delay).is_ok());
+
+        let after = Instant::now() + Duration::from_millis(1);
+        send(&main_tx, main, 2, after);
+        assert!(matches!(
+            next_video_frame(&main_rx, &mut main_queue, after),
+            Err(TryRecvError::Empty)
+        ));
+        assert!(next_video_frame(&main_rx, &mut main_queue, after + delay).is_ok());
     }
 
     #[test]

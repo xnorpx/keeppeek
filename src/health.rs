@@ -11,6 +11,8 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
+#[cfg(not(windows))]
+use sysinfo::ProcessRefreshKind;
 use sysinfo::{
     Components, CpuRefreshKind, Disks, MemoryRefreshKind, Networks, Pid, ProcessesToUpdate,
     RefreshKind, System,
@@ -604,6 +606,8 @@ pub struct SystemMonitor {
     last_refresh: Instant,
     last_hardware_refresh: Option<Instant>,
     cached_snapshot: Option<(PathBuf, Instant, SystemHealth)>,
+    #[cfg(windows)]
+    live_cpu_sample: Option<(u64, Instant)>,
 }
 
 impl Default for SystemMonitor {
@@ -635,6 +639,9 @@ impl SystemMonitor {
             last_refresh: Instant::now(),
             last_hardware_refresh: Some(Instant::now()),
             cached_snapshot: None,
+            #[cfg(windows)]
+            live_cpu_sample: windows_current_process_cpu_ticks()
+                .map(|ticks| (ticks, Instant::now())),
         }
     }
 
@@ -823,6 +830,168 @@ impl SystemMonitor {
         self.cached_snapshot = Some((cache_key, now, health.clone()));
         health
     }
+
+    /// Collects only the process CPU, process memory, and host RAM counters used by the live TUI.
+    ///
+    /// This avoids slow platform-wide probes such as Windows WMI sensor refreshes and preserves
+    /// `last_refresh` so full `/api/health` snapshots compute accurate interval byte rates.
+    pub(crate) fn live_snapshot(&mut self) -> SystemHealth {
+        if let Some(system) = &mut self.system {
+            system.refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram());
+            #[cfg(not(windows))]
+            system.refresh_processes_specifics(
+                ProcessesToUpdate::Some(&[self.pid]),
+                false,
+                ProcessRefreshKind::nothing().with_cpu().with_memory(),
+            );
+        }
+
+        let (process_cpu_percent, process_resident_memory_bytes) =
+            self.sample_live_process_metrics();
+        let system = self.system.as_ref();
+        let logical_cores = system.map_or(0, |system| system.cpus().len());
+        let total_memory_bytes = system.map_or(0, System::total_memory);
+
+        SystemHealth {
+            host_name: None,
+            os_name: None,
+            os_version: None,
+            kernel_version: None,
+            architecture: std::env::consts::ARCH,
+            system_uptime_seconds: 0,
+            boot_time_seconds: 0,
+            logical_cores,
+            physical_cores: None,
+            cpu_brand: None,
+            system_cpu_percent: 0.0,
+            process: live_process_health(
+                self.pid.as_u32(),
+                logical_cores,
+                total_memory_bytes,
+                process_cpu_percent,
+                process_resident_memory_bytes,
+            ),
+            memory: MemoryHealth {
+                total_bytes: total_memory_bytes,
+                used_bytes: system.map_or(0, System::used_memory),
+                available_bytes: system.map_or(0, System::available_memory),
+                total_swap_bytes: 0,
+                used_swap_bytes: 0,
+            },
+            load: LoadHealth {
+                one_minute: 0.0,
+                five_minutes: 0.0,
+                fifteen_minutes: 0.0,
+            },
+            cpus: Vec::new(),
+            network_egress_bps: 0,
+            networks: Vec::new(),
+            disks: Vec::new(),
+            temperatures: Vec::new(),
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn sample_live_process_metrics(&self) -> (Option<f32>, Option<u64>) {
+        let process = self
+            .system
+            .as_ref()
+            .and_then(|system| system.process(self.pid));
+        (
+            process.map(sysinfo::Process::cpu_usage),
+            process.map(sysinfo::Process::memory),
+        )
+    }
+
+    #[cfg(windows)]
+    fn sample_live_process_metrics(&mut self) -> (Option<f32>, Option<u64>) {
+        if self.system.is_none() {
+            return (None, None);
+        }
+        // Query only the current process because sysinfo enumerates the full Windows process table.
+        let now = Instant::now();
+        let cpu_percent = windows_current_process_cpu_ticks().and_then(|ticks| {
+            let previous = self.live_cpu_sample.replace((ticks, now))?;
+            let elapsed_100ns = now.saturating_duration_since(previous.1).as_nanos() / 100;
+            if elapsed_100ns == 0 {
+                return Some(0.0);
+            }
+            let delta_ticks = ticks.saturating_sub(previous.0);
+            Some((delta_ticks as f64 / elapsed_100ns as f64 * 100.0) as f32)
+        });
+        (cpu_percent, windows_current_process_working_set_bytes())
+    }
+}
+
+#[cfg(windows)]
+fn windows_current_process_cpu_ticks() -> Option<u64> {
+    use windows::Win32::{
+        Foundation::FILETIME,
+        System::Threading::{GetCurrentProcess, GetProcessTimes},
+    };
+
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    // SAFETY: GetCurrentProcess returns a valid pseudo-handle and all four FILETIME outputs are initialized stack values.
+    unsafe {
+        GetProcessTimes(
+            GetCurrentProcess(),
+            &mut creation,
+            &mut exit,
+            &mut kernel,
+            &mut user,
+        )
+    }
+    .ok()?;
+    let kernel_ticks = (u64::from(kernel.dwHighDateTime) << 32) | u64::from(kernel.dwLowDateTime);
+    let user_ticks = (u64::from(user.dwHighDateTime) << 32) | u64::from(user.dwLowDateTime);
+    Some(kernel_ticks.saturating_add(user_ticks))
+}
+
+#[cfg(windows)]
+fn windows_current_process_working_set_bytes() -> Option<u64> {
+    use windows::Win32::System::{
+        ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
+        Threading::GetCurrentProcess,
+    };
+
+    let mut counters = PROCESS_MEMORY_COUNTERS::default();
+    let size = u32::try_from(std::mem::size_of::<PROCESS_MEMORY_COUNTERS>()).ok()?;
+    // SAFETY: GetCurrentProcess returns a valid pseudo-handle and counters has exact byte size `size`.
+    unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, size) }.ok()?;
+    u64::try_from(counters.WorkingSetSize).ok()
+}
+
+fn live_process_health(
+    pid: u32,
+    logical_cores: usize,
+    total_memory_bytes: u64,
+    cpu_percent: Option<f32>,
+    resident_memory_bytes: Option<u64>,
+) -> ProcessHealth {
+    let (cpu_capacity_percent, cpu_core_equivalents) =
+        normalized_process_cpu(cpu_percent, logical_cores);
+    ProcessHealth {
+        pid,
+        name: None,
+        executable: None,
+        working_directory: None,
+        cpu_percent,
+        cpu_capacity_percent,
+        cpu_core_equivalents,
+        resident_memory_bytes,
+        memory_capacity_percent: process_memory_percent(resident_memory_bytes, total_memory_bytes),
+        virtual_memory_bytes: None,
+        started_at_seconds: None,
+        uptime_seconds: None,
+        tasks: None,
+        read_bytes_per_second: None,
+        write_bytes_per_second: None,
+        total_read_bytes: None,
+        total_written_bytes: None,
+    }
 }
 
 fn fallback_recording_disk(recording_path: &Path) -> Option<DiskHealth> {
@@ -904,6 +1073,8 @@ mod tests {
             last_refresh: Instant::now(),
             last_hardware_refresh: None,
             cached_snapshot: None,
+            #[cfg(windows)]
+            live_cpu_sample: None,
         };
         let snapshot = monitor.snapshot(&std::env::temp_dir());
         assert_eq!(snapshot.process.pid, std::process::id());
@@ -924,6 +1095,8 @@ mod tests {
             last_refresh: Instant::now(),
             last_hardware_refresh: None,
             cached_snapshot: None,
+            #[cfg(windows)]
+            live_cpu_sample: None,
         };
         let dir_a = std::env::temp_dir();
         let first = monitor.snapshot(&dir_a);
@@ -946,6 +1119,29 @@ mod tests {
                 .map(|(p, _, _)| p.as_path()),
             Some(dir_b.as_path())
         );
+    }
+
+    #[test]
+    fn live_snapshot_populates_process_and_memory_without_touching_full_probes() {
+        let mut monitor = SystemMonitor::new();
+        let before_refresh = monitor.last_refresh;
+
+        let live = monitor.live_snapshot();
+
+        assert_eq!(monitor.last_refresh, before_refresh);
+        assert_eq!(live.process.pid, std::process::id());
+        assert!(live.logical_cores > 0);
+        assert!(live.memory.total_bytes > 0);
+        assert!(live.memory.available_bytes <= live.memory.total_bytes);
+        assert!(live.process.resident_memory_bytes.is_some());
+        if let Some(cpu) = live.process.cpu_capacity_percent {
+            assert!(cpu.is_finite() && (0.0..=100.0).contains(&cpu));
+        }
+        assert!(live.cpus.is_empty());
+        assert!(live.networks.is_empty());
+        assert!(live.disks.is_empty());
+        assert!(live.temperatures.is_empty());
+        assert!(live.host_name.is_none());
     }
 
     #[test]

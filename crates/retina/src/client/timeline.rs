@@ -22,6 +22,11 @@ pub struct Timeline {
 
     /// The same in seconds, for logging.
     max_forward_jump_secs: u32,
+
+    /// Set when [`Timeline::place`] establishes the NPT epoch before any RTP packet.
+    /// Senders often stamp RTCP slightly ahead of the next RTP packet, so the first
+    /// RTP packet after that epoch skips the jump check.
+    timestamp_from_rtcp: bool,
 }
 
 impl Timeline {
@@ -51,6 +56,7 @@ impl Timeline {
             max_forward_jump_secs: enforce_with_max_forward_jump_secs
                 .map(NonZeroU32::get)
                 .unwrap_or(0),
+            timestamp_from_rtcp: false,
         })
     }
 
@@ -60,7 +66,9 @@ impl Timeline {
     /// [Timestamp], erroring on excessive or backward time jumps.
     pub fn advance_to(&mut self, rtp_timestamp: u32) -> Result<Timestamp, String> {
         let (timestamp, delta) = self.ts_and_delta(rtp_timestamp)?;
-        if matches!(self.max_forward_jump, Some(j) if !(0..j.get()).contains(&delta)) {
+        if !self.timestamp_from_rtcp
+            && matches!(self.max_forward_jump, Some(j) if !(0..j.get()).contains(&delta))
+        {
             return Err(format!(
                 "Timestamp jumped {} ({:.03} sec) from {} to {}; \
                    policy is to allow 0..{} sec only",
@@ -72,6 +80,7 @@ impl Timeline {
             ));
         }
         self.timestamp = timestamp.timestamp;
+        self.timestamp_from_rtcp = false;
         Ok(timestamp)
     }
 
@@ -80,8 +89,13 @@ impl Timeline {
     ///
     /// This is useful for RTP timestamps in RTCP packets. They commonly refer
     /// to time slightly before the most timestamp of the matching RTP stream.
+    /// If this call sets the NPT epoch, the next [`Timeline::advance_to`] call
+    /// skips the time jump policy.
     pub fn place(&mut self, rtp_timestamp: u32) -> Result<Timestamp, String> {
-        Ok(self.ts_and_delta(rtp_timestamp)?.0)
+        let sets_start = self.start.is_none();
+        let (timestamp, _) = self.ts_and_delta(rtp_timestamp)?;
+        self.timestamp_from_rtcp |= sets_start;
+        Ok(timestamp)
     }
 
     fn ts_and_delta(&mut self, rtp_timestamp: u32) -> Result<(Timestamp, i32), String> {
@@ -168,6 +182,14 @@ mod tests {
         // No initial rtptime.
         let mut t = Timeline::new(None, 90_000, NonZeroU32::new(10)).unwrap();
         assert_eq!(t.advance_to(218250000).unwrap().elapsed(), 0);
+
+        // A sender report placed before the first RTP packet may carry a later
+        // timestamp without causing a backward jump error on that RTP packet.
+        let mut t = Timeline::new(None, 90_000, NonZeroU32::new(10)).unwrap();
+        assert_eq!(t.place(1_000).unwrap().elapsed(), 0);
+        assert_eq!(t.advance_to(990).unwrap().elapsed(), -10);
+        t.advance_to(989).unwrap_err();
+        assert_eq!(t.advance_to(3_990).unwrap().elapsed(), 2_990);
     }
 
     #[test]

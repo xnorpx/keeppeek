@@ -2,12 +2,14 @@
 
 use std::{
     fs::File,
-    io, mem,
+    io,
+    mem::{self, MaybeUninit},
     os::windows::{
         ffi::OsStrExt,
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
     },
     path::{Component, Path, Prefix},
+    ptr::{self, NonNull},
 };
 use windows::{
     Win32::{
@@ -31,7 +33,7 @@ use windows::{
 struct LocalAllocation(*mut std::ffi::c_void);
 
 struct Dacl<'a> {
-    pointer: *const Security::ACL,
+    pointer: NonNull<Security::ACL>,
     owner: &'a LocalAllocation,
 }
 
@@ -126,14 +128,7 @@ fn verify_descriptor(actual: &LocalAllocation, expected: &LocalAllocation) -> io
         .map_err(|_| unverified_security())?;
     let actual_acl = descriptor_dacl(actual)?;
     let expected_acl = descriptor_dacl(expected)?;
-    // These validated ACL headers remain within their borrowed descriptor allocations.
-    let counts = unsafe {
-        (
-            (*actual_acl.pointer).AceCount,
-            (*expected_acl.pointer).AceCount,
-        )
-    };
-    if counts != (3, 3) {
+    if (acl_ace_count(&actual_acl)?, acl_ace_count(&expected_acl)?) != (3, 3) {
         return Err(unverified_security());
     }
     let mut matched = [false; 3];
@@ -173,35 +168,78 @@ fn descriptor_owner(descriptor: &LocalAllocation) -> io::Result<Security::PSID> 
     Ok(owner)
 }
 
+fn acl_ace_count(acl: &Dacl<'_>) -> io::Result<u32> {
+    let mut info = Security::ACL_SIZE_INFORMATION::default();
+    // The validated ACL stays inside its live descriptor allocation, and info holds the full struct.
+    unsafe {
+        Security::GetAclInformation(
+            acl.pointer.as_ptr(),
+            ptr::from_mut(&mut info).cast(),
+            u32::try_from(mem::size_of::<Security::ACL_SIZE_INFORMATION>()).unwrap(),
+            Security::AclSizeInformation,
+        )
+    }
+    .map_err(io::Error::other)?;
+    Ok(info.AceCount)
+}
+
 fn descriptor_dacl(descriptor: &LocalAllocation) -> io::Result<Dacl<'_>> {
     let mut present = BOOL::default();
     let mut defaulted = BOOL::default();
-    let mut acl = std::ptr::null_mut();
-    // Windows returns an ACL pointer borrowed from the descriptor, which outlives the result.
+    let mut acl = MaybeUninit::<*mut Security::ACL>::zeroed();
+    // Windows writes a borrowed ACL pointer from this live descriptor when a DACL is present.
     unsafe {
         Security::GetSecurityDescriptorDacl(
             Security::PSECURITY_DESCRIPTOR(descriptor.0),
             &mut present,
-            &mut acl,
+            acl.as_mut_ptr(),
             &mut defaulted,
         )
     }
     .map_err(io::Error::other)?;
-    // A null or missing DACL grants access and must never be accepted for an export.
-    if !present.as_bool() || acl.is_null() || !unsafe { Security::IsValidAcl(acl) }.as_bool() {
+    // A missing or null DACL grants access and must never be accepted for an export.
+    if !present.as_bool() {
+        return Err(unverified_security());
+    }
+    // The zero-initialized slot holds either null or the ACL pointer that Windows wrote.
+    let acl = unsafe { acl.assume_init() };
+    let Some(pointer) = NonNull::new(acl) else {
+        return Err(unverified_security());
+    };
+    // The non-null ACL pointer resides inside the live descriptor allocation.
+    if !unsafe { Security::IsValidAcl(pointer.as_ptr()) }.as_bool() {
         return Err(unverified_security());
     }
     Ok(Dacl {
-        pointer: acl,
+        pointer,
         owner: descriptor,
     })
 }
 
 fn allowed_ace<'a>(acl: &Dacl<'a>, index: u32) -> io::Result<AllowedAce<'a>> {
-    let mut pointer = std::ptr::null_mut();
-    // GetAce bounds the index within the validated ACL and returns a borrowed ACE header.
-    unsafe { Security::GetAce(acl.pointer, index, &mut pointer) }.map_err(io::Error::other)?;
-    // GetAce succeeded, so the header resides in the live ACL allocation.
+    let mut raw = MaybeUninit::<*mut std::ffi::c_void>::zeroed();
+    // GetAce bounds the index within the validated ACL and writes a borrowed ACE pointer on success.
+    unsafe { Security::GetAce(acl.pointer.as_ptr(), index, raw.as_mut_ptr()) }
+        .map_err(io::Error::other)?;
+    // The zero-initialized slot holds either null or the ACE pointer that GetAce wrote.
+    let pointer = unsafe { raw.assume_init() };
+    // GetAce succeeded, so any non-null pointer resides in the live ACL allocation.
+    unsafe { parse_allowed_ace(pointer, acl.owner) }
+}
+
+/// Parses an `ACCESS_ALLOWED_ACE` borrowed from `owner`, rejecting null or malformed entries.
+///
+/// # Safety
+///
+/// `pointer` must be null or point to a valid ACE inside the live allocation owned by `owner`.
+unsafe fn parse_allowed_ace<'a>(
+    pointer: *mut std::ffi::c_void,
+    owner: &'a LocalAllocation,
+) -> io::Result<AllowedAce<'a>> {
+    if pointer.is_null() {
+        return Err(unverified_security());
+    }
+    // The caller guarantees that a non-null pointer points to a valid ACE header in owner.
     let header = unsafe { pointer.cast::<Security::ACE_HEADER>().read_unaligned() };
     let sid_offset = mem::offset_of!(Security::ACCESS_ALLOWED_ACE, SidStart);
     let sid_header_bytes = mem::offset_of!(Security::SID, SubAuthority);
@@ -211,7 +249,7 @@ fn allowed_ace<'a>(acl: &Dacl<'a>, index: u32) -> io::Result<AllowedAce<'a>> {
     {
         return Err(unverified_security());
     }
-    // The checked ACE size contains the mask and SID header; raw pointers retain the full allocation.
+    // The checked ACE size holds the mask and SID header; raw pointers keep the full allocation provenance.
     let (mask, sid, subauthorities) = unsafe {
         let sid = pointer.byte_add(sid_offset);
         (
@@ -230,14 +268,14 @@ fn allowed_ace<'a>(acl: &Dacl<'a>, index: u32) -> io::Result<AllowedAce<'a>> {
     {
         return Err(unverified_security());
     }
-    // The entire variable-length SID is now bounded by the validated ACE.
+    // The entire variable-length SID fits inside the validated ACE.
     if !unsafe { Security::IsValidSid(sid) }.as_bool() {
         return Err(unverified_security());
     }
     Ok(AllowedAce {
         mask,
         sid,
-        _owner: acl.owner,
+        _owner: owner,
     })
 }
 

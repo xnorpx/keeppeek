@@ -109,26 +109,26 @@ Remote provider retention, managed export restore and disaster-recovery import r
 
 ## Verification map
 
-The current-delivery criteria below map to #130 in their original order. Broader provider,
-selection, remote retention and disaster-recovery requirements remain open in that issue.
-Passing local fixtures does not establish those capabilities.
-The table records the original delivery checkpoint. The November qualification below adds
-concurrent recording, primary-seek, transfer and target-reconnection results.
+The current-delivery criteria below map to #130 in their original order across the landed local-first
+increments (PRs #311, #352, #373, #369, #375, #356, and this final verification update). Broader
+offsite provider implementations, remote retention, physical removable/NAS device qualification,
+managed export restore, and disaster-recovery import remain open in #130. Passing local fixtures
+does not establish those capabilities.
 
-| Criterion                                | Implementation and evidence                                                                            | Observed result                                                                                                                                                                                                                                                              |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Four storage tiers                       | `storage::archive`, configuration reference and recording/operator book chapters                       | Local replica lifecycle is separate from named-volume primary relocation.                                                                                                                                                                                                    |
-| Trait and one local implementation       | `ArchiveTarget`, `FilesystemArchiveTarget`; filesystem ownership/version fixtures                      | All 89 archive tests in the canonical package graph pass at `3ac4c66`; no provider dependency or selector added.                                                                                                                                                             |
-| Administrator configuration and test     | `server::storage_archive`, configuration round-trip/import/reference tests, archive Chromium workflows | Settings, authorization, revision conflicts and private references pass focused checks; real configuration, probe and restart pass.                                                                                                                                          |
-| Independent verification before Archived | Worker transfer/checkpoint tests, catalog Ready admission and republished-source tests                 | Focused suite passes; independent length/SHA-256 readback and trusted chunk evidence precede Ready.                                                                                                                                                                          |
-| Durable bounded recovery                 | Filesystem staging/retirement, worker cleanup/probe/restart/quota tests                                | Focused suite passes, including actual probe replay and health RED-to-GREEN regressions.                                                                                                                                                                                     |
-| Safe explicit primary eviction           | Worker lifecycle, archive catalog hold/policy fences and reader tests                                  | Pre-existing holds/readers block admission. After durable retirement starts, new hold changes are rejected until recovery completes. Policy activation waits without quarantining or blocking unrelated recordings. Receipt-only replay preserves unverified/offline health. |
-| Direct archive playback and restore      | Indexed range/reader fixtures, lifecycle eviction/restart/restore tests                                | Native functional tests and real browser archive playback, seek and restore pass after eviction/restart.                                                                                                                                                                     |
-| Timeline playback, seek and measurements | Real-media isolated browser fixture; native indexed/sample/chunk timing fixtures                       | Partial: actual presented-frame and changed-source cold-seek observations are recorded below; sustained fleet nonstarvation remains unverified.                                                                                                                              |
-| Outage isolation                         | Offline/replaced/corrupt target tests; invalid Windows ACL diagnostic                                  | Focused suite passes; the real invalid-ACL attempt retained its primary and created no staging file. Live frames and writer timestamps advance across browser copy/restore intervals.                                                                                        |
-| Preview, holds and owned-object deletion | Eviction/restore confirmation, SQL intent guards and conditional retirement receipts                   | Partial: explicit primary-eviction/restore confirmation and owned cleanup pass. Independent archive expiry, general deletion preview and provider retention remain later work.                                                                                               |
-| Deterministic and performance evidence   | 89 focused archive tests, two quiet native measurements, isolated browser fixture                      | Partial: focused correctness and limited observations pass. Sustained ingest latency, large-fleet interference, pure storage throughput budgets and additional filesystem qualification remain unmeasured.                                                                   |
-| Documentation and canonical validation   | Book build, Paper export integrity guard, UI workflows, Windows `check.bat`                            | Book build and focused checks pass; final Windows gate pending.                                                                                                                                                                                                              |
+| Criterion                                | Implementation and evidence                                                                                                                 | Observed result                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Four storage tiers                       | `storage::archive`, configuration reference, how-it-works, backup-and-restore, and recording/recovery book chapters                         | Local replica lifecycle is separate from RAM, active, finalized primary, and named-volume relocation storage.                                                                                                                                                                                                                                                                                                                                                               |
+| Trait and one local implementation       | `ArchiveTarget`, `FilesystemArchiveTarget`; filesystem ownership/version and unknown-provider rejection fixtures                            | Single production local target behind `ArchiveTarget`; no provider dependency, credentials, or cloud selector.                                                                                                                                                                                                                                                                                                                                                              |
+| Administrator configuration and test     | `server::storage_archive`, `config` round-trip/reference tests, format-3 ZIP export/apply/activation round-trip test, Chromium workflows    | Settings, authorization, revision conflicts, `{secret:...}` references, and unrelated fields survive restart and configuration ZIP export/apply/activation; real probe passes.                                                                                                                                                                                                                                                                                              |
+| Independent verification before Archived | Worker transfer/checkpoint tests, catalog Ready admission, chunk-hash verification, and republished-source tests                            | Independent length/SHA-256 readback and trusted 4 MiB chunk evidence precede Ready; stale/replaced/mismatched objects fail safely.                                                                                                                                                                                                                                                                                                                                          |
+| Durable bounded recovery                 | Filesystem staging/retirement, worker cleanup/probe/restart/quota tests, and deletion-receipt recovery                                      | Bounded queue, retries, cancellation cleanup, probe replay, and deletion receipts recover across restart without duplicate or unowned objects.                                                                                                                                                                                                                                                                                                                              |
+| Safe explicit primary eviction           | Worker lifecycle, archive catalog hold/policy/eviction-fence triggers, and reader tests                                                     | `evict_after_archive` defaults off; holds and active readers block eviction; after durable retirement starts, late hold mutations are rejected until recovery finishes; timeline/seek indexes survive.                                                                                                                                                                                                                                                                      |
+| Direct archive playback and restore      | `VerifiedReader`, batch chunk reuse (#375), lifecycle eviction/restart/restore, export discovery (#373), and clean-volume decode (#369)     | Direct local chunk-verified playback without whole-file warmup; recordings restore with matching bytes/identity; archived exports are discoverable after history pruning and strictly decode on a clean volume with matching SHA-256.                                                                                                                                                                                                                                       |
+| Timeline playback, seek and measurements | `archive-notice.svelte.spec.ts`, `local-archive.e2e.ts`, #375 6-fixture Chromium timing comparison, and #352 8-camera paced qualification   | Evicted/restarted archive plays and seeks from Keep with slower-access messaging, cancel/retry, and initial/repeat timings vs local baseline (#375); browser live/writer continuity verified. Paced 8-camera nonstarvation is qualified by the uncontended PR #352 runs at `6205851c` (same NVMe) and `310255db` (separate SATA); the 2026-11-25 rerun under host contention did not complete. Operator latency budgets remain open on #130.                                |
+| Outage isolation                         | Offline/replaced/corrupt/ACL target tests, worker outage reconnection (#352), and `local-archive.e2e.ts` missing/replaced target scenario   | Offline and substituted archive roots leave ingest, live video, writer progress, and primary playback running on the same server process; unrelated files in a replacement directory remain untouched.                                                                                                                                                                                                                                                                      |
+| Preview, holds and owned-object deletion | Local `retention_days`, preview/confirm deletion (#356), SQL fences, last-copy protection, tombstones, and `ArchiveDeletionDialog.svelte`   | Explicit and 16-item age-based previews enforce holds, active readers, primary verification/write-protection, and last-copy protection; deleting local catalog state cannot cascade away an archive copy. Remote provider retention remains open.                                                                                                                                                                                                                           |
+| Deterministic and performance evidence   | 86 focused Rust archive tests, 6 Bun + 29 Chromium component tests, `local-archive.e2e.ts`, #375 playback timings, and #352 paced workload  | All deterministic crash-boundary, outage, corruption, path/identity, cancel, hold/lease, restore, playback, and retention tests pass on this commit; native playback/chunk and export-listing timings are recorded below. Paced 8-camera nonstarvation comes from the uncontended PR #352 runs (`6205851c`/`310255db`; 2026-11-25 contended rerun did not complete). Removable/NAS/network filesystems, remote providers, and owner latency/throughput budgets remain open. |
+| Documentation and canonical validation   | Book chapters (`configuration-reference`, `recording-and-evidence`, `recording-archive-recovery`, `how-it-works`, `backup-and-restore`), CI | Operator/configuration docs, formatting, strict Clippy, Rust/UI checks, and this verification map are synchronized on the final commit; broader offsite provider criteria remain unchecked in #130.                                                                                                                                                                                                                                                                         |
 
 ## Concurrent recording and local archive qualification, 2026-11-22
 
@@ -173,10 +173,11 @@ was sampled throughout that window.
 Between the first and last changing Ready checkpoints, each archived run
 completed 39 additional replicas. Every camera advanced at least 23.267,
 23.533 and 23.533 seconds respectively, while 91, 92 and 92 additional
-exact primary seeks completed. The measured transfer rate reflects this
-offered workload. A disk throughput ceiling, an owner-approved latency budget,
-a physical second disk, mounted/network filesystems and multi-host recovery
-remain unqualified.
+exact primary seeks completed. The measured transfer rate reflects this offered
+workload. At `6a9ebc5`, a disk throughput ceiling, an owner-approved latency
+budget, a physical second disk (subsequently exercised on a separate SATA NTFS
+drive at `310255db` above), mounted/network filesystems and multi-host recovery
+remained unqualified.
 
 This fixture exposed and now covers three failure modes. Buffered segment
 rotation keeps predictive frames until the next keyframe. During diagnosis a
@@ -372,3 +373,58 @@ group passes **59/59 in 0.432 seconds** after test-only commit `69b432c`. Reprod
 ```powershell
 cargo nextest run --locked --all -E 'package(keeppeek) & test(webrtc::)'
 ```
+
+## Integrated local-first verification (2026-11-25)
+
+After PRs #352, #373, #369, #375, and #356 landed on `main` (`4a29eb2c`), the final local-first
+verification pass adds end-to-end format-3 configuration ZIP export, apply, and activation coverage
+for `[storage.archive]` with raw `{secret:...}` references and unrelated fields
+(`backup::restore::tests::archive_settings_survive_configuration_zip_export_apply_and_activation_with_references`)
+and synchronizes the fourth-tier entries in `book/src/how-it-works.md` and
+`book/src/backup-and-restore.md`.
+
+Environment: Windows 11, AMD Ryzen 5 5600G (6 cores / 12 logical processors), 15.34 GiB RAM, Rust
+1.98.1 (unoptimized test profile, `debug_assertions = true`), Bun 1.4.5, FFmpeg 9.0.1, local NTFS
+NVMe drive (shared with concurrent host builds).
+
+- **Focused Rust archive suite:** 86 passed, 0 failed (`storage::archive::`,
+  `storage::catalog::archive::`, `storage::catalog::archive_playback::`,
+  `storage::catalog::locations::archives_tests::`, `server::storage_archive::`,
+  `server::export_storage_tests::*archive*`, `server::stored_encoding::tests::archive_`,
+  `config::tests::archive_settings_`, `backup::restore::tests::*archive*`).
+- **UI archive unit and component suites:** `src/lib/archive.spec.ts` 6/6 passed; Chromium
+  component tests (`ArchiveSection.svelte.spec.ts`, `ArchiveCopy.svelte.spec.ts`,
+  `archive-notice.svelte.spec.ts`, `CompletedExportDownloads.svelte.spec.ts`) 29/29 passed in
+  27.01s.
+- **Verified batch chunk reads (`archive_playback_`):**
+  - 10 real H.264 fragments in a 1,453,310-byte MP4: 1 verified read, 1,453,310 bytes hashed,
+    171,522 µs.
+  - 10 real H.264 fragments crossing chunks in a 4,746,220-byte MP4: 2 verified reads, 4,746,220
+    bytes hashed, 370,267 µs.
+- **Native playback and chunk-verification timings (n = 30, warm/unknown OS cache):**
+  - 8,510-byte MP4 indexed init + GOP: local median 74 / p95 118 µs; fresh verified archive median
+    8,126 / p95 9,550 µs; cached verified archive median 1 / p95 1 µs.
+  - 3 sample seeks per iteration (same MP4): local median 20 / p95 37 µs; cached verified archive
+    median 3 / p95 7 µs.
+  - 64-byte range in a 12,582,976-byte object (one 4 MiB verified chunk, untouched chunk corrupt):
+    local median 70 / p95 102 µs; fresh verified archive median 246,090 / p95 317,923 µs; cached
+    verified archive median 0 / p95 1 µs.
+- **Requester archived-export listing latency (n = 40 alternating pairs, 31,910-byte export):**
+  - Retained local history: history-only median 1,435.9 / p95 1,626.0 µs; history + archive median
+    5,992.0 / p95 20,050.1 µs.
+  - Pruned local history: history-only median 8.1 / p95 18.6 µs (0 rows); history + archive median
+    5,072.8 / p95 22,702.2 µs (1 verified export row).
+- **Clean-volume archived export recovery and strict FFmpeg decode:** recovered 31,910 bytes with
+  matching SHA-256 `c00a7abeee1e95d97da8cb2ddb69cd433127a949a2fc76199463b8a173536b23` and 2 strictly
+  decoded video frames.
+- **Paced 8-camera 4K H.264 workload (`verified_archive_under_paced_recording_and_review`):** on
+  this shared system NVMe with concurrent host builds, repetition 1 (`archive = false`) produced 48
+  primary recordings (ingest p50 2.2 / p95 35.6 µs, primary seek p50 81.894 / p95 258.267 ms, CPU
+  13,703 ms, peak RSS 48,246,784 bytes), and repetition 1 (`archive = true`) hit the two-second
+  catalog read-lease deadline under host disk contention. Uncontended paired six-run results on both
+  NVMe and a physically separate SATA NTFS volume remain recorded in the PR #352 qualification
+  sections above, and paired Chromium initial/repeat archive vs local playback timings remain
+  recorded in PR #375.
+- **Remaining open scope on #130:** Keep #130 open for its retained broader offsite provider
+  acceptance (S3/cloud `ArchiveTarget` implementations, remote credentials/TLS/multipart/retention,
+  managed export restore, disaster-recovery import, and physical removable/NAS device qualification).

@@ -156,6 +156,7 @@ type PositioningContract = {
 	authenticationHttpPaths: string[];
 	backupHttpPaths: string[];
 	internalHttpPaths: string[];
+	reportingHttpPaths: string[];
 	principles: Array<{
 		index: number;
 		name: string;
@@ -607,6 +608,7 @@ const expectedAuthenticationHttpPaths = [
 ];
 const expectedBackupHttpPaths = ['/config/export', '/config/apply'];
 const expectedInternalHttpPaths = ['/recording-coverage'];
+const expectedReportingHttpPaths = ['/reporting/status', '/reporting/grants', '/reporting/audit'];
 if (positioningContract.httpPaths.join('|') !== expectedHttpPaths.join('|')) {
 	throw new Error('Board 01 HTTP boundary changed');
 }
@@ -622,6 +624,9 @@ if (positioningContract.backupHttpPaths.join('|') !== expectedBackupHttpPaths.jo
 if (positioningContract.internalHttpPaths.join('|') !== expectedInternalHttpPaths.join('|')) {
 	throw new Error('Board 45 first-party HTTP boundary changed');
 }
+if (positioningContract.reportingHttpPaths.join('|') !== expectedReportingHttpPaths.join('|')) {
+	throw new Error('Approved bug reporting HTTP boundary changed');
+}
 const openApi = await readFile(resolve('..', 'api/openapi.yaml'), 'utf8');
 verifyGuestReviewOpenApi(openApi);
 verifyGuestReviewRouter(await readFile(resolve('..', 'src/server/guest_review/http.rs'), 'utf8'));
@@ -630,7 +635,12 @@ const openApiPaths = [...openApi.matchAll(/^  (\/[a-z-]+(?:\/[a-z-]+)*):$/gm)].m
 );
 if (
 	openApiPaths.join('|') !==
-	[...guestReviewHttpPaths, ...expectedAuthenticationHttpPaths, ...expectedHttpPaths].join('|')
+	[
+		...guestReviewHttpPaths,
+		...expectedAuthenticationHttpPaths,
+		...expectedHttpPaths,
+		...expectedReportingHttpPaths
+	].join('|')
 ) {
 	throw new Error('OpenAPI exposes a noncanonical Board 01 HTTP path');
 }
@@ -658,7 +668,12 @@ const serverPaths = [
 ];
 if (
 	serverPaths.join('|') !==
-	[...expectedHttpPaths, ...expectedInternalHttpPaths, ...expectedBackupHttpPaths].join('|')
+	[
+		...expectedHttpPaths,
+		...expectedInternalHttpPaths,
+		...expectedBackupHttpPaths,
+		...expectedReportingHttpPaths
+	].join('|')
 ) {
 	throw new Error('Rust router exposes a noncanonical Board 01 HTTP path');
 }

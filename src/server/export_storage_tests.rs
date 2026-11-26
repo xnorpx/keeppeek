@@ -49,6 +49,7 @@ fn ready_named_export_survives_recovery_without_its_volume() {
         proto::DownloadExport {
             job_id: "named-export".to_owned(),
             channel: proto::DataChannelKind::ReliableData as i32,
+            artifact: 0,
         },
     )
     .unwrap_err();
@@ -244,6 +245,7 @@ fn setup_for_source(
         burn_in_timestamp: false,
         guest_range_preparation: None,
         event_seed: None,
+        timelapse: None,
     };
     (root, catalog, manager, state, request)
 }
@@ -319,6 +321,7 @@ fn named_export_is_published_and_downloads_verified_mp4() {
         proto::DownloadExport {
             job_id: "named-export".to_owned(),
             channel: proto::DataChannelKind::ReliableData as i32,
+            artifact: 0,
         },
     )
     .unwrap();
@@ -378,6 +381,7 @@ fn full_matched_export_volume_never_falls_back_to_legacy() {
             proto::DownloadExport {
                 job_id: "named-export".to_owned(),
                 channel: proto::DataChannelKind::ReliableData as i32,
+                artifact: 0,
             }
         )
         .is_err()
@@ -437,6 +441,7 @@ fn obsolete_download_checksum_failure_does_not_retire_retried_export() {
             proto::DownloadExport {
                 job_id: "named-export".to_owned(),
                 channel: proto::DataChannelKind::ReliableData as i32,
+                artifact: 0,
             }
         )
         .is_ok()
@@ -541,6 +546,7 @@ fn named_export_download_resolves_moved_location_despite_stale_job_path() {
         proto::DownloadExport {
             job_id: "named-export".to_owned(),
             channel: proto::DataChannelKind::ReliableData as i32,
+            artifact: 0,
         },
     )
     .unwrap();
@@ -700,6 +706,7 @@ fn archived_export_after_primary_retirement() -> (Vec<u8>, String) {
     let request = proto::DownloadExport {
         job_id: "named-export".into(),
         channel: proto::DataChannelKind::ReliableData as i32,
+        artifact: 0,
     };
     {
         let mut jobs = state.export_jobs.lock().unwrap();
@@ -900,6 +907,7 @@ fn archive_deletion_removes_redundant_export_and_preserves_primary_download() {
     let request = proto::DownloadExport {
         job_id: "named-export".into(),
         channel: proto::DataChannelKind::ReliableData as i32,
+        artifact: 0,
     };
     let (_, messages) = download_export(&state, "owner", request).unwrap();
     assert_eq!(downloaded_bytes(messages), original);
@@ -1227,6 +1235,7 @@ fn download_persists_managed_history_and_cannot_recreate_missing_history() {
     let request = proto::DownloadExport {
         job_id: "named-export".into(),
         channel: proto::DataChannelKind::ReliableData as i32,
+        artifact: 0,
     };
     let (_, messages) = download_export(&state, "owner", request.clone()).unwrap();
     assert_eq!(downloaded_bytes(messages), original);

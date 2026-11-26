@@ -55,8 +55,11 @@ Root fields must appear before a table header or they belong to that table.
 | Root fields                                        | `Config`                                            | Operator settings                                     |
 | `[sharing]`                                        | `sharing::SharingConfig`                            | Guest review deployment policy; server-owned revision |
 | `[reporting]`                                      | `reporting::Settings`                               | Optional bug reporting service settings               |
+| `[usage_reporting]`                                | `usage_reporting::UsageReportingConfig`             | Opt-in privacy-preserving usage reporting consent     |
+| `[cloud_notifications]`                            | `cloud_notifications::Settings`                     | Optional Keeppeek Service mobile push signaling       |
 | `[access]`                                         | `AccessConfig`                                      | Administrator security policy                         |
 | `[direct_card]`                                    | `DirectCardConfig`                                  | Exact browser-origin allowlist                        |
+| `[desktop]`                                        | `DesktopConfig`                                     | Optional default server URL for KeepPeek Desktop      |
 | `[storage]`                                        | `StorageToml`                                       | Recording paths, retention, and safety                |
 | `[battery_wake]`                                   | `BatteryWakeConfig`                                 | Reolink battery-camera wake service                   |
 | `[logging]`                                        | `LoggingConfig`                                     | Service log destination                               |
@@ -70,6 +73,7 @@ Root fields must appear before a table header or they belong to that table.
 | `[<namespace>.<camera-key>.events]`                | `EventConfig`                                       | Native camera event selection and filters             |
 | `[access_credentials]`                             | `PersistedAccessCatalog`                            | Server-managed credential records                     |
 | `[peek_layouts]`                                   | `StoredRegistry`                                    | Server-managed layouts and per-user selection         |
+| `[saved_event_searches]`                           | `StoredRegistry`                                    | Server-managed owner-scoped saved event searches      |
 | `[configuration_templates]`                        | `StoredTemplateDocument`                            | Server-managed camera templates                       |
 | `[notifications]`                                  | `NotificationConfiguration`                         | Server-managed rule drafts and active rules           |
 | `[runtime_profiles]`                               | `ProfileRegistry`                                   | Server-managed profile definitions and selection      |
@@ -81,20 +85,10 @@ it as a camera namespace. Every other non-reserved root table is interpreted as 
 be interpreted as camera configuration. Some structs ignore unknown fields, so successful TOML
 parsing alone does not prove a field has an effect.
 
-`[runtime_profiles]` is server-managed internal data. Its registry is bounded to 32 profiles, and
-each profile can target at most 127 cameras with sparse runtime-safe overrides. Do not edit this
-section manually. The partial implementation supports Administrator management and activation
-through WebRTC StateStore, including bounded definition reads and staged bounded writes. Privacy,
-recording, notifications, and camera availability reach their current runtime owners. Delayed
-profile commands cannot replace newer pending runtime status; an already running camera stop is
-not preempted. An active profile's saved target that is no longer configured remains degraded
-through startup, completion and live removal; re-adding the camera replaces that observation.
-Activating Base clears missing-target observations from the previously active profile.
-Events-only camera edits also remain in effect after a profile disables the camera and Base
-enables it again. Profile targets use the server-managed `profile_identity` described below.
-An Administrator can retry a pending or degraded selection with **Reapply active policy** in
-Settings. Complete privacy leak, asynchronous convergence, capacity and performance qualification
-remain open under #202.
+`[runtime_profiles]` is server-managed configuration data. Its registry holds up to 32 named
+profiles, and each profile can target up to 127 cameras with sparse runtime-safe overrides. Do not
+edit this section manually. See [Runtime profiles](#runtime-profiles) for controls, permitted
+fields, failure handling, retry, and recovery behavior.
 
 Sources: [configuration](https://github.com/xnorpx/keeppeek/blob/main/src/config.rs),
 [cameras](https://github.com/xnorpx/keeppeek/blob/main/src/cameras/mod.rs), and the subsystem sources
@@ -217,6 +211,14 @@ Type: `DirectCardConfig`, section `[direct_card]`.
 | Field             | Type          | Default | Validation and meaning                                                                                                                      |
 | ----------------- | ------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `allowed_origins` | `Vec<String>` | `[]`    | Unique canonical exact HTTP(S) origins, such as `"https://ha.example"`. No credentials, path, query, fragment, wildcard, or trailing slash. |
+
+### Desktop client settings
+
+Type: `DesktopConfig`, section `[desktop]`. Unknown fields in `[desktop]` are rejected. KeepPeek Desktop stores its saved server target here instead of creating a separate settings file.
+
+| Field        | Type              | Default | Validation and meaning                                                                                                                                                        |
+| ------------ | ----------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server_url` | optional `String` | Absent  | Canonical exact HTTP(S) origin, 1 to 512 UTF-8 bytes, such as `"http://127.0.0.1:8081"` or `"https://nvr.example"`. No credentials, path, query, fragment, or trailing slash. |
 
 ## Guest review deployment policy
 
@@ -859,9 +861,11 @@ the configuration directory if you need it during a recovery rehearsal. Source:
 
 ## Bug reporting service
 
-The optional `[reporting]` section configures the recorder's reporting service. Omit it to keep
-bug reports local. The configuration loader validates the section. Remote submission is pending
-recorder integration.
+The optional `[reporting]` section configures the recorder's HTTPS reporting service. Omit it to
+keep bug reports local-only. When configured, KeepPeek exposes service availability on
+`GET /reporting/status`, issues short-lived single-report upload grants on `POST /reporting/grants`,
+and records non-sensitive lifecycle audit events on `POST /reporting/audit`. Every reporting
+endpoint requires Administrator authorization and the existing secure remote-access classification.
 
 | Field            | Type            | Default  | Meaning                                                                                     |
 | ---------------- | --------------- | -------- | ------------------------------------------------------------------------------------------- |
@@ -870,7 +874,57 @@ recorder integration.
 | `retention_days` | `u8`            | `7`      | Requested retention for the private evidence, from 1 to 30 days.                            |
 
 Keep the reusable credential in `secrets.toml`. The loader preserves the reference in
-`config.toml` and validates its syntax without resolving it at recorder startup.
+`config.toml` and validates its syntax without resolving it at recorder startup. The recorder
+resolves the secret only when forwarding a confirmed grant request to `POST {origin}/v1/reports`
+and registers both the resolved credential and issued grant token for log redaction.
+
+## Usage reporting
+
+The optional `[usage_reporting]` section stores explicit Administrator opt-in consent for
+privacy-preserving usage reporting. Every category defaults to `false`, so fresh installations and
+upgrades generate no telemetry installation ID, start no recurring telemetry collection worker, and
+make zero receiver requests.
+
+| Field                           | Type            | Default | Meaning                                                                                     |
+| ------------------------------- | --------------- | ------- | ------------------------------------------------------------------------------------------- |
+| `basic`                         | `bool`          | `false` | Enable basic system data. Required before enabling any additional reporting category.       |
+| `camera_compatibility`          | `bool`          | `false` | Enable aggregated, normalized camera compatibility counts (requires `basic = true`).        |
+| `feature_adoption`              | `bool`          | `false` | Enable coarse recording-mode, storage/retention bucket, and integration adoption summaries. |
+| `consented_disclosure_revision` | `u32`           | `0`     | Disclosure revision accepted by an Administrator (`1` required when `basic = true`).        |
+| `receiver_origin`               | Optional string | Absent  | Canonical HTTPS origin (`<= 512` bytes, no path or credentials) for the telemetry receiver. |
+
+Dedicated telemetry installation identities, proof tokens, send schedules, and bounded pending
+deletions (`<= 16` entries) are persisted separately in the private application-owned runtime record
+(`.keeppeek-usage-reporting-state.json` beside `config.toml`) only after explicit opt-in. They are
+excluded from `config.toml` backups and from general `StateStore` namespaces so restores do not
+clone one installation's proof token across machines. See
+[usage reporting](https://github.com/xnorpx/keeppeek/blob/main/docs/usage-reporting.md).
+
+## Cloud notifications
+
+Type: `cloud_notifications::Settings`, section `[cloud_notifications]`.
+
+The optional `[cloud_notifications]` section configures bounded Keeppeek Service mobile push
+signaling behind capability `keeppeek.cloud-notifications.v1`. Both `enabled` and
+`image_previews_enabled` default to `false`. Enabling `image_previews_enabled` requires both
+`enabled = true` and a complete pairing configuration.
+
+| Field                    | Type            | Default | Validation and meaning                                                                                  |
+| ------------------------ | --------------- | ------- | ------------------------------------------------------------------------------------------------------- |
+| `revision`               | `u64`           | `0`     | Optimistic concurrency revision incremented on every settings mutation.                                 |
+| `enabled`                | `bool`          | `false` | Enables bounded Keeppeek Service signal emission when paired.                                           |
+| `image_previews_enabled` | `bool`          | `false` | Authoritative NVR gate allowing authenticated paired mobile clients to resolve still-image previews.    |
+| `service_origin`         | Optional string | Absent  | Canonical HTTPS origin up to 512 bytes (no path, query, fragment, or credentials); required if paired.  |
+| `nvr_id`                 | Optional string | Absent  | Service-assigned 16-byte opaque NVR UUID/hex identifier; required if paired.                            |
+| `signing_key_version`    | Optional `u32`  | Absent  | Nonzero Ed25519 signing key version (`>= 1`); required if paired.                                       |
+| `signing_key`            | Optional string | Absent  | Single `{secret:KEY}` reference in `secrets.toml` holding the 32-byte Ed25519 seed; required if paired. |
+
+The four pairing fields (`service_origin`, `nvr_id`, `signing_key_version`, `signing_key`) must be
+either all absent (unpaired) or all present (paired). KeepPeek never resolves `signing_key` during
+configuration parsing or serialization, and never returns `service_origin`, `nvr_id`, or signing
+keys in settings, status, logs, or Prometheus metrics. Durable runtime state (aliases, newest-only
+pending/claimed intents, exact rolling 120/hour and 500/day windows, 3/hour test windows, and
+monotonic clock floor) is persisted in `cloud-notifications.db` under `storage.long_term_path`.
 
 ## Operational events
 
@@ -1017,6 +1071,34 @@ before any policy mutation. Runtime group-membership changes close affected grou
 and cancel their queued work so playback and event subscriptions cannot retain an obsolete grant.
 Grid audiences do not grant camera permissions. Custom roles remain unsupported, and trusted-local
 clients still follow the Administrator policy described above.
+
+## Saved event searches
+
+Source: [saved event searches](https://github.com/xnorpx/keeppeek/blob/main/src/server/saved_searches.rs).
+Saved event searches live in `config.toml` under `[saved_event_searches]` and use the
+`keeppeek.event-search.advanced.v1` capability. Manage them through `EventSearchCommand`
+compare-and-swap operations rather than editing the section manually.
+
+Type: `StoredRegistry`, section `[saved_event_searches]`.
+
+| Field            | Type                       | Rule                                                                                      |
+| ---------------- | -------------------------- | ----------------------------------------------------------------------------------------- |
+| `schema_version` | `u32`                      | Required; supported value is `1`.                                                         |
+| `owners`         | Map of `Vec<StoredSearch>` | Keyed by authenticated principal or local workspace ID; max 64 per owner and 1,024 total. |
+
+Type: `StoredSearch`, under `[saved_event_searches.owners."<owner-id>"]`.
+
+| Field                | Type     | Rule                                                                                               |
+| -------------------- | -------- | -------------------------------------------------------------------------------------------------- |
+| `id`                 | `String` | Stable UUID unique per owner; 1 to 128 characters.                                                 |
+| `name`               | `String` | Nonblank display name; 1 to 128 characters without control characters.                             |
+| `revision`           | `u64`    | Positive monotonic compare-and-swap revision.                                                      |
+| `expression_version` | `u32`    | Positive AST version (`1` editable; unsupported future versions remain readable and non-editable). |
+| `expression_json`    | `String` | Serialized AST draft, at most 32 KiB. Contains no credentials or secret references.                |
+| `updated_at_ms`      | `i64`    | UTC update timestamp in milliseconds.                                                              |
+
+Config-only backups validate and include `[saved_event_searches]` without copying the recording
+catalog database or stored embedding vectors.
 
 ## Peek layout registry
 
@@ -1278,6 +1360,66 @@ The legacy `notifications.db` is a rule-migration input. Delivery jobs, retry st
 history, and counters are runtime state, not extra `[notifications]` settings. See
 [notifications and integrations](./notifications-and-integrations.md) for provider setup.
 
+## Runtime profiles
+
+Type: `ProfileRegistry`, section `[runtime_profiles]`. The server persists profile definitions,
+revisions, and the active selection in `config.toml` through the existing atomic configuration
+writer. Do not edit this section manually.
+
+| Field               | Type                               | Default | Validation and meaning                                                                                 |
+| ------------------- | ---------------------------------- | ------- | ------------------------------------------------------------------------------------------------------ |
+| `identity_schema`   | `i64` (server-managed marker)      | `1`     | Persistence-only rollback guard written on migration and preserved across writes, backup, and restore. |
+| `revision`          | `u64`                              | `0`     | Monotonic compare-and-set revision in `0..=i64::MAX`.                                                  |
+| `active_profile_id` | Optional `String`                  | Absent  | Active profile ID, or absent when Base applies. Active profiles cannot be deleted.                     |
+| `profiles`          | `BTreeMap<String, RuntimeProfile>` | Empty   | At most 32 profiles keyed by stable machine ID (1–128 ASCII `A-Z`, `a-z`, `0-9`, `._-`, not `.`/`..`). |
+
+Each `RuntimeProfile` stores `id`, `name` (non-whitespace, 1–80 UTF-8 bytes without control
+characters), positive `revision`, and `cameras` (at most 127 targets keyed by camera
+`profile_identity` UUID). Each target's `CameraProfileOverride` rejects unknown fields and permits
+only four runtime-safe fields:
+
+| Override field             | Type                           | Inheritance and enforcement                                                                                                                                                                                        |
+| -------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `availability`             | Optional `bool`                | Omitting inherits Base. `false` stops runtime camera ingress without editing Base; cannot enable disabled Base.                                                                                                    |
+| `recording_mode`           | Optional `CameraRecordingMode` | Accepts `off`, `sub`, `main`, `both`, `event-boost`, or `event-only`. Cannot enable recording when Base is `off`; effective mode resolves to `off` when `availability` is `false` or `privacy_enforced` is `true`. |
+| `privacy_enforced`         | Optional `bool`                | Feeds the server `PrivacyRegistry` gate. `true` enforces privacy; `false` cannot weaken an active privacy schedule.                                                                                                |
+| `notifications_suppressed` | Optional `bool`                | Suppresses matching notification candidates and queued outbox delivery without altering saved rule definitions.                                                                                                    |
+
+Credentials, secret references, addresses, ports, stream URLs, codecs, transport, storage paths,
+retention settings, detectors, zones, masks, access control, PTZ settings, and notification rules
+are not valid profile fields.
+
+**Controls and activation surface:** Administrators manage and activate profiles only through
+**Settings → Runtime profiles** or an authorized WebRTC `StateStoreCommand` client on the
+`service/runtime-profiles/` namespace. No HTTP, REST, MQTT, Home Assistant, webhook, CLI,
+scheduler, presence, geofence, or location activation surface exists. Users can observe the active
+profile and camera-scoped application status but cannot read profile definitions or mutate state.
+
+**Failure, retry, and recovery:** Desired selection commits atomically before camera workers
+converge asynchronously. Each visible camera reports `pending`, `applied`, or `degraded` with
+effective-value provenance (`base` or `profile`) across eight bounded observed status documents. A
+failed or timed-out target stays `degraded` without silently falling back to Base, and restrictive
+privacy stays closed until convergence succeeds. Missing configured targets remain `degraded` with
+`configured camera is missing` until removed from the profile or Base is activated. After repairing
+storage or camera faults, select **Reapply active policy** in Settings (or re-put the active
+selection over WebRTC CAS). Unknown `identity_schema` versions fail closed without modifying
+`config.toml`. Full configuration backup and restore preserve `[runtime_profiles]`,
+`identity_schema = 1`, and camera `profile_identity` bindings; rolling back to a pre-migration
+binary requires restoring a verified pre-migration configuration backup.
+
+## Activity analytics
+
+Type: `AnalyticsConfig`, section `[analytics]`. Controls site display defaults and derived rollup
+storage bounds for bounded event activity summaries. Derived rollup tables live in the recording
+catalog database and can be rebuilt from canonical events without affecting recordings.
+
+| Field             | Type        | Default    | Validation and meaning                                                                                          |
+| ----------------- | ----------- | ---------- | --------------------------------------------------------------------------------------------------------------- |
+| `enabled`         | `bool`      | `true`     | Enables site activity summary queries and rollup maintenance.                                                   |
+| `timezone`        | `String`    | `"UTC"`    | Recognized IANA timezone used as the default display timezone for civil-time buckets and comparisons.           |
+| `week_start`      | `WeekStart` | `"monday"` | First day of the calendar week (`"monday"` or `"sunday"`).                                                      |
+| `max_rollup_rows` | `u64`       | `500000`   | Derived rollup row quota (`1000..=5000000`). Exceeding the quota degrades analytics without blocking recording. |
+
 ## Pending storage migration
 
 Type: `StorageMigration`, section `[storage_migration]`. The server creates this journal for a
@@ -1302,9 +1444,8 @@ of borrowed paths, not another TOML section.
   would omit the separate credential, layout, template, and notification records.
 - The legacy access, layout, template, and notification files are migration inputs only. Do not
   create new instances of them for new settings.
-- There is no generic `[users]`, `[permissions]`, `[groups]`, or persistent runtime-profile schema
-  in this configuration. Do not invent those sections or assume a grid's audience restricts camera
-  access elsewhere.
+- There is no generic `[users]`, `[permissions]`, or `[groups]` schema in this configuration. Do not
+  invent those sections or assume a grid's audience restricts camera access elsewhere.
 - Future layout and permission settings must extend the existing application configuration and
   its validation, atomic writes, and recovery coverage. Secret values remain in the existing
   companion secret store.

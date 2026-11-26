@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>KeepPeek Desktop</title>
+		<link rel="stylesheet" href="styles.css" />
+		<script type="module" src="app.js"></script>
+	</head>
+	<body>
+		<main class="shell" aria-labelledby="launcher-heading">
+			<header class="brand">
+				<span class="badge" aria-hidden="true">KP</span>
+				<div>
+					<p class="brand-name">KeepPeek Desktop</p>
+					<p class="brand-subtitle">Native client for an existing KeepPeek server</p>
+				</div>
+			</header>
+
+			<section class="panel" aria-live="polite">
+				<h1 id="launcher-heading">Connect to KeepPeek</h1>
+				<p class="lead">
+					Enter the address of a running local or remote KeepPeek server. Closing this desktop
+					window never stops your recorder.
+				</p>
+
+				<form id="connect-form" class="form" novalidate>
+					<div class="field">
+						<label for="server-url">Server URL</label>
+						<input
+							id="server-url"
+							name="serverUrl"
+							type="url"
+							inputmode="url"
+							autocomplete="url"
+							spellcheck="false"
+							placeholder="http://127.0.0.1:8081"
+							maxlength="512"
+							required
+						/>
+						<p class="hint" id="server-url-hint">
+							Use an exact origin such as <code>http://127.0.0.1:8081</code> or
+							<code>https://nvr.example.com</code>.
+						</p>
+					</div>
+
+					<label class="checkbox-row" for="save-default">
+						<input id="save-default" name="saveDefault" type="checkbox" checked />
+						<span>Save as default in <code>config.toml</code></span>
+					</label>
+
+					<div class="actions">
+						<button id="connect-button" type="submit" class="button button-primary">Connect</button>
+						<button id="retry-button" type="button" class="button button-secondary">Retry</button>
+					</div>
+				</form>
+
+				<p id="status-message" class="status" role="status" hidden></p>
+				<p id="error-message" class="error" role="alert" hidden></p>
+			</section>
+
+			<section class="help" aria-labelledby="recovery-heading">
+				<h2 id="recovery-heading">Server lifecycle and troubleshooting</h2>
+				<ul>
+					<li>
+						<strong>Windows:</strong> Start <code>KeepPeekService</code> or run
+						<code>keeppeek.exe</code>.
+					</li>
+					<li>
+						<strong>macOS:</strong> Open <code>KeepPeek.app</code> in
+						<code>/Applications</code> to start the <code>com.keeppeek</code> service.
+					</li>
+					<li>
+						<strong>Remote server:</strong> Use <code>https://</code> when remote HTTPS enforcement
+						is enabled on the server. Cross-origin OIDC redirects and popup-based administrator
+						verification require a standard browser.
+					</li>
+					<li>
+						<strong>Switch servers later:</strong> Use <strong>Connection &rarr; Switch Server</strong>
+						(<code>Ctrl+Shift+S</code> on Windows, <code>Cmd+Shift+S</code> on macOS).
+					</li>
+				</ul>
+				<p id="config-meta" class="meta"></p>
+			</section>
+		</main>
+	</body>
+</html>

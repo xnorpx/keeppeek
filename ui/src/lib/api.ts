@@ -5,6 +5,8 @@ import type {
 	RecordingCoverageQuery,
 	RecordingCoverageResponse,
 	RecordingGap,
+	ReportingAuditPayload,
+	ReportingStatus,
 	ServerLogEntry,
 	StreamRecordingCoverage
 } from './types';
@@ -69,6 +71,74 @@ export async function fetchMetricsSnapshot(
 	});
 	if (!response.ok) throw new ApiRequestError(response.status, response.statusText);
 	return response.text();
+}
+
+export async function fetchReportingStatus(
+	accessKey?: HttpCredential,
+	signal?: AbortSignal
+): Promise<ReportingStatus> {
+	const response = await fetch('/reporting/status', {
+		...cookieOptions(accessKey),
+		redirect: 'error',
+		headers: authenticatedHeaders(accessKey, { Accept: 'application/json' }),
+		cache: 'no-store',
+		signal
+	});
+	if (!response.ok) throw new ApiRequestError(response.status, response.statusText);
+	const value: unknown = await response.json();
+	if (!isReportingStatus(value)) {
+		throw new Error('Server returned an invalid reporting status.');
+	}
+	return value;
+}
+
+export async function createReportingGrant(
+	idempotencyKey: string,
+	manifest: unknown,
+	accessKey?: HttpCredential,
+	signal?: AbortSignal
+): Promise<{ id: string; token: string }> {
+	const response = await fetch('/reporting/grants', {
+		...cookieOptions(accessKey),
+		method: 'POST',
+		redirect: 'error',
+		cache: 'no-store',
+		headers: authenticatedHeaders(
+			accessKey,
+			{ Accept: 'application/json', 'Content-Type': 'application/json' },
+			true
+		),
+		body: JSON.stringify({ idempotencyKey, manifest }),
+		signal
+	});
+	if (!response.ok) throw new ApiRequestError(response.status, response.statusText);
+	const value: unknown = await response.json();
+	if (
+		!isObject(value) ||
+		typeof value.id !== 'string' ||
+		typeof value.grant !== 'string' ||
+		!isFiniteNumber(value.expires)
+	) {
+		throw new Error('Server returned an invalid reporting grant.');
+	}
+	return { id: value.id, token: value.grant };
+}
+
+export async function recordReportingAudit(
+	payload: ReportingAuditPayload,
+	accessKey?: HttpCredential,
+	signal?: AbortSignal
+): Promise<void> {
+	const response = await fetch('/reporting/audit', {
+		...cookieOptions(accessKey),
+		method: 'POST',
+		redirect: 'error',
+		cache: 'no-store',
+		headers: authenticatedHeaders(accessKey, { 'Content-Type': 'application/json' }, true),
+		body: JSON.stringify(payload),
+		signal
+	});
+	if (!response.ok) throw new ApiRequestError(response.status, response.statusText);
 }
 
 export async function fetchRecordingCoverage(
@@ -263,12 +333,25 @@ function isLogSnapshot(value: unknown): value is LogSnapshot {
 		(snapshot.oldest_sequence === null || typeof snapshot.oldest_sequence === 'number') &&
 		(snapshot.newest_sequence === null || typeof snapshot.newest_sequence === 'number') &&
 		typeof snapshot.truncated === 'boolean' &&
+		(snapshot.generation === undefined || typeof snapshot.generation === 'string') &&
 		Boolean(snapshot.stats) &&
 		typeof snapshot.stats?.entry_count === 'number' &&
 		typeof snapshot.stats?.byte_count === 'number' &&
 		typeof snapshot.stats?.evicted_entries === 'number' &&
 		typeof snapshot.stats?.max_entries === 'number' &&
 		typeof snapshot.stats?.max_bytes === 'number'
+	);
+}
+
+function isReportingStatus(value: unknown): value is ReportingStatus {
+	if (!isObject(value) || typeof value.configured !== 'boolean') return false;
+	if (!value.configured) return value.origin === undefined && value.retention_days === undefined;
+	return (
+		typeof value.origin === 'string' &&
+		isFiniteNumber(value.retention_days) &&
+		Number.isInteger(value.retention_days) &&
+		value.retention_days >= 1 &&
+		value.retention_days <= 30
 	);
 }
 

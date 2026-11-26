@@ -201,11 +201,19 @@ impl Transport for Client {
         match self.config.auth_type {
             AuthType::Any => match self.request_with_digest(message) {
                 Ok(success) => Ok(success),
-                Err(Error::Authorization(e)) => {
+                Err(Error::Authorization(digest_error)) => {
                     debug!(
-                        "Failed to authorize with Digest auth: {e}. Trying UsernameToken auth ..."
+                        "Failed to authorize with Digest auth: {digest_error}. Trying UsernameToken auth ..."
                     );
                     self.request_with_username_token(message)
+                        .map_err(|error| match error {
+                            Error::Authorization(username_token_error) => {
+                                Error::Authorization(format!(
+                                    "Digest: {digest_error}, UsernameToken: {username_token_error}"
+                                ))
+                            }
+                            error => error,
+                        })
                 }
                 Err(e) => Err(e),
             },
@@ -269,6 +277,13 @@ impl Client {
 
         debug!("Response status: {status}");
 
+        if !status.is_success()
+            && status != ureq::http::StatusCode::UNAUTHORIZED
+            && let RequestAuthType::Digest(digest) = auth_type
+        {
+            digest.discard_challenge();
+        }
+
         if status.is_success() {
             if let RequestAuthType::Digest(digest) = auth_type {
                 digest.set_success();
@@ -303,10 +318,10 @@ impl Client {
                 }
                 _ => {
                     if let Ok(text) = self.read_response_body(response) {
-                        trace!("Got Unauthorized with body: {text}");
+                        debug!("Got Unauthorized with body: {text}");
                     }
 
-                    return Err(Error::Authorization("Unauthorized".to_string()));
+                    return Err(Error::Authorization(status.to_string()));
                 }
             }
 
@@ -332,16 +347,23 @@ impl Client {
 
             self.request_recursive(message, &new_url, auth_type, redirections + 1)
         } else {
-            if let Ok(text) = self.read_response_body(response) {
-                trace!("Got HTTP error with body: {text}");
-                if let Err(soap::Error::Fault(fault)) = soap::unsoap(&text)
-                    && fault.is_unauthorized()
-                {
-                    return Err(Error::Authorization("Unauthorized".to_string()));
-                }
-            }
+            let text = self.read_response_body(response).unwrap_or_default();
+            debug!("Got HTTP error with body: {text}");
 
-            Err(Error::Other(status.to_string()))
+            let Err(soap::Error::Fault(fault)) = soap::unsoap(&text) else {
+                return Err(Error::Other(status.to_string()));
+            };
+
+            let message = fault.code.subcode.as_ref().map_or_else(
+                || status.to_string(),
+                |subcode| format!("{status} ({})", subcode.value),
+            );
+
+            if fault.is_unauthorized() {
+                Err(Error::Authorization(message))
+            } else {
+                Err(Error::Other(message))
+            }
         }
     }
 
@@ -358,22 +380,21 @@ impl Client {
     }
 
     fn map_ureq_error(error: ureq::Error) -> Error {
+        let message = error_chain(&error);
         match error {
-            ureq::Error::Timeout(timeout) => Error::Timeout(timeout.to_string()),
-            error @ (ureq::Error::HostNotFound | ureq::Error::ConnectionFailed) => {
-                Error::Connection(error.to_string())
-            }
-            ureq::Error::Io(error) => match error.kind() {
+            ureq::Error::Timeout(_) => Error::Timeout(message),
+            ureq::Error::HostNotFound | ureq::Error::ConnectionFailed => Error::Connection(message),
+            ureq::Error::Io(io_error) => match io_error.kind() {
                 std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => {
-                    Error::Timeout(error.to_string())
+                    Error::Timeout(message)
                 }
-                _ => Error::Connection(error.to_string()),
+                _ => Error::Connection(message),
             },
-            error @ (ureq::Error::RedirectFailed | ureq::Error::TooManyRedirects) => {
-                Error::Redirection(error.to_string())
+            ureq::Error::RedirectFailed | ureq::Error::TooManyRedirects => {
+                Error::Redirection(message)
             }
-            ureq::Error::Protocol(error) => Error::Protocol(error.to_string()),
-            error => Error::Other(error.to_string()),
+            ureq::Error::Protocol(_) => Error::Protocol(message),
+            _ => Error::Other(message),
         }
     }
 
@@ -387,6 +408,13 @@ impl Client {
     pub const fn set_fix_time_gap(&mut self, time_gap: Option<chrono::Duration>) {
         self.config.fix_time_gap = time_gap;
     }
+}
+
+fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    std::iter::successors(Some(error), |error| error.source())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(": ")
 }
 
 #[cfg(test)]
@@ -577,5 +605,207 @@ mod tests {
 
         assert!(response.contains("Reply"));
         server.join().unwrap();
+    }
+
+    #[test]
+    fn digest_auth_survives_requests_failing_with_400() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let uri = Url::parse(&format!(
+            "http://{}/onvif/device_service",
+            listener.local_addr().unwrap()
+        ))
+        .unwrap();
+        let server = thread::spawn(move || {
+            let mut issued_nonces = 0u32;
+            let mut unused_nonce = None::<String>;
+            for _ in 0..8 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_request(&mut stream);
+                match unused_nonce.take() {
+                    Some(nonce) if request.contains(&format!("nonce=\"{nonce}\"")) => {
+                        if request.contains("<Bad") {
+                            write_response(&mut stream, "400 Bad Request", &[], "");
+                        } else {
+                            write_response(&mut stream, "200 OK", &[], SOAP_RESPONSE);
+                        }
+                    }
+                    _ => {
+                        issued_nonces += 1;
+                        let nonce = format!("nonce-{issued_nonces}");
+                        let challenge =
+                            format!("Digest realm=\"test\", qop=\"auth\", nonce=\"{nonce}\"");
+                        unused_nonce = Some(nonce);
+                        write_response(
+                            &mut stream,
+                            "401 Unauthorized",
+                            &[("WWW-Authenticate", &challenge)],
+                            "",
+                        );
+                    }
+                }
+            }
+        });
+
+        let client = ClientBuilder::new(&uri)
+            .credentials(Some(Credentials {
+                username: "admin".to_string(),
+                password: "password".to_string(),
+            }))
+            .auth_type(AuthType::Digest)
+            .build();
+
+        for _ in 0..3 {
+            let result = client.request("<Bad/>");
+            assert!(matches!(result, Err(Error::Other(_))), "{result:?}");
+        }
+
+        let result = client.request("<Good/>");
+        assert!(result.is_ok(), "{result:?}");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn error_does_not_restore_rejected_digest_attempts() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let uri = Url::parse(&format!(
+            "http://{}/onvif/device_service",
+            listener.local_addr().unwrap()
+        ))
+        .unwrap();
+        let logins = Arc::new(AtomicUsize::new(0));
+        let server_logins = Arc::clone(&logins);
+        let server = thread::spawn(move || {
+            for _ in 0..6 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_request(&mut stream);
+                let has_creds = request
+                    .to_ascii_lowercase()
+                    .contains("\r\nauthorization: digest ");
+                if has_creds && server_logins.fetch_add(1, Ordering::SeqCst) == 1 {
+                    write_response(&mut stream, "503 Service Unavailable", &[], "");
+                } else {
+                    write_response(
+                        &mut stream,
+                        "401 Unauthorized",
+                        &[(
+                            "WWW-Authenticate",
+                            "Digest realm=\"test\", qop=\"auth\", nonce=\"nonce\"",
+                        )],
+                        "",
+                    );
+                }
+            }
+        });
+
+        let client = ClientBuilder::new(&uri)
+            .credentials(Some(Credentials {
+                username: "admin".to_string(),
+                password: "password".to_string(),
+            }))
+            .auth_type(AuthType::Digest)
+            .build();
+
+        let result = client.request("<Good/>");
+        assert!(matches!(result, Err(Error::Other(_))), "{result:?}");
+        assert_eq!(logins.load(Ordering::SeqCst), 2);
+
+        let result = client.request("<Good/>");
+        assert!(matches!(result, Err(Error::Authorization(_))), "{result:?}");
+        assert_eq!(logins.load(Ordering::SeqCst), 4);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn authorization_error_reports_digest_and_username_token_results() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let uri = Url::parse(&format!(
+            "http://{}/onvif/device_service",
+            listener.local_addr().unwrap()
+        ))
+        .unwrap();
+        let server = thread::spawn(move || {
+            for _ in 0..5 {
+                let (mut stream, _) = listener.accept().unwrap();
+                read_request(&mut stream);
+                write_response(
+                    &mut stream,
+                    "401 Unauthorized",
+                    &[(
+                        "WWW-Authenticate",
+                        "Digest realm=\"test\", qop=\"auth\", nonce=\"nonce\"",
+                    )],
+                    "",
+                );
+            }
+        });
+
+        let client = ClientBuilder::new(&uri)
+            .credentials(Some(Credentials {
+                username: "admin".to_string(),
+                password: "password".to_string(),
+            }))
+            .build();
+
+        let error = client.request("<Good/>").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Authorization failed: Digest: 401 Unauthorized, UsernameToken: 401 Unauthorized"
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn http_error_reports_fault_subcode() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let uri = Url::parse(&format!(
+            "http://{}/onvif/device_service",
+            listener.local_addr().unwrap()
+        ))
+        .unwrap();
+        let fault = r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:ter="http://www.onvif.org/ver10/error">
+            <s:Body>
+                <s:Fault>
+                    <s:Code>
+                        <s:Value>s:Sender</s:Value>
+                        <s:Subcode><s:Value>ter:InvalidArgVal</s:Value></s:Subcode>
+                    </s:Code>
+                    <s:Reason><s:Text xml:lang="en">No such profile</s:Text></s:Reason>
+                </s:Fault>
+            </s:Body>
+        </s:Envelope>"#;
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            read_request(&mut stream);
+            write_response(&mut stream, "400 Bad Request", &[], fault);
+        });
+
+        let client = ClientBuilder::new(&uri).build();
+        let error = client.request("<Good/>").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Other: 400 Bad Request (ter:InvalidArgVal)"
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn connection_error_includes_the_cause() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let uri = Url::parse(&format!("http://{address}/onvif/device_service")).unwrap();
+
+        let client = ClientBuilder::new(&uri)
+            .timeout(Duration::from_secs(2))
+            .build();
+        let error = client.request("<Good/>").unwrap_err();
+        assert!(
+            matches!(error, Error::Connection(_) | Error::Timeout(_)),
+            "{error:?}"
+        );
+        let text = error.to_string();
+        assert!(text.contains(':'), "{text}");
     }
 }

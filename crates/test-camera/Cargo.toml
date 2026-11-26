@@ -34,11 +34,15 @@ uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 onvif = { path = "../onvif/onvif" }
+portable-pty = "0.9"
 schema = { path = "../onvif/schema", features = ["devicemgmt", "media"] }
 tempfile = { version = "3.27.0" }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = ["Win32_Media"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows = { version = "0.62.2", features = ["Win32_System_Console"] }
 
 [[bench]]
 name = "native_events"

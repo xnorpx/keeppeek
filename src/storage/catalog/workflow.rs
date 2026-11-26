@@ -25,7 +25,7 @@ pub struct EventKey {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ReviewChange {
+pub struct ReviewChange {
     pub key: EventKey,
     pub expected_revision: u64,
     pub reviewed: bool,
@@ -224,7 +224,7 @@ impl RecordingCatalogHandle {
         })
     }
 
-    pub(crate) fn mutate_event_reviews(
+    pub fn mutate_event_reviews(
         &self,
         actor: &str,
         changes: Vec<ReviewChange>,
@@ -303,7 +303,7 @@ fn validate_keys<'key>(
     Ok(())
 }
 
-fn validate_id(value: &str) -> anyhow::Result<()> {
+pub(super) fn validate_id(value: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         !value.is_empty() && value.len() <= MAX_ID_BYTES && !value.chars().any(char::is_control),
         Failure::Invalid("event workflow identity is invalid")
@@ -393,7 +393,7 @@ pub(super) async fn execute(
     let now_ms = current_unix_time_ms();
     let result = async {
         cleanup(connection, now_ms).await?;
-        match command {
+        let states = match command {
             Command::Review { actor, changes } => {
                 mutate_reviews(connection, &actor, changes, now_ms).await
             }
@@ -403,7 +403,9 @@ pub(super) async fn execute(
                 change,
             } => bookmarks::mutate(connection, &actor, administrator, change, now_ms).await,
             Command::Read { .. } => unreachable!("workflow read returned before transaction"),
-        }
+        }?;
+        super::analytics::bump_generation(connection).await?;
+        Ok::<_, anyhow::Error>(states)
     }
     .await;
     match result {

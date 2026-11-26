@@ -1303,6 +1303,10 @@ include their byte count and SHA-256 digest, expire after 24 hours, and can be d
 
 The `keeppeek.event-search` capability enables `EventSearchCommand`. It searches durable event
 metadata without opening a playback cursor and fetches selected immutable media bytes separately.
+The `keeppeek.event-search.advanced.v1` capability enables `QueryEvents.advanced` boolean AST
+expressions and owner-scoped saved-search operations (`ListSavedEventSearches`, `SaveEventSearch`,
+`DeleteSavedEventSearch`). The `keeppeek.event-search.semantic.v1` capability advertises
+model-versioned semantic and hybrid ranking when compatible semantic search is available.
 Search result messages always use `reliable-data`; encoded object chunks use the explicitly
 requested data channel.
 
@@ -1310,13 +1314,44 @@ requested data channel.
 `FACE_NAME`, `OBJECT_CLASS`, and `TEXT` terms for one event. KeepPeek rejects attempts to mutate
 `EVENT_TYPE`, which it maintains from the durable event record. Terms are whitespace-normalized
 and matched case-insensitively by prefix. `SetEventSearchEmbedding` likewise names the source and
-creates or replaces one dense embedding under its model ID.
-The producer owns embedding generation. KeepPeek never compares vectors with different model IDs
-or dimensions.
+creates or replaces one dense embedding under its model ID and optional `model_version`,
+`producer_id`, `event_revision`, and `created_at` provenance metadata. Legacy embeddings without
+`model_version` or `producer_id` remain supported and report unknown provenance rather than
+fabricating metadata. `DeleteEventSearchEmbedding` removes stored embeddings for an event matching
+the requested `model_id` (and `model_version` when set).
+The producer owns embedding generation. KeepPeek never compares vectors with different model IDs,
+model versions, or dimensions, and never returns raw embedding vectors in search results or
+diagnostics.
 
-`QueryEvents` has exactly one `search`: `EventTextSearch` for structured prefix matching or
-`EventSemanticSearch` for exact cosine ranking. It selects an optional stable source, one logical
-stored stream, a half-open time interval, a bounded result page, and a preview interval. Omitted
+`QueryEvents` has exactly one `search`: `EventTextSearch` for structured prefix matching,
+`EventSemanticSearch` for exact cosine ranking, `EventMetadataSearch` for flat composable filters,
+or `EventAdvancedSearch` for versioned bounded boolean AST expressions (`expression_version = 1`)
+with optional hybrid `EventSemanticRanking`. Advanced expressions support nested `AND`, `OR`, and
+`NOT` over indexed predicates (camera, group, event type, origin, zone, missing zone, confidence
+threshold, missing confidence, image presence, absolute UTC time range, indexed text prefix,
+workflow review/bookmark state, embedding producer, and embedding model) within the
+caller's authorized camera scope and UTC window. Expressions are bounded to depth 8, 64 nodes, 64
+values per list, 16 KiB total text, and bounded candidate scan limits. When `semantic` is included,
+authorized structured predicates narrow candidates before exact cosine ranking, `minimum_score` is
+applied before top-K selection, and deterministic ordering uses descending score, descending start
+timestamp, and ascending event ID.
+
+`EventSearchQueryEnd` returns `normalized_summary` for advanced queries, `semantic` provenance
+(`model_id`, `model_version`, `producer_id`, `dimensions`, `score_interpretation`,
+`minimum_score`, actual searched interval, `candidate_count`, and `candidates_truncated`) when
+semantic ranking ran, and bounded `diagnostics` (`plan_category`, `estimated_candidates`,
+`scanned_candidates`, `wall_time_ms`) for Administrators only without exposing SQL, paths, secrets,
+or raw vectors.
+
+`ListSavedEventSearches`, `SaveEventSearch`, and `DeleteSavedEventSearch` manage owner-scoped saved
+searches stored in `config.toml` with compare-and-swap `expected_revision` concurrency control and
+return `Ok.saved_event_search_result`. Remote principals must leave `local_workspace_id` empty;
+trusted-local callers supply their workspace UUID. Records with unsupported `expression_version`
+values remain readable with `unsupported_draft_json` and `editable = false`. Deleted or unauthorized
+camera and group references are reported in `tombstoned_references` rather than silently widening the query.
+
+`QueryEvents` selects an optional stable source, one logical stored stream, a half-open time
+interval, a bounded result page, and a preview interval. Omitted
 preview durations use five seconds before event start and ten seconds after event end. Their sum
 cannot exceed 60 seconds. Every search is limited to 31 days. Page size defaults to 50 and is
 capped at 128. New clients leave the deprecated `offset` at zero and pass the opaque `page_token`
@@ -1897,3 +1932,142 @@ is two seconds and the decode deadline is five seconds. Drops, timeouts, unsuppo
 configurations, missing source evidence and gaps leave the displayed frame unchanged. Closing
 or changing the cursor invalidates its token and pending output. At a configuration change,
 the client must close the previous decoder and configure the new one before showing a frame.
+
+## Activity analytics
+
+A recorder advertises `keeppeek.activity-analytics.v1` when bounded event activity summaries are
+available. `Request.activity_analytics_command` (field `32`) accepts four typed actions:
+
+- `query` (`QueryActivitySummary`): Authorized for Administrators and Users, strictly scoped to
+  the session's authorized cameras and principal-local workflow state. The control channel returns
+  `Ok.activity_analytics_result.delivery` (field `50`) and delivers the serialized
+  `ActivitySummaryResponse` over the reliable data channel (`Message.activity_analytics`, field `9`)
+  in `ActivityAnalyticsChunk` payloads of at most 48 KiB each, capped at 1 MiB total. Failures are
+  delivered as `ActivityAnalyticsError`.
+- `cancel_query` (`CancelActivityAnalyticsQuery`): Cancels an in-flight query owned by the session
+  and releases its worker slot.
+- `get_status` (`GetActivityAnalyticsStatus`): Authorized for Administrators and Users. Returns
+  `ActivityAnalyticsStatus` directly on the control channel, including configured site timezone,
+  week-start preference, IANA tzdata version, rollup health state, generation, and row quota.
+- `rebuild` (`RebuildActivityAnalytics`): Administrator-only. Starts a bounded shadow-table
+  rebuild from canonical `recording_events` without modifying source events and returns
+  `ActivityAnalyticsStatus`.
+
+Query bounds are enforced server-side: UTC half-open `[start_time, end_time)` spanning at most
+10 years, at most 366 returned buckets, 64 series, 64 ranked breakdown rows per dimension, 127
+authorized cameras, 8 allowlisted `group_by` dimensions, 2 active queries per principal, 8 active
+queries server-wide, and a 5-second deadline. Counts represent producer-reported event metadata
+within current retention and authorization scope, never authoritative identity or threat totals.
+
+`EventMetadataSearch` adds `confidence_bands` (field `10`, repeated `EventConfidenceBand`) and
+`include_missing_zone` (field `11`, `bool`) so every analytics bucket and breakdown row opens an
+exact server-filtered Events query without client-side full-history filtering.
+
+## Usage reporting
+
+`keeppeek.usage-reporting.v1` advertises `UsageReportingCommand` (request tag 33) and
+`UsageReportingResult` (ok tag 51). Every action requires Administrator authorization; User and
+unauthenticated sessions are rejected server-side with `REJECTED`.
+
+- `UsageReportingCommand.get` returns `UsageReportingState`: current `configuration_revision`,
+  saved category consent (`basic`, `camera_compatibility`, `feature_adoption`,
+  `consented_disclosure_revision`), informed-consent disclosure metadata (`receiver_origin`,
+  published schema/documentation/aggregate/receiver links, `max_retention_days = 60`,
+  `aggregate_min_installations = 10`, `max_payload_bytes = 65536`, and `renewal_required` with
+  `pending_renewal_fields`), and bounded non-sensitive `UsageReportingDeliveryStatus`.
+- `UsageReportingCommand.update` requires a matching `expected_configuration_revision`, enforces
+  that `basic` is enabled before `camera_compatibility` or `feature_adoption`, validates
+  `accepted_disclosure_revision` for opt-in or disclosure renewal, atomically writes
+  `[usage_reporting]` to `config.toml`, generates a dedicated telemetry UUID only on explicit
+  opt-in, and immediately stops sends plus attempts bounded receiver deletion when all categories
+  are turned off.
+- `UsageReportingCommand.preview` builds `UsageReportingPreview` from existing authoritative
+  snapshots without probing cameras/storage/network, generating a persisted UUID, or sending a
+  report. `payload_json` is bounded to at most 65,536 UTF-8 bytes and matches the exact serialized
+  v1 telemetry wire format defined outside `api/` in `schemas/usage-reporting/v1.schema.json`.
+- `UsageReportingCommand.reset_identity` requires a matching `expected_configuration_revision`,
+  rotates the dedicated telemetry UUID and proof token, queues deletion of the prior installation
+  row (capped at 16 pending deletions; returns an error rather than dropping undeleted rows), and
+  attempts immediate bounded receiver deletion.
+- `UsageReportingCommand.delete_data` requires a matching `expected_configuration_revision` and
+  explicitly retries any pending receiver deletions without starting a hidden periodic collector
+  when disabled.
+
+Delivery status and errors use closed `UsageReportingLifecycleState` and
+`UsageReportingFailureKind` enums and never expose proof tokens, pending-deletion UUIDs, raw
+receiver response bodies, or sensitive configuration values.
+
+## Cloud mobile push signaling
+
+`keeppeek.cloud-notifications.v1` advertises `CloudNotificationCommand` (request tag 34) and
+`CloudNotificationResult` (success tag 52). The server advertises this capability only when the
+bounded cloud-signaling runtime and durable state are available. Settings default to
+`enabled = false` and `image_previews_enabled = false`.
+
+| Action            | Authorization                     | Result and bounds                                                                                                                        |
+| ----------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `get_settings`    | Administrator                     | Current `revision`, `enabled`, and `image_previews_enabled`; contains no secrets, NVR ID, or service origin                              |
+| `update_settings` | Administrator                     | Optimistic `expected_revision` match; atomically persists both booleans; rejects `image_previews_enabled = true` if disabled or unpaired |
+| `get_status`      | Administrator                     | Bounded `CloudNotificationState`, rolling hour/day accepted and suppressed counts, timestamps, and closed `CloudNotificationFailureCode` |
+| `test`            | Administrator                     | Sends one separately rate-limited (exact rolling 3/hour) signed test signal without affecting production event counters                  |
+| `resolve`         | Authenticated paired mobile token | Maps one exact 16-byte `cloud_event_id` to the current event revision and canonical still-image descriptor while previews are enabled    |
+
+`ResolveCloudNotification` requires an active paired-mobile credential bound to the current NVR ID
+and current camera authorization for the event source. Disabled signaling, disabled previews,
+unknown or expired aliases, wrong endpoint kind, wrong NVR ID, and unauthorized cameras fail with
+the same generic error. Still-image bytes travel only through existing authenticated event media
+delivery (`EventSearchCommand.fetch_media`); Keeppeek Service never receives media bytes, media
+URLs, attachment descriptors, local event IDs, camera metadata, or free text. Video, animated
+image, and audio notification previews are unsupported.
+
+## Bounded timelapse review and export
+
+A recorder advertises `keeppeek.timelapse.v1` when bounded sparse timelapse planning and lazy
+sample delivery are available. It additionally advertises `keeppeek.timelapse-export.v1` when the
+local silent MP4 encoder worker is available. Normal recording and evidence export never require
+`keeppeek.timelapse-export.v1`.
+
+### Sparse planning and lazy sample delivery
+
+Send `StoredMediaCommand.plan_timelapse` (field `9`) with a source ID, stream ID, half-open UTC
+range (`<= 31 days`), cadence (`interval` or `target_sample_count`, yielding `<= 3,600` targets),
+optional tolerance (`default 10 s`, `max 300 s`), optional pagination (`page_size <= 128`,
+`page_token`), and optional `output_preview`. The server returns `Ok.timelapse_plan` (field `48`)
+containing `source_fingerprint`, `catalog_revision`, `TimelapseEstimate`, and an ordered page of
+`TimelapsePlanItem` entries (`TimelapseSample` or explicit `TimelapseGap` with reason `MISSING`,
+`RETAINED`, `PRIVACY`, `UNSUPPORTED_CODEC`, `CORRUPT`, or `OPEN_RECORDING`). Each sample carries
+its exact recording, fragment sequence, sample ordinal, actual UTC timestamp, and an opaque
+`sample_token` bound to `(source_id, stream_id, recording_id, fragment_sequence, sample_ordinal,
+fragment_fingerprint, source_fingerprint)`.
+
+To load thumbnails lazily, send `StoredMediaCommand.fetch_timelapse_samples` (field `10`) with a
+fresh `transfer_id`, source and stream IDs, up to 16 `sample_tokens`, and `reliable-data`. The
+server re-checks camera authorization, active privacy permits, catalog reader leases, and fragment
+fingerprints for every token and returns `Ok.timelapse_sample_delivery` (field `49`) with accepted
+count and per-token rejections. Accepted samples stream on `reliable-data` as
+`StoredMediaMessage.timelapse_sample_chunk` (field `6`, carrying bounded decode-window access units
+in decode order with `target_presentation_rank`, `sample_count`, and `MediaDataConfiguration`),
+terminated by `StoredMediaMessage.timelapse_sample_end` (field `7`). Send
+`StoredMediaCommand.cancel_timelapse_samples` (field `11`) to cancel an in-flight transfer.
+
+### Silent timelapse export and provenance manifest
+
+When `CreateExportJob.timelapse` (field `10`) is absent, `ExportCommand.create` preserves the
+existing two-minute evidence export contract unchanged. When `CreateExportJob.timelapse` is present,
+the server admits a distinct silent timelapse job kind under Administrator authorization:
+
+- Bounds: input range `<= 31 days`, `<= 3,600` samples, `64x64` to `1920x1080` even dimensions,
+  `1..=30` output FPS, `<= 512 MiB` output size, `1` generating timelapse job globally and `1` per
+  requester, and storage safety-reserve headroom enforcement.
+- Missing or unavailable intervals require explicit `allow_partial = true`; expensive jobs require
+  `confirmed_expensive = true`.
+- Deduplication keys include cadence, tolerance, output FPS, dimensions, timestamp overlay,
+  partial-range behavior, and manifest schema version.
+- Completed jobs expose `ExportJob.timelapse` (field `20`) with `silent = true`, `site_timezone`,
+  `source_fingerprint`, `manifest_schema_version = 1`, `manifest_file_name`, `manifest_sha256`, and
+  `manifest_bytes`.
+- `DownloadExport.artifact` (field `3`) selects `EXPORT_ARTIFACT_KIND_MEDIA` (default when
+  unspecified or `1`) for the silent MP4 or `EXPORT_ARTIFACT_KIND_MANIFEST` (`2`) for the
+  SHA-256-verified JSON provenance manifest delivered over `ExportFileChunk` on `reliable-data`.
+  `ExportDownloadResult` reports `artifact` (field `4`), `file_name` (field `5`), and `sha256`
+  (field `6`).

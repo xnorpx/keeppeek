@@ -83,6 +83,7 @@ use std::{
 use url::Url;
 use uuid::Uuid;
 
+mod analytics;
 mod authentication;
 #[cfg(test)]
 mod authentication_benchmarks;
@@ -95,9 +96,11 @@ mod camera_control;
 mod camera_discovery;
 mod camera_metadata;
 mod camera_permissions;
+mod cloud_notifications;
 mod configuration;
 mod event_publication;
 mod event_search;
+mod event_search_proto;
 mod event_subscription;
 mod event_workflow;
 #[cfg(test)]
@@ -122,11 +125,13 @@ mod recorded_audio_settings;
 mod recorded_audio_settings_tests;
 pub(crate) mod recording_coverage;
 mod recording_maintenance;
+mod reporting;
 mod stored_encoding;
 mod stored_playback;
 mod stored_read;
 use stored_read::StoredReadRange;
 mod runtime_configuration;
+mod saved_searches;
 mod session_lifecycle;
 mod session_recovery;
 mod sharing;
@@ -148,7 +153,11 @@ mod storage_volumes;
 mod stored_frame_step;
 mod stored_media;
 mod talkback;
+mod timelapse;
+#[cfg(test)]
+mod timelapse_tests;
 mod ui_assets;
+mod usage_reporting;
 
 pub(crate) fn migrate_peek_layout_configuration(
     config_path: &Path,
@@ -159,6 +168,10 @@ pub(crate) fn migrate_peek_layout_configuration(
 
 pub(crate) fn validate_peek_layout_configuration(root: &toml::Table) -> anyhow::Result<()> {
     peek_layouts::validate_configuration(root)
+}
+
+pub(crate) fn validate_saved_event_search_configuration(root: &toml::Table) -> anyhow::Result<()> {
+    saved_searches::validate_configuration(root)
 }
 
 pub(crate) fn migrate_template_store(config_path: &Path) -> anyhow::Result<()> {
@@ -460,7 +473,16 @@ fn required_access_role(command: Option<&control_request::Command>) -> AccessRol
             Some(event_search_command::Action::Query(_))
             | Some(event_search_command::Action::CancelQuery(_))
             | Some(event_search_command::Action::FetchMedia(_))
-            | Some(event_search_command::Action::CancelMedia(_)) => AccessRole::User,
+            | Some(event_search_command::Action::CancelMedia(_))
+            | Some(event_search_command::Action::ListSavedSearches(_))
+            | Some(event_search_command::Action::SaveSearch(_))
+            | Some(event_search_command::Action::DeleteSavedSearch(_)) => AccessRole::User,
+            _ => AccessRole::Administrator,
+        },
+        Some(control_request::Command::ActivityAnalyticsCommand(command)) => match command.action {
+            Some(proto::activity_analytics_command::Action::Query(_))
+            | Some(proto::activity_analytics_command::Action::CancelQuery(_))
+            | Some(proto::activity_analytics_command::Action::GetStatus(_)) => AccessRole::User,
             _ => AccessRole::Administrator,
         },
         Some(control_request::Command::NotificationRuleCommand(command)) => match command.action {
@@ -472,6 +494,9 @@ fn required_access_role(command: Option<&control_request::Command>) -> AccessRol
             | Some(notification_rule_command::Action::ClearScope(_)) => AccessRole::User,
             _ => AccessRole::Administrator,
         },
+        Some(control_request::Command::CloudNotificationCommand(command)) => {
+            cloud_notifications::required_role(command)
+        }
         Some(control_request::Command::ServerCommand(command)) => match command.action {
             Some(server_command::Action::GetAccessSession(_)) => AccessRole::User,
             _ => AccessRole::Administrator,
@@ -533,12 +558,15 @@ const fn access_operation(command: Option<&control_request::Command>) -> &'stati
         Some(control_request::Command::HealthCommand(_)) => "health",
         Some(control_request::Command::ExportCommand(_)) => "export",
         Some(control_request::Command::ShareCommand(_)) => "sharing",
+        Some(control_request::Command::ActivityAnalyticsCommand(_)) => "activity_analytics",
+        Some(control_request::Command::UsageReportingCommand(_)) => "usage_reporting",
         Some(control_request::Command::EventSearchCommand(_)) => "event_search",
         Some(control_request::Command::EventWorkflowCommand(_)) => "event_workflow",
         Some(control_request::Command::RecordingMaintenanceCommand(_)) => "recording_maintenance",
         Some(control_request::Command::StorageVolumeCommand(_)) => "storage_volumes",
         Some(control_request::Command::ArchiveCommand(_)) => "archive",
         Some(control_request::Command::NotificationRuleCommand(_)) => "notification_rule",
+        Some(control_request::Command::CloudNotificationCommand(_)) => "cloud_notification",
         Some(control_request::Command::ConfigurationCommand(_)) => "configuration",
         None => "missing_command",
     }
@@ -638,6 +666,19 @@ fn sensitive_administrator_operation(
         Some(control_request::Command::EventSearchCommand(command)) => match command.action {
             Some(event_search_command::Action::ReplaceTerms(_)) => Some("event_terms_replace"),
             Some(event_search_command::Action::SetEmbedding(_)) => Some("event_embedding_set"),
+            Some(event_search_command::Action::DeleteEmbedding(_)) => {
+                Some("event_embedding_delete")
+            }
+            Some(event_search_command::Action::SaveSearch(_)) => Some("event_saved_search_save"),
+            Some(event_search_command::Action::DeleteSavedSearch(_)) => {
+                Some("event_saved_search_delete")
+            }
+            _ => None,
+        },
+        Some(control_request::Command::ActivityAnalyticsCommand(command)) => match command.action {
+            Some(proto::activity_analytics_command::Action::Rebuild(_)) => {
+                Some("activity_analytics_rebuild")
+            }
             _ => None,
         },
         Some(control_request::Command::NotificationRuleCommand(command)) => match command.action {
@@ -666,6 +707,12 @@ fn sensitive_administrator_operation(
             _ => None,
         },
         Some(control_request::Command::ShareCommand(command)) => sharing::audit_operation(command),
+        Some(control_request::Command::UsageReportingCommand(command)) => {
+            usage_reporting::audit_operation(command)
+        }
+        Some(control_request::Command::CloudNotificationCommand(command)) => {
+            cloud_notifications::audit_operation(command)
+        }
         Some(control_request::Command::PublishEvent(_)) => Some("event_publish"),
         Some(control_request::Command::EventPublicationCommand(command)) => {
             match command.action.as_ref() {
@@ -845,14 +892,31 @@ impl ControlRequestHandler for ServerControlHandler {
                             Err(error) => Err(error),
                         }
                     }
+                    Some(control_request::Command::ActivityAnalyticsCommand(command)) => {
+                        match analytics::dispatch(&self.state, session_id, &principal, command) {
+                            Ok((result, messages)) => {
+                                data_messages = messages;
+                                Ok(result)
+                            }
+                            Err(error) => Err(error),
+                        }
+                    }
                     Some(control_request::Command::NotificationRuleCommand(command)) => self
                         .handle_notification_rules(session_id, command)
                         .map(Some),
+                    Some(control_request::Command::CloudNotificationCommand(command)) => {
+                        cloud_notifications::dispatch(&self.state, session_id, &principal, command)
+                            .map(Some)
+                    }
                     Some(control_request::Command::ConfigurationCommand(command)) => {
                         self.handle_configuration(session_id, &principal, command)
                     }
                     Some(control_request::Command::ShareCommand(command)) => {
                         sharing::dispatch_for_session(&self.state, session_id, &principal, command)
+                            .map(Some)
+                    }
+                    Some(control_request::Command::UsageReportingCommand(command)) => {
+                        usage_reporting::dispatch(&self.state, &self.router_tx, &principal, command)
                             .map(Some)
                     }
                     Some(control_request::Command::EventWorkflowCommand(command)) => {
@@ -1424,16 +1488,30 @@ fn server_capability_ids(state: &ServerState) -> Vec<String> {
     ];
     if state.catalog.is_some() {
         capability_ids.push(stored_frame_step::CAPABILITY_ID.to_owned());
+        capability_ids.push(timelapse::CAPABILITY_ID.to_owned());
+        if state.timelapse.encoder_available() {
+            capability_ids.push(timelapse::EXPORT_CAPABILITY_ID.to_owned());
+        }
     }
     if state.notifications.is_some() {
         capability_ids.push("keeppeek.rules.v1".to_owned());
+        if state.cloud_notifications.is_some() && state.camera_config_path.is_some() {
+            capability_ids.push(cloud_notifications::CAPABILITY_ID.to_owned());
+        }
     }
-    if event_search_catalog(state).is_ok() {
+    if let Ok(catalog) = event_search_catalog(state) {
         if state.camera_config_path.is_some() {
             capability_ids.push("keeppeek.local-archive.v1".to_owned());
             capability_ids.push("keeppeek.local-archive-retention.v1".to_owned());
         }
         capability_ids.push("keeppeek.event-workflow.v1".to_owned());
+        capability_ids.push(event_search::ADVANCED_CAPABILITY_ID.to_owned());
+        if catalog.semantic_search_available() {
+            capability_ids.push(event_search::SEMANTIC_CAPABILITY_ID.to_owned());
+        }
+        if state.analytics.enabled() {
+            capability_ids.push(analytics::CAPABILITY_ID.to_owned());
+        }
         if cfg!(any(unix, windows)) {
             capability_ids.push("keeppeek.recording-maintenance.v1".to_owned());
         }
@@ -1444,6 +1522,7 @@ fn server_capability_ids(state: &ServerState) -> Vec<String> {
     if state.camera_config_path.is_some() {
         capability_ids.push(sharing::CAPABILITY_ID.to_owned());
         capability_ids.push(sharing::RANGE_CAPABILITY_ID.to_owned());
+        capability_ids.push(usage_reporting::CAPABILITY_ID.to_owned());
         capability_ids.push(peek_layouts::CAPABILITY_ID.to_owned());
         capability_ids.push(CONFIGURATION_CAPABILITY_ID.to_owned());
         capability_ids.push("keeppeek.recording.pre-roll.v1".to_owned());
@@ -3841,6 +3920,7 @@ fn export_requests_match_output(
         && left.end_time == right.end_time
         && left.allow_partial == right.allow_partial
         && left.burn_in_timestamp == right.burn_in_timestamp
+        && left.timelapse == right.timelapse
 }
 
 fn export_requests_match_normalized(
@@ -3856,6 +3936,7 @@ fn export_requests_match_normalized(
         && (existing.request.allow_partial && existing_has_gaps)
             == (requested.allow_partial && requested_has_gaps)
         && existing.request.burn_in_timestamp == requested.burn_in_timestamp
+        && existing.request.timelapse == requested.timelapse
 }
 
 fn spawn_export_worker(
@@ -4342,6 +4423,13 @@ fn cleanup_export_attempt_artifacts(
     if managed {
         export_storage::retire(state.catalog.as_ref(), artifact_id)
             .map_err(std::io::Error::other)?;
+        let manifest_id = export_storage::timelapse::manifest_object_id(artifact_id);
+        if export_storage::owned(state.catalog.as_ref(), &manifest_id)
+            .map_err(std::io::Error::other)?
+        {
+            export_storage::retire(state.catalog.as_ref(), &manifest_id)
+                .map_err(std::io::Error::other)?;
+        }
     }
     if let Some(worker) = &state.storage_config.volume_mover
         && let Err(error) = worker.scan()
@@ -5263,6 +5351,7 @@ fn start_event_search_query(
     request: proto::QueryEvents,
     access: crate::access::CameraAccess,
     workflow: Option<crate::storage::catalog::workflow::Query>,
+    query_principal: event_search::EventSearchQueryPrincipal,
 ) -> Result<proto::EventSearchDelivery, ControlCommandError> {
     validate_client_id(&request.query_id, "event search query ID")?;
     let (_, channel) = data_channel_target(request.channel)?;
@@ -5287,8 +5376,15 @@ fn start_event_search_query(
     let spawn = std::thread::Builder::new()
         .name("event-search-query".to_owned())
         .spawn(move || {
-            let result = query_events(&worker_state, request, &access, workflow)
-                .map(|(_, messages)| messages);
+            let result = query_events(
+                &worker_state,
+                request,
+                &access,
+                workflow,
+                query_principal,
+                Some(worker_cancelled.clone()),
+            )
+            .map(|(_, messages)| messages);
             deliver_event_search_task(
                 &worker_state,
                 session_id,
@@ -5577,10 +5673,132 @@ fn set_event_search_embedding(
     validate_client_id(&request.source_id, "event source ID")?;
     let catalog = event_search_catalog(state)?;
     require_stored_event(catalog, &request.event_id, &request.source_id)?;
-    let embedding = proto_event_embedding(request.embedding.as_ref())?;
+    let input = event_search_proto::parse_embedding_input(request.embedding.as_ref())?;
     EventSearch::new(catalog.clone())
-        .set_embedding(&request.event_id, embedding)
-        .map_err(|error| stored_catalog_error("set event search embedding", error))
+        .set_embedding_with_provenance(&request.event_id, input)
+        .map_err(|error| event_search_error("set event search embedding", error))
+}
+
+fn delete_event_search_embedding(
+    state: &ServerState,
+    request: &proto::DeleteEventSearchEmbedding,
+) -> Result<(), ControlCommandError> {
+    validate_client_id(&request.event_id, "event ID")?;
+    validate_client_id(&request.source_id, "event source ID")?;
+    let catalog = event_search_catalog(state)?;
+    require_stored_event(catalog, &request.event_id, &request.source_id)?;
+    let version =
+        (!request.model_version.trim().is_empty()).then_some(request.model_version.as_str());
+    EventSearch::new(catalog.clone())
+        .delete_embedding(&request.event_id, &request.model_id, version)
+        .map(|_| ())
+        .map_err(|error| event_search_error("delete event search embedding", error))
+}
+
+struct AdvancedEventQueryScope {
+    start_ms: i64,
+    end_ms: i64,
+    preview_before_ms: u64,
+    preview_after_ms: u64,
+    page_size: u32,
+    page_token: Option<String>,
+    workflow: Option<crate::storage::catalog::workflow::Query>,
+    query_principal: event_search::EventSearchQueryPrincipal,
+    cancelled: Option<Arc<AtomicBool>>,
+}
+
+type AuthorizedCameraGroups =
+    std::collections::BTreeMap<String, std::collections::BTreeSet<String>>;
+
+fn collect_authorized_camera_scope(
+    state: &ServerState,
+    access: &crate::access::CameraAccess,
+    source_id: Option<&str>,
+    stream_id: &str,
+) -> Result<(Vec<String>, AuthorizedCameraGroups), ControlCommandError> {
+    let requested_sources: Vec<String> = source_id.map(str::to_owned).into_iter().collect();
+    let visible_entries = camera_access::query_cameras(state, access, &requested_sources)?;
+    let mut authorized_cameras = Vec::with_capacity(visible_entries.len());
+    let mut camera_groups: AuthorizedCameraGroups = std::collections::BTreeMap::new();
+    for entry in visible_entries {
+        if !entry
+            .info
+            .profiles
+            .iter()
+            .any(|profile| profile.stream == stream_id)
+        {
+            continue;
+        }
+        let camera_id = entry.info.id;
+        for group in entry.groups {
+            camera_groups
+                .entry(group)
+                .or_default()
+                .insert(camera_id.clone());
+        }
+        authorized_cameras.push(camera_id);
+    }
+    Ok((authorized_cameras, camera_groups))
+}
+
+fn execute_advanced_event_query(
+    state: &ServerState,
+    search: &EventSearch,
+    access: &crate::access::CameraAccess,
+    source_id: Option<&str>,
+    stream_id: &str,
+    advanced: proto::EventAdvancedSearch,
+    scope: AdvancedEventQueryScope,
+) -> Result<crate::storage::EventSearchPage, ControlCommandError> {
+    let raw_expr = advanced.expression.as_ref().ok_or_else(|| {
+        ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "advanced event search expression is required",
+        )
+    })?;
+    let parsed_expr = event_search_proto::parse_proto_expression(raw_expr)?;
+    let validated_expr = crate::storage::search::predicate::validate_expression(
+        advanced.expression_version,
+        &parsed_expr,
+    )
+    .map_err(|error| {
+        ControlCommandError::new(proto::ErrorCode::InvalidRequest, 400, error.message())
+    })?;
+    let canonical_hash = crate::storage::search::predicate::canonical_hash(
+        advanced.expression_version,
+        &validated_expr,
+    );
+    let normalized_summary =
+        crate::storage::search::predicate::summarize_expression(&validated_expr);
+    let semantic = event_search_proto::parse_semantic_ranking(advanced.semantic.as_ref())?;
+    let (authorized_cameras, camera_groups) =
+        collect_authorized_camera_scope(state, access, source_id, stream_id)?;
+    search
+        .search_advanced(crate::storage::EventAdvancedSearchQuery {
+            expression_version: advanced.expression_version,
+            expression: validated_expr,
+            canonical_hash,
+            normalized_summary,
+            authorized_cameras,
+            camera_groups,
+            stream_id: stream_id.to_owned(),
+            start_time_ms: scope.start_ms,
+            end_time_ms: scope.end_ms,
+            preview_before_ms: scope.preview_before_ms,
+            preview_after_ms: scope.preview_after_ms,
+            page_size: scope.page_size,
+            page_token: scope.page_token,
+            include_preview_keyframes: false,
+            workflow: scope.workflow,
+            workflow_actor: scope.query_principal.workflow_actor,
+            semantic,
+            policy_revision: scope.query_principal.policy_revision,
+            is_admin: scope.query_principal.is_admin,
+            max_candidates: 10_000,
+            cancelled: scope.cancelled,
+        })
+        .map_err(|error| event_search_error("search event expression", error))
 }
 
 fn query_events(
@@ -5588,6 +5806,8 @@ fn query_events(
     request: proto::QueryEvents,
     access: &crate::access::CameraAccess,
     workflow: Option<crate::storage::catalog::workflow::Query>,
+    query_principal: event_search::EventSearchQueryPrincipal,
+    cancelled: Option<Arc<AtomicBool>>,
 ) -> Result<(proto::EventSearchDelivery, Vec<OutboundDataMessage>), ControlCommandError> {
     camera_access::authorize_event_query(access, &request)?;
     validate_client_id(&request.query_id, "event search query ID")?;
@@ -5646,6 +5866,7 @@ fn query_events(
         .then(|| open_event_page_token(state, &request.page_token))
         .transpose()?;
 
+    let is_admin = query_principal.is_admin;
     let catalog = event_search_catalog(state)?;
     let search = EventSearch::new(catalog.clone());
     let mut include_preview_keyframes = true;
@@ -5695,12 +5916,21 @@ fn query_events(
                     ));
                 }
             };
+            let confidence_bands = metadata
+                .confidence_bands
+                .iter()
+                .copied()
+                .map(analytics::proto_map::parse_confidence_band)
+                .collect::<Result<Vec<_>, _>>()?;
             if source_ids.is_empty() {
                 crate::storage::EventSearchPage {
                     hits: Vec::new(),
                     next_page_token: None,
                     candidates_truncated: false,
                     workflow_counts: workflow.as_ref().map(|_| Default::default()),
+                    normalized_summary: None,
+                    semantic_summary: None,
+                    diagnostics: None,
                 }
             } else {
                 search
@@ -5710,7 +5940,9 @@ fn query_events(
                         event_types: metadata.event_types,
                         origins,
                         zones: metadata.zones,
+                        include_missing_zone: metadata.include_missing_zone,
                         minimum_confidence: metadata.minimum_confidence,
+                        confidence_bands,
                         image,
                         text: metadata.text,
                         stream_id: request.stream_id.clone(),
@@ -5766,6 +5998,28 @@ fn query_events(
                 workflow,
             })
             .map_err(|error| event_search_error("search event embeddings", error))?,
+        Some(proto::query_events::Search::Advanced(advanced)) => {
+            include_preview_keyframes = advanced.include_preview_keyframes;
+            execute_advanced_event_query(
+                state,
+                &search,
+                access,
+                request.source_id.as_deref(),
+                &request.stream_id,
+                advanced,
+                AdvancedEventQueryScope {
+                    start_ms,
+                    end_ms,
+                    preview_before_ms,
+                    preview_after_ms,
+                    page_size,
+                    page_token,
+                    workflow,
+                    query_principal,
+                    cancelled,
+                },
+            )?
+        }
         None => {
             return Err(ControlCommandError::new(
                 proto::ErrorCode::InvalidRequest,
@@ -5812,6 +6066,14 @@ fn query_events(
             next_page_token: next_page_token.unwrap_or_default(),
             candidates_truncated: page.candidates_truncated,
             workflow_counts: page.workflow_counts.map(event_workflow::proto_counts),
+            normalized_summary: page.normalized_summary.unwrap_or_default(),
+            semantic: page
+                .semantic_summary
+                .map(event_search_proto::proto_semantic_summary),
+            diagnostics: is_admin
+                .then_some(page.diagnostics)
+                .flatten()
+                .map(event_search_proto::proto_diagnostics),
         }),
     ));
     Ok((
@@ -6338,11 +6600,31 @@ fn event_search_catalog(
 }
 
 fn event_search_error(context: &str, error: anyhow::Error) -> ControlCommandError {
-    if error.to_string().contains("event search page token") {
-        return ControlCommandError::new(proto::ErrorCode::InvalidRequest, 400, error.to_string());
+    let text = error.to_string();
+    if text.contains("event search page token") || text.contains("advanced search page token") {
+        return ControlCommandError::new(proto::ErrorCode::InvalidRequest, 400, text);
     }
-    if error.to_string().contains("event search snapshot changed") {
-        return ControlCommandError::new(proto::ErrorCode::Rejected, 409, error.to_string());
+    if text.contains("event search snapshot changed")
+        || text.contains("advanced search snapshot changed")
+        || text.contains("event revision changed")
+    {
+        return ControlCommandError::new(proto::ErrorCode::Rejected, 409, text);
+    }
+    if text.contains("candidate budget exceeded") || text.contains("camera limit exceeded") {
+        return ControlCommandError::new(proto::ErrorCode::Rejected, 429, text);
+    }
+    if text.contains("deadline exceeded") {
+        return ControlCommandError::new(proto::ErrorCode::Timeout, 504, text);
+    }
+    if text.contains("semantic event search is currently unavailable") {
+        return ControlCommandError::new(proto::ErrorCode::Unavailable, 503, text);
+    }
+    if text.contains("must contain")
+        || text.contains("must be")
+        || text.contains("must not")
+        || text.contains("workflow predicates require")
+    {
+        return ControlCommandError::new(proto::ErrorCode::InvalidRequest, 400, text);
     }
     stored_catalog_error(context, error)
 }
@@ -6471,15 +6753,16 @@ fn validate_event_metadata_search(
 ) -> Result<(), ControlCommandError> {
     const MAX_FILTER_VALUES: usize = 64;
     if search.event_ids.len() > MAX_FILTER_VALUES
-        || search.source_ids.len() > MAX_FILTER_VALUES
+        || search.source_ids.len() > crate::storage::analytics::MAX_CAMERAS
         || search.event_types.len() > MAX_FILTER_VALUES
         || search.origins.len() > MAX_FILTER_VALUES
         || search.zones.len() > MAX_FILTER_VALUES
+        || search.confidence_bands.len() > 4
     {
         return Err(ControlCommandError::new(
             proto::ErrorCode::InvalidRequest,
             400,
-            "event metadata filter count exceeds 64",
+            "event metadata filter count exceeds limit",
         ));
     }
     for event_id in &search.event_ids {
@@ -8925,6 +9208,7 @@ pub struct ServerState {
     stored_keyframe_formats: Arc<Mutex<StoredKeyframeFormatCache>>,
     recorded_audio_workers: Arc<AtomicUsize>,
     frame_step_workers: Arc<AtomicUsize>,
+    timelapse: Arc<timelapse::Registry>,
     stored_media_cursor_reservations: Arc<Mutex<HashMap<(SessionId, String), uuid::Uuid>>>,
     ptz_owners: Arc<Mutex<HashMap<String, camera_control::Owner>>>,
     export_jobs: Arc<Mutex<HashMap<String, ExportJobRecord>>>,
@@ -8964,7 +9248,11 @@ pub struct ServerState {
     catalog: Option<RecordingCatalogHandle>,
     backup_manager: Option<Arc<BackupManager>>,
     logging: Option<LoggingService>,
+    reporting: reporting::Runtime,
+    analytics: analytics::Runtime,
+    usage_reporting: usage_reporting::Runtime,
     notifications: Option<NotificationHandle>,
+    cloud_notifications: Option<crate::notifications::cloud::CloudSignalRuntime>,
     event_forwarder: Option<EventForwarderHandle>,
     started_at: Instant,
 }
@@ -9118,6 +9406,7 @@ impl ServerState {
             stored_keyframe_formats: Arc::new(Mutex::new(StoredKeyframeFormatCache::default())),
             recorded_audio_workers: Arc::new(AtomicUsize::new(0)),
             frame_step_workers: Arc::new(AtomicUsize::new(0)),
+            timelapse: Arc::new(timelapse::Registry::default()),
             stored_media_cursor_reservations: Arc::new(Mutex::new(HashMap::new())),
             ptz_owners: Arc::new(Mutex::new(HashMap::new())),
             export_jobs: Arc::new(Mutex::new(export_jobs)),
@@ -9159,7 +9448,11 @@ impl ServerState {
             catalog: None,
             backup_manager: None,
             logging: None,
+            reporting: reporting::Runtime::new(config.reporting.clone()),
+            analytics: analytics::Runtime::new(config.analytics.clone()),
+            usage_reporting: usage_reporting::Runtime::new(config.usage_reporting.clone()),
             notifications: None,
+            cloud_notifications: None,
             event_forwarder: None,
             started_at: Instant::now(),
         }
@@ -9169,6 +9462,11 @@ impl ServerState {
         if self.sharing.open(&self.storage_config).is_err() {
             tracing::warn!("guest review store unavailable; guest access stays disabled");
         }
+    }
+
+    pub(crate) fn start_usage_reporting_if_enabled(&self, router_tx: &FacadeSender<RouterMessage>) {
+        self.usage_reporting
+            .ensure_scheduler_if_enabled(self, router_tx);
     }
 
     pub(crate) fn open_state_store(&mut self) {
@@ -9653,6 +9951,11 @@ impl ServerState {
     }
 
     pub fn with_recording_catalog(mut self, catalog: RecordingCatalogHandle) -> Self {
+        if let Err(error) =
+            catalog.set_analytics_max_rollup_rows(self.analytics.config().max_rollup_rows)
+        {
+            tracing::warn!(%error, "unable to apply configured analytics rollup row quota");
+        }
         self.catalog = Some(catalog);
         export_storage::history::restore(&mut self);
         self
@@ -9680,6 +9983,14 @@ impl ServerState {
 
     pub(crate) fn with_notifications(mut self, notifications: NotificationHandle) -> Self {
         self.notifications = Some(notifications);
+        self
+    }
+
+    pub(crate) fn with_cloud_notifications(
+        mut self,
+        cloud_notifications: crate::notifications::cloud::CloudSignalRuntime,
+    ) -> Self {
+        self.cloud_notifications = Some(cloud_notifications);
         self
     }
 
@@ -10529,7 +10840,14 @@ fn handle_request(
         return service_error(404, "not found");
     }
     if request.method() == "OPTIONS"
-        && matches!(request_path.as_str(), "/config/apply" | "/config/export")
+        && matches!(
+            request_path.as_str(),
+            "/config/apply"
+                | "/config/export"
+                | "/reporting/status"
+                | "/reporting/grants"
+                | "/reporting/audit"
+        )
     {
         return config_api_preflight(request, state);
     }
@@ -10578,6 +10896,21 @@ fn handle_request(
         (POST) (/config/apply) => {
             authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
                 config_apply(request, state, &identity)
+            })
+        },
+        (GET) (/reporting/status) => {
+            authenticated_api_request(request, state, true, AccessRole::Administrator, |_| {
+                reporting::status(state)
+            })
+        },
+        (POST) (/reporting/grants) => {
+            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
+                reporting::create_grant(request, state, &identity)
+            })
+        },
+        (POST) (/reporting/audit) => {
+            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
+                reporting::record_audit(request, state, &identity)
             })
         },
         _ => serve_ui(request)
@@ -12049,6 +12382,12 @@ pub(crate) fn camera_health_snapshots(
         .collect())
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HealthHistoryMode {
+    Full,
+    LiveOnly,
+}
+
 fn server_health(
     router_tx: &FacadeSender<RouterMessage>,
     state: &ServerState,
@@ -12057,7 +12396,7 @@ fn server_health(
         router_tx,
         state,
         HealthRegistry::snapshot,
-        state.catalog.as_ref(),
+        HealthHistoryMode::Full,
     )
     .0
 }
@@ -12070,7 +12409,7 @@ pub(crate) fn dashboard_health(
         router_tx,
         state,
         HealthRegistry::local_stream_snapshot,
-        None,
+        HealthHistoryMode::LiveOnly,
     );
     lifecycle_available.then_some(health)
 }
@@ -12079,20 +12418,25 @@ fn collect_server_health(
     router_tx: &FacadeSender<RouterMessage>,
     state: &ServerState,
     ingress_snapshot: impl FnOnce(&HealthRegistry) -> Vec<crate::stats::CameraHealthReport>,
-    history_catalog: Option<&RecordingCatalogHandle>,
+    history_mode: HealthHistoryMode,
 ) -> (ServerHealthResponse, bool) {
     let uptime_seconds = state.started_at.elapsed().as_secs();
-    let system = state
-        .system
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .snapshot(&state.storage_config.long_term_path);
+    let system = {
+        let mut monitor = state
+            .system
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match history_mode {
+            HealthHistoryMode::Full => monitor.snapshot(&state.storage_config.long_term_path),
+            HealthHistoryMode::LiveOnly => monitor.live_snapshot(),
+        }
+    };
     let HealthAcquisition {
         lifecycle,
         operational_events,
         mut issues,
         lifecycle_available,
-    } = acquire_health_sources(router_tx, state);
+    } = acquire_health_sources(router_tx, state, history_mode);
     let ingress = ingress_snapshot(&state.health);
     let recording = state.recording_health.snapshot();
     let (totals, cameras) = collect_camera_health(
@@ -12104,7 +12448,7 @@ fn collect_server_health(
         uptime_seconds,
         &mut issues,
     );
-    let storage = collect_storage_health(state, history_catalog, recording.storage, &mut issues);
+    let storage = collect_storage_health(state, history_mode, recording.storage, &mut issues);
     let webrtc = state.webrtc.health_snapshot();
     append_server_health_issues(&system, &storage, &webrtc, &mut issues);
     let status = server_health_status(&issues);
@@ -12138,25 +12482,31 @@ struct HealthAcquisition {
 fn acquire_health_sources(
     router_tx: &FacadeSender<RouterMessage>,
     state: &ServerState,
+    history_mode: HealthHistoryMode,
 ) -> HealthAcquisition {
     let mut issues = Vec::new();
     let mut lifecycle_available = true;
-    let operational_events = state.events.as_ref().map_or_else(Vec::new, |events| {
-        match events.open_operational_events() {
-            Ok(events) => events,
-            Err(error) => {
-                issues.push(HealthIssue {
-                    severity: "warning".to_owned(),
-                    scope: "storage".to_owned(),
-                    message: format!("Operational event history is unavailable: {error}"),
-                    operational_event_id: None,
-                    timeline_start_ms: None,
-                    timeline_end_ms: None,
-                });
-                Vec::new()
+    // The foreground dashboard skips serial catalog reads so monitoring stays bounded and isolated.
+    let operational_events = if history_mode == HealthHistoryMode::Full {
+        state.events.as_ref().map_or_else(Vec::new, |events| {
+            match events.open_operational_events() {
+                Ok(events) => events,
+                Err(error) => {
+                    issues.push(HealthIssue {
+                        severity: "warning".to_owned(),
+                        scope: "storage".to_owned(),
+                        message: format!("Operational event history is unavailable: {error}"),
+                        operational_event_id: None,
+                        timeline_start_ms: None,
+                        timeline_end_ms: None,
+                    });
+                    Vec::new()
+                }
             }
-        }
-    });
+        })
+    } else {
+        Vec::new()
+    };
     let lifecycle = match query_router(router_tx, RouterQuery::ListCameras) {
         Ok(RouterResponse::Cameras(statuses)) => statuses
             .into_iter()
@@ -12284,27 +12634,35 @@ fn collect_camera_health(
 
 fn collect_storage_health(
     state: &ServerState,
-    history_catalog: Option<&RecordingCatalogHandle>,
+    history_mode: HealthHistoryMode,
     safety: crate::storage::safety::StorageSafetyHealthSnapshot,
     issues: &mut Vec<HealthIssue>,
 ) -> StorageHealth {
-    let catalog = history_catalog.and_then(|catalog| match catalog.stats() {
-        Ok(stats) => Some(stats),
-        Err(error) => {
-            issues.push(HealthIssue {
-                severity: "warning".to_owned(),
-                scope: "storage".to_owned(),
-                message: format!("Recording catalog statistics are unavailable: {error}"),
-                operational_event_id: None,
-                timeline_start_ms: None,
-                timeline_end_ms: None,
-            });
-            None
-        }
-    });
-    let catalog_bytes = std::fs::metadata(&state.storage_config.recording_catalog_path)
-        .ok()
-        .map(|metadata| metadata.len());
+    let include_history = history_mode == HealthHistoryMode::Full;
+    let catalog = include_history
+        .then_some(state.catalog.as_ref())
+        .flatten()
+        .and_then(|catalog| match catalog.stats() {
+            Ok(stats) => Some(stats),
+            Err(error) => {
+                issues.push(HealthIssue {
+                    severity: "warning".to_owned(),
+                    scope: "storage".to_owned(),
+                    message: format!("Recording catalog statistics are unavailable: {error}"),
+                    operational_event_id: None,
+                    timeline_start_ms: None,
+                    timeline_end_ms: None,
+                });
+                None
+            }
+        });
+    let catalog_bytes = include_history
+        .then(|| {
+            std::fs::metadata(&state.storage_config.recording_catalog_path)
+                .ok()
+                .map(|metadata| metadata.len())
+        })
+        .flatten();
     StorageHealth {
         medium_term_path: state.config.storage.medium_term_path.clone(),
         long_term_path: state.config.storage.long_term_path.clone(),
@@ -12438,8 +12796,13 @@ fn prometheus_metrics(
             recording: recording.as_ref().ok(),
             backup,
             notifications,
+            cloud_notifications: state.cloud_notifications.as_ref().map(|cloud| {
+                let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
+                cloud.metrics_snapshot(now_ms)
+            }),
             mqtt: mqtt.as_ref(),
             external_analysis: Some(external_analysis),
+            analytics: state.analytics.metric_snapshot(state),
         },
         &event_reports,
     ) {
@@ -14587,7 +14950,7 @@ mod tests {
         );
     }
 
-    fn test_control_handler(state: ServerState) -> ServerControlHandler {
+    pub(super) fn test_control_handler(state: ServerState) -> ServerControlHandler {
         let (_router, router_tx) = crate::runtime::Router::new().unwrap();
         ServerControlHandler::new(state, router_tx)
     }
@@ -14743,7 +15106,7 @@ mod tests {
         state
     }
 
-    fn test_session_record(
+    pub(super) fn test_session_record(
         principal: ApiPrincipal,
         address: IpAddr,
         reason: ClientClassificationReason,
@@ -15021,9 +15384,16 @@ mod tests {
         let dashboard = dashboard_health(&tx, &state).unwrap();
         assert_eq!(worker.join().unwrap(), 1);
         assert!(dashboard.storage.catalog.is_none());
+        assert!(dashboard.system.disks.is_empty());
+        assert!(dashboard.system.networks.is_empty());
+        assert!(dashboard.system.temperatures.is_empty());
+        assert!(dashboard.system.memory.total_bytes > 0);
+        assert!(dashboard.system.process.resident_memory_bytes.is_some());
         let (router, tx) = crate::runtime::Router::new().unwrap();
         let worker = spawn_router_query_worker(router);
-        assert!(server_health(&tx, &state).storage.catalog.is_some());
+        let public = server_health(&tx, &state);
+        assert!(public.storage.catalog.is_some());
+        assert!(!public.system.disks.is_empty());
         assert_eq!(worker.join().unwrap(), 1);
         drop(state);
         catalog.shutdown();
@@ -15031,7 +15401,7 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_health_keeps_live_data_when_event_history_is_unavailable() {
+    fn dashboard_health_skips_event_history_queries_when_catalog_is_unavailable() {
         let folder = std::env::temp_dir().join(format!("keeppeek-tui-events-{}", Uuid::new_v4()));
         std::fs::create_dir(&folder).unwrap();
         let catalog =
@@ -15046,7 +15416,19 @@ mod tests {
         let dashboard = dashboard_health(&tx, &state).unwrap();
         assert_eq!(worker.join().unwrap(), 1);
         assert!(dashboard.operational_events.is_empty());
-        assert!(dashboard.issues.iter().any(|issue| {
+        assert!(dashboard.storage.catalog_bytes.is_none());
+        assert!(!dashboard.issues.iter().any(|issue| {
+            issue.scope == "storage"
+                && issue
+                    .message
+                    .starts_with("Operational event history is unavailable")
+        }));
+
+        let (router, tx) = crate::runtime::Router::new().unwrap();
+        let worker = spawn_router_query_worker(router);
+        let public = server_health(&tx, &state);
+        assert_eq!(worker.join().unwrap(), 1);
+        assert!(public.issues.iter().any(|issue| {
             issue.scope == "storage"
                 && issue
                     .message
@@ -15068,6 +15450,54 @@ mod tests {
                 .iter()
                 .any(|issue| issue.scope == "runtime")
         );
+    }
+
+    #[test]
+    fn repeated_dashboard_health_reads_do_not_mutate_ingress_counters() {
+        use crate::stats::{CameraReport, IngressStats, video_report};
+
+        let state = media_test_state();
+        let mut ingress = IngressStats::new();
+        let previous = ingress.snapshot();
+        ingress.on_video_frame(true, 4_096);
+        ingress.on_video_frame(false, 2_048);
+        let current = ingress.snapshot();
+        let rates = current.rates_since(&previous);
+        let video = video_report(
+            StreamKind::Main,
+            &current,
+            &rates,
+            Some(&crate::cameras::VideoEncoding::H264),
+            1920,
+            1080,
+            25.0,
+        );
+        state.health.publish_from(
+            CameraReport {
+                ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                name: Some("Front".into()),
+                brand: None,
+                port: 554,
+                streams: vec![video],
+            },
+            StreamKind::Main,
+        );
+
+        let (router, tx) = crate::runtime::Router::new().unwrap();
+        let worker = spawn_router_query_worker(router);
+        let first = dashboard_health(&tx, &state).unwrap();
+        assert_eq!(worker.join().unwrap(), 1);
+        let (router, tx) = crate::runtime::Router::new().unwrap();
+        let worker = spawn_router_query_worker(router);
+        let second = dashboard_health(&tx, &state).unwrap();
+        assert_eq!(worker.join().unwrap(), 1);
+
+        let first_report = &first.cameras[0].streams[0].ingress.report;
+        let second_report = &second.cameras[0].streams[0].ingress.report;
+        assert_eq!(first_report.frames, Some(2));
+        assert_eq!(first_report.bytes, Some(6_144));
+        assert_eq!(second_report.frames, first_report.frames);
+        assert_eq!(second_report.bytes, first_report.bytes);
     }
 
     #[test]
@@ -19845,6 +20275,8 @@ mod tests {
                                 image: proto::EventImageFilter::WithImage as i32,
                                 text: Some("ali".to_owned()),
                                 include_preview_keyframes: true,
+                                confidence_bands: Vec::new(),
+                                include_missing_zone: false,
                             },
                         )),
                         source_id: None,
@@ -19886,6 +20318,7 @@ mod tests {
         let embedding = proto::EventSearchEmbedding {
             model_id: "vision-embedding".to_owned(),
             values: vec![1.0, 0.0, 0.0],
+            ..Default::default()
         };
         let set_embedding = handler.handle(proto::Request {
             request_id: 203,
@@ -19987,6 +20420,186 @@ mod tests {
             )),
         });
         assert_eq!(semantic.data_messages.len(), 2);
+
+        let versioned_embedding = proto::EventSearchEmbedding {
+            model_id: "vision-embedding".to_owned(),
+            model_version: "v2".to_owned(),
+            producer_id: "cv-service".to_owned(),
+            values: vec![1.0, 0.0, 0.0],
+            ..Default::default()
+        };
+        let set_v2 = handler.handle(proto::Request {
+            request_id: 2071,
+            command: Some(control_request::Command::EventSearchCommand(
+                proto::EventSearchCommand {
+                    action: Some(event_search_command::Action::SetEmbedding(
+                        proto::SetEventSearchEmbedding {
+                            event_id: "face-1".to_owned(),
+                            embedding: Some(versioned_embedding.clone()),
+                            source_id: "127.0.0.1".to_owned(),
+                        },
+                    )),
+                },
+            )),
+        });
+        assert!(matches!(
+            set_v2.response.result,
+            Some(control_response::Result::Ok(_))
+        ));
+
+        let advanced_request = proto::QueryEvents {
+            query_id: "advanced-query-1".to_owned(),
+            workflow: None,
+            search: Some(proto::query_events::Search::Advanced(
+                proto::EventAdvancedSearch {
+                    expression_version: 1,
+                    expression: Some(proto::EventSearchExpression {
+                        node: Some(proto::event_search_expression::Node::Predicate(
+                            proto::EventSearchPredicate {
+                                kind: Some(proto::event_search_predicate::Kind::EventTypes(
+                                    proto::EventStringListPredicate {
+                                        values: vec!["face".to_owned()],
+                                    },
+                                )),
+                            },
+                        )),
+                    }),
+                    semantic: Some(proto::EventSemanticRanking {
+                        embedding: Some(versioned_embedding),
+                        minimum_score: Some(0.5),
+                    }),
+                    include_preview_keyframes: false,
+                },
+            )),
+            source_id: None,
+            stream_id: "main".to_owned(),
+            start_time: Some(millis_timestamp(fragments[0].start_ms - 1_000)),
+            end_time: Some(millis_timestamp(fragments[1].start_ms + 2_000)),
+            preview_before: None,
+            preview_after: None,
+            page_size: 10,
+            offset: 0,
+            channel: proto::DataChannelKind::ReliableData as i32,
+            page_token: String::new(),
+        };
+        let admin_advanced = handler.handle(proto::Request {
+            request_id: 2072,
+            command: Some(control_request::Command::EventSearchCommand(
+                proto::EventSearchCommand {
+                    action: Some(event_search_command::Action::Query(
+                        advanced_request.clone(),
+                    )),
+                },
+            )),
+        });
+        let Some(proto::message::Message::EventSearch(proto::EventSearchMessage {
+            message: Some(proto::event_search_message::Message::QueryEnd(admin_end)),
+        })) = admin_advanced
+            .data_messages
+            .last()
+            .and_then(|msg| msg.message.message.as_ref())
+        else {
+            panic!("advanced search must emit a terminal QueryEnd message");
+        };
+        assert!(admin_end.normalized_summary.contains("face"));
+        let sem_summary = admin_end.semantic.as_ref().unwrap();
+        assert_eq!(sem_summary.model_id, "vision-embedding");
+        assert_eq!(sem_summary.model_version, "v2");
+        assert_eq!(sem_summary.producer_id, "cv-service");
+        assert_eq!(sem_summary.dimensions, 3);
+        assert!(admin_end.diagnostics.is_some());
+
+        let (_, user_messages) = query_events(
+            &handler.state,
+            advanced_request.clone(),
+            &crate::access::CameraAccess::unrestricted(),
+            None,
+            event_search::EventSearchQueryPrincipal {
+                is_admin: false,
+                policy_revision: 0,
+                workflow_actor: Some("user-1".to_owned()),
+            },
+            None,
+        )
+        .unwrap();
+        let Some(proto::message::Message::EventSearch(proto::EventSearchMessage {
+            message: Some(proto::event_search_message::Message::QueryEnd(user_end)),
+        })) = user_messages
+            .last()
+            .and_then(|msg| msg.message.message.as_ref())
+        else {
+            panic!("non-admin advanced search must emit a terminal QueryEnd message");
+        };
+        assert!(user_end.diagnostics.is_none());
+        assert!(user_end.semantic.is_some());
+
+        // Authenticated non-local caller can use workflow AST predicates even when QueryEvents.workflow is omitted.
+        let mut wf_only_request = advanced_request.clone();
+        wf_only_request.query_id = "advanced-workflow-no-context".to_owned();
+        wf_only_request.search = Some(proto::query_events::Search::Advanced(
+            proto::EventAdvancedSearch {
+                expression_version: 1,
+                expression: Some(proto::EventSearchExpression {
+                    node: Some(proto::event_search_expression::Node::Predicate(
+                        proto::EventSearchPredicate {
+                            kind: Some(proto::event_search_predicate::Kind::Workflow(
+                                proto::EventWorkflowPredicate::Reviewed as i32,
+                            )),
+                        },
+                    )),
+                }),
+                semantic: None,
+                include_preview_keyframes: false,
+            },
+        ));
+        let (_, wf_only_messages) = query_events(
+            &handler.state,
+            wf_only_request,
+            &crate::access::CameraAccess::unrestricted(),
+            None,
+            event_search::EventSearchQueryPrincipal {
+                is_admin: false,
+                policy_revision: 0,
+                workflow_actor: Some("user-1".to_owned()),
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(wf_only_messages.len(), 1);
+
+        let delete_v2 = handler.handle(proto::Request {
+            request_id: 2073,
+            command: Some(control_request::Command::EventSearchCommand(
+                proto::EventSearchCommand {
+                    action: Some(event_search_command::Action::DeleteEmbedding(
+                        proto::DeleteEventSearchEmbedding {
+                            source_id: "127.0.0.1".to_owned(),
+                            event_id: "face-1".to_owned(),
+                            model_id: "vision-embedding".to_owned(),
+                            model_version: "v2".to_owned(),
+                        },
+                    )),
+                },
+            )),
+        });
+        assert!(matches!(
+            delete_v2.response.result,
+            Some(control_response::Result::Ok(_))
+        ));
+        let (_, post_delete_messages) = query_events(
+            &handler.state,
+            advanced_request,
+            &crate::access::CameraAccess::unrestricted(),
+            None,
+            event_search::EventSearchQueryPrincipal {
+                is_admin: true,
+                policy_revision: 0,
+                workflow_actor: None,
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(post_delete_messages.len(), 1);
 
         let keyframe = &hit.keyframes[0];
         let objects: Vec<proto::EventSearchMediaObject> = [
@@ -21103,6 +21716,7 @@ mod tests {
                                 image_availability: proto::EventImageAvailability::Unavailable
                                     as i32,
                             }),
+                            timelapse: None,
                         },
                     )),
                 },
@@ -21206,6 +21820,7 @@ mod tests {
                         proto::DownloadExport {
                             job_id: "export-ready".to_owned(),
                             channel: proto::DataChannelKind::ReliableData as i32,
+                            artifact: 0,
                         },
                     )),
                 },
@@ -21258,6 +21873,7 @@ mod tests {
                         proto::DownloadExport {
                             job_id: "export-ready".to_owned(),
                             channel: proto::DataChannelKind::ReliableData as i32,
+                            artifact: 0,
                         },
                     )),
                 },
@@ -21294,6 +21910,7 @@ mod tests {
                 burn_in_timestamp: false,
                 guest_range_preparation: None,
                 event_seed: None,
+                timelapse: None,
             },
         )
         .unwrap();
@@ -21313,6 +21930,7 @@ mod tests {
                 burn_in_timestamp: true,
                 guest_range_preparation: None,
                 event_seed: None,
+                timelapse: None,
             },
         )
         .unwrap();
@@ -21361,6 +21979,7 @@ mod tests {
                 burn_in_timestamp: false,
                 guest_range_preparation: None,
                 event_seed: None,
+                timelapse: None,
             },
         )
         .unwrap();
@@ -21379,6 +21998,7 @@ mod tests {
                 burn_in_timestamp: false,
                 guest_range_preparation: None,
                 event_seed: None,
+                timelapse: None,
             },
         )
         .unwrap_err();
@@ -21438,6 +22058,7 @@ mod tests {
             burn_in_timestamp: false,
             guest_range_preparation: None,
             event_seed: None,
+            timelapse: None,
         };
         let active = active_export_fixture(&state, &request);
         state
@@ -21477,6 +22098,7 @@ mod tests {
                 proto::DownloadExport {
                     job_id: "active-export".to_owned(),
                     channel: proto::DataChannelKind::ReliableData as i32,
+                    artifact: 0,
                 },
             )
             .unwrap_err()
@@ -21546,6 +22168,7 @@ mod tests {
             burn_in_timestamp: false,
             guest_range_preparation: None,
             event_seed: None,
+            timelapse: None,
         };
         let now_ms = i64::try_from(unix_time_ms()).unwrap();
         state.export_jobs.lock().unwrap().insert(
@@ -21578,6 +22201,7 @@ mod tests {
                     retryable: false,
                     burn_in_timestamp: false,
                     event_seed: None,
+                    timelapse: None,
                 },
                 path: Some(PathBuf::from("private-ready-export.mp4")),
                 cancel: Arc::new(AtomicBool::new(false)),
@@ -21594,6 +22218,7 @@ mod tests {
             proto::DownloadExport {
                 job_id: request.job_id,
                 channel: proto::DataChannelKind::ReliableData as i32,
+                artifact: 0,
             },
         )
         .unwrap_err();
@@ -21619,6 +22244,7 @@ mod tests {
                 burn_in_timestamp: false,
                 guest_range_preparation: None,
                 event_seed: None,
+                timelapse: None,
             };
             let cancel = Arc::new(AtomicBool::new(false));
             let artifact_id = Uuid::new_v4().simple().to_string();
@@ -21652,6 +22278,7 @@ mod tests {
                         retryable: false,
                         burn_in_timestamp: false,
                         event_seed: None,
+                        timelapse: None,
                     },
                     path: None,
                     cancel: cancel.clone(),
@@ -21860,6 +22487,7 @@ mod tests {
             burn_in_timestamp: false,
             guest_range_preparation: None,
             event_seed: None,
+            timelapse: None,
         };
         state.export_jobs.lock().unwrap().insert(
             job_id.to_owned(),
@@ -21891,6 +22519,7 @@ mod tests {
                     retryable: false,
                     burn_in_timestamp: false,
                     event_seed: None,
+                    timelapse: None,
                 },
                 path: Some(artifact.clone()),
                 cancel: Arc::new(AtomicBool::new(false)),
@@ -21954,6 +22583,7 @@ mod tests {
             burn_in_timestamp: false,
             guest_range_preparation: None,
             event_seed: None,
+            timelapse: None,
         };
         let job = |job_id: &str, status: proto::ExportJobStatus, file_name: Option<&str>| {
             proto::ExportJob {
@@ -21976,6 +22606,7 @@ mod tests {
                 retryable: false,
                 burn_in_timestamp: false,
                 event_seed: None,
+                timelapse: None,
             }
         };
         let record =
@@ -22734,16 +23365,17 @@ mod tests {
         ));
         let config_path = directory.join("config.toml");
         let recordings = directory.join("recordings");
+        // Keep non-zero safety thresholds small so CI runners with limited free disk still validate.
         let config = Config {
             storage: StorageToml {
                 medium_term_path: Some(recordings.to_string_lossy().into_owned()),
                 long_term_path: Some(recordings.to_string_lossy().into_owned()),
                 long_term_max_gb: 24,
-                minimum_free_gb: 8,
-                maximum_used_percent: Some(85),
-                warning_free_gb: 12,
-                critical_free_gb: 8,
-                cleanup_hysteresis_gb: 2,
+                minimum_free_gb: 1,
+                maximum_used_percent: Some(99),
+                warning_free_gb: 2,
+                critical_free_gb: 1,
+                cleanup_hysteresis_gb: 1,
                 pre_recording_stream_max_bytes: 33_554_432,
                 pre_recording_global_max_bytes: 134_217_728,
                 ..StorageToml::default()
@@ -22819,11 +23451,11 @@ mod tests {
         };
         let preserved = result.config.unwrap();
         let preserved_storage = preserved.storage.unwrap();
-        assert_eq!(preserved_storage.minimum_free_gb, Some(8));
-        assert_eq!(preserved_storage.maximum_used_percent, Some(85));
-        assert_eq!(preserved_storage.warning_free_gb, Some(12));
-        assert_eq!(preserved_storage.critical_free_gb, Some(8));
-        assert_eq!(preserved_storage.cleanup_hysteresis_gb, Some(2));
+        assert_eq!(preserved_storage.minimum_free_gb, Some(1));
+        assert_eq!(preserved_storage.maximum_used_percent, Some(99));
+        assert_eq!(preserved_storage.warning_free_gb, Some(2));
+        assert_eq!(preserved_storage.critical_free_gb, Some(1));
+        assert_eq!(preserved_storage.cleanup_hysteresis_gb, Some(1));
         assert_eq!(
             preserved_storage.pre_recording_stream_max_bytes,
             Some(33_554_432)
@@ -25112,11 +25744,12 @@ mod tests {
                     flush_interval_secs: 15,
                     write_buffer_bytes: 16_384,
                     long_term_max_gb: 24,
-                    minimum_free_gb: 8,
-                    maximum_used_percent: Some(85),
-                    warning_free_gb: 12,
-                    critical_free_gb: 8,
-                    cleanup_hysteresis_gb: 2,
+                    // Keep non-zero headroom thresholds small so CI runners with limited free space pass.
+                    minimum_free_gb: 1,
+                    maximum_used_percent: Some(99),
+                    warning_free_gb: 2,
+                    critical_free_gb: 1,
+                    cleanup_hysteresis_gb: 1,
                     pre_recording_stream_max_bytes:
                         crate::config::default_pre_recording_stream_max_bytes(),
                     pre_recording_global_max_bytes:
@@ -25187,8 +25820,8 @@ mod tests {
             event_thumbnail_path.to_string_lossy()
         );
         assert_eq!(storage.event_thumbnail_max_mb, 512);
-        assert_eq!(storage.minimum_free_gb, Some(8));
-        assert_eq!(storage.maximum_used_percent, Some(85));
+        assert_eq!(storage.minimum_free_gb, Some(1));
+        assert_eq!(storage.maximum_used_percent, Some(99));
         assert_eq!(persisted.camera_count, 1);
 
         let Err(error) = save_runtime_settings(

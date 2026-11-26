@@ -108,6 +108,46 @@ After reproducing the defect, open **Settings > Logs & diagnostics > Download di
 the generated `keeppeek-diagnostics-*.json.gz` file under **Diagnostics package and sanitized
 evidence** so the package contains the relevant retained server and browser logs.
 
+## In-app bug reporting (Administrators)
+
+Administrators can also start a bounded report session from **Settings** or **Settings > Logs** by
+selecting **Report a bug**:
+
+1. Review what will be collected and choose **Collect logs only** or **Record screen**. Screen
+   recording uses `getDisplayMedia({ video: true, audio: false })` and never requests a webcam,
+   microphone, system audio, or tab audio.
+2. Reproduce the defect while navigating normally inside KeepPeek. A persistent indicator displays
+   elapsed time, recorded bytes, **Stop**, and **Cancel**. Sessions stop automatically at 5 minutes
+   or 100 MiB of screen media, and total uploads are capped at 128 MiB.
+3. Review the exact scrubbed issue text, browser and server log counts, UTC interval, evidence
+   warnings (such as active filters, buffer eviction, stream gaps, or recorder restarts detected via
+   `LogSnapshot.generation`), artifact sizes, retention window, and private screen preview. You can
+   exclude or discard the screen recording before sharing.
+4. Confirm once more to submit when `[reporting]` is configured in `config.toml`, or download the
+   scrubbed diagnostics package, optional screen recording, and report notes locally. Local
+   downloads remain available whenever remote submission is unconfigured or fails.
+
+### Browser capability matrix
+
+| Capability                                        | Behavior when supported                                       | Behavior when unavailable or denied                                                                 |
+| ------------------------------------------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `navigator.mediaDevices.getDisplayMedia`          | Offers **Record screen** after explicit consent (video-only). | **Record screen** is disabled or permission denial falls back to logs-only collection.              |
+| `MediaRecorder` + supported VP8/WebM or MP4 codec | Encodes bounded chunks up to 5 minutes / 100 MiB.             | **Record screen** is disabled; logs-only reporting stays available.                                 |
+| `CompressionStream('gzip')`                       | Produces gzip-compressed `keeppeek-diagnostics-*.json.gz`.    | Discloses that the diagnostics package is unavailable and preserves report notes and any recording. |
+
+### Manual real-browser current-tab capture smoke procedure
+
+Because browser permission pickers cannot be fully verified by DOM mocks, verify display capture in
+a real desktop browser when qualifying a release:
+
+1. Sign in as an Administrator over HTTPS or localhost, open **Settings**, and select **Report a bug**.
+2. Select **Record screen**, choose the current KeepPeek tab in the browser picker, and confirm no
+   microphone, webcam, or audio permission prompt appears.
+3. Navigate to **Settings > Logs**, confirm the persistent indicator stays visible with updating
+   elapsed time and byte count, then end sharing from either the browser banner or **Stop**.
+4. Confirm the review dialog opens with a playable preview, download the recording, and inspect it
+   with `ffprobe` to verify one video stream and zero audio streams.
+
 If the package cannot be generated or attached, state the exact reason. Missing diagnostics do not
 block submission, but a report without enough evidence may be closed as `needs more info`.
 

@@ -80,19 +80,28 @@ impl<R: Read + Seek> ReadBox<&mut R> for Mp4aBox {
         reader.read_u32::<BigEndian>()?; // reserved
         reader.read_u16::<BigEndian>()?; // reserved
         let data_reference_index = reader.read_u16::<BigEndian>()?;
-
-        reader.read_u64::<BigEndian>()?; // reserved
+        let version = reader.read_u16::<BigEndian>()?;
+        reader.read_u16::<BigEndian>()?; // reserved
+        reader.read_u32::<BigEndian>()?; // reserved
         let channelcount = reader.read_u16::<BigEndian>()?;
         let samplesize = reader.read_u16::<BigEndian>()?;
         reader.read_u32::<BigEndian>()?; // pre-defined, reserved
         let samplerate = FixedPointU16::new_raw(reader.read_u32::<BigEndian>()?);
 
+        if version == 1 {
+            // Skip QuickTime v1 sound sample description extension fields.
+            ensure_box_bytes_remaining(reader, end, 16)?;
+            reader.read_u64::<BigEndian>()?;
+            reader.read_u64::<BigEndian>()?;
+        }
+
+        // Find `esds` directly inside `mp4a` or nested inside a QuickTime `wave` atom.
         let mut esds = None;
-        let current = reader.stream_position()?;
-        if current < end {
+        while reader.stream_position()? < end {
             let header = read_box_header(reader, end)?;
             let BoxHeader { name, size: s } = header;
-            if checked_box_end(reader, s)? > end {
+            let child_end = checked_box_end(reader, s)?;
+            if child_end > end {
                 return Err(Error::InvalidData(
                     "mp4a box contains a box with a larger size than it",
                 ));
@@ -100,9 +109,15 @@ impl<R: Read + Seek> ReadBox<&mut R> for Mp4aBox {
 
             if name == BoxType::EsdsBox {
                 esds = Some(EsdsBox::read_box(reader, s)?);
+                break;
+            } else if name == BoxType::WaveBox {
+                // Continue reading child boxes nested inside the `wave` atom.
+            } else {
+                skip_bytes_to(reader, child_end)?;
             }
-            skip_bytes_to(reader, end)?;
         }
+
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             data_reference_index,
@@ -642,7 +657,7 @@ impl<W: Write> WriteDesc<&mut W> for SLConfigDescriptor {
         let size = Self::desc_size();
         write_desc(writer, Self::desc_tag(), size)?;
 
-        writer.write_u8(0)?; // pre-defined
+        writer.write_u8(2)?; // pre-defined (ISO 14496-14 requires 2 in MP4)
         Ok(size)
     }
 }
@@ -784,7 +799,7 @@ mod tests {
 
         SLConfigDescriptor::new().write_desc(&mut bytes).unwrap();
 
-        assert_eq!(bytes, [SLConfigDescriptor::desc_tag(), 1, 0]);
+        assert_eq!(bytes, [SLConfigDescriptor::desc_tag(), 1, 2]);
     }
 
     #[test]
@@ -794,7 +809,7 @@ mod tests {
         expected.write_desc(&mut bytes).unwrap();
         let sl_offset = bytes
             .windows(3)
-            .position(|window| window == [SLConfigDescriptor::desc_tag(), 1, 0])
+            .position(|window| window == [SLConfigDescriptor::desc_tag(), 1, 2])
             .unwrap();
         bytes[sl_offset + 1] = 0;
 
@@ -806,5 +821,43 @@ mod tests {
 
         let actual = ESDescriptor::read_desc(&mut reader, size).unwrap();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_mp4a_extracts_esds_from_quicktime_wave_box() {
+        let esds = EsdsBox::new(&AacConfig::default());
+        let mut esds_bytes = Vec::new();
+        esds.write_box(&mut esds_bytes).unwrap();
+
+        let frma_box = [0, 0, 0, 12, b'f', b'r', b'm', b'a', b'm', b'p', b'4', b'a'];
+        let wave_size = HEADER_SIZE + (frma_box.len() + esds_bytes.len()) as u64;
+        let mut wave_bytes = Vec::new();
+        BoxHeader::new(BoxType::WaveBox, wave_size)
+            .write(&mut wave_bytes)
+            .unwrap();
+        wave_bytes.extend_from_slice(&frma_box);
+        wave_bytes.extend_from_slice(&esds_bytes);
+
+        let total_size = HEADER_SIZE + 28 + 16 + wave_bytes.len() as u64;
+        let mut buf = Vec::new();
+        BoxHeader::new(BoxType::Mp4aBox, total_size)
+            .write(&mut buf)
+            .unwrap();
+        buf.extend_from_slice(&[0u8; 6]); // reserved
+        buf.extend_from_slice(&1u16.to_be_bytes()); // data_reference_index
+        buf.extend_from_slice(&1u16.to_be_bytes()); // QuickTime sound sample version 1
+        buf.extend_from_slice(&[0u8; 6]); // reserved
+        buf.extend_from_slice(&2u16.to_be_bytes()); // channelcount
+        buf.extend_from_slice(&16u16.to_be_bytes()); // samplesize
+        buf.extend_from_slice(&[0u8; 4]); // pre-defined + reserved
+        buf.extend_from_slice(&FixedPointU16::new(48000).raw_value().to_be_bytes());
+        buf.extend_from_slice(&[0u8; 16]); // QuickTime v1 extension
+        buf.extend_from_slice(&wave_bytes);
+
+        let mut reader = Cursor::new(&buf);
+        let header = BoxHeader::read(&mut reader).unwrap();
+        let parsed = Mp4aBox::read_box(&mut reader, header.size).unwrap();
+        assert_eq!(parsed.esds, Some(esds));
+        assert_eq!(parsed.channelcount, 2);
     }
 }

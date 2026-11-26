@@ -9,7 +9,8 @@ prefetch, cancel, or cache media.
 ## Metadata browsing
 
 `EventSearch::search_metadata` returns events newest-first using a bounded time range and opaque
-keyset continuation token. Ordinary filters compose with `AND` semantics:
+keyset continuation token. For versioned nested boolean AST expressions, hybrid semantic ranking,
+and owner-scoped saved searches, see [advanced boolean and semantic event search](advanced-event-search.md). Ordinary filters compose with `AND` semantics:
 
 - exact event and source IDs;
 - event type and origin;

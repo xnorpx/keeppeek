@@ -106,7 +106,7 @@ export const mobileSettingsSections = Object.freeze<MobileSettingsSection[]>([
 		group: 'system',
 		href: '#system',
 		renderTarget: 'appearance',
-		keywords: ['system', 'updates', 'version', 'restart', 'config']
+		keywords: ['system', 'updates', 'version', 'restart', 'config', 'usage reporting', 'telemetry']
 	},
 	{
 		id: 'logs',
@@ -137,7 +137,8 @@ export function mobileSettingsFocus(
 	hash: string,
 	backupAvailable = true
 ): MobileSettingsSection | null {
-	const id = hash.startsWith('#') ? hash.slice(1) : hash;
+	const rawId = hash.startsWith('#') ? hash.slice(1) : hash;
+	const id = rawId === 'usage-reporting' ? 'system' : rawId;
 	return (
 		mobileSettingsSections.find(
 			(section) =>

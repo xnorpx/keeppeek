@@ -11,7 +11,21 @@ import {
 	ExternalAuthenticationConfigurationSchema,
 	ExternalAuthenticationResultSchema,
 	ExternalIdentityListSchema,
-	BrowserSessionListSchema
+	BrowserSessionListSchema,
+	ExportArtifactKind,
+	StoredMediaMessageSchema,
+	TimelapseEstimateSchema,
+	TimelapseGapReason,
+	TimelapseGapSchema,
+	TimelapseJobSummarySchema,
+	TimelapsePlanItemSchema,
+	TimelapsePlanResultSchema,
+	TimelapseSampleDeliverySchema,
+	TimelapseSampleEndSchema,
+	TimelapseSampleSchema,
+	type PlanTimelapse,
+	type UsageReportingCommand,
+	type UsageReportingResult
 } from '../../src/lib/proto/webrtc_pb';
 import {
 	create,
@@ -121,6 +135,7 @@ import {
 	HealthIssueSnapshotSchema,
 	HealthProfileSummarySchema,
 	HealthTotalsSnapshotSchema,
+	LiveAudioTimingSchema,
 	LogBufferStatsSchema,
 	LoadHealthSnapshotSchema,
 	LoggingSettingsResultSchema,
@@ -144,6 +159,12 @@ import {
 	NotificationRuleRecordSchema,
 	NotificationRuleResultSchema,
 	NotificationTestResultSchema,
+	CloudNotificationFailureCode as ProtoCloudNotificationFailureCode,
+	CloudNotificationResultSchema,
+	CloudNotificationSettingsSchema,
+	CloudNotificationState as ProtoCloudNotificationState,
+	CloudNotificationStatusSchema,
+	CloudNotificationTestResultSchema,
 	PtzCapabilitySchema,
 	PtzPresetSchema,
 	PtzResultSchema,
@@ -157,6 +178,7 @@ import {
 	RuntimeConfigurationResultSchema,
 	RuntimeStorageConfigurationSchema,
 	SanitizedRuntimeConfigurationSchema,
+	SavedEventSearchResultSchema,
 	ServerCapabilitiesSchema,
 	ServerHealthSnapshotSchema,
 	SourceSessionSchema,
@@ -228,6 +250,13 @@ import type {
 	NotificationRuleDefinition,
 	NotificationRuleRecord
 } from '../../src/lib/notifications';
+import type {
+	CloudNotificationFailureCode,
+	CloudNotificationSettings,
+	CloudNotificationState,
+	CloudNotificationStatus,
+	CloudNotificationTestResult
+} from '../../src/lib/control-client-cloud-notifications';
 import type {
 	MqttIntegration,
 	MqttSettingsUpdate,
@@ -388,6 +417,7 @@ export type ControlRequests = {
 	exportJobs: ExportControlRequest[];
 	streamProbes: Array<{ ip: string; onvifPort: number | null }>;
 	notificationActions: string[];
+	cloudNotificationActions: string[];
 	mqttUpdates: MqttSettingsUpdate[];
 	mqttTests: MqttSettingsUpdate[];
 	mediaSubscriptions: Array<{
@@ -481,6 +511,10 @@ export type MockControlPeerOptions = {
 	notificationInbox?: NotificationInbox;
 	notificationHistory?: readonly NotificationHistoryGroup[];
 	notificationConflictOnSave?: boolean;
+	cloudNotificationSettings?: CloudNotificationSettings;
+	cloudNotificationStatusSequence?: readonly CloudNotificationStatus[];
+	cloudNotificationTestResults?: readonly CloudNotificationTestResult[];
+	cloudNotificationConflictOnSave?: boolean;
 	configurationSnapshots?: readonly ConfigurationSnapshot[];
 	configurationPlanResult?: ConfigurationPlan;
 	configurationApplyResult?: ConfigurationApplyResult;
@@ -490,6 +524,31 @@ export type MockControlPeerOptions = {
 	configurationExportDocument?: string;
 	configurationApplyConflictRevision?: string;
 	configurationApplyGate?: Promise<void>;
+	onUsageReportingCommand?: (
+		command: UsageReportingCommand
+	) => UsageReportingResult | Promise<UsageReportingResult>;
+	timelapsePlan?: (request: PlanTimelapse) => {
+		samples: Array<{
+			index: number;
+			requestedMs: number;
+			actualMs: number;
+			recordingId?: string;
+			codec?: string;
+			width?: number;
+			height?: number;
+		}>;
+		gaps?: Array<{
+			startMs: number;
+			endMs: number;
+			reason:
+				'missing' | 'retained' | 'privacy' | 'unsupported_codec' | 'corrupt' | 'open_recording';
+		}>;
+		requiresConfirmation?: boolean;
+		encoderAvailable?: boolean;
+		siteTimezone?: string;
+		nextPageToken?: string;
+	};
+	timelapseManifestFile?: Uint8Array;
 };
 
 function encodedOk(requestId: bigint, result?: Ok['result']): number[] {
@@ -980,6 +1039,7 @@ export async function mockControlPeer(
 		maxConcurrentEventMedia: 0,
 		exportJobs: [],
 		notificationActions: [],
+		cloudNotificationActions: [],
 		mqttUpdates: [],
 		mqttTests: [],
 		mediaSubscriptions: [],
@@ -1012,6 +1072,30 @@ export async function mockControlPeer(
 	const cameraSettingsSequence = (options.cameraSettingsSequence ?? []).map((settings) => [
 		...settings
 	]);
+	let cloudNotificationSettings: CloudNotificationSettings = options.cloudNotificationSettings
+		? { ...options.cloudNotificationSettings }
+		: { revision: 0n, enabled: false, imagePreviewsEnabled: false };
+	const cloudNotificationStatuses = (options.cloudNotificationStatusSequence ?? []).map(
+		(entry) => ({
+			...entry
+		})
+	);
+	let cloudNotificationLastStatus: CloudNotificationStatus = cloudNotificationStatuses[0] ?? {
+		state: 'disabled',
+		paired: false,
+		pending: false,
+		acceptedLastHour: 0,
+		acceptedLastDay: 0,
+		suppressedLastHour: 0,
+		suppressedLastDay: 0,
+		nextEligibleAtMs: null,
+		lastAcceptedAtMs: null,
+		lastFailure: 'none'
+	};
+	const cloudNotificationTests = (options.cloudNotificationTestResults ?? []).map((entry) => ({
+		...entry
+	}));
+	let cloudConflictPending = Boolean(options.cloudNotificationConflictOnSave);
 	let currentCameraSettings = [...(options.cameraSettings ?? [])];
 	let activeDiscoveryId = '';
 	let discoveryComplete = false;
@@ -1226,6 +1310,23 @@ export async function mockControlPeer(
 					case: 'importPreview',
 					value: protoConfigurationImportPreview(options.configurationImportPreview)
 				});
+			}
+		}
+		if (request.command.case === 'usageReportingCommand') {
+			if (!options.onUsageReportingCommand) {
+				return encodedError(request.requestId, 'usage reporting handler is not configured');
+			}
+			try {
+				const value = await options.onUsageReportingCommand(request.command.value);
+				return encodedOk(request.requestId, {
+					case: 'usageReportingResult',
+					value
+				});
+			} catch (cause) {
+				return encodedError(
+					request.requestId,
+					cause instanceof Error ? cause.message : 'usage reporting command failed'
+				);
 			}
 		}
 		if (request.command.case === 'subscribeMedia') {
@@ -1599,6 +1700,119 @@ export async function mockControlPeer(
 			}
 			return encodedError(request.requestId, 'unsupported notification action');
 		}
+		if (request.command.case === 'cloudNotificationCommand') {
+			const action = request.command.value.action;
+			if (!action.case) {
+				return encodedError(request.requestId, 'cloud notification action is required');
+			}
+			requests.cloudNotificationActions.push(action.case);
+			if (action.case === 'getSettings') {
+				return encodedOk(request.requestId, {
+					case: 'cloudNotificationResult',
+					value: create(CloudNotificationResultSchema, {
+						result: {
+							case: 'settings',
+							value: create(CloudNotificationSettingsSchema, {
+								revision: cloudNotificationSettings.revision,
+								enabled: cloudNotificationSettings.enabled,
+								imagePreviewsEnabled: cloudNotificationSettings.imagePreviewsEnabled
+							})
+						}
+					})
+				});
+			}
+			if (action.case === 'updateSettings') {
+				if (
+					cloudConflictPending ||
+					action.value.expectedRevision !== cloudNotificationSettings.revision
+				) {
+					cloudConflictPending = false;
+					cloudNotificationSettings = {
+						...cloudNotificationSettings,
+						revision: cloudNotificationSettings.revision + 1n
+					};
+					return encodedError(request.requestId, 'cloud notification settings revision conflict');
+				}
+				if (action.value.imagePreviewsEnabled && !action.value.enabled) {
+					return encodedError(
+						request.requestId,
+						'image previews cannot be enabled while cloud signaling is disabled'
+					);
+				}
+				cloudNotificationSettings = {
+					revision: cloudNotificationSettings.revision + 1n,
+					enabled: action.value.enabled,
+					imagePreviewsEnabled: action.value.imagePreviewsEnabled
+				};
+				return encodedOk(request.requestId, {
+					case: 'cloudNotificationResult',
+					value: create(CloudNotificationResultSchema, {
+						result: {
+							case: 'settings',
+							value: create(CloudNotificationSettingsSchema, {
+								revision: cloudNotificationSettings.revision,
+								enabled: cloudNotificationSettings.enabled,
+								imagePreviewsEnabled: cloudNotificationSettings.imagePreviewsEnabled
+							})
+						}
+					})
+				});
+			}
+			if (action.case === 'getStatus') {
+				const next = cloudNotificationStatuses.shift();
+				if (next) cloudNotificationLastStatus = next;
+				return encodedOk(request.requestId, {
+					case: 'cloudNotificationResult',
+					value: create(CloudNotificationResultSchema, {
+						result: {
+							case: 'status',
+							value: create(CloudNotificationStatusSchema, {
+								state: protoCloudNotificationState(cloudNotificationLastStatus.state),
+								paired: cloudNotificationLastStatus.paired,
+								pending: cloudNotificationLastStatus.pending,
+								acceptedLastHour: cloudNotificationLastStatus.acceptedLastHour,
+								acceptedLastDay: cloudNotificationLastStatus.acceptedLastDay,
+								suppressedLastHour: cloudNotificationLastStatus.suppressedLastHour,
+								suppressedLastDay: cloudNotificationLastStatus.suppressedLastDay,
+								nextEligibleAt:
+									cloudNotificationLastStatus.nextEligibleAtMs === null
+										? undefined
+										: timestampFromDate(new Date(cloudNotificationLastStatus.nextEligibleAtMs)),
+								lastAcceptedAt:
+									cloudNotificationLastStatus.lastAcceptedAtMs === null
+										? undefined
+										: timestampFromDate(new Date(cloudNotificationLastStatus.lastAcceptedAtMs)),
+								lastFailure: protoCloudNotificationFailure(cloudNotificationLastStatus.lastFailure)
+							})
+						}
+					})
+				});
+			}
+			if (action.case === 'test') {
+				const testResult = cloudNotificationTests.shift() ?? {
+					accepted: true,
+					nextEligibleAtMs: null,
+					failure: 'none'
+				};
+				return encodedOk(request.requestId, {
+					case: 'cloudNotificationResult',
+					value: create(CloudNotificationResultSchema, {
+						result: {
+							case: 'test',
+							value: create(CloudNotificationTestResultSchema, {
+								accepted: testResult.accepted,
+								nextEligibleAt:
+									testResult.nextEligibleAtMs === null
+										? undefined
+										: timestampFromDate(new Date(testResult.nextEligibleAtMs)),
+								failure: protoCloudNotificationFailure(testResult.failure)
+							})
+						}
+					})
+				});
+			}
+			return encodedError(request.requestId, 'unsupported cloud notification action');
+		}
 		if (request.command.case === 'eventSearchCommand') {
 			const action = request.command.value.action;
 			if (action.case === 'query') {
@@ -1793,6 +2007,12 @@ export async function mockControlPeer(
 					})
 				});
 			}
+			if (action.case === 'listSavedSearches') {
+				return encodedOk(request.requestId, {
+					case: 'savedEventSearchResult',
+					value: create(SavedEventSearchResultSchema, { ownerId: 'mock', searches: [] })
+				});
+			}
 			if (action.case === 'cancelQuery') {
 				requests.cancelledEventSearchQueries.push(action.value.queryId);
 				return encodedOk(request.requestId, undefined);
@@ -1895,6 +2115,134 @@ export async function mockControlPeer(
 		}
 		if (request.command.case === 'storedMediaCommand') {
 			const action = request.command.value.action;
+			if (action.case === 'planTimelapse') {
+				const req = action.value;
+				const startMs = req.startTime ? timestampFromProto(req.startTime) : 0;
+				const endMs = req.endTime ? timestampFromProto(req.endTime) : startMs + 3_600_000;
+				const planned = options.timelapsePlan?.(req) ?? {
+					samples: [
+						{ index: 0, requestedMs: startMs, actualMs: startMs + 1000 },
+						{ index: 1, requestedMs: startMs + 600_000, actualMs: startMs + 601_000 }
+					],
+					gaps: []
+				};
+				const gapReasonCode = (
+					reason:
+						'missing' | 'retained' | 'privacy' | 'unsupported_codec' | 'corrupt' | 'open_recording'
+				) => {
+					switch (reason) {
+						case 'retained':
+							return TimelapseGapReason.RETAINED;
+						case 'privacy':
+							return TimelapseGapReason.PRIVACY;
+						case 'unsupported_codec':
+							return TimelapseGapReason.UNSUPPORTED_CODEC;
+						case 'corrupt':
+							return TimelapseGapReason.CORRUPT;
+						case 'open_recording':
+							return TimelapseGapReason.OPEN_RECORDING;
+						default:
+							return TimelapseGapReason.MISSING;
+					}
+				};
+				const items = [
+					...planned.samples.map((sample) =>
+						create(TimelapsePlanItemSchema, {
+							entry: {
+								case: 'sample',
+								value: create(TimelapseSampleSchema, {
+									index: sample.index,
+									requestedTime: timestampFromDate(new Date(sample.requestedMs)),
+									actualTime: timestampFromDate(new Date(sample.actualMs)),
+									recordingId: sample.recordingId ?? 'rec-1',
+									fragmentSequence: 1n,
+									sampleOrdinal: sample.index + 1,
+									codec: sample.codec ?? 'h264',
+									width: sample.width ?? 640,
+									height: sample.height ?? 360,
+									encodedBytes: 4096,
+									sampleToken: new Uint8Array([1, 2, 3, sample.index & 0xff])
+								})
+							}
+						})
+					),
+					...(planned.gaps ?? []).map((gap) =>
+						create(TimelapsePlanItemSchema, {
+							entry: {
+								case: 'gap',
+								value: create(TimelapseGapSchema, {
+									startTime: timestampFromDate(new Date(gap.startMs)),
+									endTime: timestampFromDate(new Date(gap.endMs)),
+									reason: gapReasonCode(gap.reason)
+								})
+							}
+						})
+					)
+				];
+				const fps = req.outputPreview?.outputFps || 10;
+				const gapDurationMs = (planned.gaps ?? []).reduce(
+					(acc, gap) => acc + Math.max(0, gap.endMs - gap.startMs),
+					0
+				);
+				return encodedOk(request.requestId, {
+					case: 'timelapsePlan',
+					value: create(TimelapsePlanResultSchema, {
+						sourceId: req.sourceId,
+						streamId: req.streamId,
+						requestedStartTime: timestampFromDate(new Date(startMs)),
+						requestedEndTime: timestampFromDate(new Date(endMs)),
+						sourceFingerprint: 'fp-mock-timelapse-1',
+						catalogRevision: 1n,
+						estimate: create(TimelapseEstimateSchema, {
+							sampleCount: planned.samples.length,
+							gapCount: planned.gaps?.length ?? 0,
+							gapDurationMs: BigInt(gapDurationMs),
+							outputDurationMs: BigInt(Math.round((planned.samples.length * 1000) / fps)),
+							estimatedSourceBytes: BigInt(planned.samples.length * 32_768),
+							estimatedOutputBytes: BigInt(planned.samples.length * 16_384 + 65_536),
+							requiresConfirmation: planned.requiresConfirmation ?? false,
+							encoderAvailable: planned.encoderAvailable ?? true,
+							siteTimezone: planned.siteTimezone ?? 'UTC'
+						}),
+						items,
+						totalSamples: planned.samples.length,
+						nextPageToken: planned.nextPageToken ?? ''
+					})
+				});
+			}
+			if (action.case === 'fetchTimelapseSamples') {
+				pendingDataMessages.push(
+					encodedData(
+						create(MessageSchema, {
+							message: {
+								case: 'storedMedia',
+								value: create(StoredMediaMessageSchema, {
+									message: {
+										case: 'timelapseSampleEnd',
+										value: create(TimelapseSampleEndSchema, {
+											transferId: action.value.transferId,
+											deliveredCount: 0,
+											cancelled: false
+										})
+									}
+								})
+							}
+						})
+					)
+				);
+				return encodedOk(request.requestId, {
+					case: 'timelapseSampleDelivery',
+					value: create(TimelapseSampleDeliverySchema, {
+						transferId: action.value.transferId,
+						channel: DataChannelKind.RELIABLE_DATA,
+						acceptedCount: 0,
+						rejected: []
+					})
+				});
+			}
+			if (action.case === 'cancelTimelapseSamples') {
+				return encodedOk(request.requestId);
+			}
 			if (action.case === 'queryTimeline') {
 				const query = action.value;
 				await options.beforeStoredTimelineQuery?.(query.sourceIds);
@@ -2139,6 +2487,17 @@ export async function mockControlPeer(
 			}
 			if (action.case === 'create') {
 				const command = action.value;
+				const manifestBytes =
+					options.timelapseManifestFile ??
+					new TextEncoder().encode(
+						JSON.stringify({
+							schema_version: 1,
+							silent: true,
+							utc_provenance: true,
+							output_sha256: exportFileHash
+						})
+					);
+				const manifestHash = createHash('sha256').update(manifestBytes).digest('hex');
 				const base = create(ExportJobSchema, {
 					jobId: command.jobId,
 					sourceId: command.sourceId,
@@ -2150,7 +2509,24 @@ export async function mockControlPeer(
 						? 'Timestamp burn-in requires a configured re-encoding worker'
 						: undefined,
 					burnInTimestamp: command.burnInTimestamp,
-					eventSeed: command.eventSeed
+					eventSeed: command.eventSeed,
+					timelapse: command.timelapse
+						? create(TimelapseJobSummarySchema, {
+								options: command.timelapse,
+								sampleCount: 2,
+								gapCount: 0,
+								outputDurationMs: 200n,
+								outputWidth: command.timelapse.maxWidth,
+								outputHeight: command.timelapse.maxHeight,
+								silent: true,
+								sourceFingerprint: 'fp-mock-timelapse-1',
+								siteTimezone: 'UTC',
+								manifestSchemaVersion: 1,
+								manifestFileName: `${command.jobId}.manifest.json`,
+								manifestSha256: manifestHash,
+								manifestBytes: BigInt(manifestBytes.byteLength)
+							})
+						: undefined
 				});
 				const fixture = exportCreateResults.shift();
 				const exportJob = fixture ? applyExportFixture(base, fixture, exportFileHash) : base;
@@ -2189,8 +2565,26 @@ export async function mockControlPeer(
 			if (current.status !== ExportJobStatus.READY) {
 				return encodedError(request.requestId, 'export job is not ready');
 			}
-			const chunkSize = Math.max(1, Math.ceil(exportFile.byteLength / 2));
-			const chunkCount = Math.ceil(exportFile.byteLength / chunkSize);
+			const isManifest = action.value.artifact === ExportArtifactKind.MANIFEST;
+			const manifestPayload =
+				options.timelapseManifestFile ??
+				new TextEncoder().encode(
+					JSON.stringify({
+						schema_version: 1,
+						silent: true,
+						utc_provenance: true,
+						output_sha256: exportFileHash
+					})
+				);
+			const downloadPayload = isManifest ? manifestPayload : exportFile;
+			const downloadSha = isManifest
+				? createHash('sha256').update(manifestPayload).digest('hex')
+				: exportFileHash;
+			const downloadFileName = isManifest
+				? (current.timelapse?.manifestFileName ?? `${current.jobId}.manifest.json`)
+				: current.fileName;
+			const chunkSize = Math.max(1, Math.ceil(downloadPayload.byteLength / 2));
+			const chunkCount = Math.ceil(downloadPayload.byteLength / chunkSize);
 			for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
 				pendingDataMessages.push(
 					encodedData(
@@ -2204,9 +2598,9 @@ export async function mockControlPeer(
 											jobId: current.jobId,
 											chunkIndex,
 											chunkCount,
-											payload: exportFile.slice(
+											payload: downloadPayload.slice(
 												chunkIndex * chunkSize,
-												Math.min(exportFile.byteLength, (chunkIndex + 1) * chunkSize)
+												Math.min(downloadPayload.byteLength, (chunkIndex + 1) * chunkSize)
 											)
 										})
 									}
@@ -2221,7 +2615,10 @@ export async function mockControlPeer(
 				value: create(ExportDownloadResultSchema, {
 					job: current,
 					channel: DataChannelKind.RELIABLE_DATA,
-					chunkCount
+					chunkCount,
+					artifact: isManifest ? ExportArtifactKind.MANIFEST : ExportArtifactKind.MEDIA,
+					fileName: downloadFileName,
+					sha256: downloadSha
 				})
 			});
 		}
@@ -3615,7 +4012,19 @@ function protoHealthSnapshot(health: HealthFixture) {
 					subscribers: fixtureBigInt(source.subscribers),
 					bitrateBps: optionalFixtureBigInt(source.bitrate_bps),
 					hasKeyframe: source.has_keyframe ?? false,
-					keyframeAgeMs: optionalFixtureBigInt(source.keyframe_age_ms)
+					keyframeAgeMs: optionalFixtureBigInt(source.keyframe_age_ms),
+					liveAudio: source.live_audio
+						? create(LiveAudioTimingSchema, {
+								configuredOffsetMs: source.live_audio.configured_offset_ms,
+								appliedOffsetMs: source.live_audio.applied_offset_ms,
+								preview: source.live_audio.preview,
+								heldAudioBytes: source.live_audio.held_audio_bytes,
+								heldVideoBytes: source.live_audio.held_video_bytes,
+								heldVideoFrames: source.live_audio.held_video_frames,
+								capacityDrops: fixtureBigInt(source.live_audio.capacity_drops),
+								expiredDrops: fixtureBigInt(source.live_audio.expired_drops)
+							})
+						: undefined
 				})
 			)
 		}),
@@ -4435,4 +4844,42 @@ function protoRuntimeResult(result: SettingsConfigUpdateResponse) {
 		}),
 		restartRequired: result.restart_required
 	});
+}
+
+function protoCloudNotificationState(state: CloudNotificationState): ProtoCloudNotificationState {
+	switch (state) {
+		case 'disabled':
+			return ProtoCloudNotificationState.DISABLED;
+		case 'unpaired':
+			return ProtoCloudNotificationState.UNPAIRED;
+		case 'ready':
+			return ProtoCloudNotificationState.READY;
+		case 'throttled':
+			return ProtoCloudNotificationState.THROTTLED;
+		case 'backing_off':
+			return ProtoCloudNotificationState.BACKING_OFF;
+		case 'unavailable':
+			return ProtoCloudNotificationState.UNAVAILABLE;
+	}
+}
+
+function protoCloudNotificationFailure(
+	code: CloudNotificationFailureCode
+): ProtoCloudNotificationFailureCode {
+	switch (code) {
+		case 'none':
+			return ProtoCloudNotificationFailureCode.NONE;
+		case 'local_limit':
+			return ProtoCloudNotificationFailureCode.LOCAL_LIMIT;
+		case 'service_limit':
+			return ProtoCloudNotificationFailureCode.SERVICE_LIMIT;
+		case 'dependency':
+			return ProtoCloudNotificationFailureCode.DEPENDENCY;
+		case 'credential_rejected':
+			return ProtoCloudNotificationFailureCode.CREDENTIAL_REJECTED;
+		case 'integrity':
+			return ProtoCloudNotificationFailureCode.INTEGRITY;
+		case 'expired':
+			return ProtoCloudNotificationFailureCode.EXPIRED;
+	}
 }

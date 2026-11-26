@@ -9,6 +9,7 @@
 	import MailIcon from '@lucide/svelte/icons/mail';
 	import MonitorIcon from '@lucide/svelte/icons/monitor';
 	import RadioTowerIcon from '@lucide/svelte/icons/radio-tower';
+	import CloudNotificationSettings from './CloudNotificationSettings.svelte';
 	import NotificationsRuntime from './NotificationsRuntime.svelte';
 
 	const evidence = notificationsEvidence();
@@ -30,7 +31,10 @@
 </script>
 
 {#if runtimeSupported}
-	<NotificationsRuntime />
+	<div class="space-y-4">
+		<NotificationsRuntime />
+		<CloudNotificationSettings />
+	</div>
 {:else}
 	<section
 		id="notifications"

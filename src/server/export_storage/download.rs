@@ -5,6 +5,9 @@ struct VerifiedDownload {
     payload: Vec<u8>,
     from_history: bool,
     permit: crate::privacy::MediaPermit,
+    artifact: proto::ExportArtifactKind,
+    file_name: Option<String>,
+    sha256: Option<String>,
 }
 
 pub(in crate::server) fn download(
@@ -20,12 +23,31 @@ pub(in crate::server) fn download(
             "export downloads require reliable-data",
         ));
     }
+    let requested_artifact = match proto::ExportArtifactKind::try_from(request.artifact) {
+        Ok(proto::ExportArtifactKind::Manifest) => proto::ExportArtifactKind::Manifest,
+        Ok(proto::ExportArtifactKind::Unspecified | proto::ExportArtifactKind::Media) => {
+            proto::ExportArtifactKind::Media
+        }
+        Err(_) => {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "unsupported export artifact kind",
+            ));
+        }
+    };
     let VerifiedDownload {
         record,
         payload,
         from_history,
         permit,
-    } = resolve(state, requester, &request.job_id)?;
+        artifact,
+        file_name,
+        sha256,
+    } = match requested_artifact {
+        proto::ExportArtifactKind::Manifest => resolve_manifest(state, requester, &request.job_id)?,
+        _ => resolve(state, requester, &request.job_id)?,
+    };
     if permit.deliver(|| ()).is_none() {
         return Err(ControlCommandError::new(
             proto::ErrorCode::Rejected,
@@ -64,9 +86,84 @@ pub(in crate::server) fn download(
             job: Some(record.job),
             channel: channel as i32,
             chunk_count,
+            artifact: artifact as i32,
+            file_name,
+            sha256,
         },
         messages,
     ))
+}
+
+fn resolve_manifest(
+    state: &ServerState,
+    requester: &str,
+    job_id: &str,
+) -> Result<VerifiedDownload, ControlCommandError> {
+    let record = snapshot(state, requester, job_id)?;
+    let permit = derived_media_permit(state, &record.job.source_id, 409)?;
+    let summary = record.job.timelapse.as_ref().ok_or_else(|| {
+        ControlCommandError::new(
+            proto::ErrorCode::NotFound,
+            404,
+            "export job has no timelapse manifest",
+        )
+    })?;
+    let manifest_name = summary
+        .manifest_file_name
+        .as_deref()
+        .filter(|name| safe_export_path_component(name))
+        .ok_or_else(|| unavailable("ready timelapse manifest name is invalid"))?;
+    let expected_sha = summary
+        .manifest_sha256
+        .as_deref()
+        .ok_or_else(|| unavailable("ready timelapse manifest has no checksum"))?;
+    let bytes = manifest_payload(state, &record, manifest_name)?;
+    let actual_sha = encode_lower_hex(Sha256::digest(&bytes));
+    if actual_sha != expected_sha {
+        checksum_failure(state, &record);
+        return Err(unavailable(
+            "timelapse manifest checksum verification failed; retry the export",
+        ));
+    }
+    Ok(VerifiedDownload {
+        file_name: Some(manifest_name.to_owned()),
+        sha256: Some(actual_sha),
+        record,
+        payload: bytes,
+        from_history: true,
+        permit,
+        artifact: proto::ExportArtifactKind::Manifest,
+    })
+}
+
+fn manifest_payload(
+    state: &ServerState,
+    record: &ExportJobRecord,
+    manifest_name: &str,
+) -> Result<Vec<u8>, ControlCommandError> {
+    let manifest_id = super::timelapse::manifest_object_id(&record.artifact_id);
+    if owned(state.catalog.as_ref(), &manifest_id).map_err(unavailable)? {
+        let catalog = state
+            .catalog
+            .as_ref()
+            .ok_or_else(|| unavailable("export catalog unavailable"))?;
+        let (location, _lease) = catalog
+            .leased_export(&manifest_id)
+            .map_err(unavailable)?
+            .ok_or_else(|| unavailable("timelapse manifest location unavailable"))?;
+        let manager = state
+            .storage_config
+            .volume_runtime
+            .as_ref()
+            .ok_or_else(|| unavailable("export volume unavailable"))?;
+        let mut file = manager.open_owned(&location).map_err(unavailable)?;
+        return read(&mut file, location.bytes);
+    }
+    let path = export_attempt_directory(state, &record.job.job_id, &record.artifact_id)
+        .join(manifest_name);
+    let mut file = File::open(&path).map_err(unavailable)?;
+    let length = file.metadata().map_err(unavailable)?.len();
+    read(&mut file, length)
 }
 
 fn resolve(
@@ -82,11 +179,16 @@ fn resolve(
                     if record.job.sha256.as_deref()
                         == Some(&encode_lower_hex(Sha256::digest(&bytes))) =>
                 {
+                    let file_name = record.job.file_name.clone();
+                    let sha256 = record.job.sha256.clone();
                     return Ok(VerifiedDownload {
                         record,
                         payload: bytes,
                         from_history: true,
                         permit,
+                        artifact: proto::ExportArtifactKind::Media,
+                        file_name,
+                        sha256,
                     });
                 }
                 Ok(_) => {
@@ -106,11 +208,16 @@ fn resolve(
     if record.job.sha256.as_deref() != Some(&encode_lower_hex(Sha256::digest(&bytes))) {
         return Err(unavailable("archived export checksum verification failed"));
     }
+    let file_name = record.job.file_name.clone();
+    let sha256 = record.job.sha256.clone();
     Ok(VerifiedDownload {
         record,
         payload: bytes,
         from_history: false,
         permit,
+        artifact: proto::ExportArtifactKind::Media,
+        file_name,
+        sha256,
     })
 }
 

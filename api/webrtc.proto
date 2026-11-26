@@ -52,6 +52,9 @@ message Request {
     StorageVolumeCommand storage_volume_command = 29;
     ArchiveCommand archive_command = 30;
     ShareCommand share_command = 31;
+    ActivityAnalyticsCommand activity_analytics_command = 32;
+    UsageReportingCommand usage_reporting_command = 33;
+    CloudNotificationCommand cloud_notification_command = 34;
   }
   reserved 19, 20;
   reserved "recording_command", "live_session_command";
@@ -1181,6 +1184,8 @@ message CreateExportJob {
   optional EventExportSeed event_seed = 8;
   // Negotiated by keeppeek.guest-range.v1. Bound writes to the guest evidence limit.
   optional bool guest_range_preparation = 9;
+  // Negotiated by keeppeek.timelapse.v1 and keeppeek.timelapse-export.v1.
+  optional TimelapseExportOptions timelapse = 10;
 }
 
 message EventExportSeed {
@@ -1209,6 +1214,7 @@ message RetryExportJob {
 message DownloadExport {
   string job_id = 1;
   DataChannelKind channel = 2;
+  ExportArtifactKind artifact = 3;
 }
 
 enum ExportJobStatus {
@@ -1243,6 +1249,8 @@ message ExportJob {
   optional EventExportSeed event_seed = 18;
   // The server captures configured timing once. Retry preserves the original snapshot.
   RecordedAudioTiming recorded_audio = 19;
+  // Present only for silent timelapse export jobs.
+  optional TimelapseJobSummary timelapse = 20;
 }
 
 message ExportMissingRange {
@@ -1258,6 +1266,9 @@ message ExportDownloadResult {
   ExportJob job = 1;
   DataChannelKind channel = 2;
   uint32 chunk_count = 3;
+  ExportArtifactKind artifact = 4;
+  optional string file_name = 5;
+  optional string sha256 = 6;
 }
 
 message EventSearchCommand {
@@ -1268,6 +1279,10 @@ message EventSearchCommand {
     CancelEventSearchQuery cancel_query = 4;
     FetchEventSearchMedia fetch_media = 5;
     CancelEventSearchMedia cancel_media = 6;
+    DeleteEventSearchEmbedding delete_embedding = 7;
+    ListSavedEventSearches list_saved_searches = 8;
+    SaveEventSearch save_search = 9;
+    DeleteSavedEventSearch delete_saved_search = 10;
   }
 }
 
@@ -1281,6 +1296,13 @@ message SetEventSearchEmbedding {
   string event_id = 1;
   EventSearchEmbedding embedding = 2;
   string source_id = 3;
+}
+
+message DeleteEventSearchEmbedding {
+  string event_id = 1;
+  string source_id = 2;
+  string model_id = 3;
+  string model_version = 4;
 }
 
 message EventSearchTerm {
@@ -1299,6 +1321,10 @@ enum EventSearchField {
 message EventSearchEmbedding {
   string model_id = 1;
   repeated float values = 2;
+  string model_version = 3;
+  string producer_id = 4;
+  optional uint64 event_revision = 5;
+  google.protobuf.Timestamp created_at = 6;
 }
 
 message QueryEvents {
@@ -1307,6 +1333,7 @@ message QueryEvents {
     EventTextSearch text = 2;
     EventSemanticSearch semantic = 3;
     EventMetadataSearch metadata = 14;
+    EventAdvancedSearch advanced = 16;
   }
   optional string source_id = 4;
   string stream_id = 5;
@@ -1320,6 +1347,127 @@ message QueryEvents {
   DataChannelKind channel = 12;
   string page_token = 13;
   EventWorkflowQuery workflow = 15;
+}
+
+message EventAdvancedSearch {
+  uint32 expression_version = 1;
+  EventSearchExpression expression = 2;
+  EventSemanticRanking semantic = 3;
+  bool include_preview_keyframes = 4;
+}
+
+message EventSearchExpression {
+  oneof node {
+    EventSearchExpressionList and_group = 1;
+    EventSearchExpressionList or_group = 2;
+    EventSearchExpression not_expr = 3;
+    EventSearchPredicate predicate = 4;
+  }
+}
+
+message EventSearchExpressionList {
+  repeated EventSearchExpression children = 1;
+}
+
+message EventSearchPredicate {
+  oneof kind {
+    EventStringListPredicate camera_ids = 1;
+    EventStringListPredicate group_ids = 2;
+    EventStringListPredicate event_types = 3;
+    EventOriginListPredicate origins = 4;
+    EventStringListPredicate zones = 5;
+    bool missing_zone = 6;
+    EventConfidencePredicate confidence = 7;
+    bool missing_confidence = 8;
+    bool has_image = 9;
+    EventTimeRangePredicate time_range = 10;
+    EventTextPredicate text = 11;
+    EventWorkflowPredicate workflow = 12;
+    EventStringListPredicate producer_ids = 13;
+    EventStringListPredicate model_ids = 14;
+  }
+}
+
+message EventStringListPredicate {
+  repeated string values = 1;
+}
+
+message EventOriginListPredicate {
+  repeated EventOrigin origins = 1;
+}
+
+enum EventConfidenceOperator {
+  EVENT_CONFIDENCE_OPERATOR_UNSPECIFIED = 0;
+  EVENT_CONFIDENCE_OPERATOR_AT_LEAST = 1;
+  EVENT_CONFIDENCE_OPERATOR_AT_MOST = 2;
+}
+
+message EventConfidencePredicate {
+  EventConfidenceOperator operator = 1;
+  double threshold = 2;
+}
+
+message EventTimeRangePredicate {
+  google.protobuf.Timestamp start_time = 1;
+  google.protobuf.Timestamp end_time = 2;
+}
+
+message EventTextPredicate {
+  string prefix = 1;
+  optional EventSearchField field = 2;
+}
+
+enum EventWorkflowPredicate {
+  EVENT_WORKFLOW_PREDICATE_UNSPECIFIED = 0;
+  EVENT_WORKFLOW_PREDICATE_REVIEWED = 1;
+  EVENT_WORKFLOW_PREDICATE_DISMISSED = 2;
+  EVENT_WORKFLOW_PREDICATE_BOOKMARKED = 3;
+  EVENT_WORKFLOW_PREDICATE_BOOKMARKED_BY_ME = 4;
+}
+
+message EventSemanticRanking {
+  EventSearchEmbedding embedding = 1;
+  optional double minimum_score = 2;
+}
+
+message ListSavedEventSearches {
+  string local_workspace_id = 1;
+}
+
+message SaveEventSearch {
+  string local_workspace_id = 1;
+  string search_id = 2;
+  uint64 expected_revision = 3;
+  string name = 4;
+  uint32 expression_version = 5;
+  EventSearchExpression expression = 6;
+  string raw_draft_json = 7;
+}
+
+message DeleteSavedEventSearch {
+  string local_workspace_id = 1;
+  string search_id = 2;
+  uint64 expected_revision = 3;
+}
+
+message SavedEventSearchRecord {
+  string search_id = 1;
+  string owner_id = 2;
+  uint64 revision = 3;
+  string name = 4;
+  uint32 expression_version = 5;
+  EventSearchExpression expression = 6;
+  string unsupported_draft_json = 7;
+  google.protobuf.Timestamp updated_at = 8;
+  repeated string tombstoned_references = 9;
+  bool editable = 10;
+}
+
+message SavedEventSearchResult {
+  string owner_id = 1;
+  repeated SavedEventSearchRecord searches = 2;
+  SavedEventSearchRecord search = 3;
+  string deleted_search_id = 4;
 }
 
 message EventWorkflowQuery {
@@ -2088,6 +2236,9 @@ message StoredMediaCommand {
     CancelStoredMediaTimelineQuery cancel_timeline_query = 6;
     RefillStoredMedia refill = 7;
     StepStoredFrame step_frame = 8;
+    PlanTimelapse plan_timelapse = 9;
+    FetchTimelapseSamples fetch_timelapse_samples = 10;
+    CancelTimelapseSamples cancel_timelapse_samples = 11;
   }
 }
 
@@ -3024,6 +3175,12 @@ message Ok {
     ArchiveResult archive_result = 44;
     ShareResult share_result = 45;
     StoredFrameStepResult stored_frame_step_result = 46;
+    SavedEventSearchResult saved_event_search_result = 47;
+    TimelapsePlanResult timelapse_plan = 48;
+    TimelapseSampleDelivery timelapse_sample_delivery = 49;
+    ActivityAnalyticsResult activity_analytics_result = 50;
+    UsageReportingResult usage_reporting_result = 51;
+    CloudNotificationResult cloud_notification_result = 52;
   }
   reserved 17, 18;
   reserved "recording_activity_result", "live_session_result";
@@ -3928,6 +4085,7 @@ message Message {
     EventMessage event = 6;
     ExportMessage export = 7;
     EventSearchMessage event_search = 8;
+    ActivityAnalyticsMessage activity_analytics = 9;
   }
 }
 
@@ -4004,6 +4162,29 @@ message EventSearchQueryEnd {
   string next_page_token = 4;
   bool candidates_truncated = 5;
   EventWorkflowCounts workflow_counts = 6;
+  string normalized_summary = 7;
+  EventSearchSemanticSummary semantic = 8;
+  EventSearchPlannerDiagnostics diagnostics = 9;
+}
+
+message EventSearchSemanticSummary {
+  string model_id = 1;
+  string model_version = 2;
+  string producer_id = 3;
+  uint32 dimensions = 4;
+  string score_interpretation = 5;
+  optional double minimum_score = 6;
+  google.protobuf.Timestamp searched_start_time = 7;
+  google.protobuf.Timestamp searched_end_time = 8;
+  uint64 candidate_count = 9;
+  bool candidates_truncated = 10;
+}
+
+message EventSearchPlannerDiagnostics {
+  string plan_category = 1;
+  uint64 estimated_candidates = 2;
+  uint64 scanned_candidates = 3;
+  uint64 wall_time_ms = 4;
 }
 
 message EventSearchMediaChunk {
@@ -4127,6 +4308,8 @@ message StoredMediaMessage {
     StoredMediaTimedData timed_data = 3;
     StoredMediaKeyFrame key_frame = 4;
     StoredFrameStepChunk frame_step_chunk = 5;
+    TimelapseSampleChunk timelapse_sample_chunk = 6;
+    TimelapseSampleEnd timelapse_sample_end = 7;
   }
 }
 
@@ -4229,6 +4412,8 @@ message EventMetadataSearch {
   optional string text = 7;
   repeated string event_ids = 8;
   bool include_preview_keyframes = 9;
+  repeated EventConfidenceBand confidence_bands = 10;
+  bool include_missing_zone = 11;
 }
 
 enum EventImageFilter {
@@ -4620,4 +4805,682 @@ message StoredFrameStepChunk {
   google.protobuf.Timestamp stored_time = 11;
   // Exclusive end when the stored sample has a positive duration representable in nanoseconds.
   google.protobuf.Timestamp stored_end_time = 12;
+}
+
+// Fixed confidence bands shared by activity analytics and bounded Events drill-down.
+enum EventConfidenceBand {
+  EVENT_CONFIDENCE_BAND_UNSPECIFIED = 0;
+  EVENT_CONFIDENCE_BAND_UNKNOWN = 1;
+  EVENT_CONFIDENCE_BAND_LOW = 2;
+  EVENT_CONFIDENCE_BAND_MEDIUM = 3;
+  EVENT_CONFIDENCE_BAND_HIGH = 4;
+}
+
+enum ActivityBucketGranularity {
+  ACTIVITY_BUCKET_GRANULARITY_UNSPECIFIED = 0;
+  ACTIVITY_BUCKET_GRANULARITY_HOUR = 1;
+  ACTIVITY_BUCKET_GRANULARITY_DAY = 2;
+  ACTIVITY_BUCKET_GRANULARITY_WEEK = 3;
+  ACTIVITY_BUCKET_GRANULARITY_MONTH = 4;
+  ACTIVITY_BUCKET_GRANULARITY_HOUR_OF_DAY = 5;
+  ACTIVITY_BUCKET_GRANULARITY_WEEKDAY_WEEKEND = 6;
+}
+
+enum ActivityWeekStart {
+  ACTIVITY_WEEK_START_UNSPECIFIED = 0;
+  ACTIVITY_WEEK_START_MONDAY = 1;
+  ACTIVITY_WEEK_START_SUNDAY = 2;
+}
+
+enum ActivityDimension {
+  ACTIVITY_DIMENSION_UNSPECIFIED = 0;
+  ACTIVITY_DIMENSION_CAMERA = 1;
+  ACTIVITY_DIMENSION_GROUP = 2;
+  ACTIVITY_DIMENSION_EVENT_TYPE = 3;
+  ACTIVITY_DIMENSION_ORIGIN = 4;
+  ACTIVITY_DIMENSION_ZONE = 5;
+  ACTIVITY_DIMENSION_CONFIDENCE_BAND = 6;
+  ACTIVITY_DIMENSION_IMAGE = 7;
+  ACTIVITY_DIMENSION_WORKFLOW = 8;
+}
+
+enum ActivityComparisonMode {
+  ACTIVITY_COMPARISON_MODE_UNSPECIFIED = 0;
+  ACTIVITY_COMPARISON_MODE_NONE = 1;
+  ACTIVITY_COMPARISON_MODE_PREVIOUS_DURATION = 2;
+  ACTIVITY_COMPARISON_MODE_PREVIOUS_CALENDAR = 3;
+}
+
+enum ActivityRollupState {
+  ACTIVITY_ROLLUP_STATE_UNSPECIFIED = 0;
+  ACTIVITY_ROLLUP_STATE_READY = 1;
+  ACTIVITY_ROLLUP_STATE_REBUILDING = 2;
+  ACTIVITY_ROLLUP_STATE_DEGRADED = 3;
+  ACTIVITY_ROLLUP_STATE_UNAVAILABLE = 4;
+}
+
+enum ActivityCompletenessState {
+  ACTIVITY_COMPLETENESS_STATE_UNSPECIFIED = 0;
+  ACTIVITY_COMPLETENESS_STATE_COMPLETE = 1;
+  ACTIVITY_COMPLETENESS_STATE_PARTIAL_CURRENT = 2;
+  ACTIVITY_COMPLETENESS_STATE_PARTIAL_RETENTION = 3;
+  ACTIVITY_COMPLETENESS_STATE_SOURCE_GAP = 4;
+  ACTIVITY_COMPLETENESS_STATE_UNKNOWN = 5;
+}
+
+enum ActivityCameraHealthStatus {
+  ACTIVITY_CAMERA_HEALTH_STATUS_UNSPECIFIED = 0;
+  ACTIVITY_CAMERA_HEALTH_STATUS_REPORTING = 1;
+  ACTIVITY_CAMERA_HEALTH_STATUS_HEALTHY_NO_REPORTS = 2;
+  ACTIVITY_CAMERA_HEALTH_STATUS_MISSING_HEALTH = 3;
+  ACTIVITY_CAMERA_HEALTH_STATUS_NO_EXPECTED_SOURCE = 4;
+  ACTIVITY_CAMERA_HEALTH_STATUS_UNKNOWN_HISTORY = 5;
+}
+
+message ActivityAnalyticsCommand {
+  oneof action {
+    QueryActivitySummary query = 1;
+    CancelActivityAnalyticsQuery cancel_query = 2;
+    GetActivityAnalyticsStatus get_status = 3;
+    RebuildActivityAnalytics rebuild = 4;
+  }
+}
+
+message ActivitySummaryFilter {
+  repeated string source_ids = 1;
+  repeated string group_ids = 2;
+  repeated string event_types = 3;
+  repeated EventOrigin origins = 4;
+  repeated string zones = 5;
+  bool include_missing_zone = 6;
+  repeated EventConfidenceBand confidence_bands = 7;
+  EventImageFilter image = 8;
+  EventWorkflowQuery workflow = 9;
+}
+
+message QueryActivitySummary {
+  string query_id = 1;
+  google.protobuf.Timestamp start_time = 2;
+  google.protobuf.Timestamp end_time = 3;
+  string timezone = 4;
+  ActivityBucketGranularity granularity = 5;
+  ActivityWeekStart week_start = 6;
+  ActivitySummaryFilter filter = 7;
+  repeated ActivityDimension group_by = 8;
+  ActivityComparisonMode comparison = 9;
+  bool dense_buckets = 10;
+  uint32 max_buckets = 11;
+  uint32 max_series = 12;
+  uint32 max_ranked_rows = 13;
+  bool include_heatmap = 14;
+  DataChannelKind channel = 15;
+}
+
+message CancelActivityAnalyticsQuery {
+  string query_id = 1;
+}
+
+message GetActivityAnalyticsStatus {}
+
+message RebuildActivityAnalytics {}
+
+message ActivityAnalyticsDelivery {
+  string query_id = 1;
+  DataChannelKind channel = 2;
+}
+
+message ActivityAnalyticsStatus {
+  ActivityRollupState state = 1;
+  uint64 analytics_generation = 2;
+  uint32 schema_version = 3;
+  string site_timezone = 4;
+  ActivityWeekStart week_start = 5;
+  string tzdb_version = 6;
+  uint64 rollup_row_count = 7;
+  uint64 max_rollup_rows = 8;
+  optional google.protobuf.Timestamp oldest_retained_event_time = 9;
+  optional google.protobuf.Timestamp last_rebuild_completed_at = 10;
+  optional string status_detail = 11;
+}
+
+message ActivityAnalyticsResult {
+  oneof result {
+    ActivityAnalyticsDelivery delivery = 1;
+    ActivityAnalyticsStatus status = 2;
+  }
+}
+
+message ActivityAnalyticsMessage {
+  oneof message {
+    ActivityAnalyticsChunk chunk = 1;
+    ActivityAnalyticsError error = 2;
+  }
+}
+
+message ActivityAnalyticsChunk {
+  string query_id = 1;
+  uint32 chunk_index = 2;
+  uint32 chunk_count = 3;
+  bytes payload = 4;
+}
+
+message ActivityAnalyticsError {
+  string query_id = 1;
+  ErrorCode code = 2;
+  string message = 3;
+}
+
+message ActivityMeasures {
+  uint64 event_count = 1;
+  uint64 distinct_event_count = 2;
+  uint64 interval_event_count = 3;
+  uint64 open_interval_event_count = 4;
+  uint64 total_duration_ms = 5;
+  optional double average_duration_ms = 6;
+  uint64 with_image_count = 7;
+  uint64 with_confidence_count = 8;
+  uint64 with_zone_count = 9;
+  optional double percent_with_image = 10;
+  optional double percent_with_confidence = 11;
+  optional double percent_with_zone = 12;
+}
+
+message ActivityTimeBucket {
+  google.protobuf.Timestamp start_time = 1;
+  google.protobuf.Timestamp end_time = 2;
+  string label = 3;
+  sint32 utc_offset_seconds = 4;
+  uint32 dst_fold = 5;
+  bool partial_current = 6;
+  ActivityCompletenessState completeness = 7;
+  bool retention_partial = 8;
+  bool source_health_gap = 9;
+  ActivityMeasures measures = 10;
+}
+
+message ActivityDimensionEntry {
+  ActivityDimension dimension = 1;
+  string value = 2;
+}
+
+message ActivitySeries {
+  repeated ActivityDimensionEntry dimensions = 1;
+  string label = 2;
+  ActivityMeasures totals = 3;
+  repeated uint64 bucket_counts = 4;
+}
+
+message ActivityHeatmapCell {
+  uint32 weekday = 1;
+  uint32 local_hour = 2;
+  uint64 event_count = 3;
+  uint64 distinct_event_count = 4;
+  ActivityCompletenessState completeness = 5;
+}
+
+message ActivityBreakdownRow {
+  string key = 1;
+  string label = 2;
+  bool is_unknown = 3;
+  ActivityMeasures measures = 4;
+  double share_percent = 5;
+}
+
+message ActivityComparisonSummary {
+  ActivityComparisonMode mode = 1;
+  google.protobuf.Timestamp start_time = 2;
+  google.protobuf.Timestamp end_time = 3;
+  ActivityMeasures totals = 4;
+  sint64 event_count_delta = 5;
+  optional double event_count_delta_percent = 6;
+  ActivityCompletenessState completeness = 7;
+  bool retention_partial = 8;
+  bool source_health_gap = 9;
+}
+
+message ActivityTimeInterval {
+  google.protobuf.Timestamp start_time = 1;
+  google.protobuf.Timestamp end_time = 2;
+}
+
+message ActivityRetentionEvidence {
+  bool partial_retention = 1;
+  optional google.protobuf.Timestamp oldest_retained_event_time = 2;
+  uint64 deleted_event_count_in_range = 3;
+  repeated ActivityTimeInterval deleted_intervals = 4;
+}
+
+message ActivityCameraSourceHealth {
+  string camera_id = 1;
+  string display_name = 2;
+  ActivityCameraHealthStatus status = 3;
+  uint64 reported_events = 4;
+  uint64 missing_health_ms = 5;
+  uint64 healthy_observed_ms = 6;
+}
+
+message ActivitySourceHealthSummary {
+  uint64 authorized_cameras = 1;
+  uint64 reporting_cameras = 2;
+  uint64 healthy_no_reports_cameras = 3;
+  uint64 missing_health_cameras = 4;
+  uint64 no_expected_source_cameras = 5;
+  uint64 unknown_history_cameras = 6;
+  repeated ActivityCameraSourceHealth cameras = 7;
+}
+
+message ActivitySummaryResponse {
+  string query_id = 1;
+  google.protobuf.Timestamp generated_at = 2;
+  google.protobuf.Timestamp start_time = 3;
+  google.protobuf.Timestamp end_time = 4;
+  string timezone = 5;
+  string tzdb_version = 6;
+  ActivityBucketGranularity granularity = 7;
+  ActivityWeekStart week_start = 8;
+  uint64 analytics_generation = 9;
+  uint64 group_policy_revision = 10;
+  string data_source = 11;
+  ActivityRollupState rollup_state = 12;
+  ActivityMeasures totals = 13;
+  ActivityComparisonSummary comparison = 14;
+  repeated ActivityTimeBucket buckets = 15;
+  repeated ActivitySeries series = 16;
+  bool series_truncated = 17;
+  repeated ActivityHeatmapCell heatmap = 18;
+  repeated ActivityBreakdownRow by_camera = 19;
+  repeated ActivityBreakdownRow by_event_type = 20;
+  repeated ActivityBreakdownRow by_zone = 21;
+  repeated ActivityBreakdownRow by_origin = 22;
+  repeated ActivityBreakdownRow by_confidence_band = 23;
+  repeated ActivityBreakdownRow by_group = 24;
+  ActivityRetentionEvidence retention = 25;
+  ActivitySourceHealthSummary source_health = 26;
+  string provenance_notice = 27;
+  bool exact = 28;
+}
+
+// Administrator-only opt-in usage reporting controls. Clients must require keeppeek.usage-reporting.v1.
+message UsageReportingCommand {
+  oneof action {
+    GetUsageReporting get = 1;
+    UpdateUsageReporting update = 2;
+    PreviewUsageReporting preview = 3;
+    ResetUsageReportingIdentity reset_identity = 4;
+    DeleteUsageReportingData delete_data = 5;
+  }
+}
+
+message GetUsageReporting {}
+
+message UpdateUsageReporting {
+  string expected_configuration_revision = 1;
+  bool basic = 2;
+  bool camera_compatibility = 3;
+  bool feature_adoption = 4;
+  uint32 accepted_disclosure_revision = 5;
+}
+
+message PreviewUsageReporting {
+  bool basic = 1;
+  bool camera_compatibility = 2;
+  bool feature_adoption = 3;
+  uint32 disclosure_revision = 4;
+}
+
+message ResetUsageReportingIdentity {
+  string expected_configuration_revision = 1;
+}
+
+message DeleteUsageReportingData {
+  string expected_configuration_revision = 1;
+}
+
+enum UsageReportingLifecycleState {
+  USAGE_REPORTING_LIFECYCLE_STATE_UNSPECIFIED = 0;
+  USAGE_REPORTING_LIFECYCLE_STATE_DISABLED = 1;
+  USAGE_REPORTING_LIFECYCLE_STATE_SCHEDULED = 2;
+  USAGE_REPORTING_LIFECYCLE_STATE_SENDING = 3;
+  USAGE_REPORTING_LIFECYCLE_STATE_SUCCEEDED = 4;
+  USAGE_REPORTING_LIFECYCLE_STATE_FAILED = 5;
+  USAGE_REPORTING_LIFECYCLE_STATE_DELETION_PENDING = 6;
+}
+
+enum UsageReportingFailureKind {
+  USAGE_REPORTING_FAILURE_KIND_UNSPECIFIED = 0;
+  USAGE_REPORTING_FAILURE_KIND_NONE = 1;
+  USAGE_REPORTING_FAILURE_KIND_RECEIVER_UNCONFIGURED = 2;
+  USAGE_REPORTING_FAILURE_KIND_PAYLOAD_TOO_LARGE = 3;
+  USAGE_REPORTING_FAILURE_KIND_VALIDATION_FAILED = 4;
+  USAGE_REPORTING_FAILURE_KIND_NETWORK_UNAVAILABLE = 5;
+  USAGE_REPORTING_FAILURE_KIND_DNS_FAILED = 6;
+  USAGE_REPORTING_FAILURE_KIND_TLS_FAILED = 7;
+  USAGE_REPORTING_FAILURE_KIND_TIMEOUT = 8;
+  USAGE_REPORTING_FAILURE_KIND_RATE_LIMITED = 9;
+  USAGE_REPORTING_FAILURE_KIND_RECEIVER_REJECTED = 10;
+  USAGE_REPORTING_FAILURE_KIND_RECEIVER_UNAVAILABLE = 11;
+  USAGE_REPORTING_FAILURE_KIND_INVALID_RESPONSE = 12;
+  USAGE_REPORTING_FAILURE_KIND_DELETION_FAILED = 13;
+  USAGE_REPORTING_FAILURE_KIND_STORAGE_ERROR = 14;
+}
+
+message UsageReportingConsent {
+  bool basic = 1;
+  bool camera_compatibility = 2;
+  bool feature_adoption = 3;
+  uint32 consented_disclosure_revision = 4;
+}
+
+message UsageReportingDisclosure {
+  uint32 current_disclosure_revision = 1;
+  string schema_version = 2;
+  string receiver_origin = 3;
+  string schema_url = 4;
+  string documentation_url = 5;
+  string aggregate_data_url = 6;
+  string receiver_source_url = 7;
+  uint32 max_retention_days = 8;
+  uint32 aggregate_min_installations = 9;
+  uint32 max_payload_bytes = 10;
+  bool renewal_required = 11;
+  repeated string pending_renewal_fields = 12;
+}
+
+message UsageReportingDeliveryStatus {
+  UsageReportingLifecycleState state = 1;
+  optional int64 last_attempt_at_ms = 2;
+  optional int64 last_success_at_ms = 3;
+  optional int64 next_scheduled_at_ms = 4;
+  UsageReportingFailureKind last_failure = 5;
+  uint32 pending_deletion_count = 6;
+  bool identity_configured = 7;
+  optional int64 last_deletion_attempt_at_ms = 8;
+  optional int64 last_deletion_success_at_ms = 9;
+  UsageReportingFailureKind last_deletion_failure = 10;
+}
+
+message UsageReportingState {
+  string configuration_revision = 1;
+  UsageReportingConsent consent = 2;
+  UsageReportingDisclosure disclosure = 3;
+  UsageReportingDeliveryStatus status = 4;
+}
+
+message UsageReportingPreview {
+  string payload_json = 1;
+  uint32 payload_bytes = 2;
+  uint32 max_payload_bytes = 3;
+  bool uses_placeholder_identity = 4;
+  bool valid = 5;
+  UsageReportingFailureKind validation_error = 6;
+}
+
+message UsageReportingResult {
+  oneof result {
+    UsageReportingState state = 1;
+    UsageReportingPreview preview = 2;
+  }
+}
+
+// Controls bounded Keeppeek Service mobile push signaling and private preview resolution.
+message CloudNotificationCommand {
+  oneof action {
+    GetCloudNotificationSettings get_settings = 1;
+    UpdateCloudNotificationSettings update_settings = 2;
+    GetCloudNotificationStatus get_status = 3;
+    TestCloudNotification test = 4;
+    ResolveCloudNotification resolve = 5;
+  }
+}
+
+message GetCloudNotificationSettings {}
+
+message GetCloudNotificationStatus {}
+
+message TestCloudNotification {}
+
+message UpdateCloudNotificationSettings {
+  uint64 expected_revision = 1;
+  bool enabled = 2;
+  bool image_previews_enabled = 3;
+}
+
+message ResolveCloudNotification {
+  // Opaque 16-byte random cloud event alias.
+  bytes cloud_event_id = 1;
+}
+
+message CloudNotificationSettings {
+  uint64 revision = 1;
+  bool enabled = 2;
+  bool image_previews_enabled = 3;
+}
+
+enum CloudNotificationState {
+  CLOUD_NOTIFICATION_STATE_UNSPECIFIED = 0;
+  CLOUD_NOTIFICATION_STATE_DISABLED = 1;
+  CLOUD_NOTIFICATION_STATE_UNPAIRED = 2;
+  CLOUD_NOTIFICATION_STATE_READY = 3;
+  CLOUD_NOTIFICATION_STATE_THROTTLED = 4;
+  CLOUD_NOTIFICATION_STATE_BACKING_OFF = 5;
+  CLOUD_NOTIFICATION_STATE_UNAVAILABLE = 6;
+}
+
+enum CloudNotificationFailureCode {
+  CLOUD_NOTIFICATION_FAILURE_CODE_UNSPECIFIED = 0;
+  CLOUD_NOTIFICATION_FAILURE_CODE_NONE = 1;
+  CLOUD_NOTIFICATION_FAILURE_CODE_LOCAL_LIMIT = 2;
+  CLOUD_NOTIFICATION_FAILURE_CODE_SERVICE_LIMIT = 3;
+  CLOUD_NOTIFICATION_FAILURE_CODE_DEPENDENCY = 4;
+  CLOUD_NOTIFICATION_FAILURE_CODE_CREDENTIAL_REJECTED = 5;
+  CLOUD_NOTIFICATION_FAILURE_CODE_INTEGRITY = 6;
+  CLOUD_NOTIFICATION_FAILURE_CODE_EXPIRED = 7;
+}
+
+message CloudNotificationStatus {
+  CloudNotificationState state = 1;
+  bool paired = 2;
+  bool pending = 3;
+  uint32 accepted_last_hour = 4;
+  uint32 accepted_last_day = 5;
+  uint32 suppressed_last_hour = 6;
+  uint32 suppressed_last_day = 7;
+  optional google.protobuf.Timestamp next_eligible_at = 8;
+  optional google.protobuf.Timestamp last_accepted_at = 9;
+  CloudNotificationFailureCode last_failure = 10;
+}
+
+message CloudNotificationContext {
+  // Opaque 16-byte random cloud event alias.
+  bytes cloud_event_id = 1;
+  string event_id = 2;
+  uint64 revision = 3;
+  optional EventAttachmentDescriptor canonical_attachment = 4;
+  EventImageAvailability image_availability = 5;
+}
+
+message CloudNotificationTestResult {
+  bool accepted = 1;
+  optional google.protobuf.Timestamp next_eligible_at = 2;
+  CloudNotificationFailureCode failure = 3;
+}
+
+message CloudNotificationResult {
+  oneof result {
+    CloudNotificationSettings settings = 1;
+    CloudNotificationStatus status = 2;
+    CloudNotificationContext context = 3;
+    CloudNotificationTestResult test = 4;
+  }
+}
+
+enum ExportArtifactKind {
+  EXPORT_ARTIFACT_KIND_UNSPECIFIED = 0;
+  EXPORT_ARTIFACT_KIND_MEDIA = 1;
+  EXPORT_ARTIFACT_KIND_MANIFEST = 2;
+}
+
+enum TimelapseGapReason {
+  TIMELAPSE_GAP_REASON_UNSPECIFIED = 0;
+  TIMELAPSE_GAP_REASON_MISSING = 1;
+  TIMELAPSE_GAP_REASON_RETAINED = 2;
+  TIMELAPSE_GAP_REASON_PRIVACY = 3;
+  TIMELAPSE_GAP_REASON_UNSUPPORTED_CODEC = 4;
+  TIMELAPSE_GAP_REASON_CORRUPT = 5;
+  TIMELAPSE_GAP_REASON_OPEN_RECORDING = 6;
+}
+
+message TimelapseOutputPreview {
+  uint32 output_fps = 1;
+  uint32 max_width = 2;
+  uint32 max_height = 3;
+  bool timestamp_overlay = 4;
+}
+
+message TimelapseExportOptions {
+  oneof cadence {
+    google.protobuf.Duration interval = 1;
+    uint32 target_sample_count = 2;
+  }
+  optional google.protobuf.Duration tolerance = 3;
+  uint32 output_fps = 4;
+  uint32 max_width = 5;
+  uint32 max_height = 6;
+  bool timestamp_overlay = 7;
+  bool confirmed_expensive = 8;
+  optional string expected_source_fingerprint = 9;
+}
+
+message TimelapseJobSummary {
+  TimelapseExportOptions options = 1;
+  uint32 sample_count = 2;
+  uint32 gap_count = 3;
+  uint64 output_duration_ms = 4;
+  uint32 output_width = 5;
+  uint32 output_height = 6;
+  bool silent = 7;
+  string source_fingerprint = 8;
+  string site_timezone = 9;
+  uint32 manifest_schema_version = 10;
+  optional string manifest_file_name = 11;
+  optional string manifest_sha256 = 12;
+  optional uint64 manifest_bytes = 13;
+}
+
+message PlanTimelapse {
+  string source_id = 1;
+  string stream_id = 2;
+  google.protobuf.Timestamp start_time = 3;
+  google.protobuf.Timestamp end_time = 4;
+  oneof cadence {
+    google.protobuf.Duration interval = 5;
+    uint32 target_sample_count = 6;
+  }
+  optional google.protobuf.Duration tolerance = 7;
+  uint32 page_size = 8;
+  string page_token = 9;
+  optional TimelapseOutputPreview output_preview = 10;
+}
+
+message TimelapseEstimate {
+  uint32 sample_count = 1;
+  uint32 gap_count = 2;
+  uint64 gap_duration_ms = 3;
+  uint64 output_duration_ms = 4;
+  uint64 estimated_source_bytes = 5;
+  uint64 estimated_output_bytes = 6;
+  bool requires_confirmation = 7;
+  bool encoder_available = 8;
+  string site_timezone = 9;
+}
+
+message TimelapseSample {
+  uint32 index = 1;
+  google.protobuf.Timestamp requested_time = 2;
+  google.protobuf.Timestamp actual_time = 3;
+  optional sint64 source_ticks = 4;
+  optional uint32 source_timescale = 5;
+  string recording_id = 6;
+  uint64 fragment_sequence = 7;
+  uint32 sample_ordinal = 8;
+  string codec = 9;
+  uint32 width = 10;
+  uint32 height = 11;
+  uint32 encoded_bytes = 12;
+  bytes sample_token = 13;
+}
+
+message TimelapseGap {
+  google.protobuf.Timestamp start_time = 1;
+  google.protobuf.Timestamp end_time = 2;
+  TimelapseGapReason reason = 3;
+}
+
+message TimelapsePlanItem {
+  oneof entry {
+    TimelapseSample sample = 1;
+    TimelapseGap gap = 2;
+  }
+}
+
+message TimelapsePlanResult {
+  string source_id = 1;
+  string stream_id = 2;
+  google.protobuf.Timestamp requested_start_time = 3;
+  google.protobuf.Timestamp requested_end_time = 4;
+  string source_fingerprint = 5;
+  uint64 catalog_revision = 6;
+  TimelapseEstimate estimate = 7;
+  repeated TimelapsePlanItem items = 8;
+  uint32 total_samples = 9;
+  string next_page_token = 10;
+}
+
+message FetchTimelapseSamples {
+  string transfer_id = 1;
+  string source_id = 2;
+  string stream_id = 3;
+  repeated bytes sample_tokens = 4;
+  DataChannelKind channel = 5;
+}
+
+message CancelTimelapseSamples {
+  string transfer_id = 1;
+}
+
+message TimelapseSampleRejection {
+  bytes sample_token = 1;
+  ErrorCode code = 2;
+  string message = 3;
+  TimelapseGapReason reason = 4;
+}
+
+message TimelapseSampleDelivery {
+  string transfer_id = 1;
+  DataChannelKind channel = 2;
+  uint32 accepted_count = 3;
+  repeated TimelapseSampleRejection rejected = 4;
+}
+
+message TimelapseSampleChunk {
+  string transfer_id = 1;
+  bytes sample_token = 2;
+  google.protobuf.Timestamp actual_time = 3;
+  uint32 decode_index = 4;
+  uint32 presentation_rank = 5;
+  uint32 target_presentation_rank = 6;
+  uint32 sample_count = 7;
+  bool random_access = 8;
+  uint32 chunk_index = 9;
+  uint32 chunk_count = 10;
+  bytes payload = 11;
+  uint32 sample_bytes = 12;
+  MediaDataConfiguration configuration = 13;
+}
+
+message TimelapseSampleEnd {
+  string transfer_id = 1;
+  uint32 delivered_count = 2;
+  bool cancelled = 3;
+  optional string error = 4;
 }

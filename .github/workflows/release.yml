@@ -223,6 +223,9 @@ jobs:
       - name: Build release service binary
         if: runner.os == 'Windows'
         run: cargo build --locked --release --bin keeppeek-service
+      - name: Build release desktop binary
+        if: runner.os == 'Windows' || matrix.platform == 'macos-aarch64'
+        run: cargo build --locked --release -p keeppeek-desktop
       - name: Upload unsigned Windows binaries
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -231,6 +234,7 @@ jobs:
           path: |
             target/release/keeppeek.exe
             target/release/keeppeek-service.exe
+            target/release/keeppeek-desktop.exe
           if-no-files-found: error
           retention-days: 1
       - name: Configure macOS code signing
@@ -323,6 +327,45 @@ jobs:
               xcrun stapler staple "$asset"
               xcrun stapler validate "$asset"
             fi
+
+            desktop_staging="$(mktemp -d)"
+            desktop_app="$desktop_staging/KeepPeek Desktop.app"
+            mkdir -p "$desktop_app/Contents/MacOS" "$desktop_app/Contents/Resources/KeepPeekDesktop.iconset"
+            cp installer/macos/desktop/Info.plist "$desktop_app/Contents/Info.plist"
+            plutil -replace CFBundleShortVersionString -string "$VERSION" "$desktop_app/Contents/Info.plist"
+            plutil -replace CFBundleVersion -string "$VERSION" "$desktop_app/Contents/Info.plist"
+            cp target/release/keeppeek-desktop "$desktop_app/Contents/MacOS/keeppeek-desktop"
+            chmod 755 "$desktop_app/Contents/MacOS/keeppeek-desktop"
+            for size in 16 32 128 256 512; do
+              sips --resampleHeightWidth "$size" "$size" --setProperty format png assets/readme_logo.jpeg --out "$desktop_app/Contents/Resources/KeepPeekDesktop.iconset/icon_${size}x${size}.png"
+              doubled_size=$((size * 2))
+              sips --resampleHeightWidth "$doubled_size" "$doubled_size" --setProperty format png assets/readme_logo.jpeg --out "$desktop_app/Contents/Resources/KeepPeekDesktop.iconset/icon_${size}x${size}@2x.png"
+            done
+            iconutil --convert icns "$desktop_app/Contents/Resources/KeepPeekDesktop.iconset" --output "$desktop_app/Contents/Resources/KeepPeekDesktop.icns"
+            rm -rf "$desktop_app/Contents/Resources/KeepPeekDesktop.iconset"
+            if [[ -n "${MACOS_SIGNING_IDENTITY:-}" ]]; then
+              codesign --force --options runtime --timestamp \
+                --keychain "$MACOS_SIGNING_KEYCHAIN" --sign "$MACOS_SIGNING_IDENTITY" \
+                "$desktop_app/Contents/MacOS/keeppeek-desktop"
+              codesign --force --options runtime --timestamp \
+                --keychain "$MACOS_SIGNING_KEYCHAIN" --sign "$MACOS_SIGNING_IDENTITY" "$desktop_app"
+              codesign --verify --deep --strict --verbose=2 "$desktop_app"
+            fi
+            ln -s /Applications "$desktop_staging/Applications"
+            desktop_asset="keeppeek-desktop-${VERSION}-${PLATFORM}.${EXTENSION}"
+            hdiutil create -volname "KeepPeek Desktop" -srcfolder "$desktop_staging" -ov -format UDZO "$desktop_asset"
+            rm -rf "$desktop_staging"
+            if [[ -n "${MACOS_NOTARIZATION_APPLE_ID:-}" ]]; then
+              xcrun notarytool submit "$desktop_asset" \
+                --apple-id "$MACOS_NOTARIZATION_APPLE_ID" \
+                --password "$MACOS_NOTARIZATION_PASSWORD" \
+                --team-id "$MACOS_NOTARIZATION_TEAM_ID" \
+                --wait
+              xcrun stapler staple "$desktop_asset"
+              xcrun stapler validate "$desktop_asset"
+            fi
+            python -c 'import hashlib, pathlib; path = pathlib.Path("'"$desktop_asset"'"); print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")' > "$desktop_asset.sha256"
+            assets=("$desktop_asset" "$desktop_asset.sha256")
           else
             mkdir "$archive"
             cp "target/release/keeppeek${BINARY_EXTENSION}" "$archive/"
@@ -424,13 +467,14 @@ jobs:
           files: |
             ${{ github.workspace }}\target\release\keeppeek.exe
             ${{ github.workspace }}\target\release\keeppeek-service.exe
+            ${{ github.workspace }}\target\release\keeppeek-desktop.exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
       - name: Verify Windows binary signatures
         shell: pwsh
         run: |
-          foreach ($path in 'target/release/keeppeek.exe', 'target/release/keeppeek-service.exe') {
+          foreach ($path in 'target/release/keeppeek.exe', 'target/release/keeppeek-service.exe', 'target/release/keeppeek-desktop.exe') {
             $signature = Get-AuthenticodeSignature $path
             if ($signature.Status -ne 'Valid') {
               throw "$path has invalid signature status: $($signature.Status)"
@@ -441,32 +485,100 @@ jobs:
           }
       - name: Set up NSIS
         uses: ./.github/actions/setup-nsis
-      - name: Build Windows installer
-        shell: bash
+      - name: Extract Windows uninstaller
+        id: windows-uninstaller
+        shell: pwsh
         env:
           ARCH: ${{ matrix.installer_arch }}
-          MSYS2_ARG_CONV_EXCL: "*"
           VERSION: ${{ needs.create-release.outputs.version }}
           VERSION_RESOURCE: ${{ needs.create-release.outputs.version_resource }}
         run: |
-          build_dir="$(cygpath -aw target/release)"
-          out_dir="$(cygpath -aw .)"
-          makensis_args=(
-            "/DARCH=$ARCH"
-            "/DBUILD_DIR=$build_dir"
-            "/DOUT_DIR=$out_dir"
-            "/DVERSION=$VERSION"
-            "/DVERSION_RESOURCE=$VERSION_RESOURCE"
+          $uninstRoot = Join-Path $env:RUNNER_TEMP 'keeppeek-uninstaller'
+          $genDirectory = Join-Path $uninstRoot 'gen'
+          $uninstDirectory = Join-Path $uninstRoot 'out'
+          foreach ($dir in $genDirectory, $uninstDirectory) {
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          }
+
+          $uninstaller = Join-Path $uninstDirectory 'uninstall.exe'
+          & 'C:\Program Files (x86)\NSIS\makensis.exe' `
+            "/DARCH=$env:ARCH" `
+            "/DOUT_DIR=$genDirectory" `
+            "/DVERSION=$env:VERSION" `
+            "/DVERSION_RESOURCE=$env:VERSION_RESOURCE" `
+            '/DWRITE_UNINSTALLER_ONLY' `
+            "/DUNINST_OUT=$uninstaller" `
             installer/keeppeek.nsi
-          )
-          "C:/Program Files (x86)/NSIS/makensis.exe" "${makensis_args[@]}"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to build the KeepPeek uninstaller generator'
+          }
+
+          $generator = Join-Path $genDirectory 'keeppeek-uninst-gen.exe'
+          $previousCompat = $env:__COMPAT_LAYER
+          $env:__COMPAT_LAYER = 'RunAsInvoker'
+          try {
+            $process = Start-Process -FilePath $generator -PassThru -Wait
+          } finally {
+            $env:__COMPAT_LAYER = $previousCompat
+          }
+          if ($process.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $uninstaller)) {
+            throw "Unable to extract KeepPeek uninstall.exe (exit $($process.ExitCode))"
+          }
+
+          Remove-Item -Force -Recurse -ErrorAction SilentlyContinue $genDirectory
+          "uninstaller=$uninstaller" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+      - name: Sign Windows uninstaller
+        uses: Azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          files: |
+            ${{ steps.windows-uninstaller.outputs.uninstaller }}
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Verify Windows uninstaller signature
+        shell: pwsh
+        env:
+          UNINSTALLER: ${{ steps.windows-uninstaller.outputs.uninstaller }}
+        run: |
+          $signature = Get-AuthenticodeSignature $env:UNINSTALLER
+          if ($signature.Status -ne 'Valid') {
+            throw "$env:UNINSTALLER has invalid signature status: $($signature.Status)"
+          }
+          if ($null -eq $signature.TimestamperCertificate) {
+            throw "$env:UNINSTALLER does not have an RFC 3161 timestamp"
+          }
+      - name: Build Windows installer
+        shell: pwsh
+        env:
+          ARCH: ${{ matrix.installer_arch }}
+          VERSION: ${{ needs.create-release.outputs.version }}
+          VERSION_RESOURCE: ${{ needs.create-release.outputs.version_resource }}
+          SIGNED_UNINSTALLER: ${{ steps.windows-uninstaller.outputs.uninstaller }}
+        run: |
+          $buildDirectory = Join-Path $env:GITHUB_WORKSPACE 'target\release'
+          $outputDirectory = $env:GITHUB_WORKSPACE
+          & 'C:\Program Files (x86)\NSIS\makensis.exe' `
+            "/DARCH=$env:ARCH" `
+            "/DBUILD_DIR=$buildDirectory" `
+            "/DOUT_DIR=$outputDirectory" `
+            "/DVERSION=$env:VERSION" `
+            "/DVERSION_RESOURCE=$env:VERSION_RESOURCE" `
+            "/DSIGNED_UNINSTALLER=$env:SIGNED_UNINSTALLER" `
+            installer/keeppeek.nsi
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to build the KeepPeek installer'
+          }
       - name: Sign Windows installer
         uses: Azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
           signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
           certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
-          files: ${{ github.workspace }}\keeppeek-${{ needs.create-release.outputs.version }}-${{ matrix.platform }}-installer.exe
+          files: |
+            ${{ github.workspace }}\keeppeek-${{ needs.create-release.outputs.version }}-${{ matrix.platform }}-installer.exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
@@ -497,6 +609,14 @@ jobs:
           cp target/release/keeppeek.exe "$standalone"
           python -c 'import hashlib, pathlib; path = pathlib.Path("'"$standalone"'"); print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")' > "$standalone.sha256"
 
+          service_standalone="keeppeek-service-${VERSION}-${PLATFORM}.exe"
+          cp target/release/keeppeek-service.exe "$service_standalone"
+          python -c 'import hashlib, pathlib; path = pathlib.Path("'"$service_standalone"'"); print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")' > "$service_standalone.sha256"
+
+          desktop_standalone="keeppeek-desktop-${VERSION}-${PLATFORM}.exe"
+          cp target/release/keeppeek-desktop.exe "$desktop_standalone"
+          python -c 'import hashlib, pathlib; path = pathlib.Path("'"$desktop_standalone"'"); print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")' > "$desktop_standalone.sha256"
+
           installer="keeppeek-${VERSION}-${PLATFORM}-installer.exe"
           python -c 'import hashlib, pathlib; path = pathlib.Path("'"$installer"'"); print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")' > "$installer.sha256"
 
@@ -504,7 +624,18 @@ jobs:
           7z a "$asset" "$archive"
           python -c 'import hashlib, pathlib; path = pathlib.Path("'"$asset"'"); print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")' > "$asset.sha256"
 
-          package_assets=("$asset" "$asset.sha256" "$standalone" "$standalone.sha256" "$installer" "$installer.sha256")
+          package_assets=(
+            "$asset"
+            "$asset.sha256"
+            "$standalone"
+            "$standalone.sha256"
+            "$service_standalone"
+            "$service_standalone.sha256"
+            "$desktop_standalone"
+            "$desktop_standalone.sha256"
+            "$installer"
+            "$installer.sha256"
+          )
           for package_asset in "${package_assets[@]}"; do
             if [[ ! -f "$package_asset" ]]; then
               echo "Expected release asset was not created: $package_asset" >&2

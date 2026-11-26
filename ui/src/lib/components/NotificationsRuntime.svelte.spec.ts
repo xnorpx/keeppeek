@@ -161,6 +161,30 @@ describe('NotificationsRuntime', () => {
 		await expect.element(page.getByLabelText('Emergency retry (seconds)')).toHaveValue(30);
 		await expect.element(page.getByLabelText('Emergency expiry (seconds)')).toHaveValue(300);
 
+		await userEvent.selectOptions(
+			page.getByRole('combobox', { name: 'Attachment' }).first(),
+			'required'
+		);
+		await userEvent.selectOptions(
+			page.getByRole('combobox', { name: 'Channel' }).first(),
+			'keeppeek_service'
+		);
+		await expect.element(page.getByLabelText('Keeppeek Service')).toBeDisabled();
+		await expect
+			.element(page.getByLabelText('Keeppeek Service'))
+			.toHaveAttribute('placeholder', 'Managed by NVR pairing');
+		await expect
+			.element(page.getByRole('combobox', { name: 'Attachment' }).first())
+			.toHaveValue('never');
+		await expect
+			.element(
+				page
+					.getByRole('combobox', { name: 'Attachment' })
+					.first()
+					.getByRole('option', { name: 'Required' })
+			)
+			.toBeDisabled();
+
 		await userEvent.click(page.getByRole('tab', { name: 'History' }));
 		await userEvent.click(page.getByText('Person at front door', { exact: true }));
 		await expect.element(page.getByText(/request 647d2300-702/)).toBeVisible();

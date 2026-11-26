@@ -59,9 +59,11 @@
 	import type { CameraListItem, RecordingEvent, RecordingSegment } from '$lib/types';
 	import RecordedReviewExport from '$lib/components/RecordedReviewExport.svelte';
 	import RecordedReviewWorkspace from '$lib/components/RecordedReviewWorkspace.svelte';
+	import { reviewGroupPresets } from '$lib/recorded-review-requests';
 	import KeepCameraSwitcher from '$lib/components/KeepCameraSwitcher.svelte';
 	import CopyMomentLink from '$lib/components/CopyMomentLink.svelte';
 	import KeepExportPanel from '$lib/components/KeepExportPanel.svelte';
+	import TimelapseReview from '$lib/components/TimelapseReview.svelte';
 	import ColdSeekState from '$lib/components/ColdSeekState.svelte';
 	import KeepStories from '$lib/components/KeepStories.svelte';
 	import KeepSwimlanes from '$lib/components/KeepSwimlanes.svelte';
@@ -110,6 +112,7 @@
 	let selectedWorkflowEvent = $state.raw<RecordingEvent | null>(null);
 
 	let cameras: CameraListItem[] = $state([]);
+	let reviewGroups = $derived(reviewGroupPresets(cameras));
 	let mode = $state<KeepMode>('timeline');
 	let cameraId = $state('');
 	let stream = $state<'main' | 'sub'>('main');
@@ -168,6 +171,7 @@
 	let audioPreviewOpen = $state(false);
 	let audioPreviewBusy = $state(false);
 	let audioPreviewSupported = $state(false);
+	let liveAudioSupported = $state(false);
 	let playbackAudioUnsubscribe: (() => void) | null = null;
 	let requestedPlaybackVariant = $state<RecordedQualityPreference>('auto');
 	let selectedPlaybackVariant = $state<RecordedStreamId | null>(null);
@@ -489,6 +493,7 @@
 				capabilityActions.shareRecordingRange.capability
 			);
 			audioPreviewSupported = capabilityIds.includes('keeppeek.recorded-audio.v1');
+			liveAudioSupported = capabilityIds.includes('keeppeek.live-audio-timing.v1');
 			eventSearchAvailable = capabilityIds.includes('keeppeek.event-search');
 			eventWorkflowAvailable = capabilityIds.includes(EVENT_WORKFLOW_CAPABILITY);
 			if (capabilityIds.length === 0) {
@@ -2967,13 +2972,18 @@
 	) {
 		const search =
 			'?' +
-			keepMomentSearchParams({
-				cameraId: focus,
-				timestampMs: Math.floor(at),
-				streamPreference: recordedPreference(playbackPreferences, focus),
-				mode: 'timeline',
-				review
-			});
+			keepMomentSearchParams(
+				{
+					cameraId: focus,
+					timestampMs: Math.floor(at),
+					streamPreference: recordedPreference(playbackPreferences, focus),
+					mode: 'timeline',
+					eventId: routeContext?.cameraId === focus ? routeContext.eventId : null,
+					returnHref: exportReturnHref,
+					review
+				},
+				resolve('/events')
+			);
 		if (replace) appliedSearch = search;
 		// eslint-disable-next-line svelte/no-navigation-without-resolve
 		void goto(resolve('/keep') + search, { state: page.state, shallow: replace, replace });
@@ -2985,23 +2995,39 @@
 		stream: RecordedStreamId,
 		review: NonNullable<KeepRoute['review']>
 	) {
-		const search = keepMomentSearchParams({
-			cameraId: focus,
-			timestampMs: at,
-			streamPreference: stream,
-			mode: 'export',
-			review
-		});
+		const search = keepMomentSearchParams(
+			{
+				cameraId: focus,
+				timestampMs: at,
+				streamPreference: stream,
+				mode: 'export',
+				eventId: routeContext?.cameraId === focus ? routeContext.eventId : null,
+				returnHref: exportReturnHref,
+				review
+			},
+			resolve('/events')
+		);
 		// eslint-disable-next-line svelte/no-navigation-without-resolve
 		void goto(resolve('/keep') + '?' + search);
 	}
-	function compareWith(secondId: string) {
-		if (!secondId || !cameraId || playheadMs === null) return;
+	function compareWith(selectionValue: string) {
+		if (!selectionValue || !cameraId || playheadMs === null) return;
 		const at =
 			selected && video && video.readyState >= 1
 				? playbackAnchorMs + video.currentTime * 1000
 				: playheadMs;
-		navigateReview(at, cameraId, { cameraIds: [cameraId, secondId], audioCameraId: cameraId });
+		if (selectionValue.startsWith('group:')) {
+			const groupName = selectionValue.slice('group:'.length);
+			const preset = reviewGroups.find((entry) => entry.name === groupName);
+			if (!preset) return;
+			const focus = preset.cameraIds.includes(cameraId) ? cameraId : preset.cameraIds[0]!;
+			navigateReview(at, focus, { cameraIds: preset.cameraIds, audioCameraId: focus });
+			return;
+		}
+		navigateReview(at, cameraId, {
+			cameraIds: [cameraId, selectionValue],
+			audioCameraId: cameraId
+		});
 	}
 
 	function currentMomentLink(): string | null {
@@ -3091,6 +3117,7 @@
 		timing={recordedAudio}
 		name={`${selectedCamera?.name ?? cameraId} / ${selected?.stream ?? ''}`}
 		disabled={scrubbing}
+		{liveAudioSupported}
 		onapply={applyRecordedAudioPreview}
 		onclose={() => (audioPreviewOpen = false)}
 	/>
@@ -3115,6 +3142,8 @@
 				startMs={reviewRoute.timestampMs}
 				focusedId={reviewRoute.cameraId}
 				preferences={playbackPreferences}
+				returnHref={reviewRoute.returnHref}
+				eventId={reviewRoute.eventId}
 				updateLink={(at, focus, selection) => navigateReview(at, focus, selection, true)}
 				openExport={exportComparison}
 				single={(at, focus) => navigateReview(at, focus)}
@@ -3154,7 +3183,7 @@
 					>
 						Coverage
 					</a>
-					{#each ['timeline', 'stories', 'swimlanes', 'export'] as nextMode (nextMode)}
+					{#each ['timeline', 'stories', 'swimlanes', 'timelapse', 'export'] as nextMode (nextMode)}
 						<button
 							type="button"
 							class="h-11 min-w-11 shrink-0 rounded-xs px-2.5 text-2xs font-semibold md:h-7 {mode ===
@@ -3185,6 +3214,15 @@
 						{#each cameras.filter((camera) => camera.id !== cameraId) as camera (camera.id)}
 							<option value={camera.id}>{camera.name || camera.id}</option>
 						{/each}
+						{#if reviewGroups.length > 0}
+							<optgroup label="Camera groups">
+								{#each reviewGroups as preset (preset.name)}
+									<option value={'group:' + preset.name}
+										>{preset.name} ({preset.totalCameras})</option
+									>
+								{/each}
+							</optgroup>
+						{/if}
 					</select>
 				</label>
 			{/if}
@@ -3342,6 +3380,14 @@
 					anchorMs={swimlaneAnchorMs}
 					{playheadMs}
 					onselect={selectSwimlane}
+				/>
+			{:else if mode === 'timelapse'}
+				<TimelapseReview
+					sourceId={cameraId}
+					sourceName={selectedCamera?.name ?? cameraId}
+					streamId={selected?.stream === 'sub' ? 'sub' : 'main'}
+					anchorMs={playheadMs}
+					onseek={openTimestamp}
 				/>
 			{:else if mode === 'export'}
 				<div class="space-y-3">

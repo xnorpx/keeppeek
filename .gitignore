@@ -57,3 +57,4 @@ htmlcov/
 
 /examples/object_detection_service/generated/
 /data/sample-videos/
+/crates/keeppeek-desktop/gen/

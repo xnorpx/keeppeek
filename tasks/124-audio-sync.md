@@ -388,6 +388,39 @@ offset, including variable packet size and gaps. The approved server bounds are
 numbers compare disabled and enabled queue processing in this build. They do not
 measure capture-to-speaker latency, end-to-end ingest throughput or production CPU.
 
+### Reconnect reset, health UI and release measurements on 2026-11-25
+
+Stream reconnects now reset transient live-timing state without closing active
+WebRTC sessions or discarding saved offsets: `RtspLoop::run_stream` calls
+`Publisher::reset_stream_timing` for the reconnecting stream and
+`ReolinkLoop::run_session` calls `Publisher::reset_camera_timing`. The Health
+page parses and displays per-source `WebRtcSourceHealthSnapshot.live_audio`
+occupancy and drops when reported, and Keep's **Recorded audio preview** dialog
+gates its live-audio availability note on `keeppeek.live-audio-timing.v1`.
+
+Release-optimized measurements (`CARGO_PROFILE_RELEASE_LTO=false`,
+`CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16`) ran on Windows 11 x64 (build 26200),
+AMD Ryzen 5 5600G, Rust `1.98.1` (`48a229cea`), 30 measured runs after warmup
+while other workstation tasks were active:
+
+| Benchmark                                      | Workload / Case             |                p50 |                p95 | Peak / Output              |
+| ---------------------------------------------- | --------------------------- | -----------------: | -----------------: | -------------------------- |
+| `measure_live_listener_timing` (7,500 units)   | `0 ms`                      |           0.204 ms |           0.225 ms | 0 B audio, 0 B video       |
+| `measure_live_listener_timing` (7,500 units)   | `+120 ms`                   |           1.507 ms |           7.955 ms | 3,072 B audio, 0 B video   |
+| `measure_live_listener_timing` (7,500 units)   | `−120 ms`                   |           0.890 ms |           1.669 ms | 0 B audio, 98,304 B video  |
+| `measure_recorded_audio_file_operations`       | Export `0 ms` / `+200 ms`   | 13.594 / 13.673 ms | 29.530 / 24.812 ms | 20,276 / 20,132 B          |
+| `measure_recorded_audio_file_operations`       | Playback `0 ms` / `+200 ms` |   0.809 / 5.257 ms |  1.120 / 14.647 ms | 20,268 / 20,124 B          |
+| `measure_recorded_audio_file_operations`       | Seek `0 ms` / `+200 ms`     |   0.651 / 4.101 ms |   0.963 / 5.477 ms | 16,220 / 17,221 B          |
+| `measure_accepted_rtp_packets` (8,192 packets) | Accepted RTP timing parser  |      76.440 ns/pkt |     147.656 ns/pkt | Fixed-size per-track state |
+
+Reproduce with:
+
+```sh
+CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 cargo test --locked --release -p keeppeek --lib measure_live_listener_timing -- --ignored --nocapture
+CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 cargo test --locked --release -p keeppeek --lib measure_recorded_audio_file_operations -- --ignored --nocapture
+CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 cargo test --locked --release -p retina --lib measure_accepted_rtp_packets -- --ignored --nocapture
+```
+
 ### Physical output verification procedure
 
 Use a camera and a flash/click source with simultaneous visible and audible events. A

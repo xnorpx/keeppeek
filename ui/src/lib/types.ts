@@ -59,6 +59,7 @@ export interface CameraListItem {
 	web_url?: string;
 	ports?: CameraPorts;
 	capabilities?: CameraCapabilities;
+	group_ids?: string[];
 	profiles: ProfileSummary[];
 }
 
@@ -1208,6 +1209,17 @@ export interface WebRtcSessionQueueHealth {
 	recovery_drops: number;
 }
 
+export interface LiveAudioTimingHealth {
+	configured_offset_ms: number;
+	applied_offset_ms: number;
+	preview: boolean;
+	held_audio_bytes: number;
+	held_video_bytes: number;
+	held_video_frames: number;
+	capacity_drops: number;
+	expired_drops: number;
+}
+
 export interface WebRtcSourceHealth {
 	camera_ip: string;
 	stream: 'main' | 'sub';
@@ -1215,6 +1227,7 @@ export interface WebRtcSourceHealth {
 	bitrate_bps: number | null;
 	has_keyframe: boolean;
 	keyframe_age_ms: number | null;
+	live_audio?: LiveAudioTimingHealth | null;
 }
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';
@@ -1251,6 +1264,21 @@ export interface LogSnapshot {
 	newest_sequence: number | null;
 	truncated: boolean;
 	stats: LogBufferStats;
+	generation?: string;
+}
+
+export interface ReportingStatus {
+	configured: boolean;
+	origin?: string;
+	retention_days?: number;
+}
+
+export type ReportingAuditEventName = 'start' | 'cancel' | 'local_download' | 'complete' | 'failed';
+
+export interface ReportingAuditPayload {
+	event: ReportingAuditEventName;
+	mode?: 'logs_only' | 'screen';
+	report_id?: string;
 }
 
 export interface LoggingSettings {

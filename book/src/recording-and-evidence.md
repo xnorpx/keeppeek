@@ -8,14 +8,15 @@ reviewed later. The underlying live evidence dimensions are defined in
 ## Find and play a recording
 
 Open **Keep**, choose the camera and recorded day, then select footage or an event on the timeline.
-The four modes serve different investigations:
+The five modes serve different investigations:
 
-| Mode      | Use it for                                                                          |
-| --------- | ----------------------------------------------------------------------------------- |
-| Timeline  | Follow footage and event intervals around the selected playback time.               |
-| Stories   | Review available event stories and their associated media.                          |
-| Swimlanes | Compare the available camera histories around a common time.                        |
-| Export    | Prepare and inspect an evidence-export job; creation requires Administrator access. |
+| Mode      | Use it for                                                                                |
+| --------- | ----------------------------------------------------------------------------------------- |
+| Timeline  | Follow footage and event intervals around the selected playback time.                     |
+| Stories   | Review available event stories and their associated media.                                |
+| Swimlanes | Compare the available camera histories around a common time.                              |
+| Timelapse | Review sparse sampled frames across a range and export a silent MP4 with a JSON manifest. |
+| Export    | Prepare and inspect an evidence-export job; creation requires Administrator access.       |
 
 Use play/pause, skip, the recording-position slider, volume/mute, speed and fullscreen controls
 below the image. Available stream quality depends on retained media and browser codec support.
@@ -44,33 +45,40 @@ Arrow keys pan a focused digitally zoomed image.
 
 ### Compare recordings from up to four cameras
 
-Open a recording in **Keep**. Under **Compare with**, select a second camera.
-Use **Add camera** to compare up to four selected cameras. **Remove** drops a
-camera from the comparison. Removing one of the last two opens the remaining
-camera at the shared time. **Play**, **Pause**, **Speed** and the five-second seek
-buttons act on one UTC playhead. Enter a date and time under **Seek to UTC** and
-choose **Go to time** to move directly to that instant. Each camera shows the UTC
-time of its most recently presented frame. When a playing camera falls more than
-250 ms from the shared playhead, Keep seeks to the shared time once that footage
-is buffered. A camera outside that tolerance shows **Synchronizing** with its measured
-distance ahead of or behind the shared time. The label clears when the browser presents
-a frame within tolerance. Keep waits at least 750 ms between corrections for the same player.
-If two paused corrections cannot present the selected moment, **Retry recording** reopens just
-that camera.
-A camera with a gap shows its own status and rejoins when the playhead reaches
-playable footage again. **Single camera** opens the focused camera at that moment.
+Open a recording in **Keep**. Under **Compare with**, select a second camera or a camera group.
+Use **Add camera** or **Group** to compare up to four selected cameras; larger groups show the
+first four authorized cameras with an explicit notice. **Remove** drops a camera from the
+comparison. Removing one of the last two opens the remaining camera at the shared time. **Play**,
+**Pause**, **Speed**, **Previous event**, **Next event** and the five-second seek buttons act on
+one UTC playhead. **Previous event** and **Next event** jump across events in the current UTC day
+(up to 256 events per stream, showing a status notice when truncated). Enter a date and time under
+**Seek to UTC** and choose **Go to time** to move directly to that instant. When paused on a focused camera that supports exact frame stepping, use
+**Prev frame** or **Next frame** to step that camera's verified picture; sibling cameras seek to
+the stepped UTC timestamp without claiming identical frame boundaries.
 
-Use **Audio** to select the one camera whose recording can be heard, and **Mute**
-or **Unmute** to control listening. **Focus** chooses which camera has priority
-when decoder capacity is limited. Pausing, seeking or changing the focused or
-audio camera updates the link so it can reopen the comparison at that moment.
-**Copy link to this moment** captures the current playhead while recordings are
-playing. The browser remembers the playback speed and mute preference.
-For an export, choose a camera under **Focus**. Mark the shared UTC playhead with
-**Set range start** and **Set range end**, up to two minutes apart. **Export
-focused camera** opens the usual export workflow for that camera and stream.
-The recorder checks retained coverage. **Back to comparison** restores the
-camera selection, focus, audio, marked range and shared time.
+Each camera shows the UTC time of its most recently presented frame, its selected stream and codec,
+and a **Diagnostics** disclosure with measured drift, forward buffer duration, audio state and
+correction count. Drift between 100 ms and 250 ms uses a bounded 3% playback-rate slew. When a
+playing camera falls more than 250 ms from the shared playhead, Keep seeks to the shared time once
+that footage is buffered. A camera outside that tolerance shows **Synchronizing** with its measured
+distance ahead of or behind the shared time. The label clears when the browser presents a frame
+within tolerance. Keep waits at least 750 ms between corrections for the same player. If two paused
+corrections cannot present the selected moment, **Retry recording** reopens just that camera. A
+camera with a gap shows its own status and rejoins when the playhead reaches playable footage
+again. A camera whose available recordings use an unsupported codec names the unsupported stream
+and codec instead of showing a gap. **Single camera** opens the focused camera at that moment, and
+**Back to event** returns to the originating Events view when opened from an event.
+
+Use **Audio** to select the one camera whose recording can be heard, and **Mute** or **Unmute** to
+control listening. Tiles show active, muted, unavailable and configured audio-offset state.
+**Focus** chooses which camera has priority when decoder capacity is limited and which camera
+receives paused frame steps. Pausing, seeking or changing the focused or audio camera updates the
+link so it can reopen the comparison at that moment. **Copy link to this moment** captures the
+current playhead while recordings are playing. The browser remembers the playback speed and mute
+preference. For an export, choose a camera under **Focus**. Mark the shared UTC playhead with
+**Set range start** and **Set range end**, up to two minutes apart. **Export focused camera** opens
+the usual export workflow for that camera and stream. The recorder checks retained coverage. **Back
+to comparison** restores the camera selection, focus, audio, marked range and shared time.
 
 On a compact screen, up to two recordings can decode. On phones, **Comparison
 options** opens the camera, audio, speed, UTC seek and marked-range controls.
@@ -93,9 +101,25 @@ Tap **Playback options** for volume, playback speed, quality, **Copy link to thi
 Back closes the sheet and returns focus to a visible control. Opening a sheet keeps the player
 open. In recording fullscreen, rate and volume remain available beside the player controls.
 
-The compact controls do not remove Timeline, Stories, Swimlanes or Export. Rotate the device or
+The compact controls do not remove Timeline, Stories, Swimlanes, Timelapse or Export. Rotate the device or
 close the sheet to return to the history view. The timeline changes recording time; the separate
 Digital controls above the image change only the inspection crop.
+
+### Review and export a bounded timelapse
+
+Open **Timelapse** in **Keep** to inspect a quiet period without loading every recorded frame.
+Choose **Last 15 min**, **Last hour**, or a bounded **Custom** range (up to 31 days and 3,600
+sampled frames). KeepPeek plans sampled timestamps first and loads visible thumbnails lazily.
+Gaps, retained intervals, privacy windows, open recordings, and unsupported codecs appear as
+explicit gap cards and are never filled with repeated stale frames. Selecting any sampled frame
+opens **Timeline** at its exact recorded source timestamp.
+
+Generating a timelapse MP4 is a separate Administrator action that produces a **silent**
+time-compressed derivative (up to 1920x1080, 1–30 FPS, 512 MiB) rather than continuous source
+evidence. Optional timestamp overlays render in the configured site timezone while the companion
+SHA-256-verified JSON provenance manifest records exact UTC source timestamps, source identities,
+sampling settings, and omitted intervals. Source recordings remain immutable. See
+[Bounded Timelapse Review and Export](https://github.com/xnorpx/keeppeek/blob/main/docs/timelapse.md).
 
 ### Keep the requested UTC time explicit
 

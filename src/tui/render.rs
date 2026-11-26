@@ -8,6 +8,8 @@ use ratatui::{
 use std::time::{Duration, Instant};
 
 const WIDE_COLUMNS: u16 = 100;
+const SOURCE_COLUMNS: u16 = 115;
+const STALE_SAMPLE_AGE: Duration = Duration::from_secs(5);
 
 #[derive(Default)]
 pub(super) struct Navigation {
@@ -140,7 +142,7 @@ pub(super) fn draw(
         return;
     }
     draw_server_summary(frame, s);
-    draw_stream_page(frame, s, nav, elapsed);
+    draw_stream_page(frame, s, nav, elapsed, failure_age.is_some());
 }
 
 fn draw_sample_heading(
@@ -150,7 +152,7 @@ fn draw_sample_heading(
     failure: Option<String>,
 ) {
     let strong = Style::new().add_modifier(Modifier::BOLD);
-    let stale = if elapsed >= Duration::from_secs(5) {
+    let stale = if elapsed >= STALE_SAMPLE_AGE {
         "  STALE"
     } else {
         ""
@@ -210,7 +212,13 @@ fn draw_server_summary(frame: &mut Frame<'_>, s: &Snapshot) {
     );
 }
 
-fn draw_stream_page(frame: &mut Frame<'_>, s: &Snapshot, nav: &mut Navigation, elapsed: Duration) {
+fn draw_stream_page(
+    frame: &mut Frame<'_>,
+    s: &Snapshot,
+    nav: &mut Navigation,
+    elapsed: Duration,
+    failed: bool,
+) {
     let plain = Style::new();
     let strong = plain.add_modifier(Modifier::BOLD);
     let height = frame.area().height;
@@ -245,7 +253,7 @@ fn draw_stream_page(frame: &mut Frame<'_>, s: &Snapshot, nav: &mut Navigation, e
         line(frame, y, warning, strong);
         y += 1;
     }
-    draw_stream_footer(frame, s, start, end, warnings);
+    draw_stream_footer(frame, s, start, end, warnings, elapsed, failed);
 }
 
 fn draw_stream_footer(
@@ -254,17 +262,27 @@ fn draw_stream_footer(
     start: usize,
     end: usize,
     warnings: usize,
+    elapsed: Duration,
+    failed: bool,
 ) {
     let plain = Style::new();
     let height = frame.area().height;
-    let extra = s.omitted_warnings + s.warnings.len() - warnings;
-    let omitted = s.total_rows - s.rows.len();
+    let extra = s
+        .omitted_warnings
+        .saturating_add(s.warnings.len().saturating_sub(warnings));
+    let omitted = s.total_rows.saturating_sub(s.rows.len());
     let mut footer = format!(
         "{}–{} of {}   ↑↓ PgUp/PgDn   q logs   Ctrl+C stop",
         if end == 0 { 0 } else { start + 1 },
         end,
         s.total_rows
     );
+    if failed {
+        footer.push_str("   CHECK FAILED");
+    }
+    if elapsed >= STALE_SAMPLE_AGE {
+        footer.push_str("   STALE");
+    }
     if omitted > 0 {
         footer.push_str(&format!("   {omitted} beyond row limit"));
     }
@@ -274,74 +292,159 @@ fn draw_stream_footer(
     line(frame, height.saturating_sub(1), &footer, plain);
 }
 
-fn stream_table(frame: &mut Frame<'_>, rows: &[StreamRow], selected: usize, elapsed: Duration) {
-    let area = frame.area();
-    let wide = area.width >= WIDE_COLUMNS;
-    let mut widths = vec![
-        Constraint::Min(8),
-        Constraint::Length(10),
-        Constraint::Length(13),
-    ];
-    let mut titles = vec!["Camera", "Stream", "Health"];
+fn table_columns(wide: bool, show_source: bool) -> (Vec<Constraint>, Vec<&'static str>) {
+    let mut widths = vec![Constraint::Min(8)];
+    let mut titles = vec!["Camera"];
+    if show_source {
+        widths.push(Constraint::Length(12));
+        titles.push("Source");
+    }
+    widths.extend([Constraint::Length(10), Constraint::Length(12)]);
+    titles.extend(["Stream", "Health"]);
     if wide {
         widths.extend([
-            Constraint::Length(8),
-            Constraint::Length(10),
             Constraint::Length(6),
+            Constraint::Length(10),
+            Constraint::Length(9),
         ]);
         titles.extend(["Codec", "Resolution", "FPS"]);
     }
-    widths.push(Constraint::Length(13));
+    widths.push(Constraint::Length(11));
     titles.push("Recv kbit/s");
     if wide {
-        widths.push(Constraint::Length(9));
+        widths.push(Constraint::Length(12));
         titles.push("Recording");
     }
-    let visible = rows.iter().enumerate().map(|(index, row)| {
-        let measurement = row.measurement.as_ref();
-        let mut cells = vec![
-            Cell::from(row.camera.as_str()),
-            Cell::from(format!("{}/{}", row.stream, row.medium)),
-            Cell::from(row.health),
-        ];
-        if wide {
-            cells.extend([
-                Cell::from(row.codec.as_deref().unwrap_or("—")),
-                Cell::from(row.resolution.as_deref().unwrap_or("—")),
-                Cell::from(value(
-                    measurement
-                        .and_then(|m| m.observed_fps)
-                        .map(|f| format!("{f:.1}")),
-                )),
-            ]);
-        }
-        cells.push(Cell::from(value(
-            measurement.map(|m| received_rate(m, elapsed)),
-        )));
-        if wide {
-            cells.push(Cell::from(measurement.map_or("—", recording)));
-        }
-        let row = Row::new(cells);
-        if index == selected {
-            row.style(Style::new().add_modifier(Modifier::REVERSED))
-        } else {
-            row
-        }
-    });
+    widths.push(Constraint::Length(9));
+    titles.push("Age");
+    (widths, titles)
+}
+
+fn stream_table_row<'a>(
+    row: &'a StreamRow,
+    wide: bool,
+    show_source: bool,
+    selected: bool,
+    elapsed: Duration,
+) -> Row<'a> {
+    let measurement = row.measurement.as_ref();
+    let mut cells = vec![Cell::from(camera_cell(row, show_source))];
+    if show_source {
+        cells.push(Cell::from(row.id.as_str()));
+    }
+    cells.extend([
+        Cell::from(format!("{}/{}", row.stream, row.medium)),
+        Cell::from(row.health),
+    ]);
+    if wide {
+        cells.extend([
+            Cell::from(row.codec.as_deref().unwrap_or("—")),
+            Cell::from(row.resolution.as_deref().unwrap_or("—")),
+            Cell::from(fps_cell(row, measurement)),
+        ]);
+    }
+    cells.push(Cell::from(value(
+        measurement.and_then(|m| received_rate(m, elapsed)),
+    )));
+    if wide {
+        cells.push(Cell::from(
+            measurement.map_or_else(|| "—".into(), |m| recording_cell(m, elapsed)),
+        ));
+    }
+    cells.push(Cell::from(
+        measurement.map_or_else(|| "—".into(), |m| row_age(m, elapsed)),
+    ));
+    let table_row = Row::new(cells);
+    if selected {
+        table_row.style(Style::new().add_modifier(Modifier::REVERSED))
+    } else {
+        table_row
+    }
+}
+
+fn stream_table(frame: &mut Frame<'_>, rows: &[StreamRow], selected: usize, elapsed: Duration) {
+    let area = frame.area();
+    let wide = area.width >= WIDE_COLUMNS;
+    let show_source = area.width >= SOURCE_COLUMNS;
+    let (widths, titles) = table_columns(wide, show_source);
+    let visible = rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| stream_table_row(row, wide, show_source, index == selected, elapsed));
     let table = Table::new(visible, widths)
         .header(Row::new(titles).style(Style::new().add_modifier(Modifier::BOLD)));
     let height = u16::try_from(rows.len() + 1).unwrap_or(area.height);
     frame.render_widget(table, Rect::new(area.x, area.y + 3, area.width, height));
 }
 
-fn received_rate(m: &Measurement, elapsed: Duration) -> String {
+fn camera_cell(row: &StreamRow, show_source: bool) -> String {
+    if row.camera.is_empty() {
+        row.id.clone()
+    } else if row.duplicate_name && !show_source {
+        format!("{} [{}]", row.camera, row.id)
+    } else {
+        row.camera.clone()
+    }
+}
+
+fn format_fps(fps: f64) -> String {
+    if (fps - fps.round()).abs() < 0.05 {
+        format!("{fps:.0}")
+    } else {
+        format!("{fps:.1}")
+    }
+}
+
+fn fps_cell(row: &StreamRow, m: Option<&Measurement>) -> String {
+    match (m.and_then(|m| m.observed_fps), row.expected_fps) {
+        (Some(observed), Some(expected)) => format!("{observed:.1}/{}", format_fps(expected)),
+        (Some(observed), None) => format!("{observed:.1}"),
+        (None, _) => "—".into(),
+    }
+}
+
+fn row_age(m: &Measurement, elapsed: Duration) -> String {
+    let report = Duration::from_millis(m.report_age_ms)
+        .saturating_add(elapsed)
+        .as_secs();
+    if let Some(frame_ms) = m.frame_age_ms {
+        let frame = Duration::from_millis(frame_ms)
+            .saturating_add(elapsed)
+            .as_secs();
+        if frame != report {
+            return format!("{report}s/{frame}s");
+        }
+    }
+    format!("{report}s")
+}
+
+fn recording_cell(m: &Measurement, elapsed: Duration) -> String {
+    match (
+        m.recording_requested,
+        m.recording_progress,
+        m.recording_age_ms,
+    ) {
+        (Some(true), Some(true), Some(ms)) => format!(
+            "rec {}s",
+            Duration::from_millis(ms).saturating_add(elapsed).as_secs()
+        ),
+        (Some(true), Some(false), Some(ms)) => format!(
+            "stalled {}s",
+            Duration::from_millis(ms).saturating_add(elapsed).as_secs()
+        ),
+        _ => recording(m).into(),
+    }
+}
+
+fn received_rate(m: &Measurement, elapsed: Duration) -> Option<String> {
+    let kbit = m.kbit_per_second?;
     let stale = Duration::from_millis(m.report_age_ms).saturating_add(elapsed)
         > Duration::from_millis(m.report_freshness_ms);
-    if stale {
-        format!("{:.0} stale", m.kbit_per_second)
+    Some(if stale {
+        format!("{kbit:.0} stale")
     } else {
-        format!("{:.0}", m.kbit_per_second)
-    }
+        format!("{kbit:.0}")
+    })
 }
 
 fn details(row: &StreamRow, elapsed: Duration, width: u16) -> [String; 4] {
@@ -352,7 +455,7 @@ fn details(row: &StreamRow, elapsed: Duration, width: u16) -> [String; 4] {
     let codec = row.codec.as_deref().unwrap_or("—");
     let resolution = row.resolution.as_deref().unwrap_or("—");
     let observed = value(m.and_then(|m| m.observed_fps).map(|v| format!("{v:.1}")));
-    let expected = value(row.expected_fps);
+    let expected = value(row.expected_fps.map(format_fps));
     let record = m.map_or("—", recording);
     let progress = age(m.and_then(|m| m.recording_age_ms), elapsed);
     let media = if width < WIDE_COLUMNS {

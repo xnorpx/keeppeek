@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "generated_at_unix_secs": 1790000000,
+  "min_installations_per_cell": 10,
+  "max_retention_days": 60,
+  "suppressed": false,
+  "active_installations": 24,
+  "camera_compatibility_installations": 24,
+  "feature_adoption_installations": 24,
+  "dimensions": {
+    "keeppeek_version": {
+      "0.1.0-alpha.1": 24
+    },
+    "release_channel": {
+      "alpha": 24
+    },
+    "deployment_type": {
+      "container": 14,
+      "native": 10
+    },
+    "os_family": {
+      "linux": 14,
+      "windows": 10
+    },
+    "architecture": {
+      "x86_64": 24
+    },
+    "cpu_vendor": {
+      "amd": 10,
+      "intel": 14
+    },
+    "cpu_model_family": {
+      "amd_ryzen": 10,
+      "intel_n_series": 14
+    },
+    "memory_bucket": {
+      "16_32gb": 10,
+      "8_16gb": 14
+    },
+    "video_acceleration": {
+      "d3d11va": 10,
+      "vaapi": 14
+    },
+    "camera_manufacturer": {
+      "hikvision": 10,
+      "reolink": 14
+    },
+    "camera_model": {
+      "hikvision_ds_2cd2347g2": 10,
+      "reolink_rlc_810a": 14
+    },
+    "camera_backend": {
+      "reo_proto": 14,
+      "retina": 10
+    },
+    "camera_transport": {
+      "tcp": 24
+    },
+    "video_codec": {
+      "h264": 10,
+      "h265": 14
+    },
+    "resolution_bucket": {
+      "qhd_1440p": 10,
+      "uhd_4k": 14
+    },
+    "camera_capability": {
+      "audio": 24,
+      "events": 24,
+      "recording": 24
+    },
+    "recording_mode": {
+      "continuous": 24
+    },
+    "storage_capacity_bucket": {
+      "1tb_4tb": 14,
+      "4tb_16tb": 10
+    },
+    "projected_retention_bucket": {
+      "30_90d": 10,
+      "7_30d": 14
+    },
+    "enabled_integration": {
+      "mqtt_forwarder": 14
+    },
+    "event_source_type": {
+      "hikvision_isapi": 10,
+      "operational_events": 24,
+      "reolink_events": 14
+    }
+  },
+  "combined_dimensions": {
+    "os_x_architecture": {
+      "linux:x86_64": 14,
+      "windows:x86_64": 10
+    },
+    "manufacturer_x_backend": {
+      "hikvision:retina": 10,
+      "reolink:reo_proto": 14
+    },
+    "codec_x_resolution": {
+      "h264:qhd_1440p": 10,
+      "h265:uhd_4k": 14
+    }
+  }
+}

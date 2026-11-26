@@ -47,6 +47,10 @@ describe('mobile settings navigation', () => {
 			label: 'System & updates',
 			renderTarget: 'appearance'
 		});
+		expect(mobileSettingsFocus('#usage-reporting')).toMatchObject({
+			id: 'system',
+			renderTarget: 'appearance'
+		});
 		expect(mobileSettingsFocus('#camera-defaults')).toBeNull();
 		expect(mobileSettingsFocus('#logs')).toBeNull();
 		expect(mobileSettingsFocus('')).toBeNull();

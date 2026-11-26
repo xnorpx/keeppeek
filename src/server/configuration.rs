@@ -3695,7 +3695,7 @@ mod tests {
         let path = directory.join("config.toml");
         config::write_private_file(
             &path,
-            b"[camera_defaults]\nusername='user'\npassword='password'\n[cameras.front]\nip='192.0.2.10'\n[cameras.back]\nip='192.0.2.11'\n[cameras.back.recorded_audio]\ndefault_offset_ms=200\nsub_offset_ms=0\n",
+            b"[camera_defaults]\nusername='user'\npassword='password'\n[cameras.front]\nip='192.0.2.10'\n[cameras.back]\nip='192.0.2.11'\n[cameras.back.recorded_audio]\ndefault_offset_ms=200\nsub_offset_ms=0\n[cameras.back.live_audio]\ndefault_offset_ms=-80\nmain_offset_ms=0\n",
         ).unwrap();
         let state = ServerState::empty().with_camera_config_path(path);
         let snapshot = configuration_snapshot(&state).unwrap();
@@ -3712,6 +3712,7 @@ mod tests {
             front.recorded_audio,
             Some(proto::RecordedAudioSettings::default())
         );
+        assert_eq!(front.live_audio, Some(proto::LiveAudioSettings::default()));
         let back = cameras
             .iter()
             .find(|camera| camera.id == "192.0.2.11")
@@ -3721,15 +3722,21 @@ mod tests {
             Some(200)
         );
         assert_eq!(back.recorded_audio.as_ref().unwrap().sub_offset_ms, Some(0));
+        assert_eq!(
+            back.live_audio.as_ref().unwrap().default_offset_ms,
+            Some(-80)
+        );
+        assert_eq!(back.live_audio.as_ref().unwrap().main_offset_ms, Some(0));
         std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
     fn unrelated_camera_patch_and_template_preserve_recorded_audio_settings() {
         let mut camera: toml::Table = toml::from_str(
-            "ip='192.0.2.10'\nusername='user'\npassword='password'\n[recorded_audio]\ndefault_offset_ms=-250\nmain_offset_ms=0\n",
+            "ip='192.0.2.10'\nusername='user'\npassword='password'\n[recorded_audio]\ndefault_offset_ms=-250\nmain_offset_ms=0\n[live_audio]\ndefault_offset_ms=60\nsub_offset_ms=0\n",
         ).unwrap();
-        let original = camera["recorded_audio"].clone();
+        let original_recorded = camera["recorded_audio"].clone();
+        let original_live = camera["live_audio"].clone();
         let mut issues = Vec::new();
         apply_camera_patch(
             Path::new("config.toml"),
@@ -3745,10 +3752,12 @@ mod tests {
             &mut issues,
         );
         assert!(issues.is_empty());
-        assert_eq!(camera["recorded_audio"], original);
+        assert_eq!(camera["recorded_audio"], original_recorded);
+        assert_eq!(camera["live_audio"], original_live);
         let values: StoredTemplateValues = toml::from_str("backend='retina'").unwrap();
         apply_template_values(&mut camera, &values);
-        assert_eq!(camera["recorded_audio"], original);
+        assert_eq!(camera["recorded_audio"], original_recorded);
+        assert_eq!(camera["live_audio"], original_live);
         let restored: CameraConfig = toml::Value::Table(camera).try_into().unwrap();
         assert_eq!(
             restored.recorded_audio.effective_offset_ms("main").unwrap(),
@@ -3758,6 +3767,8 @@ mod tests {
             restored.recorded_audio.effective_offset_ms("sub").unwrap(),
             -250
         );
+        assert_eq!(restored.live_audio.effective_offset_ms("main").unwrap(), 60);
+        assert_eq!(restored.live_audio.effective_offset_ms("sub").unwrap(), 0);
     }
 
     fn pre_recording_patch(seconds: u32, stream: i32) -> proto::CameraDefaultPatch {

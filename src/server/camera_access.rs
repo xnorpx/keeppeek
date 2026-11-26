@@ -202,11 +202,27 @@ pub(super) fn authorize_command(
         Some(control_request::Command::EventSearchCommand(command)) => {
             authorize_event_search(&policy, command)
         }
+        Some(control_request::Command::ActivityAnalyticsCommand(command)) => {
+            authorize_activity_analytics(&policy, command)
+        }
         Some(control_request::Command::TalkbackCommand(command)) => {
             authorize_talkback(state, &policy, command)
         }
         _ => Ok(()),
     }
+}
+
+fn authorize_activity_analytics(
+    policy: &CameraAccess,
+    command: &proto::ActivityAnalyticsCommand,
+) -> Result<(), ControlCommandError> {
+    let Some(proto::activity_analytics_command::Action::Query(query)) = &command.action else {
+        return Ok(());
+    };
+    if let Some(filter) = &query.filter {
+        require_cameras(policy, &filter.source_ids)?;
+    }
+    Ok(())
 }
 
 fn authorize_talkback(
@@ -325,6 +341,12 @@ fn authorize_stored_media(
         Some(stored_media_command::Action::StepFrame(request)) => {
             require_camera(policy, &request.source_id)
         }
+        Some(stored_media_command::Action::PlanTimelapse(request)) => {
+            require_camera(policy, &request.source_id)
+        }
+        Some(stored_media_command::Action::FetchTimelapseSamples(request)) => {
+            require_camera(policy, &request.source_id)
+        }
         Some(stored_media_command::Action::QueryTimeline(request)) => {
             require_cameras(policy, &request.source_ids)
         }
@@ -337,6 +359,15 @@ fn authorize_event_search(
     command: &proto::EventSearchCommand,
 ) -> Result<(), ControlCommandError> {
     match &command.action {
+        Some(event_search_command::Action::ReplaceTerms(request)) => {
+            require_camera(policy, &request.source_id)
+        }
+        Some(event_search_command::Action::SetEmbedding(request)) => {
+            require_camera(policy, &request.source_id)
+        }
+        Some(event_search_command::Action::DeleteEmbedding(request)) => {
+            require_camera(policy, &request.source_id)
+        }
         Some(event_search_command::Action::Query(request)) => {
             authorize_event_query(policy, request)
         }

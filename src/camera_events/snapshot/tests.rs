@@ -21,6 +21,10 @@ struct Worker {
 
 impl Worker {
     fn new(camera: &Camera) -> Self {
+        Self::with_privacy(camera, Arc::new(crate::privacy::PrivacyRegistry::default()))
+    }
+
+    fn with_privacy(camera: &Camera, privacy: Arc<crate::privacy::PrivacyRegistry>) -> Self {
         let registry = Registry::default();
         let shutdown = Shutdown::new();
         let (input, received) = mpsc::sync_channel(8);
@@ -36,7 +40,7 @@ impl Worker {
             camera,
             Arc::clone(&slot),
             registry.clone(),
-            Arc::new(crate::privacy::PrivacyRegistry::default()),
+            privacy,
             shutdown.clone(),
         )
         .unwrap()
@@ -280,4 +284,78 @@ fn snapshot_worker_has_four_queued_jobs_and_one_in_flight_request() {
     );
     drop(worker);
     assert_eq!(images.requests().len(), 1);
+}
+
+#[test]
+fn profile_privacy_blocks_pre_fetch_and_in_flight_snapshots() {
+    use std::collections::BTreeMap;
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
+
+    let images = FakeHikvision::builder().start().unwrap();
+    let sample_jpeg = images.resource(SNAPSHOT_PATH).unwrap();
+    let privacy = Arc::new(crate::privacy::PrivacyRegistry::default());
+    let worker = Worker::with_privacy(&configured_camera(), Arc::clone(&privacy));
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (request_seen_tx, request_seen_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let jpeg_reply = sample_jpeg.clone();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buffer = [0u8; 1024];
+        let _ = stream.read(&mut buffer);
+        request_seen_tx.send(()).unwrap();
+        release_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            jpeg_reply.len()
+        );
+        stream.write_all(header.as_bytes()).unwrap();
+        stream.write_all(&jpeg_reply).unwrap();
+    });
+
+    // Block requests before any HTTP fetch when profile privacy is active.
+    let gated_uri = format!("http://{address}{SNAPSHOT_PATH}");
+    assert!(worker.registry.record_snapshot(worker.ip, Some(&gated_uri)));
+    privacy
+        .replace_profile_overrides(BTreeMap::from([(worker.ip.to_string(), true)]))
+        .unwrap();
+    worker.send("blocked-before-fetch");
+    assert!(matches!(
+        request_seen_rx.recv_timeout(Duration::from_millis(150)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    assert!(matches!(
+        worker.received.recv_timeout(Duration::from_millis(50)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+
+    // Allow a fetch to start, then cycle profile privacy while the response is in flight.
+    privacy.replace_profile_overrides(BTreeMap::new()).unwrap();
+    worker.send("in-flight-crossed-privacy");
+    request_seen_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("snapshot worker must issue HTTP request while privacy is inactive");
+    privacy
+        .replace_profile_overrides(BTreeMap::from([(worker.ip.to_string(), true)]))
+        .unwrap();
+    privacy.replace_profile_overrides(BTreeMap::new()).unwrap();
+    release_tx.send(()).unwrap();
+    server.join().unwrap();
+    assert!(matches!(
+        worker.received.recv_timeout(Duration::from_millis(200)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+
+    // Allow a fresh snapshot after privacy ends.
+    let normal_uri = format!("{}{SNAPSHOT_PATH}", images.origin());
+    assert!(
+        worker
+            .registry
+            .record_snapshot(worker.ip, Some(&normal_uri))
+    );
+    worker.send("after-privacy-cleared");
+    assert_eq!(worker.jpeg("after-privacy-cleared"), sample_jpeg);
 }

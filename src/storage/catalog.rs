@@ -8,8 +8,9 @@ use crate::{
             EventAttachment, EventSource, TimelineEvent, canonical_event_attachment, event_icon,
         },
         search::{
-            EventEmbedding, EventImageFilter, EventMetadataQuery, EventSearchHit, EventSearchPage,
-            EventSearchTerm, EventSemanticSearchQuery, EventTextSearchQuery, normalize_search_text,
+            EventAdvancedSearchQuery, EventEmbeddingInput, EventImageFilter, EventMetadataQuery,
+            EventSearchHit, EventSearchPage, EventSearchSemanticSummary, EventSearchTerm,
+            EventSemanticSearchQuery, EventTextSearchQuery, normalize_search_text,
         },
     },
 };
@@ -29,6 +30,8 @@ use std::{
     time::Duration,
 };
 
+mod advanced_search;
+pub(crate) mod analytics;
 pub(crate) mod archive;
 pub mod archive_playback;
 pub(crate) mod authority;
@@ -162,6 +165,19 @@ pub struct CatalogMediaFragment {
     pub byte_offset: u64,
     pub byte_len: u64,
     pub archive: Option<archive_playback::ArchiveRead>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogTimelapseFragment {
+    pub fragment: CatalogMediaFragment,
+    pub finalized: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogTimelapseLookup {
+    pub catalog_revision: u64,
+    pub candidates: Vec<Option<CatalogTimelapseFragment>>,
+    pub retained_ranges: Vec<(i64, i64)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -367,6 +383,7 @@ pub struct RecordingCatalogHandle {
     search_tx: SyncSender<SearchCommand>,
     retention: std::sync::Weak<retention::Connection>,
     retention_shutdown: Arc<AtomicBool>,
+    semantic_available: Arc<AtomicBool>,
 }
 
 pub struct RecordingCatalog {
@@ -604,12 +621,19 @@ enum Command {
     },
     SetEventEmbedding {
         event_id: String,
-        embedding: EventEmbedding,
+        input: EventEmbeddingInput,
         reply: SyncSender<anyhow::Result<()>>,
+    },
+    DeleteEventEmbedding {
+        event_id: String,
+        model_id: String,
+        model_version: Option<String>,
+        reply: SyncSender<anyhow::Result<u64>>,
     },
     Stats {
         reply: SyncSender<anyhow::Result<CatalogStats>>,
     },
+    Analytics(analytics::WriteCommand),
     #[cfg(test)]
     Snapshot {
         destination: PathBuf,
@@ -621,6 +645,7 @@ enum Command {
 
 enum SearchCommand {
     Maintenance(maintenance::ReadRequest),
+    Analytics(analytics::ReadCommand),
     Bookmarks {
         query: workflow::BookmarkQuery,
         reply: SyncSender<anyhow::Result<workflow::BookmarkPage>>,
@@ -637,6 +662,10 @@ enum SearchCommand {
         query: EventSemanticSearchQuery,
         reply: SyncSender<anyhow::Result<EventSearchPage>>,
     },
+    Advanced {
+        query: Box<EventAdvancedSearchQuery>,
+        reply: SyncSender<anyhow::Result<EventSearchPage>>,
+    },
     Availability {
         stream_id: String,
         start_ms: i64,
@@ -648,6 +677,14 @@ enum SearchCommand {
         start_ms: i64,
         end_ms: i64,
         reply: SyncSender<anyhow::Result<CatalogCoverageSnapshot>>,
+    },
+    TimelapseLookup {
+        stream_id: String,
+        start_ms: i64,
+        end_ms: i64,
+        targets_ms: Vec<i64>,
+        tolerance_ms: i64,
+        reply: SyncSender<anyhow::Result<CatalogTimelapseLookup>>,
     },
     Shutdown,
 }
@@ -679,12 +716,13 @@ impl RecordingCatalog {
         let search_connection = database.connect()?;
         connection.busy_timeout(BUSY_TIMEOUT)?;
         search_connection.busy_timeout(BUSY_TIMEOUT)?;
-        let legacy_recordings = pollster::block_on(prepare_catalog(&connection))?;
+        let (legacy_recordings, semantic_ok) = pollster::block_on(prepare_catalog(&connection))?;
 
         let (tx, rx) = mpsc::sync_channel(COMMAND_CAPACITY);
         let (search_tx, search_rx) = mpsc::sync_channel(COMMAND_CAPACITY);
         let readers = Arc::new(readers::Registry::new(&lease));
         let maintenance_shutdown = Arc::new(AtomicBool::new(false));
+        let semantic_available = Arc::new(AtomicBool::new(semantic_ok));
         let retention_connection = retention::connect(&database, Arc::clone(&lease))?;
         let handle = RecordingCatalogHandle {
             legacy_cleanup: Arc::default(),
@@ -693,18 +731,21 @@ impl RecordingCatalog {
             readers: Arc::clone(&readers),
             retention: Arc::downgrade(&retention_connection),
             retention_shutdown: maintenance_shutdown.clone(),
+            semantic_available: Arc::clone(&semantic_available),
         };
         let writer_lease = lease.clone();
+        let writer_semantic = Arc::clone(&semantic_available);
         let thread = std::thread::Builder::new()
             .name("recording-catalog".to_owned())
             .spawn(move || {
-                run_catalog(connection, rx, readers, &writer_lease);
+                run_catalog(connection, rx, readers, &writer_lease, &writer_semantic);
             })?;
+        let search_semantic = Arc::clone(&semantic_available);
         let search_thread = std::thread::Builder::new()
             .name("recording-catalog-search".to_owned())
             .spawn(move || {
                 let _lease = lease;
-                run_search_catalog(search_connection, search_rx);
+                run_search_catalog(search_connection, search_rx, &search_semantic);
             })?;
         let maintenance = (!legacy_recordings.is_empty())
             .then(|| {
@@ -906,7 +947,18 @@ impl RecordingCatalogHandle {
             search_tx,
             retention: std::sync::Weak::new(),
             retention_shutdown: Arc::new(AtomicBool::new(false)),
+            semantic_available: Arc::new(AtomicBool::new(true)),
         }
+    }
+
+    /// Returns whether semantic embedding storage and ranking are available.
+    pub fn semantic_search_available(&self) -> bool {
+        self.semantic_available.load(Ordering::Acquire)
+    }
+
+    /// Controls semantic availability so external outages isolate semantic queries from ordinary search.
+    pub fn set_semantic_search_available(&self, available: bool) {
+        self.semantic_available.store(available, Ordering::Release);
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
@@ -1072,6 +1124,42 @@ impl RecordingCatalogHandle {
                 stream_id: stream_id.to_owned(),
                 start_ms,
                 end_ms,
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
+    pub fn timelapse_lookup(
+        &self,
+        stream_id: &str,
+        start_ms: i64,
+        end_ms: i64,
+        targets_ms: &[i64],
+        tolerance_ms: i64,
+    ) -> anyhow::Result<CatalogTimelapseLookup> {
+        anyhow::ensure!(
+            start_ms < end_ms,
+            "timelapse lookup start must be before end"
+        );
+        anyhow::ensure!(
+            tolerance_ms >= 0,
+            "timelapse tolerance must not be negative"
+        );
+        anyhow::ensure!(
+            targets_ms.len() <= crate::storage::timelapse::MAX_SAMPLES as usize,
+            "timelapse target count exceeds maximum"
+        );
+        let (reply, response) = mpsc::sync_channel(1);
+        self.search_tx
+            .send(SearchCommand::TimelapseLookup {
+                stream_id: stream_id.to_owned(),
+                start_ms,
+                end_ms,
+                targets_ms: targets_ms.to_vec(),
+                tolerance_ms,
                 reply,
             })
             .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
@@ -1574,13 +1662,33 @@ impl RecordingCatalogHandle {
     pub(crate) fn set_event_embedding(
         &self,
         event_id: &str,
-        embedding: EventEmbedding,
+        input: EventEmbeddingInput,
     ) -> anyhow::Result<()> {
         let (reply, response) = mpsc::sync_channel(1);
         self.tx
             .send(Command::SetEventEmbedding {
                 event_id: event_id.to_owned(),
-                embedding,
+                input,
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
+    pub(crate) fn delete_event_embedding(
+        &self,
+        event_id: &str,
+        model_id: &str,
+        model_version: Option<&str>,
+    ) -> anyhow::Result<u64> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.tx
+            .send(Command::DeleteEventEmbedding {
+                event_id: event_id.to_owned(),
+                model_id: model_id.to_owned(),
+                model_version: model_version.map(ToOwned::to_owned),
                 reply,
             })
             .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
@@ -1622,6 +1730,22 @@ impl RecordingCatalogHandle {
         let (reply, response) = mpsc::sync_channel(1);
         self.search_tx
             .send(SearchCommand::Semantic { query, reply })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
+    pub(crate) fn search_event_advanced(
+        &self,
+        query: EventAdvancedSearchQuery,
+    ) -> anyhow::Result<EventSearchPage> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.search_tx
+            .send(SearchCommand::Advanced {
+                query: Box::new(query),
+                reply,
+            })
             .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
         response
             .recv()
@@ -1673,6 +1797,7 @@ fn run_catalog(
     rx: Receiver<Command>,
     readers: Arc<readers::Registry>,
     lease: &authority::Lease,
+    semantic_available: &AtomicBool,
 ) {
     let intent_epoch = maintenance::jobs::Epoch::new();
     while let Ok(command) = rx.recv() {
@@ -2133,17 +2258,43 @@ fn run_catalog(
             }
             Command::SetEventEmbedding {
                 event_id,
-                embedding,
+                input,
                 reply,
             } => {
-                let _ = reply.send(pollster::block_on(set_event_embedding(
-                    &connection,
-                    &event_id,
-                    embedding,
-                )));
+                let outcome = if semantic_available.load(Ordering::Acquire) {
+                    pollster::block_on(set_event_embedding_record(&connection, &event_id, input))
+                } else {
+                    Err(anyhow::anyhow!(
+                        "semantic event search is currently unavailable"
+                    ))
+                };
+                let _ = reply.send(outcome);
+            }
+            Command::DeleteEventEmbedding {
+                event_id,
+                model_id,
+                model_version,
+                reply,
+            } => {
+                let outcome = if semantic_available.load(Ordering::Acquire) {
+                    pollster::block_on(delete_event_embedding(
+                        &connection,
+                        &event_id,
+                        &model_id,
+                        model_version.as_deref(),
+                    ))
+                } else {
+                    Err(anyhow::anyhow!(
+                        "semantic event search is currently unavailable"
+                    ))
+                };
+                let _ = reply.send(outcome);
             }
             Command::Stats { reply } => {
                 let _ = reply.send(pollster::block_on(catalog_stats(&connection)));
+            }
+            Command::Analytics(command) => {
+                pollster::block_on(analytics::execute_write(&connection, command));
             }
             #[cfg(test)]
             Command::Snapshot {
@@ -2162,10 +2313,17 @@ fn run_catalog(
     }
 }
 
-fn run_search_catalog(connection: turso::Connection, rx: Receiver<SearchCommand>) {
+fn run_search_catalog(
+    connection: turso::Connection,
+    rx: Receiver<SearchCommand>,
+    semantic_available: &AtomicBool,
+) {
     while let Ok(command) = rx.recv() {
         match command {
             SearchCommand::Maintenance(request) => maintenance::read(&connection, request),
+            SearchCommand::Analytics(command) => {
+                pollster::block_on(analytics::execute_read(&connection, command));
+            }
             SearchCommand::Bookmarks { query, reply } => {
                 let _ = reply.send(pollster::block_on(workflow::list_bookmarks(
                     &connection,
@@ -2182,9 +2340,21 @@ fn run_search_catalog(connection: turso::Connection, rx: Receiver<SearchCommand>
                 let _ = reply.send(pollster::block_on(search_event_text(&connection, query)));
             }
             SearchCommand::Semantic { query, reply } => {
-                let _ = reply.send(pollster::block_on(search_event_semantic(
+                let outcome = if semantic_available.load(Ordering::Acquire) {
+                    pollster::block_on(search_event_semantic(&connection, query))
+                } else {
+                    Err(anyhow::anyhow!(
+                        "semantic event search is currently unavailable"
+                    ))
+                };
+                let _ = reply.send(outcome);
+            }
+            SearchCommand::Advanced { query, reply } => {
+                let available = semantic_available.load(Ordering::Acquire);
+                let _ = reply.send(pollster::block_on(advanced_search::execute(
                     &connection,
-                    query,
+                    *query,
+                    available,
                 )));
             }
             SearchCommand::Availability {
@@ -2210,6 +2380,23 @@ fn run_search_catalog(connection: turso::Connection, rx: Receiver<SearchCommand>
                 let _ = reply.send(pollster::block_on(catalog_coverage(
                     &connection,
                     start_ms..end_ms,
+                )));
+            }
+            SearchCommand::TimelapseLookup {
+                stream_id,
+                start_ms,
+                end_ms,
+                targets_ms,
+                tolerance_ms,
+                reply,
+            } => {
+                let _ = reply.send(pollster::block_on(timelapse_lookup_candidates(
+                    &connection,
+                    &stream_id,
+                    start_ms,
+                    end_ms,
+                    &targets_ms,
+                    tolerance_ms,
                 )));
             }
             SearchCommand::Shutdown => break,
@@ -2861,7 +3048,7 @@ async fn set_recording_protected(
     Ok(())
 }
 
-pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow::Result<()> {
+async fn initialize_core_schema(connection: &turso::Connection) -> anyhow::Result<()> {
     connection
         .execute_batch(
             "PRAGMA foreign_keys = ON;
@@ -3076,10 +3263,13 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
              CREATE TABLE IF NOT EXISTS recording_event_embeddings (
                  event_id TEXT NOT NULL REFERENCES recording_events(id) ON DELETE CASCADE,
                  model_id TEXT NOT NULL,
+                 model_version TEXT NOT NULL DEFAULT '',
+                 producer_id TEXT NOT NULL DEFAULT '',
+                 created_at_ms INTEGER,
                  dimensions INTEGER NOT NULL,
                  embedding BLOB NOT NULL,
                  event_revision INTEGER,
-                 PRIMARY KEY(event_id, model_id)
+                 PRIMARY KEY(event_id, model_id, model_version)
              );
              CREATE INDEX IF NOT EXISTS recording_event_embeddings_model
                  ON recording_event_embeddings(model_id, dimensions, event_id);",
@@ -3195,12 +3385,153 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
     initialize_operational_schema(connection).await?;
     archive::initialize(connection).await?;
     relocation::initialize(connection).await?;
+    analytics::initialize(connection).await?;
     Ok(())
 }
 
-async fn prepare_catalog(connection: &turso::Connection) -> anyhow::Result<Vec<LegacyRecording>> {
-    initialize_schema(connection).await?;
-    prepare_legacy_backfill(connection).await
+pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow::Result<()> {
+    initialize_core_schema(connection).await?;
+    migrate_embedding_provenance(connection).await?;
+    Ok(())
+}
+
+async fn migrate_embedding_provenance(connection: &turso::Connection) -> anyhow::Result<()> {
+    if !table_has_column(connection, "recording_event_embeddings", "model_version").await? {
+        rebuild_embedding_provenance_table(connection).await?;
+    }
+    ensure_column(
+        connection,
+        "recording_event_embeddings",
+        "producer_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    .await?;
+    ensure_column(
+        connection,
+        "recording_event_embeddings",
+        "created_at_ms",
+        "INTEGER",
+    )
+    .await?;
+    ensure_column(
+        connection,
+        "recording_event_embeddings",
+        "event_revision",
+        "INTEGER",
+    )
+    .await?;
+    connection
+        .execute_batch(
+            "CREATE INDEX IF NOT EXISTS recording_event_embeddings_model
+                 ON recording_event_embeddings(model_id, dimensions, event_id);
+             CREATE INDEX IF NOT EXISTS recording_event_embeddings_space
+                 ON recording_event_embeddings(model_id, model_version, dimensions, event_id);
+             CREATE INDEX IF NOT EXISTS recording_event_embeddings_event_space
+                 ON recording_event_embeddings(event_id, model_id, model_version, dimensions);
+             CREATE INDEX IF NOT EXISTS recording_event_embeddings_event_provenance
+                 ON recording_event_embeddings(event_id, producer_id, model_id);",
+        )
+        .await?;
+    Ok(())
+}
+
+async fn rebuild_embedding_provenance_table(connection: &turso::Connection) -> anyhow::Result<()> {
+    let has_event_revision =
+        table_has_column(connection, "recording_event_embeddings", "event_revision").await?;
+    let revision_select = if has_event_revision {
+        "event_revision"
+    } else {
+        "NULL"
+    };
+    connection.execute_batch("BEGIN IMMEDIATE").await?;
+    let result = async {
+        connection
+            .execute_batch(
+                "CREATE TABLE recording_event_embeddings_migrated (
+                     event_id TEXT NOT NULL REFERENCES recording_events(id) ON DELETE CASCADE,
+                     model_id TEXT NOT NULL,
+                     model_version TEXT NOT NULL DEFAULT '',
+                     producer_id TEXT NOT NULL DEFAULT '',
+                     created_at_ms INTEGER,
+                     dimensions INTEGER NOT NULL,
+                     embedding BLOB NOT NULL,
+                     event_revision INTEGER,
+                     PRIMARY KEY(event_id, model_id, model_version)
+                 );",
+            )
+            .await?;
+        connection
+            .execute(
+                format!(
+                    "INSERT INTO recording_event_embeddings_migrated (
+                         event_id, model_id, model_version, producer_id, created_at_ms,
+                         dimensions, embedding, event_revision
+                     )
+                     SELECT event_id, model_id, '', '', NULL, dimensions, embedding, {revision_select}
+                     FROM recording_event_embeddings"
+                ),
+                (),
+            )
+            .await?;
+        connection
+            .execute_batch(
+                "DROP TRIGGER IF EXISTS recording_event_embeddings_invalidate_revision;
+                 DROP TABLE recording_event_embeddings;
+                 ALTER TABLE recording_event_embeddings_migrated
+                     RENAME TO recording_event_embeddings;
+                 CREATE TRIGGER IF NOT EXISTS recording_event_embeddings_invalidate_revision
+                 AFTER UPDATE OF revision ON recording_events
+                 WHEN NEW.revision <> OLD.revision
+                 BEGIN
+                     DELETE FROM recording_event_embeddings WHERE event_id = OLD.id;
+                 END;",
+            )
+            .await?;
+        anyhow::Ok(())
+    }
+    .await;
+    match result {
+        Ok(()) => connection.execute_batch("COMMIT").await.map_err(Into::into),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK").await;
+            Err(error)
+        }
+    }
+}
+
+async fn table_has_column(
+    connection: &turso::Connection,
+    table: &str,
+    column: &str,
+) -> anyhow::Result<bool> {
+    let mut rows = connection
+        .query(format!("PRAGMA table_info({table})"), ())
+        .await?;
+    while let Some(row) = rows.next().await? {
+        if row.get::<String>(1)? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+async fn prepare_catalog(
+    connection: &turso::Connection,
+) -> anyhow::Result<(Vec<LegacyRecording>, bool)> {
+    initialize_core_schema(connection).await?;
+    // A failed embedding migration disables semantic queries while ordinary recording and search continue.
+    let semantic_available = match migrate_embedding_provenance(connection).await {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "embedding provenance migration failed; semantic search is unavailable"
+            );
+            false
+        }
+    };
+    let legacy = prepare_legacy_backfill(connection).await?;
+    Ok((legacy, semantic_available))
 }
 
 async fn prepare_legacy_backfill(
@@ -3797,6 +4128,265 @@ pub(super) async fn media_fragments_in_range_with_limit(
         fragment.archive = archive;
     }
     Ok(fragments)
+}
+
+#[derive(Clone)]
+struct TimelapseRecordingRow {
+    id: String,
+    started_at_ms: i64,
+    ended_at_ms: Option<i64>,
+    path: String,
+    init_offset: u64,
+    init_len: u64,
+    finalized: bool,
+}
+
+async fn load_timelapse_recordings(
+    connection: &turso::Connection,
+    stream_id: &str,
+    start_ms: i64,
+    search_end_ms: i64,
+) -> anyhow::Result<Vec<TimelapseRecordingRow>> {
+    let mut rows = connection
+        .query(
+            "SELECT r.id, r.started_at_ms, r.ended_at_ms, r.path, r.init_offset, r.init_len,
+                    r.finalized
+             FROM recording_files AS r
+             WHERE r.stream_id = ?1
+               AND r.started_at_ms <= ?3
+               AND COALESCE(r.ended_at_ms, ?3) >= ?2
+               AND NOT EXISTS (
+                   SELECT 1 FROM recording_maintenance_claims
+                   WHERE recording_id = r.id AND active = 1
+               )
+             ORDER BY r.started_at_ms, r.id",
+            (stream_id, start_ms, search_end_ms),
+        )
+        .await?;
+    let mut recordings = Vec::new();
+    while let Some(row) = rows.next().await? {
+        recordings.push(TimelapseRecordingRow {
+            id: row.get(0)?,
+            started_at_ms: row.get(1)?,
+            ended_at_ms: row.get(2)?,
+            path: row.get(3)?,
+            init_offset: to_u64(row.get(4)?, "initialization offset")?,
+            init_len: to_u64(row.get(5)?, "initialization length")?,
+            finalized: row.get::<i64>(6)? != 0,
+        });
+    }
+    Ok(recordings)
+}
+
+async fn load_timelapse_retained_ranges(
+    connection: &turso::Connection,
+    stream_id: &str,
+    start_ms: i64,
+    end_ms: i64,
+) -> anyhow::Result<Vec<(i64, i64)>> {
+    let mut rows = connection
+        .query(
+            "SELECT start_ms, end_ms
+             FROM recording_deletions
+             WHERE stream_id = ?1 AND start_ms < ?3 AND end_ms > ?2
+             ORDER BY start_ms
+             LIMIT 4096",
+            (stream_id, start_ms, end_ms),
+        )
+        .await?;
+    let mut ranges = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let start: i64 = row.get(0)?;
+        let end: i64 = row.get(1)?;
+        if end > start {
+            ranges.push((start, end));
+        }
+    }
+    Ok(ranges)
+}
+
+async fn find_fragment_for_recording(
+    connection: &turso::Connection,
+    recording: &TimelapseRecordingRow,
+    target_ms: i64,
+    window_end_ms: i64,
+    archives: &mut BTreeMap<String, Option<archive_playback::ArchiveRead>>,
+) -> anyhow::Result<Option<CatalogTimelapseFragment>> {
+    // Use two bounded index seeks instead of scanning all earlier fragments in the recording.
+    let mut chosen = seek_fragment_row(
+        connection,
+        "SELECT f.sequence, f.start_ms, f.duration_ms, f.byte_offset, f.byte_len
+         FROM recording_fragments AS f
+         WHERE f.recording_id = ?1 AND f.start_ms <= ?2
+         ORDER BY f.start_ms DESC, f.sequence DESC
+         LIMIT 1",
+        (recording.id.as_str(), target_ms),
+    )
+    .await?
+    .filter(|row| {
+        row.start_ms
+            .saturating_add(i64::try_from(row.duration_ms).unwrap_or(i64::MAX))
+            > target_ms
+    });
+    if chosen.is_none() {
+        chosen = seek_fragment_row(
+            connection,
+            "SELECT f.sequence, f.start_ms, f.duration_ms, f.byte_offset, f.byte_len
+             FROM recording_fragments AS f
+             WHERE f.recording_id = ?1 AND f.start_ms > ?2 AND f.start_ms <= ?3
+             ORDER BY f.start_ms ASC, f.sequence ASC
+             LIMIT 1",
+            (recording.id.as_str(), target_ms, window_end_ms),
+        )
+        .await?;
+    }
+    let Some(row) = chosen else {
+        return Ok(None);
+    };
+    let archive = if let Some(cached) = archives.get(&recording.id) {
+        cached.clone()
+    } else {
+        let archive = archive_playback::read(connection, &recording.id).await?;
+        archives.insert(recording.id.clone(), archive.clone());
+        archive
+    };
+    Ok(Some(CatalogTimelapseFragment {
+        fragment: CatalogMediaFragment {
+            recording_id: recording.id.clone(),
+            recording_started_at_ms: recording.started_at_ms,
+            path: recording.path.clone(),
+            init_offset: recording.init_offset,
+            init_len: recording.init_len,
+            sequence: row.sequence,
+            start_ms: row.start_ms,
+            duration_ms: row.duration_ms,
+            byte_offset: row.byte_offset,
+            byte_len: row.byte_len,
+            archive,
+        },
+        finalized: recording.finalized,
+    }))
+}
+
+struct SeekFragmentRow {
+    sequence: u64,
+    start_ms: i64,
+    duration_ms: u64,
+    byte_offset: u64,
+    byte_len: u64,
+}
+
+async fn seek_fragment_row(
+    connection: &turso::Connection,
+    sql: &str,
+    params: impl turso::IntoParams,
+) -> anyhow::Result<Option<SeekFragmentRow>> {
+    let mut rows = connection.query(sql, params).await?;
+    let Some(row) = rows.next().await? else {
+        return Ok(None);
+    };
+    Ok(Some(SeekFragmentRow {
+        sequence: to_u64(row.get(0)?, "fragment sequence")?,
+        start_ms: row.get(1)?,
+        duration_ms: to_u64(row.get(2)?, "fragment duration")?,
+        byte_offset: to_u64(row.get(3)?, "fragment byte offset")?,
+        byte_len: to_u64(row.get(4)?, "fragment byte length")?,
+    }))
+}
+
+async fn find_candidate_for_target(
+    connection: &turso::Connection,
+    recordings: &[TimelapseRecordingRow],
+    target_ms: i64,
+    window_end_ms: i64,
+    archives: &mut BTreeMap<String, Option<archive_playback::ArchiveRead>>,
+) -> anyhow::Result<Option<CatalogTimelapseFragment>> {
+    let first_after = recordings.partition_point(|rec| rec.started_at_ms <= window_end_ms);
+    let mut start_idx = first_after;
+    while start_idx > 0 {
+        let rec = &recordings[start_idx - 1];
+        if rec.ended_at_ms.is_some_and(|ended| ended <= target_ms) {
+            break;
+        }
+        start_idx -= 1;
+    }
+    let mut chosen: Option<CatalogTimelapseFragment> = None;
+    for rec in &recordings[start_idx..first_after] {
+        if rec.ended_at_ms.is_some_and(|ended| ended <= target_ms) {
+            continue;
+        }
+        if let Some(found) =
+            find_fragment_for_recording(connection, rec, target_ms, window_end_ms, archives).await?
+        {
+            let replace = chosen.as_ref().is_none_or(|current| {
+                (found.fragment.start_ms, found.fragment.sequence)
+                    < (current.fragment.start_ms, current.fragment.sequence)
+            });
+            if replace {
+                chosen = Some(found);
+            }
+        }
+    }
+    Ok(chosen)
+}
+
+async fn timelapse_lookup_candidates(
+    connection: &turso::Connection,
+    stream_id: &str,
+    start_ms: i64,
+    end_ms: i64,
+    targets_ms: &[i64],
+    tolerance_ms: i64,
+) -> anyhow::Result<CatalogTimelapseLookup> {
+    let mut rev_rows = connection
+        .query(
+            "SELECT revision FROM recording_catalog_state WHERE id = 1",
+            (),
+        )
+        .await?;
+    let catalog_revision = match rev_rows.next().await? {
+        Some(row) => to_u64(row.get(0)?, "catalog revision")?,
+        None => 0,
+    };
+    drop(rev_rows);
+    let search_end_ms = end_ms.saturating_add(tolerance_ms);
+    let recordings =
+        load_timelapse_recordings(connection, stream_id, start_ms, search_end_ms).await?;
+    let retained_ranges =
+        load_timelapse_retained_ranges(connection, stream_id, start_ms, end_ms).await?;
+    let mut archives = BTreeMap::new();
+    let mut candidates = Vec::with_capacity(targets_ms.len());
+    let mut last_found: Option<CatalogTimelapseFragment> = None;
+    for &target_ms in targets_ms {
+        let window_end_ms = target_ms.saturating_add(tolerance_ms);
+        if let Some(prev) = last_found.as_ref() {
+            let prev_end = prev
+                .fragment
+                .start_ms
+                .saturating_add(i64::try_from(prev.fragment.duration_ms).unwrap_or(i64::MAX));
+            if prev.fragment.start_ms <= target_ms && prev_end > target_ms {
+                candidates.push(Some(prev.clone()));
+                continue;
+            }
+        }
+        let chosen = find_candidate_for_target(
+            connection,
+            &recordings,
+            target_ms,
+            window_end_ms,
+            &mut archives,
+        )
+        .await?;
+        if chosen.is_some() {
+            last_found.clone_from(&chosen);
+        }
+        candidates.push(chosen);
+    }
+    Ok(CatalogTimelapseLookup {
+        catalog_revision,
+        candidates,
+        retained_ranges,
+    })
 }
 
 async fn availability_ranges_in_range(
@@ -4858,6 +5448,7 @@ async fn close_event_in_transaction(
     if changed == 0 {
         anyhow::bail!("event was not found or its end precedes its start");
     }
+    analytics::delta::sync_event_by_id(connection, id).await?;
     record_event_search_mutation(connection, id).await
 }
 
@@ -4941,6 +5532,7 @@ async fn attach_event_thumbnail(
                 ],
             )
             .await?;
+        analytics::delta::sync_event_by_id(connection, id).await?;
         record_event_search_mutation(connection, id).await
     }
     .await;
@@ -4969,6 +5561,7 @@ async fn detach_event_thumbnail(connection: &turso::Connection, id: &str) -> any
             anyhow::bail!("event was not found");
         }
         locations::images::detach(connection, id).await?;
+        analytics::delta::sync_event_by_id(connection, id).await?;
         record_event_search_mutation(connection, id).await
     }
     .await;
@@ -5011,6 +5604,7 @@ async fn detach_event_thumbnail_file(
                 .await?;
             if changed == 1 {
                 locations::images::detach(connection, &event_id).await?;
+                analytics::delta::sync_event_by_id(connection, &event_id).await?;
                 record_event_search_mutation(connection, &event_id).await?;
             }
         }
@@ -5420,27 +6014,78 @@ async fn replace_event_search_terms(
     }
 }
 
+#[cfg(test)]
 async fn set_event_embedding(
     connection: &turso::Connection,
     event_id: &str,
-    embedding: EventEmbedding,
+    embedding: crate::storage::search::EventEmbedding,
 ) -> anyhow::Result<()> {
-    let dimensions = i64::try_from(embedding.values.len())?;
-    let encoded = serde_json::to_string(&embedding.values)?;
+    set_event_embedding_record(
+        connection,
+        event_id,
+        EventEmbeddingInput {
+            embedding,
+            provenance: crate::storage::search::EventEmbeddingProvenance::default(),
+        },
+    )
+    .await
+}
+
+async fn set_event_embedding_record(
+    connection: &turso::Connection,
+    event_id: &str,
+    input: EventEmbeddingInput,
+) -> anyhow::Result<()> {
+    let dimensions = i64::try_from(input.embedding.values.len())?;
+    let encoded = serde_json::to_string(&input.embedding.values)?;
+    let created_at_ms = input
+        .provenance
+        .created_at_ms
+        .unwrap_or_else(current_unix_time_ms);
     connection.execute_batch("BEGIN IMMEDIATE").await?;
     let result = async {
+        let mut rows = connection
+            .query(
+                "SELECT revision FROM recording_events WHERE id = ?1",
+                turso::params![event_id],
+            )
+            .await?;
+        let current_revision = rows
+            .next()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("event was not found"))?
+            .get::<i64>(0)?;
+        drop(rows);
+        if let Some(expected) = input.provenance.event_revision {
+            let expected = to_i64(expected, "embedding event revision")?;
+            anyhow::ensure!(
+                current_revision == expected,
+                "event revision changed; embedding was rejected"
+            );
+        }
         connection
             .execute(
                 "INSERT INTO recording_event_embeddings (
-                     event_id, model_id, dimensions, embedding, event_revision
+                     event_id, model_id, model_version, producer_id, created_at_ms,
+                     dimensions, embedding, event_revision
                  )
-                 SELECT id, ?2, ?3, vector32(?4), revision
-                 FROM recording_events WHERE id = ?1
-                 ON CONFLICT(event_id, model_id) DO UPDATE SET
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, vector32(?7), ?8)
+                 ON CONFLICT(event_id, model_id, model_version) DO UPDATE SET
+                     producer_id = excluded.producer_id,
+                     created_at_ms = excluded.created_at_ms,
                      dimensions = excluded.dimensions,
                      embedding = excluded.embedding,
                      event_revision = excluded.event_revision",
-                turso::params![event_id, embedding.model_id, dimensions, encoded],
+                turso::params![
+                    event_id,
+                    input.embedding.model_id,
+                    input.provenance.model_version,
+                    input.provenance.producer_id,
+                    created_at_ms,
+                    dimensions,
+                    encoded,
+                    current_revision
+                ],
             )
             .await?;
         record_event_search_mutation(connection, event_id).await
@@ -5448,6 +6093,50 @@ async fn set_event_embedding(
     .await;
     match result {
         Ok(()) => connection.execute_batch("COMMIT").await.map_err(Into::into),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK").await;
+            Err(error)
+        }
+    }
+}
+
+async fn delete_event_embedding(
+    connection: &turso::Connection,
+    event_id: &str,
+    model_id: &str,
+    model_version: Option<&str>,
+) -> anyhow::Result<u64> {
+    connection.execute_batch("BEGIN IMMEDIATE").await?;
+    let result = async {
+        let deleted = match model_version {
+            Some(version) => {
+                connection
+                    .execute(
+                        "DELETE FROM recording_event_embeddings
+                         WHERE event_id = ?1 AND model_id = ?2 AND model_version = ?3",
+                        turso::params![event_id, model_id, version],
+                    )
+                    .await?
+            }
+            None => {
+                connection
+                    .execute(
+                        "DELETE FROM recording_event_embeddings
+                         WHERE event_id = ?1 AND model_id = ?2",
+                        turso::params![event_id, model_id],
+                    )
+                    .await?
+            }
+        };
+        record_event_search_mutation(connection, event_id).await?;
+        Ok::<u64, anyhow::Error>(deleted)
+    }
+    .await;
+    match result {
+        Ok(deleted) => {
+            connection.execute_batch("COMMIT").await?;
+            Ok(deleted)
+        }
         Err(error) => {
             let _ = connection.execute_batch("ROLLBACK").await;
             Err(error)
@@ -5549,11 +6238,17 @@ async fn search_event_metadata_snapshot(
         .map(|origin| origin.as_str().to_owned())
         .collect::<Vec<_>>();
     append_text_filter(&mut sql, "e.source", &origins, &mut params);
-    append_text_filter(&mut sql, "lower(e.zone)", &query.zones, &mut params);
+    append_zone_filter(
+        &mut sql,
+        &query.zones,
+        query.include_missing_zone,
+        &mut params,
+    );
     if let Some(confidence) = query.minimum_confidence {
         sql.push_str(&format!(" AND e.confidence >= ?{}", params.len() + 1));
         params.push(turso::Value::Real(confidence));
     }
+    append_confidence_band_filter(&mut sql, &query.confidence_bands);
     match query.image {
         EventImageFilter::Any => {}
         EventImageFilter::WithImage => sql.push_str(" AND e.canonical_attachment_id IS NOT NULL"),
@@ -5639,7 +6334,67 @@ async fn search_event_metadata_snapshot(
         next_page_token,
         candidates_truncated: false,
         workflow_counts,
+        normalized_summary: None,
+        semantic_summary: None,
+        diagnostics: None,
     })
+}
+
+fn append_zone_filter(
+    sql: &mut String,
+    zones: &[String],
+    include_missing_zone: bool,
+    params: &mut Vec<turso::Value>,
+) {
+    if zones.is_empty() && !include_missing_zone {
+        return;
+    }
+    let mut clauses = Vec::new();
+    if !zones.is_empty() {
+        let placeholders: Vec<String> = zones
+            .iter()
+            .map(|value| {
+                params.push(turso::Value::Text(value.clone()));
+                format!("?{}", params.len())
+            })
+            .collect();
+        clauses.push(format!(
+            "lower(trim(e.zone)) IN ({})",
+            placeholders.join(",")
+        ));
+    }
+    if include_missing_zone {
+        clauses.push("(e.zone IS NULL OR trim(e.zone) = '')".to_owned());
+    }
+    sql.push_str(&format!(" AND ({})", clauses.join(" OR ")));
+}
+
+fn append_confidence_band_filter(
+    sql: &mut String,
+    bands: &[crate::storage::analytics::ConfidenceBand],
+) {
+    if bands.is_empty() {
+        return;
+    }
+    let mut clauses = Vec::with_capacity(bands.len());
+    for band in bands {
+        let expr = match band {
+            crate::storage::analytics::ConfidenceBand::Unknown => {
+                "(e.confidence IS NULL OR e.confidence < 0.0 OR e.confidence > 1.0)"
+            }
+            crate::storage::analytics::ConfidenceBand::Low => {
+                "(e.confidence >= 0.0 AND e.confidence < 0.5)"
+            }
+            crate::storage::analytics::ConfidenceBand::Medium => {
+                "(e.confidence >= 0.5 AND e.confidence < 0.8)"
+            }
+            crate::storage::analytics::ConfidenceBand::High => {
+                "(e.confidence >= 0.8 AND e.confidence <= 1.0)"
+            }
+        };
+        clauses.push(expr);
+    }
+    sql.push_str(&format!(" AND ({})", clauses.join(" OR ")));
 }
 
 fn append_text_filter(
@@ -5799,6 +6554,9 @@ async fn search_event_text_snapshot(
         next_page_token,
         candidates_truncated: false,
         workflow_counts,
+        normalized_summary: None,
+        semantic_summary: None,
+        diagnostics: None,
     })
 }
 
@@ -5868,14 +6626,14 @@ async fn search_event_semantic_snapshot(
     let mut from_sql = String::from(
         "FROM recording_event_embeddings AS s JOIN recording_events AS e ON e.id = s.event_id
          WHERE COALESCE(s.event_revision, 1) = e.revision
-             AND s.model_id = ?2 AND s.dimensions = ?3 AND (?4 IS NULL OR e.camera_id = ?5)
+             AND s.model_id = ?2 AND s.model_version = '' AND s.dimensions = ?3 AND (?4 IS NULL OR e.camera_id = ?5)
              AND (e.stream IS NULL OR e.stream = ?6) AND e.start_time_ms < ?8
              AND COALESCE(e.end_time_ms, e.start_time_ms + 1) > ?7
              AND e.rowid <= ?9 AND s.rowid <= ?10",
     );
     let mut params = turso::params![
         encoded,
-        query.embedding.model_id,
+        query.embedding.model_id.clone(),
         dimensions,
         source_id.clone(),
         source_id,
@@ -5975,11 +6733,26 @@ async fn search_event_semantic_snapshot(
             })
         })
         .transpose()?;
+    let semantic_summary = Some(EventSearchSemanticSummary {
+        model_id: query.embedding.model_id,
+        model_version: String::new(),
+        producer_id: "unknown".to_owned(),
+        dimensions: u32::try_from(query.embedding.values.len()).unwrap_or(u32::MAX),
+        score_interpretation: "cosine_similarity_higher_is_closer".to_owned(),
+        minimum_score: None,
+        searched_start_time_ms: query.start_time_ms,
+        searched_end_time_ms: query.end_time_ms,
+        candidate_count: u64::try_from(hits.len()).unwrap_or(u64::MAX),
+        candidates_truncated,
+    });
     Ok(EventSearchPage {
         hits,
         next_page_token,
         candidates_truncated,
         workflow_counts,
+        normalized_summary: None,
+        semantic_summary,
+        diagnostics: None,
     })
 }
 
@@ -6032,6 +6805,7 @@ fn metadata_search_fingerprint(query: &EventMetadataQuery) -> String {
     for zone in &query.zones {
         update_search_fingerprint(&mut hasher, zone.as_bytes());
     }
+    update_search_fingerprint(&mut hasher, &[u8::from(query.include_missing_zone)]);
     update_search_fingerprint(
         &mut hasher,
         &query
@@ -6040,6 +6814,10 @@ fn metadata_search_fingerprint(query: &EventMetadataQuery) -> String {
             .unwrap_or_default()
             .to_le_bytes(),
     );
+    update_search_fingerprint(&mut hasher, b"confidence_bands");
+    for band in &query.confidence_bands {
+        update_search_fingerprint(&mut hasher, band.as_str().as_bytes());
+    }
     let image = match query.image {
         EventImageFilter::Any => b"any".as_slice(),
         EventImageFilter::WithImage => b"with".as_slice(),
@@ -6726,6 +7504,7 @@ fn to_u64(value: i64, name: &str) -> anyhow::Result<u64> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::storage::search::EventEmbedding;
     use bytes::Bytes;
     use std::io::BufWriter;
 

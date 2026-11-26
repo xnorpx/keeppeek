@@ -839,3 +839,48 @@ test('keeps the highest-cost health issue and diagnosis action first on mobile',
 		.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
 		.toBe(true);
 });
+
+test('shows WebRTC live-audio timing occupancy and drops when reported by source health', async ({
+	page
+}) => {
+	await mockControlPeer(page, {
+		health: {
+			...healthSnapshot,
+			webrtc: {
+				...healthSnapshot.webrtc,
+				sources: [
+					{
+						camera_ip: '192.168.137.199',
+						stream: 'main',
+						subscribers: 2,
+						bitrate_bps: 8_000_000,
+						has_keyframe: true,
+						keyframe_age_ms: 400,
+						live_audio: {
+							configured_offset_ms: -120,
+							applied_offset_ms: -120,
+							preview: false,
+							held_audio_bytes: 0,
+							held_video_bytes: 98_304,
+							held_video_frames: 3,
+							capacity_drops: 1,
+							expired_drops: 2
+						}
+					}
+				]
+			}
+		}
+	});
+
+	await page.goto('/system-health');
+	const webrtc = page.locator('section').filter({
+		has: page.getByRole('heading', { name: 'WebRTC delivery' })
+	});
+	await expect(webrtc.getByRole('columnheader', { name: 'Live timing' })).toBeVisible();
+	await expect(webrtc.getByRole('columnheader', { name: 'Timing queue' })).toBeVisible();
+	await expect(webrtc.getByRole('columnheader', { name: 'Timing drops' })).toBeVisible();
+	const row = webrtc.getByRole('row').filter({ hasText: '192.168.137.199' }).last();
+	await expect(row).toContainText('Video +120 ms');
+	await expect(row).toContainText('Audio 0 B · Video 98304 B (3 frames)');
+	await expect(row).toContainText('1 capacity · 2 expired');
+});

@@ -99,31 +99,35 @@ impl<R: Read + Seek> ReadBox<&mut R> for Avc1Box {
         let depth = reader.read_u16::<BigEndian>()?;
         reader.read_i16::<BigEndian>()?; // pre-defined
 
-        let header = read_box_header(reader, end)?;
-        let BoxHeader { name, size: s } = header;
-        if checked_box_end(reader, s)? > end {
-            return Err(Error::InvalidData(
-                "avc1 box contains a box with a larger size than it",
-            ));
-        }
-        if name == BoxType::AvcCBox {
-            let avcc = AvcCBox::read_box(reader, s)?;
+        while reader.stream_position()? < end {
+            let header = read_box_header(reader, end)?;
+            let BoxHeader { name, size: s } = header;
+            let child_end = checked_box_end(reader, s)?;
+            if child_end > end {
+                return Err(Error::InvalidData(
+                    "avc1 box contains a box with a larger size than it",
+                ));
+            }
+            if name == BoxType::AvcCBox {
+                let avcc = AvcCBox::read_box(reader, s)?;
 
-            skip_bytes_to(reader, end)?;
+                skip_bytes_to(reader, end)?;
 
-            Ok(Self {
-                data_reference_index,
-                width,
-                height,
-                horizresolution,
-                vertresolution,
-                frame_count,
-                depth,
-                avcc,
-            })
-        } else {
-            Err(Error::InvalidData("avcc not found"))
+                return Ok(Self {
+                    data_reference_index,
+                    width,
+                    height,
+                    horizresolution,
+                    vertresolution,
+                    frame_count,
+                    depth,
+                    avcc,
+                });
+            }
+            skip_bytes_to(reader, child_end)?;
         }
+
+        Err(Error::InvalidData("avcc not found"))
     }
 }
 
@@ -454,5 +458,29 @@ mod tests {
             avcc.write_box(&mut Vec::new()),
             Err(Error::InvalidData(_))
         ));
+    }
+
+    #[test]
+    fn test_avc1_skips_unknown_subbox_before_avcc() {
+        let mut avcc = AvcCBox::new(&[0x67, 0x64, 0x00, 0x0D], &[0x68, 0xEB]);
+        avcc.length_size_minus_one = 3;
+        let mut avcc_bytes = Vec::new();
+        avcc.write_box(&mut avcc_bytes).unwrap();
+
+        let unknown_box = [0, 0, 0, 12, b'c', b'o', b'l', b'r', 1, 2, 3, 4];
+        let body_len = 78 + unknown_box.len() + avcc_bytes.len();
+        let total_size = HEADER_SIZE + body_len as u64;
+        let mut buf = Vec::new();
+        BoxHeader::new(BoxType::Avc1Box, total_size)
+            .write(&mut buf)
+            .unwrap();
+        buf.extend_from_slice(&[0u8; 78]);
+        buf.extend_from_slice(&unknown_box);
+        buf.extend_from_slice(&avcc_bytes);
+
+        let mut reader = Cursor::new(&buf);
+        let header = BoxHeader::read(&mut reader).unwrap();
+        let parsed = Avc1Box::read_box(&mut reader, header.size).unwrap();
+        assert_eq!(parsed.avcc, avcc);
     }
 }

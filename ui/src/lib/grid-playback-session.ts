@@ -1,6 +1,9 @@
 import { isPlaybackRate } from './playback-preferences';
 
 export const maximumReviewCameras = 4;
+export const gridDriftSlewThresholdMs = 100;
+export const gridDriftSeekThresholdMs = 250;
+export const gridDriftSlewFactor = 0.03;
 
 export type GridPlaybackMode = 'live' | 'scrub' | 'playback' | 'paused';
 
@@ -121,7 +124,15 @@ export function expectedGridEpochMs(
 }
 
 export function needsGridDriftCorrection(driftMs: number): boolean {
-	return Math.abs(driftMs) > 250;
+	return Math.abs(driftMs) > gridDriftSeekThresholdMs;
+}
+
+export function gridPlaybackRateForDrift(baseRate: number, driftMs: number): number {
+	if (!Number.isFinite(baseRate) || baseRate <= 0 || !Number.isFinite(driftMs)) return baseRate;
+	if (Math.abs(driftMs) <= gridDriftSlewThresholdMs || needsGridDriftCorrection(driftMs)) {
+		return baseRate;
+	}
+	return driftMs > 0 ? baseRate * (1 + gridDriftSlewFactor) : baseRate * (1 - gridDriftSlewFactor);
 }
 
 function replayDemandScore(demand: GridReplayDemand): number {

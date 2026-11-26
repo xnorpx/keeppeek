@@ -1,10 +1,12 @@
 pub use crate::access::AccessKey;
+pub mod cloud_notifications;
 pub(crate) mod metadata;
 #[cfg(test)]
 mod recorded_audio_tests;
 pub(crate) mod reporting;
 pub(crate) mod sharing;
 mod storage_volumes;
+pub mod usage_reporting;
 use crate::{
     access,
     cameras::{
@@ -127,11 +129,20 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) reporting: Option<reporting::Settings>,
 
+    #[serde(default)]
+    pub usage_reporting: usage_reporting::UsageReportingConfig,
+
+    #[serde(default, skip_serializing_if = "is_default_cloud_notifications")]
+    pub(crate) cloud_notifications: cloud_notifications::Settings,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) external_auth: Option<crate::access::external::Config>,
 
     #[serde(default)]
     pub direct_card: DirectCardConfig,
+
+    #[serde(default, skip_serializing_if = "DesktopConfig::is_empty")]
+    pub desktop: DesktopConfig,
 
     #[serde(default)]
     pub storage: StorageToml,
@@ -144,6 +155,9 @@ pub struct Config {
 
     #[serde(default)]
     pub operational_events: OperationalEventsConfig,
+
+    #[serde(default)]
+    pub analytics: AnalyticsConfig,
 
     #[serde(default)]
     pub privacy: PrivacyConfig,
@@ -165,6 +179,55 @@ pub struct Config {
 
     #[serde(skip)]
     pub(crate) secrets_snapshot: Secrets,
+}
+
+/// Site defaults and derived-storage bounds for activity analytics (`[analytics]`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct AnalyticsConfig {
+    #[serde(default = "default_analytics_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_analytics_timezone")]
+    pub timezone: String,
+    #[serde(default)]
+    pub week_start: crate::storage::analytics::WeekStart,
+    #[serde(default = "default_analytics_max_rollup_rows")]
+    pub max_rollup_rows: u64,
+}
+
+impl AnalyticsConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        crate::storage::analytics::time::parse_timezone(&self.timezone)?;
+        let min = crate::storage::analytics::MIN_MAX_ROLLUP_ROWS;
+        let max = crate::storage::analytics::MAX_CONFIGURABLE_ROLLUP_ROWS;
+        anyhow::ensure!(
+            (min..=max).contains(&self.max_rollup_rows),
+            "analytics.max_rollup_rows must be between {min} and {max}"
+        );
+        Ok(())
+    }
+}
+
+impl Default for AnalyticsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            timezone: default_analytics_timezone(),
+            week_start: crate::storage::analytics::WeekStart::Monday,
+            max_rollup_rows: default_analytics_max_rollup_rows(),
+        }
+    }
+}
+
+const fn default_analytics_enabled() -> bool {
+    true
+}
+
+fn default_analytics_timezone() -> String {
+    "UTC".to_owned()
+}
+
+const fn default_analytics_max_rollup_rows() -> u64 {
+    crate::storage::analytics::DEFAULT_MAX_ROLLUP_ROWS
 }
 
 /// Server-enforced recurring privacy policies keyed by camera identity.
@@ -453,31 +516,94 @@ impl DirectCardConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
         let mut unique = HashSet::with_capacity(self.allowed_origins.len());
         for origin in &self.allowed_origins {
-            let url = Url::parse(origin)
-                .map_err(|error| anyhow::anyhow!("invalid direct card origin: {error}"))?;
-            if !matches!(url.scheme(), "http" | "https")
-                || url.path() != "/"
-                || url.query().is_some()
-                || url.fragment().is_some()
-                || !url.username().is_empty()
-                || url.password().is_some()
-            {
-                anyhow::bail!(
-                    "direct card origin must contain only an HTTP(S) scheme and authority"
-                );
-            }
-            let canonical = url.origin().ascii_serialization();
-            if canonical == "null" || canonical != *origin {
-                anyhow::bail!(
-                    "direct card origin must use its canonical exact origin: {canonical}"
-                );
-            }
+            validate_canonical_http_origin(origin, "direct card origin", None, false)?;
             if !unique.insert(origin) {
                 anyhow::bail!("direct card origin appears more than once: {origin}");
             }
         }
         Ok(())
     }
+}
+
+const MAX_DESKTOP_SERVER_URL_BYTES: usize = 512;
+
+/// Desktop client connection settings stored under `[desktop]` in `config.toml`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DesktopConfig {
+    /// Canonical HTTP(S) origin of the KeepPeek server for `keeppeek-desktop`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_url: Option<String>,
+}
+
+impl DesktopConfig {
+    /// Returns true when no desktop client setting is configured.
+    pub const fn is_empty(&self) -> bool {
+        self.server_url.is_none()
+    }
+
+    /// Validates that any configured desktop server URL is a canonical HTTP(S) origin.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `server_url` exceeds 512 bytes, contains control
+    /// characters, credentials, path, query, or fragment components, uses an
+    /// unspecified bind address or port zero, or is not a canonical HTTP(S) origin.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let Some(server_url) = self.server_url.as_deref() else {
+            return Ok(());
+        };
+        validate_canonical_http_origin(
+            server_url,
+            "desktop server_url",
+            Some(MAX_DESKTOP_SERVER_URL_BYTES),
+            true,
+        )
+    }
+}
+
+fn validate_canonical_http_origin(
+    raw: &str,
+    label: &str,
+    max_bytes: Option<usize>,
+    reject_unspecified_host: bool,
+) -> anyhow::Result<()> {
+    if let Some(limit) = max_bytes
+        && (raw.is_empty() || raw.len() > limit)
+    {
+        anyhow::bail!("{label} must be between 1 and {limit} bytes");
+    }
+    if raw.bytes().any(|byte| byte < 0x20 || byte == 0x7f) {
+        anyhow::bail!("{label} must not contain ASCII control characters");
+    }
+    let url = Url::parse(raw).map_err(|error| anyhow::anyhow!("invalid {label}: {error}"))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        anyhow::bail!("{label} must contain only an HTTP(S) scheme and authority");
+    }
+    if url.port() == Some(0) {
+        anyhow::bail!("{label} port must be between 1 and 65535");
+    }
+    if reject_unspecified_host {
+        let unspecified = match url.host() {
+            Some(url::Host::Ipv4(address)) => IpAddr::V4(address).is_unspecified(),
+            Some(url::Host::Ipv6(address)) => IpAddr::V6(address).is_unspecified(),
+            _ => false,
+        };
+        if unspecified {
+            anyhow::bail!("{label} must not use an unspecified bind address");
+        }
+    }
+    let canonical = url.origin().ascii_serialization();
+    if canonical == "null" || canonical != raw {
+        anyhow::bail!("{label} must use its canonical exact origin: {canonical}");
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -1033,6 +1159,10 @@ const fn default_port() -> u16 {
     8081
 }
 
+fn is_default_cloud_notifications(settings: &cloud_notifications::Settings) -> bool {
+    *settings == cloud_notifications::Settings::default()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -1042,12 +1172,16 @@ impl Default for Config {
             access: AccessConfig::default(),
             sharing: sharing::SharingConfig::default(),
             reporting: None,
+            usage_reporting: usage_reporting::UsageReportingConfig::default(),
+            cloud_notifications: cloud_notifications::Settings::default(),
             external_auth: None,
             direct_card: DirectCardConfig::default(),
+            desktop: DesktopConfig::default(),
             storage: StorageToml::default(),
             battery_wake: BatteryWakeConfig::default(),
             logging: LoggingConfig::default(),
             operational_events: OperationalEventsConfig::default(),
+            analytics: AnalyticsConfig::default(),
             privacy: PrivacyConfig::default(),
             runtime_profiles: crate::profiles::ProfileRegistry::default(),
             event_forwarder: EventForwarderConfig::default(),
@@ -1461,7 +1595,9 @@ fn load_from_path(path: PathBuf) -> anyhow::Result<(Config, PathBuf)> {
     }
     cfg.access.validate()?;
     cfg.direct_card.validate()?;
+    cfg.desktop.validate()?;
     cfg.operational_events.validate()?;
+    cfg.analytics.validate()?;
     cfg.privacy.validate()?;
     cfg.event_forwarder.mqtt.validate()?;
 
@@ -1909,13 +2045,16 @@ fn validated_configuration_table_with_secrets(
     config.access.validate()?;
     crate::access::validate_configuration(root)?;
     config.direct_card.validate()?;
+    config.desktop.validate()?;
     config.battery_wake.validate()?;
     config.operational_events.validate()?;
+    config.analytics.validate()?;
     config.privacy.validate()?;
     config.event_forwarder.mqtt.validate()?;
     config.storage.validate_safety_thresholds()?;
     crate::notifications::validate_configuration(path, root)?;
     crate::server::validate_peek_layout_configuration(root)?;
+    crate::server::validate_saved_event_search_configuration(root)?;
     crate::server::validate_template_configuration(root)?;
     cameras_from_table(root, secrets)?;
     camera_profile_identities_from_table(root, secrets)?;
@@ -1953,6 +2092,11 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
         .remove("reporting")
         .map(reporting::parse_settings)
         .transpose()?;
+    let cloud_notifications = runtime
+        .remove("cloud_notifications")
+        .map(cloud_notifications::parse_settings)
+        .transpose()?
+        .unwrap_or_default();
     if let Some(value) = runtime.get_mut("runtime_profiles") {
         *value = runtime_profile_value_without_identity_schema(value)?;
     }
@@ -1961,6 +2105,7 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
         "external_identities",
         "notifications",
         "peek_layouts",
+        "saved_event_searches",
         "configuration_templates",
     ] {
         runtime.remove(section);
@@ -1969,6 +2114,8 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
     resolve_toml_secret_references(&mut resolved, secrets)?;
     let mut config: Config = resolved.try_into()?;
     config.reporting = reporting;
+    config.usage_reporting.validate()?;
+    config.cloud_notifications = cloud_notifications;
     config.runtime_profiles.validate()?;
     config.sharing.validate()?;
     config.storage.validate_pre_recording_budgets()?;
@@ -2520,18 +2667,23 @@ pub(crate) fn is_reserved_section(namespace: &str) -> bool {
         "access"
             | "sharing"
             | "reporting"
+            | "usage_reporting"
+            | "cloud_notifications"
             | "external_auth"
             | "external_identities"
             | "access_credentials"
             | "storage"
             | "battery_wake"
             | "direct_card"
+            | "desktop"
             | "homekit"
             | "logging"
             | "operational_events"
+            | "analytics"
             | "event_forwarder"
             | "notifications"
             | "peek_layouts"
+            | "saved_event_searches"
             | "configuration_templates"
             | "runtime_profiles"
             | "isapi_callbacks"
@@ -5538,5 +5690,54 @@ mod tests {
             config.schedule_for("side", "192.0.2.11").unwrap().timezone,
             "UTC"
         );
+    }
+
+    #[test]
+    fn desktop_section_is_reserved_and_validates_canonical_origins() {
+        assert!(is_reserved_section("desktop"));
+
+        DesktopConfig::default().validate().unwrap();
+        DesktopConfig {
+            server_url: Some("http://127.0.0.1:8081".to_owned()),
+        }
+        .validate()
+        .unwrap();
+        DesktopConfig {
+            server_url: Some("https://nvr.example.com".to_owned()),
+        }
+        .validate()
+        .unwrap();
+
+        for invalid in [
+            "",
+            "http://127.0.0.1:8081/",
+            "http://127.0.0.1:8081/peek",
+            "http://user:pass@127.0.0.1:8081",
+            "http://0.0.0.0:8081",
+            "http://[::]:8081",
+            "http://127.0.0.1:0",
+            "http://127.0.0.1\t:8081",
+            "https://nvr.example.com:443",
+            "https://NVR.EXAMPLE.COM",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            &format!("https://{}.example.com", "a".repeat(520)),
+        ] {
+            let config = DesktopConfig {
+                server_url: Some(invalid.to_owned()),
+            };
+            assert!(
+                config.validate().is_err(),
+                "expected invalid desktop server_url to fail: {invalid}"
+            );
+        }
+
+        let unknown: Result<DesktopConfig, _> = toml::from_str(
+            r#"
+                server_url = "http://127.0.0.1:8081"
+                unexpected = true
+            "#,
+        );
+        assert!(unknown.is_err());
     }
 }

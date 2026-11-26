@@ -35,14 +35,14 @@ impl Depacketizer {
         Some(super::ParametersRef::Audio(&self.parameters))
     }
 
+    /// Returns the frame length in sampling instants per RFC 3551 section 4.
     fn frame_length(&self, payload_len: usize) -> Option<NonZeroU32> {
-        // This calculation could be strength-reduced but it's just once per frame anyway.
-        // Let's do it in a straightforward way.
         assert!(payload_len < usize::from(u16::MAX));
         let bits = (payload_len) as u32 * 8;
-        match bits.is_multiple_of(self.bits_per_sample) {
+        let bits_per_instant = self.bits_per_sample * u32::from(self.parameters.channels.get());
+        match bits.is_multiple_of(bits_per_instant) {
             false => None,
-            true => NonZeroU32::new(bits / self.bits_per_sample),
+            true => NonZeroU32::new(bits / bits_per_instant),
         }
     }
 
@@ -51,9 +51,10 @@ impl Depacketizer {
         let payload = pkt.payload();
         let frame_length = self.frame_length(payload.len()).ok_or_else(|| {
             format!(
-                "invalid length {} for payload of {}-bit audio samples",
+                "invalid length {} for payload of {}-bit audio samples in {} channel(s)",
                 payload.len(),
-                self.bits_per_sample
+                self.bits_per_sample,
+                self.parameters.channels,
             )
         })?;
         self.pending = Some(super::AudioFrame {
@@ -112,5 +113,12 @@ mod tests {
         // 321 bytes is not divisible by 2 bytes per sample
         let d = depacketizer_16bit();
         assert_eq!(d.frame_length(321), None);
+    }
+
+    #[test]
+    fn frame_length_stereo_16bit() {
+        let d = Depacketizer::new(16000, 16, NonZeroU16::new(2));
+        assert_eq!(d.frame_length(320), Some(NonZeroU32::new(80).unwrap()));
+        assert_eq!(d.frame_length(322), None);
     }
 }

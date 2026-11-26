@@ -3,6 +3,7 @@ members = [
   ".",
   "crates/chunked-transfer",
   "crates/isapi",
+  "crates/keeppeek-desktop",
   "crates/mp4",
   "crates/onvif/onvif",
   "crates/onvif/schema",
@@ -22,9 +23,13 @@ members = [
   "crates/test-frame",
   "crates/test-hikvision",
   "crates/tiny-http",
+  "examples/usage_reporting_receiver",
 ]
 
 [workspace.dependencies]
+aws-lc-rs = { version = "1.18.0", default-features = false, features = [
+  "aws-lc-sys",
+] }
 oauth2 = { version = "=5.0.0", default-features = false }
 jsonwebtoken = { version = "=12.0.0", default-features = false, features = [
   "aws_lc_rs",
@@ -61,6 +66,14 @@ yaserde_derive = "0.13.2"
 chrono = { path = "crates/chrono-compat" }
 chunked_transfer = { path = "crates/chunked-transfer" }
 tiny_http = { path = "crates/tiny-http" }
+# Tauri v2 requests urlpattern 0.3, which pulls unmaintained unic-* crates; urlpattern 0.6 uses icu_properties.
+urlpattern = { path = "crates/urlpattern-compat" }
+# KeepPeek Desktop supports Windows and macOS only; exclude unused Linux GTK3 crates from Cargo.lock.
+gtk = { path = "crates/linux-desktop-unsupported/gtk" }
+javascriptcore-rs = { path = "crates/linux-desktop-unsupported/javascriptcore-rs" }
+libappindicator = { path = "crates/linux-desktop-unsupported/libappindicator" }
+soup3 = { path = "crates/linux-desktop-unsupported/soup3" }
+webkit2gtk = { path = "crates/linux-desktop-unsupported/webkit2gtk" }
 
 [package]
 name = "keeppeek"
@@ -127,7 +140,23 @@ name = "recording_coverage"
 harness = false
 test = false
 
+[[bench]]
+name = "advanced_event_search"
+harness = false
+test = false
+
+[[bench]]
+name = "cloud_notifications"
+harness = false
+test = false
+
+[[bench]]
+name = "timelapse"
+harness = false
+test = false
+
 [dependencies]
+aws-lc-rs = { workspace = true }
 crossterm = { version = "0.29.0", default-features = false, features = [
   "events",
   "windows",
@@ -221,6 +250,7 @@ windows = { version = "0.62.2", features = [
   "Win32_Security_Authorization",
   "Win32_Storage_FileSystem",
   "Win32_System_Console",
+  "Win32_System_ProcessStatus",
   "Win32_System_Threading",
   "Win32_System_SystemServices",
 ] }

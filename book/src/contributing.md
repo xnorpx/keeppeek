@@ -144,11 +144,11 @@ Run the same gate with opt-in slow Rust test bodies before submitting a pull req
 - Windows PowerShell: `$env:KEEPPEEK_RUN_SLOW_TESTS = '1'; .\check.bat`
 
 Pull-request CI keeps feedback fast by splitting static UI checks, unit tests, coverage, and Linux
-Playwright tests into non-overlapping jobs. On pull requests targeting `main`, the `Main` workflow
-runs Rust CodeQL so reviewers can inspect security findings before merging. The `Security` workflow
-runs JavaScript/TypeScript CodeQL. After each merge and once per hour, `Main` also runs the opt-in
-slow Rust tests, ARM builds and tests, Windows installer lifecycles, Rust coverage, and full
-Playwright suites on macOS and Windows.
+Playwright tests into non-overlapping jobs. The `CodeQL` workflow runs Actions,
+JavaScript/TypeScript, Python, and Rust CodeQL on pull requests targeting `main`, pushes to `main`,
+and a weekly schedule. After each merge and once per hour, `Main` runs the opt-in slow Rust tests,
+ARM builds and tests, Windows installer lifecycles, Rust coverage, and full Playwright suites on
+macOS and Windows.
 
 Windows pull-request core tests run only the runtime-profile regressions and native volume-root
 validation. Windows pull-request durable-state tests retain ordinary regressions and defer

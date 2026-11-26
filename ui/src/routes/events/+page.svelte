@@ -13,6 +13,20 @@
 	import EventWorkflowControls from '$lib/components/EventWorkflowControls.svelte';
 	import EventWorkflowNotice from '$lib/components/EventWorkflowNotice.svelte';
 	import EventBookmarkLibrary from '$lib/components/EventBookmarkLibrary.svelte';
+	import EventExpressionBuilder from '$lib/components/EventExpressionBuilder.svelte';
+	import SavedSearchControls from '$lib/components/SavedSearchControls.svelte';
+	import {
+		commonFiltersToExpression,
+		decodeExpressionUrlParam,
+		defaultExpressionPredicate,
+		encodeExpressionUrlParam,
+		EVENT_SEARCH_ADVANCED_CAPABILITY,
+		EVENT_SEARCH_SEMANTIC_CAPABILITY,
+		expressionToCommonFilters,
+		summarizeEventExpression,
+		validateEventExpression,
+		type EventExpressionNode
+	} from '$lib/event-expression';
 	import BookmarkIcon from '@lucide/svelte/icons/bookmark';
 	import { EventWorkflow } from '$lib/event-workflow.svelte';
 	import {
@@ -38,12 +52,16 @@
 		type EventPreviewState
 	} from '$lib/event-browser';
 	import type {
+		EventPlannerDiagnostics,
 		EventPreviewHit,
 		EventPreviewKeyframe,
-		EventPreviewPage
+		EventPreviewPage,
+		EventSemanticSummary,
+		SavedEventSearch
 	} from '$lib/control-client';
 	import type { CameraListItem, RecordingEvent } from '$lib/types';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
+	import BarChart3Icon from '@lucide/svelte/icons/bar-chart-3';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import SlidersHorizontalIcon from '@lucide/svelte/icons/sliders-horizontal';
 
@@ -65,6 +83,22 @@
 	let workflowIdentity = $state.raw<EventWorkflowIdentity | null>(null);
 	let workflowCounts = $state.raw<EventWorkflowCounts | null>(null);
 	let bookmarkLibraryOpen = $state(false);
+	let advancedOpen = $state(false);
+	let advancedDraft = $state.raw<EventExpressionNode>({
+		op: 'and',
+		children: [{ op: 'predicate', predicate: defaultExpressionPredicate() }]
+	});
+	let activeExpression = $state.raw<EventExpressionNode | null>(null);
+	let activeSavedSearchId = $state<string | null>(null);
+	let savedSearches = $state.raw<SavedEventSearch[]>([]);
+	let savedSearchBusy = $state(false);
+	let savedSearchError = $state<string | null>(null);
+	let normalizedSummary = $state<string | null>(null);
+	let semanticSummary = $state.raw<EventSemanticSummary | null>(null);
+	let plannerDiagnostics = $state.raw<EventPlannerDiagnostics | null>(null);
+	let advancedSupported = $derived(capabilities.supports(EVENT_SEARCH_ADVANCED_CAPABILITY));
+	let semanticSupported = $derived(capabilities.supports(EVENT_SEARCH_SEMANTIC_CAPABILITY));
+	let advancedDraftValid = $derived(validateEventExpression(advancedDraft) === null);
 	let workflowCountsController: AbortController | null = null;
 	let resultsScroll = $state<HTMLDivElement | null>(null);
 	let restoredHref: string | null = null;
@@ -129,6 +163,7 @@
 		update: Partial<EventBrowserFilters>;
 	} | null>(null);
 	let isToday = $derived(filters.date === currentDate);
+	let convertibleCommonFilters = $derived(expressionToCommonFilters(advancedDraft, filters));
 	let visibleRecords = $derived(records.map(workflowRecord));
 	let visibleWorkflowStates = $derived(
 		visibleRecords.flatMap((record) => (record.event.workflow ? [record.event.workflow] : []))
@@ -185,11 +220,21 @@
 		const constrains = (key: keyof EventBrowserFilters) =>
 			Object.prototype.hasOwnProperty.call(update, key);
 		const cameraName = cameras.find((camera) => camera.id === filters.cameraId)?.name;
+		const hasExplicitRange =
+			typeof filters.rangeStartMs === 'number' &&
+			typeof filters.rangeEndMs === 'number' &&
+			filters.rangeStartMs < filters.rangeEndMs;
 		return [
-			filters.startTime
+			hasExplicitRange
+				? {
+						label: `range:${new Date(filters.rangeStartMs!).toISOString()}..${new Date(filters.rangeEndMs!).toISOString()}`,
+						constraining: constrains('rangeStartMs')
+					}
+				: null,
+			!hasExplicitRange && filters.startTime
 				? { label: `from:${filters.startTime} UTC`, constraining: constrains('startTime') }
 				: null,
-			filters.endTime
+			!hasExplicitRange && filters.endTime
 				? { label: `to:${filters.endTime} UTC`, constraining: constrains('endTime') }
 				: null,
 			filters.cameraId
@@ -197,12 +242,27 @@
 						label: `camera:${cameraName ?? filters.cameraId}`,
 						constraining: constrains('cameraId')
 					}
-				: null,
+				: filters.cameraIds && filters.cameraIds.length > 0
+					? {
+							label: `cameras:${filters.cameraIds.length}`,
+							constraining: constrains('cameraIds')
+						}
+					: null,
 			filters.type ? { label: `type:${filters.type}`, constraining: constrains('type') } : null,
 			filters.source
 				? { label: `source:${filters.source}`, constraining: constrains('source') }
 				: null,
-			filters.zone ? { label: `zone:${filters.zone}`, constraining: constrains('zone') } : null,
+			filters.missingZone
+				? { label: 'zone:missing', constraining: constrains('missingZone') }
+				: filters.zone
+					? { label: `zone:${filters.zone}`, constraining: constrains('zone') }
+					: null,
+			filters.confidenceBand
+				? {
+						label: `confidence-band:${filters.confidenceBand}`,
+						constraining: constrains('confidenceBand')
+					}
+				: null,
 			filters.minimumConfidence === null
 				? null
 				: {
@@ -213,7 +273,7 @@
 				? null
 				: { label: `image:${filters.image}`, constraining: constrains('image') },
 			filters.query ? { label: `query:${filters.query}`, constraining: constrains('query') } : null,
-			{ label: filters.date }
+			!hasExplicitRange ? { label: filters.date } : null
 		].filter((clause): clause is { label: string; constraining?: boolean } => clause !== null);
 	});
 
@@ -236,12 +296,35 @@
 		const handlePopState = () => {
 			const url = new URL(window.location.href);
 			const nextFilters = parseEventBrowserFilters(url.searchParams, currentDate);
+			const nextExpr = decodeExpressionUrlParam(url.searchParams.get('expr'));
+			const nextSavedId = url.searchParams.get('saved')?.trim() || null;
+			const currentExprParam = activeExpression ? encodeExpressionUrlParam(activeExpression) : null;
+			const nextExprParam = nextExpr ? encodeExpressionUrlParam(nextExpr) : null;
 			const filtersChanged =
 				eventBrowserSearchParams(nextFilters).toString() !==
 				eventBrowserSearchParams(filters).toString();
+			const advancedChanged =
+				nextExprParam !== currentExprParam || nextSavedId !== activeSavedSearchId;
 			filters = nextFilters;
+			activeSavedSearchId = nextSavedId;
+			if (nextExpr) {
+				advancedOpen = true;
+				advancedDraft = nextExpr;
+				activeExpression = nextExpr;
+			} else if (nextSavedId) {
+				const matched = savedSearches.find((item) => item.searchId === nextSavedId);
+				if (matched?.expression) {
+					advancedOpen = true;
+					advancedDraft = matched.expression;
+					activeExpression = matched.expression;
+				} else {
+					activeExpression = null;
+				}
+			} else {
+				activeExpression = null;
+			}
 			restoreSelection(url.searchParams);
-			if (!filtersChanged) return;
+			if (!filtersChanged && !advancedChanged) return;
 			const state = history.state as EventPageState | null;
 			pageTokens = state?.eventPageTokens ?? [''];
 			pageTokenBase = Number.isInteger(state?.eventPageTokenBase)
@@ -286,6 +369,16 @@
 		restoredHref = window.location.href;
 		const restoredParameters = new URL(window.location.href).searchParams;
 		filters = parseEventBrowserFilters(restoredParameters, currentDate);
+		const urlExpression = decodeExpressionUrlParam(restoredParameters.get('expr'));
+		const urlSavedId = restoredParameters.get('saved')?.trim() || null;
+		if (urlExpression) {
+			advancedOpen = true;
+			advancedDraft = urlExpression;
+			activeExpression = urlExpression;
+		} else {
+			activeExpression = null;
+		}
+		activeSavedSearchId = urlSavedId;
 		restoreSelection(restoredParameters);
 		void initialize();
 	}
@@ -294,6 +387,17 @@
 		try {
 			cameras = await controlClient.getCameras();
 			initializeWorkflow();
+			if (capabilities.supports(EVENT_SEARCH_ADVANCED_CAPABILITY)) {
+				await loadSavedSearches();
+				if (activeSavedSearchId && !activeExpression) {
+					const matched = savedSearches.find((item) => item.searchId === activeSavedSearchId);
+					if (matched?.expression) {
+						advancedOpen = true;
+						advancedDraft = matched.expression;
+						activeExpression = matched.expression;
+					}
+				}
+			}
 			const state = page.state as EventPageState;
 			const restoredTokens = state.eventPageTokens?.filter(
 				(token): token is string => typeof token === 'string'
@@ -411,6 +515,9 @@
 			if (controller.signal.aborted || version !== requestVersion) return;
 			records = eventRecords(result.hits);
 			workflowCounts = result.workflowCounts ?? null;
+			normalizedSummary = result.normalizedSummary ?? null;
+			semanticSummary = result.semanticSummary ?? null;
+			plannerDiagnostics = result.diagnostics ?? null;
 			pageIndex = targetPage;
 			nextPageToken = result.nextPageToken;
 			const relativePage = targetPage - pageTokenBase;
@@ -473,6 +580,23 @@
 				new Error('Event workflow filters are unavailable until this workspace connects.')
 			);
 		}
+		if (activeExpression && eventIds.length === 0) {
+			return controlClient.searchEventAdvanced({
+				expression: activeExpression,
+				streamId: 'main',
+				startMs: bounds.startMs,
+				endMs: bounds.endMs,
+				pageSize,
+				pageToken: pageToken || undefined,
+				workflow: workflowIdentity
+					? {
+							review: 'all',
+							bookmarkedByMe: false
+						}
+					: undefined,
+				signal
+			});
+		}
 		return controlClient.searchEventMetadata({
 			workflow: workflowIdentity
 				? {
@@ -485,14 +609,18 @@
 			eventIds,
 			sourceIds: queryFilters.cameraId
 				? [queryFilters.cameraId]
-				: cameras.map((camera) => camera.id),
+				: queryFilters.cameraIds && queryFilters.cameraIds.length > 0
+					? queryFilters.cameraIds
+					: cameras.map((camera) => camera.id),
 			streamId: 'main',
 			startMs: bounds.startMs,
 			endMs: bounds.endMs,
 			eventTypes: queryFilters.type ? [queryFilters.type] : [],
 			origins: queryFilters.source ? [queryFilters.source] : [],
 			zones: queryFilters.zone ? [queryFilters.zone] : [],
+			includeMissingZone: queryFilters.missingZone ?? false,
 			minimumConfidence: queryFilters.minimumConfidence ?? undefined,
+			confidenceBands: queryFilters.confidenceBand ? [queryFilters.confidenceBand] : [],
 			image: queryFilters.image,
 			text: queryFilters.query || undefined,
 			pageSize,
@@ -969,7 +1097,22 @@
 	}
 
 	function updateFilters(update: Partial<EventBrowserFilters>, debounce = false): void {
-		const next = { ...filters, ...update };
+		const normalizedUpdate: Partial<EventBrowserFilters> = { ...update };
+		const changesDateOrTime = 'date' in update || 'startTime' in update || 'endTime' in update;
+		if (changesDateOrTime && !('rangeStartMs' in update) && !('rangeEndMs' in update)) {
+			normalizedUpdate.rangeStartMs = null;
+			normalizedUpdate.rangeEndMs = null;
+		}
+		if ('cameraId' in update && !('cameraIds' in update)) {
+			normalizedUpdate.cameraIds = [];
+		}
+		if ('zone' in update && !('missingZone' in update)) {
+			normalizedUpdate.missingZone = false;
+		}
+		if ('minimumConfidence' in update && !('confidenceBand' in update)) {
+			normalizedUpdate.confidenceBand = null;
+		}
+		const next = { ...filters, ...normalizedUpdate };
 		loadController?.abort();
 		refreshController?.abort();
 		requestVersion += 1;
@@ -1132,6 +1275,13 @@
 			search.set('event', selectedIdentity.eventId);
 			search.set('eventCamera', selectedIdentity.cameraId);
 		}
+		if (activeExpression) {
+			const encoded = encodeExpressionUrlParam(activeExpression);
+			if (encoded) search.set('expr', encoded);
+		}
+		if (activeSavedSearchId) {
+			search.set('saved', activeSavedSearchId);
+		}
 		const state: EventPageState = {
 			eventPageToken: pageTokens[pageIndex - pageTokenBase] ?? '',
 			eventPageTokens: pageTokens,
@@ -1165,19 +1315,33 @@
 			update: Partial<EventBrowserFilters>;
 		}> = [
 			...(filters.query ? [{ label: `Clear “${filters.query}”`, update: { query: '' } }] : []),
+			...(filters.confidenceBand
+				? [{ label: 'Any confidence band', update: { confidenceBand: null } }]
+				: []),
 			...(filters.minimumConfidence !== null
 				? [{ label: 'Remove confidence limit', update: { minimumConfidence: null } }]
 				: []),
 			...(filters.cameraId ? [{ label: 'Any camera', update: { cameraId: null } }] : []),
+			...(filters.cameraIds && filters.cameraIds.length > 0
+				? [{ label: 'Any camera group', update: { cameraIds: [] } }]
+				: []),
 			...(filters.type ? [{ label: 'Any event type', update: { type: null } }] : []),
 			...(filters.source ? [{ label: 'Any source', update: { source: null } }] : []),
+			...(filters.missingZone ? [{ label: 'Any zone state', update: { missingZone: false } }] : []),
 			...(filters.zone ? [{ label: 'Any zone', update: { zone: null } }] : []),
 			...(filters.image !== 'all'
 				? [{ label: 'Any image state', update: { image: 'all' as const } }]
 				: []),
-			...(filters.startTime || filters.endTime
-				? [{ label: 'Use the full day', update: { startTime: null, endTime: null } }]
-				: [])
+			...(filters.rangeStartMs !== null || filters.rangeEndMs !== null
+				? [
+						{
+							label: 'Use the full day',
+							update: { rangeStartMs: null, rangeEndMs: null, startTime: null, endTime: null }
+						}
+					]
+				: filters.startTime || filters.endTime
+					? [{ label: 'Use the full day', update: { startTime: null, endTime: null } }]
+					: [])
 		];
 		for (const candidate of candidates) {
 			try {
@@ -1201,19 +1365,132 @@
 	}
 
 	function clearFilters(): void {
+		activeExpression = null;
+		activeSavedSearchId = null;
+		normalizedSummary = null;
+		semanticSummary = null;
+		plannerDiagnostics = null;
 		updateFilters({
 			review: 'all',
 			bookmarks: 'all',
 			startTime: null,
 			endTime: null,
+			rangeStartMs: null,
+			rangeEndMs: null,
 			cameraId: null,
+			cameraIds: [],
 			type: null,
 			source: null,
 			zone: null,
+			missingZone: false,
 			minimumConfidence: null,
+			confidenceBand: null,
 			image: 'all',
 			query: ''
 		});
+	}
+
+	function toggleAdvancedSearch(): void {
+		if (!advancedOpen) {
+			const converted = commonFiltersToExpression(filters);
+			if (converted) advancedDraft = converted;
+			advancedOpen = true;
+			void loadSavedSearches();
+			return;
+		}
+		advancedOpen = false;
+	}
+
+	function applyAdvancedSearch(): void {
+		if (validateEventExpression(advancedDraft) !== null) return;
+		activeExpression = advancedDraft;
+		recoveryNotice = null;
+		pageTokens = [''];
+		pageTokenBase = 0;
+		pageIndex = 0;
+		nextPageToken = '';
+		syncUrl();
+		void loadFirstPage();
+	}
+
+	function convertAdvancedToCommon(): void {
+		const converted = expressionToCommonFilters(advancedDraft, filters);
+		if (!converted) return;
+		activeExpression = null;
+		activeSavedSearchId = null;
+		advancedOpen = false;
+		normalizedSummary = null;
+		semanticSummary = null;
+		plannerDiagnostics = null;
+		updateFilters(converted);
+	}
+
+	async function loadSavedSearches(): Promise<void> {
+		if (!capabilities.supports(EVENT_SEARCH_ADVANCED_CAPABILITY)) return;
+		try {
+			const listed = await controlClient.listSavedEventSearches();
+			savedSearches = listed.searches;
+			savedSearchError = null;
+		} catch (cause) {
+			savedSearchError =
+				cause instanceof Error ? cause.message : 'Saved searches could not be loaded.';
+		}
+	}
+
+	function applySavedSearch(record: SavedEventSearch): void {
+		activeSavedSearchId = record.searchId;
+		savedSearchError = null;
+		if (!record.editable || !record.expression) {
+			savedSearchError = `Saved search "${record.name}" uses schema v${record.expressionVersion} and is preserved read-only.`;
+			return;
+		}
+		advancedOpen = true;
+		advancedDraft = record.expression;
+		activeExpression = record.expression;
+		syncUrl('push');
+		void loadFirstPage();
+	}
+
+	async function saveCurrentSearch(name: string, existing: SavedEventSearch | null): Promise<void> {
+		if (validateEventExpression(advancedDraft) !== null) return;
+		savedSearchBusy = true;
+		savedSearchError = null;
+		try {
+			const saved = await controlClient.saveEventSearch({
+				searchId: existing?.searchId,
+				expectedRevision: existing?.revision ?? 0,
+				name,
+				expression: advancedDraft
+			});
+			activeSavedSearchId = saved.searchId;
+			savedSearches = existing
+				? savedSearches.map((item) => (item.searchId === saved.searchId ? saved : item))
+				: [...savedSearches, saved];
+			syncUrl();
+		} catch (cause) {
+			savedSearchError =
+				cause instanceof Error ? cause.message : 'Saved search could not be updated.';
+		} finally {
+			savedSearchBusy = false;
+		}
+	}
+
+	async function deleteSavedSearch(record: SavedEventSearch): Promise<void> {
+		savedSearchBusy = true;
+		savedSearchError = null;
+		try {
+			await controlClient.deleteSavedEventSearch(record.searchId, record.revision);
+			savedSearches = savedSearches.filter((item) => item.searchId !== record.searchId);
+			if (activeSavedSearchId === record.searchId) {
+				activeSavedSearchId = null;
+				syncUrl();
+			}
+		} catch (cause) {
+			savedSearchError =
+				cause instanceof Error ? cause.message : 'Saved search could not be deleted.';
+		} finally {
+			savedSearchBusy = false;
+		}
 	}
 
 	function updateStartTime(value: string): void {
@@ -1247,6 +1524,11 @@
 		</div>
 		<div class="min-w-2 flex-1"></div>
 		<div class="flex items-center gap-2">
+			{#if capabilities.supports('keeppeek.activity-analytics.v1')}<a
+					href={resolve('/activity')}
+					class="inline-flex min-h-11 items-center gap-2 rounded-sm border border-border px-3 text-xs hover:bg-raised focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+					><BarChart3Icon class="size-4" />Activity summary</a
+				>{/if}
 			{#if workflowIdentity}<button
 					type="button"
 					class="inline-flex min-h-11 items-center gap-2 rounded-sm px-3 text-xs hover:bg-raised"
@@ -1457,6 +1739,16 @@
 					<option value="keeppeek">KeepPeek pipeline</option>
 				</select>
 			</label>
+			{#if advancedSupported}
+				<button
+					type="button"
+					class="h-11 rounded-sm border border-hairline bg-raised px-2.5 text-xs font-medium hover:bg-surface focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none md:h-8"
+					aria-expanded={advancedOpen}
+					onclick={toggleAdvancedSearch}
+				>
+					{advancedOpen ? 'Hide advanced search' : 'Advanced search'}
+				</button>
+			{/if}
 			<button
 				type="button"
 				class="ml-auto h-11 rounded-sm px-2.5 text-xs text-text-muted hover:bg-raised hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none md:h-8"
@@ -1466,6 +1758,33 @@
 			</button>
 		</div>
 	</section>
+
+	{#if advancedSupported && advancedOpen}
+		<div class="shrink-0 space-y-2">
+			<EventExpressionBuilder
+				draft={advancedDraft}
+				{cameras}
+				canConvertToCommon={convertibleCommonFilters !== null}
+				semanticAvailable={semanticSupported}
+				{normalizedSummary}
+				{semanticSummary}
+				diagnostics={plannerDiagnostics}
+				onchange={(next) => (advancedDraft = next)}
+				onapply={applyAdvancedSearch}
+				onconvert={convertAdvancedToCommon}
+			/>
+			<SavedSearchControls
+				searches={savedSearches}
+				activeSearchId={activeSavedSearchId}
+				draftValid={advancedDraftValid}
+				busy={savedSearchBusy}
+				error={savedSearchError}
+				onload={applySavedSearch}
+				onsave={(name, existing) => void saveCurrentSearch(name, existing)}
+				ondelete={(record) => void deleteSavedSearch(record)}
+			/>
+		</div>
+	{/if}
 
 	{#if workflowIdentity}
 		<div
@@ -1514,7 +1833,11 @@
 				: `${records.length}${nextPageToken ? '+' : ''} ${records.length === 1 && !nextPageToken ? 'event' : 'events'}`}</span
 		>
 		<span aria-hidden="true">·</span>
-		<span class="min-w-0 break-words">{eventFilterSummary(filters)}</span>
+		<span class="min-w-0 break-words"
+			>{activeExpression
+				? normalizedSummary || summarizeEventExpression(activeExpression)
+				: eventFilterSummary(filters)}</span
+		>
 		{#if workflowCounts}<span data-workflow-count class="ml-auto shrink-0 font-mono"
 				>{workflowCounts.total} matching</span
 			>{/if}

@@ -69,6 +69,36 @@ export const serverCapabilityCatalog = {
 		failureGuarantee:
 			'Conflicts preserve drafts and never overwrite newer state; bookmarks do not protect recordings'
 	},
+	'keeppeek.event-search.advanced.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'Versioned bounded boolean AST evaluation, authorized snapshot pagination, and owner-scoped revisioned saved searches',
+		unlocks: 'Advanced nested boolean event search builder and durable saved searches',
+		whenMissing:
+			'Common Events filters remain fully usable; advanced builder and saved searches stay hidden',
+		failureGuarantee:
+			'Validation errors and revision conflicts preserve unsaved drafts; inaccessible cameras and counts never leak'
+	},
+	'keeppeek.event-search.semantic.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'Exact model-space cosine ranking, revision-bound embeddings, provenance, interval, and truncation reporting',
+		unlocks: 'Optional semantic similarity ranking alongside structured boolean filters',
+		whenMissing:
+			'Structured boolean and common event filters continue working without semantic ranking',
+		failureGuarantee:
+			'External embedding failures never affect recording or ordinary search; raw vectors never cross results or diagnostics'
+	},
+	'keeppeek.activity-analytics.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'Bounded revision-correct activity rollups, IANA timezone buckets, retention and source-health completeness, and shadow rebuilds',
+		unlocks:
+			'Activity summary dashboard, trend charts, weekday-hour heatmap, ranked breakdowns, and aggregate CSV/JSON exports',
+		whenMissing: 'Events remain browsable; server activity summaries require a server update',
+		failureGuarantee:
+			'Rollup degradation never alters canonical events and rejects unverified long-range totals instead of serving stale counts'
+	},
 	'keeppeek.backup.v1': {
 		delivery: 'ships',
 		serverOwns:
@@ -123,6 +153,15 @@ export const serverCapabilityCatalog = {
 		whenMissing: 'Range sharing is hidden',
 		failureGuarantee: 'A range with media outside its boundaries cannot issue a guest link'
 	},
+	'keeppeek.usage-reporting.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'Administrator-only consent persistence, snapshot-only v1 payload preview, dedicated telemetry UUID rotation, and bounded receiver delivery/deletion',
+		unlocks: 'Opt-in usage reporting controls in Settings',
+		whenMissing: 'Usage reporting settings stay hidden and zero telemetry requests occur',
+		failureGuarantee:
+			'Disabled installs stay silent; failed sends or deletions remain truthful and never affect recording'
+	},
 	'stored-media-keyframe-preview.v1': {
 		delivery: 'ships',
 		serverOwns:
@@ -156,6 +195,16 @@ export const serverCapabilityCatalog = {
 			'Channel evidence remains visible; rule creation and tests require a server update',
 		failureGuarantee:
 			'Test failures never enable a rule; retry count and last response remain visible'
+	},
+	'keeppeek.cloud-notifications.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'Bounded Keeppeek Service signaling settings, exact rolling local pacing, test signals, and paired-mobile preview resolution',
+		unlocks: 'Bounded mobile push signaling controls and health state in Settings > Notifications',
+		whenMissing:
+			'Mobile push signaling controls stay unavailable while local rules, Pushover, browser alerts, and MQTT remain independent',
+		failureGuarantee:
+			'Revision conflicts reload authoritative settings; service failures never block local recording or notification channels'
 	},
 	'keeppeek.mqtt-forwarder.v1': {
 		delivery: 'ships',
@@ -200,6 +249,24 @@ export const serverCapabilityCatalog = {
 		unlocks: 'Bookmarks in the event drawer and timeline',
 		whenMissing: 'Existing pins stay visible and protected; new pins cannot be made',
 		failureGuarantee: 'A failed pin never silently leaves its intended span unprotected'
+	},
+	'keeppeek.timelapse.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'Bounded sparse timelapse planning, explicit gap/privacy reporting, and lazy sample delivery',
+		unlocks: 'Sparse timelapse review with Last hour preset and exact Keep seek drill-down',
+		whenMissing: 'Timelapse controls stay unavailable while normal Keep playback remains live',
+		failureGuarantee:
+			'Missing, retained, private, and unsupported intervals remain visible without stale repeats'
+	},
+	'keeppeek.timelapse-export.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'Bounded local silent MP4 timelapse encoding, durable export lifecycle, and SHA-256 provenance manifest',
+		unlocks: 'Silent timelapse MP4 generation and provenance manifest downloads',
+		whenMissing: 'Interactive sparse review stays available while MP4 generation is disabled',
+		failureGuarantee:
+			'Source recordings remain immutable and failed or cancelled jobs remove partial artifacts'
 	}
 } as const satisfies Record<string, ServerCapabilityContract>;
 

@@ -184,6 +184,7 @@ pub fn run_with_dashboard(
     let mut storage_config = StorageConfig::from_toml(&cfg.storage);
     let recording_catalog = open_recording_catalog(&storage_config)?;
     let catalog_handle = recording_catalog.handle();
+    catalog_handle.set_analytics_max_rollup_rows(cfg.analytics.max_rollup_rows)?;
     storage_config.initialize_named_volumes(catalog_handle.clone())?;
     let volume_worker = storage_config
         .volume_runtime
@@ -246,6 +247,9 @@ pub fn run_with_dashboard(
     let recording_health = storage_engine.health();
     let webrtc = WebRtc::with_recording_demand(recording_demand.clone());
     let health_registry = HealthRegistry::new();
+    health_registry
+        .events
+        .set_analytics_catalog(recording_catalog.handle());
     let mut server_state = ServerState::new(
         &cfg,
         &camera_configs,
@@ -279,10 +283,33 @@ pub fn run_with_dashboard(
         .with_backup_manager(backup_manager)
         .with_recording_health(recording_health.clone())
         .with_battery_wake(battery_wake.as_ref().map(BatteryWakeService::handle));
-    let notification_runtime = NotificationRuntime::open_with_config_update(
+    let cloud_notifications = match crate::notifications::cloud::CloudSignalRuntime::open(
+        config_path.to_path_buf(),
+        &storage_config.long_term_path.join("cloud-notifications.db"),
+        cfg.cloud_notifications.clone(),
+        i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+        )
+        .unwrap_or(i64::MAX),
+    ) {
+        Ok(runtime) => Some(runtime),
+        Err(error) => {
+            tracing::warn!(
+                event = "cloud_notification_runtime_unavailable",
+                error = %error,
+                "cloud notifications runtime unavailable; capability remains disabled"
+            );
+            None
+        }
+    };
+    let notification_runtime = NotificationRuntime::open_with_config_update_and_cloud(
         config_path,
         server_state.configuration_update_lock(),
         Some(event_store.clone()),
+        cloud_notifications.clone(),
     )?;
     let notification_handle = notification_runtime.handle();
     let notification_health = NotificationHealthMonitor::start(
@@ -290,9 +317,12 @@ pub fn run_with_dashboard(
         notification_handle.clone(),
         shutdown.clone(),
     )?;
-    let server_state = server_state
+    let mut server_state = server_state
         .with_notifications(notification_handle.clone())
         .with_event_forwarder(event_forwarder_handle.clone());
+    if let Some(cloud_runtime) = cloud_notifications {
+        server_state = server_state.with_cloud_notifications(cloud_runtime);
+    }
 
     let (mut router, router_tx) = Router::new()?;
     for camera in cameras.values() {
@@ -330,6 +360,7 @@ pub fn run_with_dashboard(
     }
 
     let server_state = with_camera_events(server_state, &mut keeppeek);
+    server_state.start_usage_reporting_if_enabled(&router_tx);
     keeppeek.configure_isapi_callbacks(cfg.isapi_callbacks.as_ref(), &cameras)?;
 
     let operational_state = server_state.clone();
@@ -373,7 +404,7 @@ pub fn run_with_dashboard(
         .recv()
         .err()
         .map(|_| anyhow::anyhow!("HTTP server stopped before reporting readiness"));
-    let _dashboard = startup_error
+    let dashboard = startup_error
         .is_none()
         .then(|| {
             crate::tui::Dashboard::start(
@@ -446,6 +477,8 @@ pub fn run_with_dashboard(
         router.wait_and_drain(Some(std::time::Duration::from_millis(100)))?;
     }
     shutdown.cancel();
+    // Restore terminal modes and console logs before recording finalization or process restart.
+    drop(dashboard);
     webrtc.shutdown();
 
     match server_handle.join() {

@@ -36,13 +36,15 @@ function setup() {
 		redactText,
 		warnings: []
 	}));
+	const audit = vi.fn();
 	const session = new ReportSession({
 		now: () => time,
 		latestBrowserSequence: () => browser.latestSequence,
 		browserEntries: () => browser.snapshot(),
 		package: createPackage,
 		snapshot: checkpoint,
-		capture
+		capture,
+		audit
 	});
 	return {
 		time: (value: number) => {
@@ -53,7 +55,8 @@ function setup() {
 		result,
 		capture,
 		checkpoint,
-		createPackage
+		createPackage,
+		audit
 	};
 }
 
@@ -144,7 +147,7 @@ it('cancels asynchronous finalization and clears the report after the hard time 
 });
 
 it('shows the exact scrubbed issue text, included log counts and retention before contacting the service', async () => {
-	const { session, browser } = setup();
+	const { session, browser, audit } = setup();
 	browser.append('info', 'test', ['outside']);
 	session.start(false);
 	browser.append('info', 'test', ['inside']);
@@ -162,7 +165,8 @@ it('shows the exact scrubbed issue text, included log counts and retention befor
 	};
 	render(ReportBugWorkflow, {
 		session,
-		reporting: { transport, retentionDays: 30 }
+		reporting: { transport, retentionDays: 30 },
+		onaudit: audit
 	});
 	await page.getByLabelText('Issue title').fill('Test fixture-private-name');
 	await page.getByLabelText('Problem description').fill('Playback stopped at 192.0.2.5.');
@@ -190,6 +194,8 @@ it('shows the exact scrubbed issue text, included log counts and retention befor
 	await expect
 		.element(page.getByRole('link', { name: 'Open the created GitHub issue' }))
 		.toHaveAttribute('href', 'https://github.com/xnorpx/keeppeek/issues/999');
+	await page.getByRole('button', { name: 'Done', exact: true }).click();
+	expect(audit.mock.calls.map(([entry]) => entry.event)).toEqual(['start', 'complete']);
 	expect(transport.create).toHaveBeenCalledExactlyOnceWith(
 		expect.objectContaining({
 			title: 'Test camera-001',

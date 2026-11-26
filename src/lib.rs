@@ -16,7 +16,8 @@ pub mod keeppeek;
 pub mod logging;
 mod media_time;
 pub(crate) mod metrics;
-mod notifications;
+#[doc(hidden)]
+pub mod notifications;
 pub(crate) mod operational_events;
 pub mod privacy;
 pub mod profiles;
@@ -31,4 +32,5 @@ pub mod storage;
 #[doc(hidden)]
 pub mod test_support;
 pub mod tui;
+pub mod usage_reporting;
 pub mod webrtc;

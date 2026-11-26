@@ -1,8 +1,6 @@
 name: Security
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
   schedule:
@@ -11,7 +9,6 @@ on:
 
 permissions:
   contents: read
-  security-events: write
 
 concurrency:
   group: security-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
@@ -91,19 +88,3 @@ jobs:
         run: |
           python -m pip install --upgrade pip pip-audit
           python -m pip_audit --index-url https://pypi.org/simple --requirement requirements.txt
-
-  codeql-typescript:
-    name: CodeQL (JavaScript/TypeScript)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          submodules: recursive
-      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
-        with:
-          languages: javascript-typescript
-          build-mode: none
-      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
-        with:
-          category: /language:javascript-typescript

@@ -1,0 +1,40 @@
+[package]
+name = "keeppeek-desktop"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+authors = ["xnorpx <xnorpx@outlook.com>"]
+description = "Tauri desktop UI client for KeepPeek on Windows and macOS"
+repository = "https://github.com/xnorpx/keeppeek"
+homepage = "https://xnorpx.github.io/keeppeek/"
+documentation = "https://xnorpx.github.io/keeppeek/"
+
+[dependencies]
+clap = { version = "4.6.6", default-features = false, features = [
+  "std",
+  "derive",
+  "help",
+  "usage",
+] }
+mimalloc = { version = "0.1.52" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+toml = { version = "1.1.4" }
+tracing = { version = "0.1.44" }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+ureq = { workspace = true, features = ["native-tls"] }
+url = { workspace = true }
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+tauri = { version = "2.11.6", default-features = false, features = [
+  "wry",
+  "compression",
+  "common-controls-v6",
+  "dynamic-acl",
+] }
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.build-dependencies]
+tauri-build = { version = "2.6.3" }
+
+[lints]
+workspace = true

@@ -32,9 +32,13 @@ treat it as `unknown`, never as healthy.
 ## Read the terminal dashboard
 
 The foreground dashboard uses the recorder's health evidence for its summary, stream states
-and warnings. Select a main or sub stream to see its source identity, media type, report age
-and available counters. Received bitrate uses decimal kbit/s. Ingest FPS comes from received
-video frames. Process CPU and resident memory describe the KeepPeek process.
+and warnings. To stay non-blocking, the foreground dashboard derives camera warnings from live
+camera state instead of querying stored operational event history. Each stream row shows its
+camera name (with source identity on wide terminals or when names collide), main/sub video or
+audio stream kind, health state, received bitrate, and report/frame age. Select a row to
+inspect its source identity, media type, recording progress age, and available counters.
+Received bitrate uses decimal kbit/s. Ingest FPS comes from received video frames. Process CPU
+and resident memory describe the KeepPeek process.
 
 A zero is a measured value. A dash marks evidence that is unavailable or does not apply to the
 selected stream. The report age shows how recently the recorder sampled the stream. The header
@@ -242,8 +246,11 @@ Unknown evidence is not counted as connected, fresh, decodable, recording, or he
 ## API and metrics
 
 `HealthCommand` returns the versioned protobuf health snapshot. Version 1 includes the canonical
-`state`, stable reasons, camera and stream dimensions, media progress timestamps, and explicit fleet
-counts. Unknown future state or reason strings are presented as `unknown`.
+`state`, stable reasons, camera and stream dimensions, media progress timestamps, explicit fleet
+counts, and per-source WebRTC live-audio timing occupancy and drop counters (`WebRtcSourceHealthSnapshot.live_audio`).
+Unknown future state or reason strings are presented as `unknown`. See
+[Calibrating live audio](./recording-and-evidence.md#calibrating-live-audio) for live timing
+bounds and queue drop semantics.
 
 `GET /metrics` exposes the same projection. Important gauges include:
 

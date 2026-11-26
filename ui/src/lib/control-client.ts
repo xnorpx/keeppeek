@@ -1,4 +1,38 @@
 import { StoredFrameClock } from './stored-frame-clock';
+import type {
+	ActivityAnalyticsStatusData,
+	ActivitySummaryData,
+	ActivitySummaryQueryOptions,
+	EventConfidenceBand
+} from './activity-analytics';
+import {
+	appendAnalyticsChunk,
+	buildProtoActivityQuery,
+	decodeAnalyticsStatus,
+	protoConfidenceBand,
+	type PendingAnalyticsTransfer
+} from './control-client-analytics';
+import {
+	buildAdvancedSearchProto,
+	buildDeleteSavedSearchCommand,
+	buildListSavedSearchesCommand,
+	buildSaveEventSearchCommand,
+	decodePlannerDiagnostics,
+	decodeSavedEventSearch,
+	decodeSemanticSummary,
+	type EventAdvancedSearchOptions,
+	type EventPlannerDiagnostics,
+	type EventSemanticSummary,
+	type SavedEventSearch,
+	type SaveEventSearchOptions
+} from './control-client-event-search';
+export type {
+	EventAdvancedSearchOptions,
+	EventPlannerDiagnostics,
+	EventSemanticSummary,
+	SavedEventSearch,
+	SaveEventSearchOptions
+} from './control-client-event-search';
 import {
 	awaitFrameOperation,
 	StoredFrameWindow,
@@ -16,12 +50,15 @@ import { durationFromMs, timestampDate, timestampFromDate } from '@bufbuild/prot
 import {
 	ApiRequestError,
 	applyCookieConfigurationArchive,
+	createReportingGrant as createAuthenticatedReportingGrant,
 	createSession,
 	deleteSession,
 	fetchLogSnapshot as fetchAuthenticatedLogSnapshot,
 	fetchLogStream as fetchAuthenticatedLogStream,
 	fetchMetricsSnapshot as fetchAuthenticatedMetricsSnapshot,
-	fetchRecordingCoverage as fetchAuthenticatedRecordingCoverage
+	fetchRecordingCoverage as fetchAuthenticatedRecordingCoverage,
+	fetchReportingStatus as fetchAuthenticatedReportingStatus,
+	recordReportingAudit as recordAuthenticatedReportingAudit
 } from './api';
 import type { HttpCredential } from './api';
 import { ExternalAuthentication, authenticationError } from './external-authentication.svelte';
@@ -36,6 +73,7 @@ import type { MqttSettingsUpdate } from './integrations';
 import { MqttControlClient } from './control-client-mqtt';
 import { RecordingMaintenanceClient } from './control-client-maintenance';
 import { SharingControlClient } from './control-client-sharing';
+import { UsageReportingControlClient } from './control-client-usage-reporting';
 import { PeekLayoutControlClient } from './control-client-peek-layouts';
 import { RuntimeProfilesControlClient } from './control-client-runtime-profiles';
 import { CameraAccessControlClient } from './control-client-camera-access';
@@ -52,6 +90,13 @@ import type {
 } from './access';
 import { workspaceAccessChanged } from './access';
 import { NotificationControlClient } from './control-client-notifications';
+import {
+	CloudNotificationControlClient,
+	type CloudNotificationContext,
+	type CloudNotificationSettings,
+	type CloudNotificationStatus,
+	type CloudNotificationTestResult
+} from './control-client-cloud-notifications';
 import { replaceKnownCamera } from './camera-inventory';
 import { SystemControlClient, healthProfile, numeric } from './control-client-system';
 import { ConfigurationControlClient } from './control-client-configuration';
@@ -85,6 +130,8 @@ import {
 import {
 	AccessRole as ProtoAccessRole,
 	CameraBackend as ProtoCameraBackend,
+	ActivityAnalyticsCommandSchema,
+	CancelActivityAnalyticsQuerySchema,
 	CameraConfigurationCommandSchema,
 	CameraControlCommandSchema,
 	CameraRecordingMode as ProtoCameraRecordingMode,
@@ -117,6 +164,7 @@ import {
 	ExportJobStatus,
 	FetchEventSearchMediaSchema,
 	GetAccessSessionSchema,
+	GetActivityAnalyticsStatusSchema,
 	GetCameraCatalogSchema,
 	GetCameraConfigurationsSchema,
 	GetCameraDiscoverySchema,
@@ -139,6 +187,7 @@ import {
 	PtzStopSchema,
 	QueryEventsSchema,
 	QueryStoredMediaTimelineSchema,
+	RebuildActivityAnalyticsSchema,
 	RecordedAudioPreviewSchema,
 	RefillStoredMediaSchema,
 	RemoveCameraConfigurationSchema,
@@ -159,10 +208,19 @@ import {
 	StoredMediaMode,
 	StoredMediaObjectRepresentation,
 	StoredMediaStatus,
+	CancelTimelapseSamplesSchema,
+	ExportArtifactKind,
+	FetchTimelapseSamplesSchema,
+	PlanTimelapseSchema,
+	TimelapseExportOptionsSchema,
+	TimelapseGapReason as ProtoTimelapseGapReason,
+	TimelapseOutputPreviewSchema,
 	UpdateCameraConfigurationSchema,
 	type AccessAuditEvent as ProtoAccessAuditEvent,
 	type AccessCredential as ProtoAccessCredential,
 	type AccessSession as ProtoAccessSession,
+	type ActivityAnalyticsChunk,
+	type ActivityAnalyticsError,
 	type Event as ProtoEvent,
 	type EventSearchHit as ProtoEventSearchHit,
 	type EventSearchMediaObject as ProtoEventSearchMediaObject,
@@ -180,8 +238,20 @@ import {
 	type StoredMediaState,
 	type RecordedAudioTiming,
 	type RecordedAudioPreview,
+	type TimelapsePlanResult as ProtoTimelapsePlanResult,
+	type TimelapseSampleChunk,
+	type TimelapseSampleEnd,
 	type EventAttachmentDescriptor as ProtoEventAttachmentDescriptor
 } from './proto/webrtc_pb';
+import {
+	tokenHexKey,
+	type TimelapseDecodedWindow,
+	type TimelapseExportDraftOptions,
+	type TimelapseGapReason,
+	type TimelapseJobSummaryView,
+	type TimelapsePlanEntry,
+	type TimelapsePlanResponse
+} from './timelapse-review';
 import { canonicalEventAttachment, eventIconKey } from './event-presentation';
 import type {
 	NotificationClearScope,
@@ -221,6 +291,7 @@ import type {
 	RecordingCoverageResponse,
 	RecordingSegment,
 	RecordingsResponse,
+	ReportingAuditPayload,
 	SanitizedConfig,
 	ServerHealthResponse,
 	SettingsConfigUpdate,
@@ -284,6 +355,7 @@ export type MediaExportJob = {
 	burnInTimestamp: boolean;
 	eventSeed: MediaExportEventSeed | null;
 	recordedAudio?: RecordedAudioTiming;
+	timelapse?: TimelapseJobSummaryView;
 };
 
 type StoredMediaOpenOptions = {
@@ -312,6 +384,7 @@ export type MediaExportEventSeed = {
 export type MediaExportDownload = {
 	job: MediaExportJob;
 	blob: Blob;
+	fileName?: string | null;
 };
 
 export type EventPreviewKeyframe = {
@@ -355,6 +428,9 @@ export type EventPreviewPage = {
 	nextPageToken: string;
 	candidatesTruncated: boolean;
 	workflowCounts?: EventWorkflowCounts;
+	normalizedSummary?: string;
+	semanticSummary?: EventSemanticSummary;
+	diagnostics?: EventPlannerDiagnostics;
 };
 
 export type EventMetadataSearchOptions = {
@@ -366,7 +442,9 @@ export type EventMetadataSearchOptions = {
 	eventTypes?: readonly string[];
 	origins?: readonly RecordingEvent['source'][];
 	zones?: readonly string[];
+	includeMissingZone?: boolean;
 	minimumConfidence?: number;
+	confidenceBands?: readonly EventConfidenceBand[];
 	image?: 'all' | 'with' | 'without';
 	text?: string;
 	pageSize?: number;
@@ -482,10 +560,39 @@ type EventMediaPending = {
 
 type ExportDownloadPending = {
 	job: MediaExportJob | null;
+	artifact: 'media' | 'manifest';
+	expectedSha256: string | null;
+	fileName: string | null;
 	expectedChunks: number | null;
 	chunks: Array<Uint8Array | undefined>;
 	completing: boolean;
 	resolve: (download: MediaExportDownload) => void;
+	reject: (error: Error) => void;
+	timeout: ReturnType<typeof setTimeout>;
+};
+
+type TimelapseUnitAccumulator = {
+	presentationRank: number;
+	randomAccess: boolean;
+	chunkCount: number;
+	chunks: Array<Uint8Array | undefined>;
+};
+
+type TimelapseSampleAccumulator = {
+	tokenKey: string;
+	actualTimeMs: number;
+	targetPresentationRank: number;
+	sampleCount: number;
+	codec: string;
+	width: number;
+	height: number;
+	decoderConfig: Uint8Array;
+	units: Map<number, TimelapseUnitAccumulator>;
+};
+
+type TimelapseTransferPending = {
+	samples: Map<string, TimelapseSampleAccumulator>;
+	resolve: (windows: Map<string, TimelapseDecodedWindow>) => void;
 	reject: (error: Error) => void;
 	timeout: ReturnType<typeof setTimeout>;
 };
@@ -518,9 +625,11 @@ export class ControlClient {
 	#pending = new Map<bigint, PendingRequest>();
 	#timelinePending = new Map<string, TimelinePending>();
 	#eventSearchPending = new Map<string, EventSearchPending>();
+	#analyticsPending = new Map<string, PendingAnalyticsTransfer>();
 	#eventMediaPending = new Map<string, EventMediaPending>();
 	#playbacks = new Map<string, StoredMediaPlayback>();
 	#exportDownloads = new Map<string, ExportDownloadPending>();
+	#timelapseTransfers = new Map<string, TimelapseTransferPending>();
 	#nextStoredId = 1;
 	#serverCapabilities: ServerCapabilities | null = null;
 	#capabilityWaiters: CapabilityWaiter[] = [];
@@ -637,7 +746,11 @@ export class ControlClient {
 	};
 	#accessStateListeners = new Set<AccessStateListener>();
 	#notifications = new NotificationControlClient((command) => this.request(command));
+	#cloudNotifications = new CloudNotificationControlClient((command) => this.request(command));
 	readonly sharing = new SharingControlClient((command, timeout) => this.request(command, timeout));
+	readonly usageReporting = new UsageReportingControlClient((command, timeout) =>
+		this.request(command, timeout)
+	);
 	readonly recordingMaintenance = new RecordingMaintenanceClient((command) =>
 		this.request(command)
 	);
@@ -800,6 +913,22 @@ export class ControlClient {
 
 	async getMetricsSnapshot(signal?: AbortSignal): Promise<string> {
 		return this.diagnosticsSnapshot(fetchAuthenticatedMetricsSnapshot, signal);
+	}
+
+	async getReportingStatus(signal?: AbortSignal) {
+		return this.diagnosticsSnapshot(fetchAuthenticatedReportingStatus, signal);
+	}
+
+	async createReportingGrant(idempotencyKey: string, manifest: unknown, signal?: AbortSignal) {
+		return this.diagnosticsSnapshot(
+			(credential, activeSignal) =>
+				createAuthenticatedReportingGrant(idempotencyKey, manifest, credential, activeSignal),
+			signal
+		);
+	}
+
+	async recordReportingAudit(payload: ReportingAuditPayload, signal?: AbortSignal): Promise<void> {
+		await recordAuthenticatedReportingAudit(payload, this.#accessKey, signal);
 	}
 
 	private async diagnosticsSnapshot<T>(
@@ -1022,7 +1151,9 @@ export class ControlClient {
 							origin === 'keeppeek' ? EventOrigin.KEEPPEEK : EventOrigin.CAMERA
 						),
 						zones: [...(options.zones ?? [])],
+						includeMissingZone: options.includeMissingZone ?? false,
 						minimumConfidence: options.minimumConfidence,
+						confidenceBands: (options.confidenceBands ?? []).map(protoConfidenceBand),
 						image,
 						text: options.text?.trim() || undefined,
 						includePreviewKeyframes: options.includePreviewKeyframes ?? false
@@ -1038,6 +1169,69 @@ export class ControlClient {
 				pageToken: options.pageToken ?? ''
 			})
 		);
+	}
+
+	async searchEventAdvanced(options: EventAdvancedSearchOptions): Promise<EventPreviewPage> {
+		if (options.workflow) await this.getServerCapabilities();
+		return this.runEventSearch(options.signal, (queryId) =>
+			create(QueryEventsSchema, {
+				queryId,
+				workflow: options.workflow ? this.#eventWorkflow.query(options.workflow) : undefined,
+				search: {
+					case: 'advanced',
+					value: buildAdvancedSearchProto(options)
+				},
+				sourceId: options.sourceId,
+				streamId: options.streamId,
+				startTime: timestampFromDate(new Date(options.startMs)),
+				endTime: timestampFromDate(new Date(options.endMs)),
+				previewBefore: durationFromMs(5_000),
+				previewAfter: durationFromMs(10_000),
+				pageSize: options.pageSize ?? 50,
+				channel: DataChannelKind.RELIABLE_DATA,
+				pageToken: options.pageToken ?? ''
+			})
+		);
+	}
+
+	async listSavedEventSearches(): Promise<{ ownerId: string; searches: SavedEventSearch[] }> {
+		await this.getServerCapabilities();
+		const workspaceId = this.savedSearchWorkspaceId();
+		const command = buildListSavedSearchesCommand(workspaceId);
+		const result = await this.request({ case: 'eventSearchCommand', value: command });
+		if (result.case !== 'savedEventSearchResult') {
+			throw new Error('Server returned an unexpected saved search list response.');
+		}
+		return {
+			ownerId: result.value.ownerId,
+			searches: result.value.searches.map(decodeSavedEventSearch)
+		};
+	}
+
+	async saveEventSearch(options: SaveEventSearchOptions): Promise<SavedEventSearch> {
+		await this.getServerCapabilities();
+		const workspaceId = this.savedSearchWorkspaceId();
+		const command = buildSaveEventSearchCommand(workspaceId, options);
+		const result = await this.request({ case: 'eventSearchCommand', value: command });
+		if (result.case !== 'savedEventSearchResult' || !result.value.search) {
+			throw new Error('Server returned an unexpected saved search response.');
+		}
+		return decodeSavedEventSearch(result.value.search);
+	}
+
+	async deleteSavedEventSearch(searchId: string, expectedRevision: number): Promise<void> {
+		await this.getServerCapabilities();
+		const workspaceId = this.savedSearchWorkspaceId();
+		const command = buildDeleteSavedSearchCommand(workspaceId, searchId, expectedRevision);
+		const result = await this.request({ case: 'eventSearchCommand', value: command });
+		if (result.case !== 'savedEventSearchResult') {
+			throw new Error('Server returned an unexpected saved search delete response.');
+		}
+	}
+
+	private savedSearchWorkspaceId(): string {
+		const identity = this.eventWorkflowIdentity();
+		return identity.localWorkspaceId ?? '';
 	}
 
 	private async admitEventSearch(
@@ -1112,6 +1306,148 @@ export class ControlClient {
 			this.#eventSearchPending.delete(queryId);
 			admission.abort();
 		}
+	}
+
+	async getActivityAnalyticsStatus(signal?: AbortSignal): Promise<ActivityAnalyticsStatusData> {
+		const command = create(ActivityAnalyticsCommandSchema, {
+			action: { case: 'getStatus', value: create(GetActivityAnalyticsStatusSchema, {}) }
+		});
+		const result = await this.request(
+			{ case: 'activityAnalyticsCommand', value: command },
+			controlTimeoutMs,
+			{ signal }
+		);
+		if (result.case !== 'activityAnalyticsResult' || result.value.result.case !== 'status') {
+			throw new Error('Server returned an unexpected activity analytics status response.');
+		}
+		return decodeAnalyticsStatus(result.value.result.value);
+	}
+
+	async rebuildActivityAnalytics(signal?: AbortSignal): Promise<ActivityAnalyticsStatusData> {
+		const command = create(ActivityAnalyticsCommandSchema, {
+			action: { case: 'rebuild', value: create(RebuildActivityAnalyticsSchema, {}) }
+		});
+		const result = await this.request(
+			{ case: 'activityAnalyticsCommand', value: command },
+			controlTimeoutMs,
+			{ signal }
+		);
+		if (result.case !== 'activityAnalyticsResult' || result.value.result.case !== 'status') {
+			throw new Error('Server returned an unexpected activity analytics rebuild response.');
+		}
+		return decodeAnalyticsStatus(result.value.result.value);
+	}
+
+	async cancelActivityAnalyticsQuery(queryId: string): Promise<void> {
+		const command = create(ActivityAnalyticsCommandSchema, {
+			action: {
+				case: 'cancelQuery',
+				value: create(CancelActivityAnalyticsQuerySchema, { queryId })
+			}
+		});
+		await this.request({ case: 'activityAnalyticsCommand', value: command });
+	}
+
+	async queryActivitySummary(options: ActivitySummaryQueryOptions): Promise<ActivitySummaryData> {
+		options.signal?.throwIfAborted();
+		const needsWorkflow =
+			(options.filter?.review && options.filter.review !== 'all') ||
+			(options.filter?.bookmarks && options.filter.bookmarks !== 'all') ||
+			options.groupBy?.includes('workflow');
+		if (needsWorkflow) await this.getServerCapabilities();
+		const workflowQuery = needsWorkflow
+			? this.#eventWorkflow.query({
+					review: options.filter?.review ?? 'all',
+					bookmarked:
+						options.filter?.bookmarks && options.filter.bookmarks !== 'all' ? true : undefined,
+					bookmarkedByMe: options.filter?.bookmarks === 'mine'
+				})
+			: undefined;
+		const queryId = `activity-analytics-${this.#nextStoredId++}`;
+		const admission = new AbortController();
+		let sent = false;
+		const completed = new Promise<ActivitySummaryData>((resolve, reject) => {
+			this.#analyticsPending.set(queryId, {
+				chunks: new Map(),
+				chunkCount: null,
+				totalBytes: 0,
+				resolve,
+				reject
+			});
+		});
+		const cancel = (reason: unknown) => {
+			if (admission.signal.aborted) return;
+			const pending = this.#analyticsPending.get(queryId);
+			this.#analyticsPending.delete(queryId);
+			admission.abort(reason);
+			pending?.reject(reason);
+			if (sent) void this.cancelActivityAnalyticsQuery(queryId).catch(() => undefined);
+		};
+		const abort = () => cancel(options.signal?.reason ?? timelineAbortError());
+		const deadline = setTimeout(
+			() => cancel(new Error('Activity analytics query timed out.')),
+			controlTimeoutMs
+		);
+		options.signal?.addEventListener('abort', abort, { once: true });
+		try {
+			const command = create(ActivityAnalyticsCommandSchema, {
+				action: {
+					case: 'query',
+					value: buildProtoActivityQuery(queryId, options, workflowQuery)
+				}
+			});
+			const admitted = this.request(
+				{ case: 'activityAnalyticsCommand', value: command },
+				controlTimeoutMs,
+				{
+					signal: admission.signal,
+					onSent: () => {
+						sent = true;
+					}
+				}
+			).then((result) => {
+				if (
+					result.case !== 'activityAnalyticsResult' ||
+					result.value.result.case !== 'delivery' ||
+					result.value.result.value.queryId !== queryId ||
+					result.value.result.value.channel !== DataChannelKind.RELIABLE_DATA
+				) {
+					throw new Error('Server returned an unexpected activity analytics delivery response.');
+				}
+			});
+			const [, data] = await Promise.all([admitted, completed]);
+			return data;
+		} catch (error) {
+			if (admission.signal.aborted) throw admission.signal.reason;
+			throw error;
+		} finally {
+			clearTimeout(deadline);
+			options.signal?.removeEventListener('abort', abort);
+			this.#analyticsPending.delete(queryId);
+			admission.abort();
+		}
+	}
+
+	private receiveAnalyticsChunk(chunk: ActivityAnalyticsChunk): void {
+		const pending = this.#analyticsPending.get(chunk.queryId);
+		if (!pending) return;
+		try {
+			const decoded = appendAnalyticsChunk(pending, chunk);
+			if (decoded) {
+				this.#analyticsPending.delete(chunk.queryId);
+				pending.resolve(decoded);
+			}
+		} catch (error) {
+			this.#analyticsPending.delete(chunk.queryId);
+			pending.reject(error instanceof Error ? error : new Error('Invalid analytics response.'));
+		}
+	}
+
+	private failAnalyticsQuery(error: ActivityAnalyticsError): void {
+		const pending = this.#analyticsPending.get(error.queryId);
+		if (!pending) return;
+		this.#analyticsPending.delete(error.queryId);
+		pending.reject(new Error(error.message || 'Activity analytics query failed.'));
 	}
 
 	async fetchEventPreviewKeyframe(
@@ -1382,6 +1718,30 @@ export class ControlClient {
 		return this.#notifications.listRules();
 	}
 
+	async getCloudNotificationSettings(): Promise<CloudNotificationSettings> {
+		return this.#cloudNotifications.getSettings();
+	}
+
+	async updateCloudNotificationSettings(
+		expectedRevision: bigint,
+		enabled: boolean,
+		imagePreviewsEnabled: boolean
+	): Promise<CloudNotificationSettings> {
+		return this.#cloudNotifications.updateSettings(expectedRevision, enabled, imagePreviewsEnabled);
+	}
+
+	async getCloudNotificationStatus(): Promise<CloudNotificationStatus> {
+		return this.#cloudNotifications.getStatus();
+	}
+
+	async testCloudNotification(): Promise<CloudNotificationTestResult> {
+		return this.#cloudNotifications.sendTest();
+	}
+
+	async resolveCloudNotification(cloudEventId: Uint8Array): Promise<CloudNotificationContext> {
+		return this.#cloudNotifications.resolve(cloudEventId);
+	}
+
 	async saveNotificationRuleDraft(
 		rule: NotificationRuleDefinition,
 		expectedDraftRevision: bigint
@@ -1466,6 +1826,7 @@ export class ControlClient {
 		allowPartial?: boolean;
 		burnInTimestamp?: boolean;
 		guestRangePreparation?: boolean;
+		timelapse?: TimelapseExportDraftOptions;
 		event?: Pick<
 			RecordingEvent,
 			| 'id'
@@ -1477,6 +1838,30 @@ export class ControlClient {
 		>;
 	}): Promise<MediaExportJob> {
 		const jobId = `export-${crypto.randomUUID()}`;
+		const timelapseOptions = options.timelapse
+			? create(TimelapseExportOptionsSchema, {
+					cadence:
+						options.timelapse.cadence.mode === 'interval'
+							? {
+									case: 'interval',
+									value: durationFromMs(options.timelapse.cadence.intervalMs)
+								}
+							: {
+									case: 'targetSampleCount',
+									value: options.timelapse.cadence.targetSampleCount
+								},
+					tolerance:
+						options.timelapse.toleranceMs !== undefined
+							? durationFromMs(options.timelapse.toleranceMs)
+							: undefined,
+					outputFps: options.timelapse.outputFps,
+					maxWidth: options.timelapse.maxWidth,
+					maxHeight: options.timelapse.maxHeight,
+					timestampOverlay: options.timelapse.timestampOverlay,
+					confirmedExpensive: options.timelapse.confirmedExpensive,
+					expectedSourceFingerprint: options.timelapse.expectedSourceFingerprint
+				})
+			: undefined;
 		const command = create(ExportCommandSchema, {
 			action: {
 				case: 'create',
@@ -1489,11 +1874,143 @@ export class ControlClient {
 					allowPartial: options.allowPartial ?? false,
 					burnInTimestamp: options.burnInTimestamp ?? false,
 					guestRangePreparation: options.guestRangePreparation,
+					timelapse: timelapseOptions,
 					eventSeed: options.event ? protoExportEventSeed(options.event) : undefined
 				})
 			}
 		});
 		return this.exportJobRequest(command);
+	}
+
+	async planTimelapse(options: {
+		sourceId: string;
+		streamId: 'main' | 'sub';
+		startMs: number;
+		endMs: number;
+		cadence:
+			{ mode: 'interval'; intervalMs: number } | { mode: 'count'; targetSampleCount: number };
+		toleranceMs?: number;
+		pageSize?: number;
+		pageToken?: string;
+		outputPreview?: {
+			outputFps: number;
+			maxWidth: number;
+			maxHeight: number;
+			timestampOverlay: boolean;
+		};
+	}): Promise<TimelapsePlanResponse> {
+		const command = create(StoredMediaCommandSchema, {
+			action: {
+				case: 'planTimelapse',
+				value: create(PlanTimelapseSchema, {
+					sourceId: options.sourceId,
+					streamId: options.streamId,
+					startTime: timestampFromDate(new Date(options.startMs)),
+					endTime: timestampFromDate(new Date(options.endMs)),
+					cadence:
+						options.cadence.mode === 'interval'
+							? { case: 'interval', value: durationFromMs(options.cadence.intervalMs) }
+							: { case: 'targetSampleCount', value: options.cadence.targetSampleCount },
+					tolerance:
+						options.toleranceMs !== undefined ? durationFromMs(options.toleranceMs) : undefined,
+					pageSize: options.pageSize ?? 32,
+					pageToken: options.pageToken ?? '',
+					outputPreview: options.outputPreview
+						? create(TimelapseOutputPreviewSchema, {
+								outputFps: options.outputPreview.outputFps,
+								maxWidth: options.outputPreview.maxWidth,
+								maxHeight: options.outputPreview.maxHeight,
+								timestampOverlay: options.outputPreview.timestampOverlay
+							})
+						: undefined
+				})
+			}
+		});
+		const result = await this.request({ case: 'storedMediaCommand', value: command });
+		if (result.case !== 'timelapsePlan') {
+			throw new Error('Server returned an unexpected timelapse plan response.');
+		}
+		return timelapsePlanFromProto(result.value);
+	}
+
+	async fetchTimelapseSampleWindow(options: {
+		sourceId: string;
+		streamId: 'main' | 'sub';
+		sampleToken: Uint8Array;
+		signal?: AbortSignal;
+	}): Promise<TimelapseDecodedWindow> {
+		options.signal?.throwIfAborted();
+		const transferId = `tl-${crypto.randomUUID()}`;
+		const key = tokenHexKey(options.sampleToken);
+		const completed = new Promise<Map<string, TimelapseDecodedWindow>>((resolve, reject) => {
+			const timeout = setTimeout(() => {
+				this.#timelapseTransfers.delete(transferId);
+				reject(new Error('Timelapse preview request timed out.'));
+			}, 20_000);
+			this.#timelapseTransfers.set(transferId, {
+				samples: new Map(),
+				resolve,
+				reject,
+				timeout
+			});
+		});
+		const onAbort = () => {
+			const pending = this.#timelapseTransfers.get(transferId);
+			if (pending) {
+				clearTimeout(pending.timeout);
+				this.#timelapseTransfers.delete(transferId);
+				pending.reject(new DOMException('Timelapse sample fetch cancelled.', 'AbortError'));
+			}
+			void this.cancelTimelapseSamples(transferId).catch(() => {});
+		};
+		options.signal?.addEventListener('abort', onAbort, { once: true });
+		try {
+			const command = create(StoredMediaCommandSchema, {
+				action: {
+					case: 'fetchTimelapseSamples',
+					value: create(FetchTimelapseSamplesSchema, {
+						transferId,
+						sourceId: options.sourceId,
+						streamId: options.streamId,
+						sampleTokens: [options.sampleToken],
+						channel: DataChannelKind.RELIABLE_DATA
+					})
+				}
+			});
+			const result = await this.request({ case: 'storedMediaCommand', value: command });
+			if (result.case !== 'timelapseSampleDelivery') {
+				throw new Error('Server returned an unexpected timelapse sample delivery response.');
+			}
+			if (result.value.acceptedCount === 0) {
+				const reason = result.value.rejected[0]?.message || 'Sample is no longer available.';
+				throw new Error(reason);
+			}
+			const windows = await completed;
+			const decoded = windows.get(key);
+			if (!decoded) {
+				throw new Error('Timelapse sample chunks were incomplete.');
+			}
+			return decoded;
+		} catch (error) {
+			const pending = this.#timelapseTransfers.get(transferId);
+			if (pending) {
+				clearTimeout(pending.timeout);
+				this.#timelapseTransfers.delete(transferId);
+			}
+			throw error;
+		} finally {
+			options.signal?.removeEventListener('abort', onAbort);
+		}
+	}
+
+	async cancelTimelapseSamples(transferId: string): Promise<void> {
+		const command = create(StoredMediaCommandSchema, {
+			action: {
+				case: 'cancelTimelapseSamples',
+				value: create(CancelTimelapseSamplesSchema, { transferId })
+			}
+		});
+		await this.request({ case: 'storedMediaCommand', value: command });
 	}
 
 	async listExports(): Promise<MediaExportJob[]> {
@@ -1528,7 +2045,10 @@ export class ControlClient {
 		return this.exportJobRequest(command);
 	}
 
-	async downloadExport(jobId: string): Promise<MediaExportDownload> {
+	async downloadExport(
+		jobId: string,
+		artifact: 'media' | 'manifest' = 'media'
+	): Promise<MediaExportDownload> {
 		if (this.#exportDownloads.has(jobId)) {
 			throw new Error('Export download is already in progress.');
 		}
@@ -1539,6 +2059,9 @@ export class ControlClient {
 			}, 120_000);
 			this.#exportDownloads.set(jobId, {
 				job: null,
+				artifact,
+				expectedSha256: null,
+				fileName: null,
 				expectedChunks: null,
 				chunks: [],
 				completing: false,
@@ -1553,7 +2076,9 @@ export class ControlClient {
 					case: 'download',
 					value: create(DownloadExportSchema, {
 						jobId,
-						channel: DataChannelKind.RELIABLE_DATA
+						channel: DataChannelKind.RELIABLE_DATA,
+						artifact:
+							artifact === 'manifest' ? ExportArtifactKind.MANIFEST : ExportArtifactKind.MEDIA
 					})
 				}
 			});
@@ -1569,6 +2094,16 @@ export class ControlClient {
 			const pending = this.#exportDownloads.get(jobId);
 			if (!pending) return await completed;
 			pending.job = mediaExportJob(result.value.job);
+			pending.expectedSha256 =
+				result.value.sha256 ??
+				(artifact === 'manifest'
+					? (pending.job.timelapse?.manifestSha256 ?? null)
+					: pending.job.sha256);
+			pending.fileName =
+				result.value.fileName ??
+				(artifact === 'manifest'
+					? (pending.job.timelapse?.manifestFileName ?? null)
+					: pending.job.fileName);
 			pending.expectedChunks = result.value.chunkCount;
 			if (pending.chunks.length > result.value.chunkCount) {
 				throw new Error('Export download chunk count was inconsistent.');
@@ -2762,6 +3297,12 @@ export class ControlClient {
 			this.failData('WebRTC data message was invalid.');
 			return;
 		}
+		if (message.message.case === 'activityAnalytics') {
+			const analytics = message.message.value.message;
+			if (analytics.case === 'chunk') this.receiveAnalyticsChunk(analytics.value);
+			if (analytics.case === 'error') this.failAnalyticsQuery(analytics.value);
+			return;
+		}
 		if (message.message.case === 'eventSearch') {
 			const search = message.message.value.message;
 			if (search.case === 'result') this.receiveEventSearchResult(search.value);
@@ -2801,6 +3342,103 @@ export class ControlClient {
 		if (stored.case === 'keyFrame') {
 			this.#playbacks.get(stored.value.storedMediaId)?.receiveKeyFrame(stored.value);
 		}
+		if (stored.case === 'timelapseSampleChunk') {
+			this.receiveTimelapseSampleChunk(stored.value);
+		}
+		if (stored.case === 'timelapseSampleEnd') {
+			this.finishTimelapseSampleTransfer(stored.value);
+		}
+	}
+
+	private receiveTimelapseSampleChunk(chunk: TimelapseSampleChunk): void {
+		const pending = this.#timelapseTransfers.get(chunk.transferId);
+		if (!pending || chunk.chunkCount === 0 || chunk.chunkIndex >= chunk.chunkCount) return;
+		const key = tokenHexKey(chunk.sampleToken);
+		let sample = pending.samples.get(key);
+		if (!sample) {
+			const video =
+				chunk.configuration?.format?.format.case === 'video'
+					? chunk.configuration.format.format.value
+					: undefined;
+			sample = {
+				tokenKey: key,
+				actualTimeMs: chunk.actualTime ? timestampDate(chunk.actualTime).getTime() : 0,
+				targetPresentationRank: chunk.targetPresentationRank,
+				sampleCount: chunk.sampleCount,
+				codec: chunk.configuration?.codec?.name ?? '',
+				width: video?.width ?? 0,
+				height: video?.height ?? 0,
+				decoderConfig: video?.decoderConfig ?? new Uint8Array(),
+				units: new Map()
+			};
+			pending.samples.set(key, sample);
+		} else if (!sample.codec && chunk.configuration) {
+			const video =
+				chunk.configuration.format?.format.case === 'video'
+					? chunk.configuration.format.format.value
+					: undefined;
+			sample.codec = chunk.configuration.codec?.name ?? sample.codec;
+			sample.width = video?.width ?? sample.width;
+			sample.height = video?.height ?? sample.height;
+			sample.decoderConfig = video?.decoderConfig ?? sample.decoderConfig;
+		}
+		let unit = sample.units.get(chunk.decodeIndex);
+		if (!unit) {
+			unit = {
+				presentationRank: chunk.presentationRank,
+				randomAccess: chunk.randomAccess,
+				chunkCount: chunk.chunkCount,
+				chunks: Array.from<Uint8Array | undefined>({ length: chunk.chunkCount })
+			};
+			sample.units.set(chunk.decodeIndex, unit);
+		}
+		unit.chunks[chunk.chunkIndex] = chunk.payload;
+	}
+
+	private finishTimelapseSampleTransfer(end: TimelapseSampleEnd): void {
+		const pending = this.#timelapseTransfers.get(end.transferId);
+		if (!pending) return;
+		this.#timelapseTransfers.delete(end.transferId);
+		clearTimeout(pending.timeout);
+		if (end.cancelled) {
+			pending.reject(new DOMException('Timelapse sample fetch cancelled.', 'AbortError'));
+			return;
+		}
+		if (end.error) {
+			pending.reject(new Error(end.error));
+			return;
+		}
+		const windows = new Map<string, TimelapseDecodedWindow>();
+		for (const [key, acc] of pending.samples) {
+			const units: TimelapseDecodedWindow['samples'] = [];
+			let complete = acc.units.size === acc.sampleCount && acc.sampleCount > 0;
+			for (let decodeIndex = 0; decodeIndex < acc.sampleCount; decodeIndex += 1) {
+				const unit = acc.units.get(decodeIndex);
+				if (!unit || !unit.chunks.every((slice): slice is Uint8Array => slice !== undefined)) {
+					complete = false;
+					break;
+				}
+				units.push({
+					decodeIndex,
+					presentationRank: unit.presentationRank,
+					randomAccess: unit.randomAccess,
+					payload: concatenateChunks(unit.chunks)
+				});
+			}
+			if (complete) {
+				windows.set(key, {
+					tokenKey: key,
+					actualTimeMs: acc.actualTimeMs,
+					targetPresentationRank: acc.targetPresentationRank,
+					codec: acc.codec,
+					width: acc.width,
+					height: acc.height,
+					decoderConfig: acc.decoderConfig,
+					samples: units
+				});
+			}
+		}
+		pending.resolve(windows);
 	}
 
 	private receiveExportChunk(chunk: import('./proto/webrtc_pb').ExportFileChunk): void {
@@ -2842,9 +3480,10 @@ export class ControlClient {
 		pending.completing = true;
 		const payload = concatenateChunks(pending.chunks);
 		try {
-			if (!pending.job.sha256) throw new Error('Export download did not include a checksum.');
+			const expectedSha = pending.expectedSha256 ?? pending.job.sha256;
+			if (!expectedSha) throw new Error('Export download did not include a checksum.');
 			const digest = await crypto.subtle.digest('SHA-256', ownedArrayBuffer(payload));
-			if (hexDigest(digest) !== pending.job.sha256.toLowerCase()) {
+			if (hexDigest(digest) !== expectedSha.toLowerCase()) {
 				throw new Error('Export download checksum did not match the server.');
 			}
 			if (this.#exportDownloads.get(jobId) !== pending) return;
@@ -2852,7 +3491,10 @@ export class ControlClient {
 			clearTimeout(pending.timeout);
 			pending.resolve({
 				job: pending.job,
-				blob: new Blob([ownedArrayBuffer(payload)], { type: 'video/mp4' })
+				fileName: pending.fileName,
+				blob: new Blob([ownedArrayBuffer(payload)], {
+					type: pending.artifact === 'manifest' ? 'application/json' : 'video/mp4'
+				})
 			});
 		} catch (error) {
 			this.failExportDownload(
@@ -2891,11 +3533,16 @@ export class ControlClient {
 			return;
 		}
 		try {
+			const semanticSummary = decodeSemanticSummary(end.semantic);
+			const diagnostics = decodePlannerDiagnostics(end.diagnostics);
 			pending.resolve({
 				hits: pending.hits.map(eventPreviewHit),
 				nextPageToken: end.nextPageToken,
 				candidatesTruncated: end.candidatesTruncated,
-				...(end.workflowCounts ? { workflowCounts: eventWorkflowCounts(end.workflowCounts) } : {})
+				...(end.workflowCounts ? { workflowCounts: eventWorkflowCounts(end.workflowCounts) } : {}),
+				...(end.normalizedSummary ? { normalizedSummary: end.normalizedSummary } : {}),
+				...(semanticSummary ? { semanticSummary } : {}),
+				...(diagnostics ? { diagnostics } : {})
 			});
 		} catch (cause) {
 			pending.reject(
@@ -3131,6 +3778,10 @@ export class ControlClient {
 	}
 
 	private failData(message: string): void {
+		for (const [queryId, pending] of this.#analyticsPending) {
+			this.#analyticsPending.delete(queryId);
+			pending.reject(new Error(message));
+		}
 		for (const queryId of this.#eventSearchPending.keys()) {
 			this.failEventSearchPending(queryId, message);
 		}
@@ -3142,6 +3793,11 @@ export class ControlClient {
 			pending.reject(new Error(message));
 		}
 		this.#timelinePending.clear();
+		for (const pending of this.#timelapseTransfers.values()) {
+			clearTimeout(pending.timeout);
+			pending.reject(new Error(message));
+		}
+		this.#timelapseTransfers.clear();
 		for (const [jobId] of this.#exportDownloads) this.failExportDownload(jobId, message);
 		for (const playback of this.#playbacks.values()) playback.fail(message);
 	}
@@ -4733,6 +5389,27 @@ function mediaExportJob(job: ProtoExportJob): MediaExportJob {
 		retryable: job.retryable,
 		burnInTimestamp: job.burnInTimestamp,
 		recordedAudio: job.recordedAudio,
+		...(job.timelapse
+			? {
+					timelapse: {
+						sampleCount: job.timelapse.sampleCount,
+						gapCount: job.timelapse.gapCount,
+						outputDurationMs: numeric(job.timelapse.outputDurationMs),
+						outputWidth: job.timelapse.outputWidth,
+						outputHeight: job.timelapse.outputHeight,
+						silent: job.timelapse.silent,
+						sourceFingerprint: job.timelapse.sourceFingerprint,
+						siteTimezone: job.timelapse.siteTimezone,
+						manifestSchemaVersion: job.timelapse.manifestSchemaVersion,
+						manifestFileName: job.timelapse.manifestFileName ?? null,
+						manifestSha256: job.timelapse.manifestSha256 ?? null,
+						manifestBytes:
+							job.timelapse.manifestBytes === undefined
+								? null
+								: numeric(job.timelapse.manifestBytes)
+					}
+				}
+			: {}),
 		eventSeed: job.eventSeed
 			? {
 					eventId: job.eventSeed.eventId,
@@ -5037,7 +5714,89 @@ function camerasFromCapabilities(capabilities: ServerCapabilities): CameraListIt
 				imaging: camera.deviceCapabilities?.imaging ?? false,
 				two_way_audio: camera.deviceCapabilities?.twoWayAudio ?? false
 			},
+			...(camera.groupIds.length > 0 ? { group_ids: [...camera.groupIds] } : {}),
 			profiles
 		};
 	});
+}
+
+function timelapseGapReasonFromProto(reason: ProtoTimelapseGapReason): TimelapseGapReason {
+	switch (reason) {
+		case ProtoTimelapseGapReason.RETAINED:
+			return 'retained';
+		case ProtoTimelapseGapReason.PRIVACY:
+			return 'privacy';
+		case ProtoTimelapseGapReason.UNSUPPORTED_CODEC:
+			return 'unsupported_codec';
+		case ProtoTimelapseGapReason.CORRUPT:
+			return 'corrupt';
+		case ProtoTimelapseGapReason.OPEN_RECORDING:
+			return 'open_recording';
+		default:
+			return 'missing';
+	}
+}
+
+function timelapsePlanFromProto(plan: ProtoTimelapsePlanResult): TimelapsePlanResponse {
+	if (!plan.requestedStartTime || !plan.requestedEndTime || !plan.estimate) {
+		throw new Error('Server returned an incomplete timelapse plan.');
+	}
+	if (plan.streamId !== 'main' && plan.streamId !== 'sub') {
+		throw new Error(`Server returned unexpected timelapse stream '${plan.streamId}'.`);
+	}
+	const items: TimelapsePlanEntry[] = [];
+	for (const entry of plan.items) {
+		if (entry.entry.case === 'sample') {
+			const s = entry.entry.value;
+			if (!s.requestedTime || !s.actualTime) continue;
+			items.push({
+				kind: 'sample',
+				index: s.index,
+				requestedTimeMs: timestampDate(s.requestedTime).getTime(),
+				actualTimeMs: timestampDate(s.actualTime).getTime(),
+				sourceTicks: s.sourceTicks,
+				sourceTimescale: s.sourceTimescale,
+				recordingId: s.recordingId,
+				fragmentSequence: s.fragmentSequence,
+				sampleOrdinal: s.sampleOrdinal,
+				codec: s.codec,
+				width: s.width,
+				height: s.height,
+				encodedBytes: s.encodedBytes,
+				sampleToken: s.sampleToken,
+				tokenKey: tokenHexKey(s.sampleToken)
+			});
+		} else if (entry.entry.case === 'gap') {
+			const g = entry.entry.value;
+			if (!g.startTime || !g.endTime) continue;
+			items.push({
+				kind: 'gap',
+				startMs: timestampDate(g.startTime).getTime(),
+				endMs: timestampDate(g.endTime).getTime(),
+				reason: timelapseGapReasonFromProto(g.reason)
+			});
+		}
+	}
+	return {
+		sourceId: plan.sourceId,
+		streamId: plan.streamId,
+		requestedStartMs: timestampDate(plan.requestedStartTime).getTime(),
+		requestedEndMs: timestampDate(plan.requestedEndTime).getTime(),
+		sourceFingerprint: plan.sourceFingerprint,
+		catalogRevision: plan.catalogRevision,
+		estimate: {
+			sampleCount: plan.estimate.sampleCount,
+			gapCount: plan.estimate.gapCount,
+			gapDurationMs: numeric(plan.estimate.gapDurationMs),
+			outputDurationMs: numeric(plan.estimate.outputDurationMs),
+			estimatedSourceBytes: numeric(plan.estimate.estimatedSourceBytes),
+			estimatedOutputBytes: numeric(plan.estimate.estimatedOutputBytes),
+			requiresConfirmation: plan.estimate.requiresConfirmation,
+			encoderAvailable: plan.estimate.encoderAvailable,
+			siteTimezone: plan.estimate.siteTimezone || 'UTC'
+		},
+		items,
+		totalSamples: plan.totalSamples,
+		nextPageToken: plan.nextPageToken
+	};
 }

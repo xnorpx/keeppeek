@@ -286,6 +286,10 @@ impl LoggingService {
         self.hub.clone()
     }
 
+    pub(crate) fn redact_secret(&self, value: &str) {
+        self.hub.add_sensitive_value(value.to_owned());
+    }
+
     pub fn settings(&self) -> LoggingSettings {
         LoggingSettings {
             active_filter: self.active_filter(),
@@ -725,6 +729,39 @@ mod tests {
         assert!(!output.contains("192.168.2.44"));
         assert!(!output.contains("camera-secret"));
         assert!(!output.contains("rtsp://"));
+        let _ = fs::remove_dir_all(file.path().parent().unwrap());
+    }
+
+    #[test]
+    fn console_pause_preserves_file_sink_and_log_hub_redaction() {
+        let file = temporary_filter_file();
+        let output_path = file.path().with_file_name("paused-service.log");
+        let hub = LogHub::default();
+        hub.set_sensitive_values(["secret-camera-token".to_owned()]);
+        let pause = ConsolePause::acquire().unwrap();
+        let writer = RedactingMakeWriter::file(hub.clone(), File::create(&output_path).unwrap());
+        let subscriber = Registry::default()
+            .with(tracing_subscriber::fmt::layer().with_writer(writer))
+            .with(LogCaptureLayer::new(hub.clone()));
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!("camera credential secret-camera-token remained active");
+        });
+        drop(pause);
+
+        let file_output = fs::read_to_string(&output_path).unwrap();
+        assert!(file_output.contains("[REDACTED]"));
+        assert!(!file_output.contains("secret-camera-token"));
+        let entries = hub.snapshot(None, 10).entries;
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.message.contains("[REDACTED]"))
+        );
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| entry.message.contains("secret-camera-token"))
+        );
         let _ = fs::remove_dir_all(file.path().parent().unwrap());
     }
 }

@@ -5,7 +5,11 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, RwLock, atomic::Ordering},
 };
 
-use super::{NotificationMetrics, decrement_counter, model::Rule, state::RuntimeState};
+use super::{
+    NotificationMetrics, decrement_counter,
+    model::{Channel, Rule},
+    state::RuntimeState,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -84,6 +88,7 @@ pub(super) struct Store {
     config_update: Arc<Mutex<()>>,
     state: Arc<Mutex<RuntimeState>>,
     pub(super) profile_suppressed_sources: Arc<RwLock<BTreeSet<String>>>,
+    pub(super) cloud: Option<super::cloud::CloudSignalRuntime>,
 }
 
 impl Store {
@@ -115,6 +120,7 @@ impl Store {
             config_update,
             state: Arc::new(Mutex::new(RuntimeState::new(rules))),
             profile_suppressed_sources: Arc::new(RwLock::new(BTreeSet::new())),
+            cloud: None,
         };
         if migrate_legacy {
             let mut state = store.lock_state();
@@ -348,6 +354,30 @@ impl Store {
             .collect()
     }
 
+    pub(super) fn configured_channel_flags(&self) -> (bool, bool) {
+        let mut has_pushover = false;
+        let mut has_webhook = false;
+        for record in self.lock_state().rules.values() {
+            let Some(active) = &record.active else {
+                continue;
+            };
+            if !active.enabled {
+                continue;
+            }
+            for action in &active.actions {
+                if !action.enabled {
+                    continue;
+                }
+                match action.channel {
+                    Channel::Push => has_pushover = true,
+                    Channel::Webhook => has_webhook = true,
+                    Channel::Browser | Channel::Forwarder | Channel::KeeppeekService => {}
+                }
+            }
+        }
+        (has_pushover, has_webhook)
+    }
+
     fn persist_configured_rules(
         &self,
         rules: &mut BTreeMap<String, RuleRecord>,
@@ -404,6 +434,10 @@ impl Store {
         )?;
         *rules = canonical_rules;
         Ok(())
+    }
+
+    pub(super) fn attach_cloud(&mut self, cloud: super::cloud::CloudSignalRuntime) {
+        self.cloud = Some(cloud);
     }
 
     pub(super) fn lock_state(&self) -> MutexGuard<'_, RuntimeState> {
@@ -561,7 +595,10 @@ fn remove_file_if_exists(path: &Path) -> std::io::Result<()> {
 fn resolve_rule_destinations(path: &Path, rule: &Rule) -> anyhow::Result<Rule> {
     let mut resolved = rule.clone();
     for action in &mut resolved.actions {
-        action.destination = crate::config::resolve_secret_references(path, &action.destination)?;
+        if action.destination.contains("{secret:") {
+            action.destination =
+                crate::config::resolve_secret_references(path, &action.destination)?;
+        }
     }
     Ok(resolved)
 }
@@ -685,8 +722,8 @@ mod tests {
     use crate::notifications::{
         Cooldown, CooldownScope, Stage,
         model::{
-            Action, AttachmentPolicy, Channel, EnrichmentPolicy, FailurePolicy, Filter, Schedule,
-            Template, Trigger,
+            Action, AttachmentPolicy, EnrichmentPolicy, FailurePolicy, Filter, Schedule, Template,
+            Trigger,
         },
         state::{MAX_HISTORY_EVENTS, PendingHistoryEntry},
     };

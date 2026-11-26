@@ -27,6 +27,11 @@ Recorded players negotiate exact paused-picture navigation with
 `keeppeek.stored-frame-step.v1`. The recorder returns a bounded decode window and a precise
 sample identity for qualified media. See [recorded frame stepping](webrtc.md#recorded-frame-stepping).
 
+Bounded sparse timelapse review negotiates `keeppeek.timelapse.v1` for metadata-first planning and
+lazy sample delivery over `reliable-data`. Silent timelapse MP4 generation additionally requires
+`keeppeek.timelapse-export.v1` and pairs each output with a SHA-256-verified provenance manifest.
+See [bounded timelapse review and export](webrtc.md#bounded-timelapse-review-and-export).
+
 ## Privacy-retired viewer sessions
 
 A viewer may send the decimal ID of its retired session in the

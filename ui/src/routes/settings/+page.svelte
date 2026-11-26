@@ -15,6 +15,8 @@
 	import * as Card from '$lib/components/ui/card/index.js';
 	import AccessSection from '$lib/components/AccessSection.svelte';
 	import GuestSharingSection from '$lib/components/GuestSharingSection.svelte';
+	import UsageReportingSettings from '$lib/components/UsageReportingSettings.svelte';
+	import { usageReportingCapability } from '$lib/control-client-usage-reporting';
 	import { capabilityActions } from '$lib/capability-actions';
 	import BackupRestoreSection from '$lib/components/BackupRestoreSection.svelte';
 	import MobileSettingsActionBar from '$lib/components/MobileSettingsActionBar.svelte';
@@ -188,7 +190,8 @@
 				'access',
 				'integrations',
 				'notifications',
-				'appearance'
+				'appearance',
+				'usage-reporting'
 			].includes(targetId)
 		)
 			return;
@@ -591,6 +594,11 @@
 					onrestart={() => void restartRecorder()}
 					ondownloaddiagnostics={exportDiagnostics}
 				/>
+				{#if administrator && capabilities.supports(usageReportingCapability)}
+					<div class="mt-6">
+						<UsageReportingSettings controller={controlClient.usageReporting} />
+					</div>
+				{/if}
 			</div>
 
 			<form

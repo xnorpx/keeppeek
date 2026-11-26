@@ -91,6 +91,11 @@ struct QuantileLabels {
     quantile: String,
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct CloudNotificationStateLabels {
+    state: String,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AccessMetricsSnapshot {
     pub(crate) authentication_successes: u64,
@@ -127,6 +132,17 @@ pub struct ExternalAnalysisMetricsSnapshot {
     pub(crate) event_publication_storage_failures: u64,
     pub(crate) event_publication_commit_latency_ms_p50: u64,
     pub(crate) event_publication_commit_latency_ms_p95: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AnalyticsMetricsSnapshot {
+    pub(crate) rollup_state: u64,
+    pub(crate) rollup_rows: u64,
+    pub(crate) active_queries: u64,
+    pub(crate) queries_total: u64,
+    pub(crate) query_errors_total: u64,
+    pub(crate) rebuild_runs_total: u64,
+    pub(crate) last_query_duration_ms: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -183,8 +199,10 @@ pub struct HealthMetricSnapshots<'a> {
     pub recording: Option<&'a RecordingCoverageMetricSnapshot>,
     pub backup: Option<BackupMetricsSnapshot>,
     pub notifications: Option<NotificationMetricsSnapshot>,
+    pub cloud_notifications: Option<crate::notifications::cloud::CloudMetricsSnapshot>,
     pub mqtt: Option<&'a MqttStatus>,
     pub external_analysis: Option<ExternalAnalysisMetricsSnapshot>,
+    pub analytics: Option<AnalyticsMetricsSnapshot>,
 }
 
 /// Encodes health and event evidence using configured camera identities.
@@ -200,10 +218,12 @@ pub fn encode_health_with_events(
         recording,
         backup,
         notifications,
+        cloud_notifications,
         mqtt,
         external_analysis,
+        analytics,
     } = snapshots;
-    if event_reports.is_empty() {
+    if event_reports.is_empty() && analytics.is_none() && cloud_notifications.is_none() {
         return encode_health_metrics(
             health,
             access,
@@ -223,7 +243,15 @@ pub fn encode_health_with_events(
         mqtt,
         external_analysis,
     );
-    events::register(&mut registry, health, event_reports);
+    if let Some(analytics) = analytics {
+        register_analytics_metrics(&mut registry, analytics);
+    }
+    if let Some(cloud) = cloud_notifications {
+        register_cloud_notification_metrics(&mut registry, cloud);
+    }
+    if !event_reports.is_empty() {
+        events::register(&mut registry, health, event_reports);
+    }
     let mut output = String::new();
     encode_registry(&mut output, &registry)?;
     Ok(output)
@@ -881,6 +909,51 @@ fn health_registry(
     registry
 }
 
+fn register_analytics_metrics(registry: &mut Registry, snapshot: AnalyticsMetricsSnapshot) {
+    register_gauge(
+        registry,
+        "analytics_rollup_state",
+        "Activity analytics rollup state (0=ready, 1=rebuilding, 2=degraded, 3=unavailable)",
+        snapshot.rollup_state,
+    );
+    register_gauge(
+        registry,
+        "analytics_rollup_rows",
+        "Current row count stored across active derived analytics rollup tables",
+        snapshot.rollup_rows,
+    );
+    register_gauge(
+        registry,
+        "analytics_active_queries",
+        "Currently executing bounded activity analytics summary queries",
+        snapshot.active_queries,
+    );
+    register_counter(
+        registry,
+        "analytics_queries",
+        "Total bounded activity analytics summary queries executed",
+        snapshot.queries_total,
+    );
+    register_counter(
+        registry,
+        "analytics_query_errors",
+        "Total failed or rejected activity analytics summary queries",
+        snapshot.query_errors_total,
+    );
+    register_counter(
+        registry,
+        "analytics_rebuild_runs",
+        "Total bounded shadow-table analytics rebuilds triggered",
+        snapshot.rebuild_runs_total,
+    );
+    register_gauge(
+        registry,
+        "analytics_last_query_duration_ms",
+        "Duration of the most recent activity analytics query in milliseconds",
+        snapshot.last_query_duration_ms,
+    );
+}
+
 fn register_external_analysis_metrics(
     registry: &mut Registry,
     snapshot: ExternalAnalysisMetricsSnapshot,
@@ -943,6 +1016,59 @@ fn register_external_analysis_gauges(
         ),
     ] {
         register_gauge(registry, name, help, value);
+    }
+}
+
+fn register_cloud_notification_metrics(
+    registry: &mut Registry,
+    snapshot: crate::notifications::cloud::CloudMetricsSnapshot,
+) {
+    if let Some(state) = snapshot.state {
+        let state_gauge = Family::<CloudNotificationStateLabels, Gauge>::default();
+        state_gauge
+            .get_or_create(&CloudNotificationStateLabels {
+                state: state.as_str().to_owned(),
+            })
+            .set(1);
+        registry.register(
+            "cloud_notification_state",
+            "Current bounded Keeppeek Service cloud notification state",
+            state_gauge,
+        );
+    }
+    for (name, help, value) in [
+        (
+            "cloud_notification_signals_enqueued",
+            "Cloud notification signals staged by the notification runtime",
+            snapshot.signals_enqueued,
+        ),
+        (
+            "cloud_notification_signals_replaced",
+            "Pending cloud notification signals replaced by a newer logical event",
+            snapshot.signals_replaced,
+        ),
+        (
+            "cloud_notification_signals_attempted",
+            "Outbound Keeppeek Service signal HTTP attempts",
+            snapshot.signals_attempted,
+        ),
+        (
+            "cloud_notification_signals_accepted",
+            "Keeppeek Service signal requests accepted with HTTP 202",
+            snapshot.signals_accepted,
+        ),
+        (
+            "cloud_notification_signals_failed",
+            "Keeppeek Service signal requests ending in failure",
+            snapshot.signals_failed,
+        ),
+        (
+            "cloud_notification_signals_suppressed",
+            "Cloud notification signals suppressed, expired, or replaced",
+            snapshot.signals_suppressed,
+        ),
+    ] {
+        register_counter(registry, name, help, value);
     }
 }
 

@@ -17,21 +17,28 @@ describe('server capability contract', () => {
 			'keeppeek.recording.pre-roll.v1',
 			'keeppeek.recording-maintenance.v1',
 			'keeppeek.event-workflow.v1',
+			'keeppeek.event-search.advanced.v1',
+			'keeppeek.event-search.semantic.v1',
+			'keeppeek.activity-analytics.v1',
 			'keeppeek.backup.v1',
 			'keeppeek.configuration.v1',
 			'keeppeek.runtime-config.v1',
 			'keeppeek.media-export.v1',
 			'keeppeek.guest-review.v1',
 			'keeppeek.guest-range.v1',
+			'keeppeek.usage-reporting.v1',
 			'stored-media-keyframe-preview.v1',
 			'keeppeek.identity.v1',
 			'keeppeek.camera-access.v1',
 			'keeppeek.rules.v1',
+			'keeppeek.cloud-notifications.v1',
 			'keeppeek.mqtt-forwarder.v1',
 			'keeppeek.peek-layouts.v1',
 			'keeppeek.group-admin.v1',
 			'keeppeek.offsite-archive.v1',
-			'keeppeek.bookmarks.v1'
+			'keeppeek.bookmarks.v1',
+			'keeppeek.timelapse.v1',
+			'keeppeek.timelapse-export.v1'
 		]);
 		expect(new Set(serverCapabilityIds).size).toBe(serverCapabilityIds.length);
 	});
