@@ -8,8 +8,9 @@ use crate::{
             EventAttachment, EventSource, TimelineEvent, canonical_event_attachment, event_icon,
         },
         search::{
-            EventEmbedding, EventImageFilter, EventMetadataQuery, EventSearchHit, EventSearchPage,
-            EventSearchTerm, EventSemanticSearchQuery, EventTextSearchQuery, normalize_search_text,
+            EventAdvancedSearchQuery, EventEmbeddingInput, EventImageFilter, EventMetadataQuery,
+            EventSearchHit, EventSearchPage, EventSearchSemanticSummary, EventSearchTerm,
+            EventSemanticSearchQuery, EventTextSearchQuery, normalize_search_text,
         },
     },
 };
@@ -29,6 +30,7 @@ use std::{
     time::Duration,
 };
 
+mod advanced_search;
 pub(crate) mod archive;
 pub mod archive_playback;
 pub(crate) mod authority;
@@ -360,6 +362,7 @@ pub struct RecordingCatalogHandle {
     search_tx: SyncSender<SearchCommand>,
     retention: std::sync::Weak<retention::Connection>,
     retention_shutdown: Arc<AtomicBool>,
+    semantic_available: Arc<AtomicBool>,
 }
 
 pub struct RecordingCatalog {
@@ -593,8 +596,14 @@ enum Command {
     },
     SetEventEmbedding {
         event_id: String,
-        embedding: EventEmbedding,
+        input: EventEmbeddingInput,
         reply: SyncSender<anyhow::Result<()>>,
+    },
+    DeleteEventEmbedding {
+        event_id: String,
+        model_id: String,
+        model_version: Option<String>,
+        reply: SyncSender<anyhow::Result<u64>>,
     },
     Stats {
         reply: SyncSender<anyhow::Result<CatalogStats>>,
@@ -624,6 +633,10 @@ enum SearchCommand {
     },
     Semantic {
         query: EventSemanticSearchQuery,
+        reply: SyncSender<anyhow::Result<EventSearchPage>>,
+    },
+    Advanced {
+        query: Box<EventAdvancedSearchQuery>,
         reply: SyncSender<anyhow::Result<EventSearchPage>>,
     },
     Availability {
@@ -668,12 +681,13 @@ impl RecordingCatalog {
         let search_connection = database.connect()?;
         connection.busy_timeout(BUSY_TIMEOUT)?;
         search_connection.busy_timeout(BUSY_TIMEOUT)?;
-        let legacy_recordings = pollster::block_on(prepare_catalog(&connection))?;
+        let (legacy_recordings, semantic_ok) = pollster::block_on(prepare_catalog(&connection))?;
 
         let (tx, rx) = mpsc::sync_channel(COMMAND_CAPACITY);
         let (search_tx, search_rx) = mpsc::sync_channel(COMMAND_CAPACITY);
         let readers = Arc::new(readers::Registry::new(&lease));
         let maintenance_shutdown = Arc::new(AtomicBool::new(false));
+        let semantic_available = Arc::new(AtomicBool::new(semantic_ok));
         let retention_connection = retention::connect(&database, Arc::clone(&lease))?;
         let handle = RecordingCatalogHandle {
             legacy_cleanup: Arc::default(),
@@ -682,18 +696,21 @@ impl RecordingCatalog {
             readers: Arc::clone(&readers),
             retention: Arc::downgrade(&retention_connection),
             retention_shutdown: maintenance_shutdown.clone(),
+            semantic_available: Arc::clone(&semantic_available),
         };
         let writer_lease = lease.clone();
+        let writer_semantic = Arc::clone(&semantic_available);
         let thread = std::thread::Builder::new()
             .name("recording-catalog".to_owned())
             .spawn(move || {
-                run_catalog(connection, rx, readers, &writer_lease);
+                run_catalog(connection, rx, readers, &writer_lease, &writer_semantic);
             })?;
+        let search_semantic = Arc::clone(&semantic_available);
         let search_thread = std::thread::Builder::new()
             .name("recording-catalog-search".to_owned())
             .spawn(move || {
                 let _lease = lease;
-                run_search_catalog(search_connection, search_rx);
+                run_search_catalog(search_connection, search_rx, &search_semantic);
             })?;
         let maintenance = (!legacy_recordings.is_empty())
             .then(|| {
@@ -895,7 +912,18 @@ impl RecordingCatalogHandle {
             search_tx,
             retention: std::sync::Weak::new(),
             retention_shutdown: Arc::new(AtomicBool::new(false)),
+            semantic_available: Arc::new(AtomicBool::new(true)),
         }
+    }
+
+    /// Returns whether semantic embedding storage and ranking are available.
+    pub fn semantic_search_available(&self) -> bool {
+        self.semantic_available.load(Ordering::Acquire)
+    }
+
+    /// Controls semantic availability so external outages isolate semantic queries from ordinary search.
+    pub fn set_semantic_search_available(&self, available: bool) {
+        self.semantic_available.store(available, Ordering::Release);
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
@@ -1532,13 +1560,33 @@ impl RecordingCatalogHandle {
     pub(crate) fn set_event_embedding(
         &self,
         event_id: &str,
-        embedding: EventEmbedding,
+        input: EventEmbeddingInput,
     ) -> anyhow::Result<()> {
         let (reply, response) = mpsc::sync_channel(1);
         self.tx
             .send(Command::SetEventEmbedding {
                 event_id: event_id.to_owned(),
-                embedding,
+                input,
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
+    pub(crate) fn delete_event_embedding(
+        &self,
+        event_id: &str,
+        model_id: &str,
+        model_version: Option<&str>,
+    ) -> anyhow::Result<u64> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.tx
+            .send(Command::DeleteEventEmbedding {
+                event_id: event_id.to_owned(),
+                model_id: model_id.to_owned(),
+                model_version: model_version.map(ToOwned::to_owned),
                 reply,
             })
             .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
@@ -1580,6 +1628,22 @@ impl RecordingCatalogHandle {
         let (reply, response) = mpsc::sync_channel(1);
         self.search_tx
             .send(SearchCommand::Semantic { query, reply })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
+    pub(crate) fn search_event_advanced(
+        &self,
+        query: EventAdvancedSearchQuery,
+    ) -> anyhow::Result<EventSearchPage> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.search_tx
+            .send(SearchCommand::Advanced {
+                query: Box::new(query),
+                reply,
+            })
             .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
         response
             .recv()
@@ -1631,6 +1695,7 @@ fn run_catalog(
     rx: Receiver<Command>,
     readers: Arc<readers::Registry>,
     lease: &authority::Lease,
+    semantic_available: &AtomicBool,
 ) {
     let intent_epoch = maintenance::jobs::Epoch::new();
     while let Ok(command) = rx.recv() {
@@ -2085,14 +2150,37 @@ fn run_catalog(
             }
             Command::SetEventEmbedding {
                 event_id,
-                embedding,
+                input,
                 reply,
             } => {
-                let _ = reply.send(pollster::block_on(set_event_embedding(
-                    &connection,
-                    &event_id,
-                    embedding,
-                )));
+                let outcome = if semantic_available.load(Ordering::Acquire) {
+                    pollster::block_on(set_event_embedding_record(&connection, &event_id, input))
+                } else {
+                    Err(anyhow::anyhow!(
+                        "semantic event search is currently unavailable"
+                    ))
+                };
+                let _ = reply.send(outcome);
+            }
+            Command::DeleteEventEmbedding {
+                event_id,
+                model_id,
+                model_version,
+                reply,
+            } => {
+                let outcome = if semantic_available.load(Ordering::Acquire) {
+                    pollster::block_on(delete_event_embedding(
+                        &connection,
+                        &event_id,
+                        &model_id,
+                        model_version.as_deref(),
+                    ))
+                } else {
+                    Err(anyhow::anyhow!(
+                        "semantic event search is currently unavailable"
+                    ))
+                };
+                let _ = reply.send(outcome);
             }
             Command::Stats { reply } => {
                 let _ = reply.send(pollster::block_on(catalog_stats(&connection)));
@@ -2114,7 +2202,11 @@ fn run_catalog(
     }
 }
 
-fn run_search_catalog(connection: turso::Connection, rx: Receiver<SearchCommand>) {
+fn run_search_catalog(
+    connection: turso::Connection,
+    rx: Receiver<SearchCommand>,
+    semantic_available: &AtomicBool,
+) {
     while let Ok(command) = rx.recv() {
         match command {
             SearchCommand::Maintenance(request) => maintenance::read(&connection, request),
@@ -2134,9 +2226,21 @@ fn run_search_catalog(connection: turso::Connection, rx: Receiver<SearchCommand>
                 let _ = reply.send(pollster::block_on(search_event_text(&connection, query)));
             }
             SearchCommand::Semantic { query, reply } => {
-                let _ = reply.send(pollster::block_on(search_event_semantic(
+                let outcome = if semantic_available.load(Ordering::Acquire) {
+                    pollster::block_on(search_event_semantic(&connection, query))
+                } else {
+                    Err(anyhow::anyhow!(
+                        "semantic event search is currently unavailable"
+                    ))
+                };
+                let _ = reply.send(outcome);
+            }
+            SearchCommand::Advanced { query, reply } => {
+                let available = semantic_available.load(Ordering::Acquire);
+                let _ = reply.send(pollster::block_on(advanced_search::execute(
                     &connection,
-                    query,
+                    *query,
+                    available,
                 )));
             }
             SearchCommand::Availability {
@@ -2813,7 +2917,7 @@ async fn set_recording_protected(
     Ok(())
 }
 
-pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow::Result<()> {
+async fn initialize_core_schema(connection: &turso::Connection) -> anyhow::Result<()> {
     connection
         .execute_batch(
             "PRAGMA foreign_keys = ON;
@@ -3028,10 +3132,13 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
              CREATE TABLE IF NOT EXISTS recording_event_embeddings (
                  event_id TEXT NOT NULL REFERENCES recording_events(id) ON DELETE CASCADE,
                  model_id TEXT NOT NULL,
+                 model_version TEXT NOT NULL DEFAULT '',
+                 producer_id TEXT NOT NULL DEFAULT '',
+                 created_at_ms INTEGER,
                  dimensions INTEGER NOT NULL,
                  embedding BLOB NOT NULL,
                  event_revision INTEGER,
-                 PRIMARY KEY(event_id, model_id)
+                 PRIMARY KEY(event_id, model_id, model_version)
              );
              CREATE INDEX IF NOT EXISTS recording_event_embeddings_model
                  ON recording_event_embeddings(model_id, dimensions, event_id);",
@@ -3150,9 +3257,149 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
     Ok(())
 }
 
-async fn prepare_catalog(connection: &turso::Connection) -> anyhow::Result<Vec<LegacyRecording>> {
-    initialize_schema(connection).await?;
-    prepare_legacy_backfill(connection).await
+pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow::Result<()> {
+    initialize_core_schema(connection).await?;
+    migrate_embedding_provenance(connection).await?;
+    Ok(())
+}
+
+async fn migrate_embedding_provenance(connection: &turso::Connection) -> anyhow::Result<()> {
+    if !table_has_column(connection, "recording_event_embeddings", "model_version").await? {
+        rebuild_embedding_provenance_table(connection).await?;
+    }
+    ensure_column(
+        connection,
+        "recording_event_embeddings",
+        "producer_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    .await?;
+    ensure_column(
+        connection,
+        "recording_event_embeddings",
+        "created_at_ms",
+        "INTEGER",
+    )
+    .await?;
+    ensure_column(
+        connection,
+        "recording_event_embeddings",
+        "event_revision",
+        "INTEGER",
+    )
+    .await?;
+    connection
+        .execute_batch(
+            "CREATE INDEX IF NOT EXISTS recording_event_embeddings_model
+                 ON recording_event_embeddings(model_id, dimensions, event_id);
+             CREATE INDEX IF NOT EXISTS recording_event_embeddings_space
+                 ON recording_event_embeddings(model_id, model_version, dimensions, event_id);
+             CREATE INDEX IF NOT EXISTS recording_event_embeddings_event_space
+                 ON recording_event_embeddings(event_id, model_id, model_version, dimensions);
+             CREATE INDEX IF NOT EXISTS recording_event_embeddings_event_provenance
+                 ON recording_event_embeddings(event_id, producer_id, model_id);",
+        )
+        .await?;
+    Ok(())
+}
+
+async fn rebuild_embedding_provenance_table(connection: &turso::Connection) -> anyhow::Result<()> {
+    let has_event_revision =
+        table_has_column(connection, "recording_event_embeddings", "event_revision").await?;
+    let revision_select = if has_event_revision {
+        "event_revision"
+    } else {
+        "NULL"
+    };
+    connection.execute_batch("BEGIN IMMEDIATE").await?;
+    let result = async {
+        connection
+            .execute_batch(
+                "CREATE TABLE recording_event_embeddings_migrated (
+                     event_id TEXT NOT NULL REFERENCES recording_events(id) ON DELETE CASCADE,
+                     model_id TEXT NOT NULL,
+                     model_version TEXT NOT NULL DEFAULT '',
+                     producer_id TEXT NOT NULL DEFAULT '',
+                     created_at_ms INTEGER,
+                     dimensions INTEGER NOT NULL,
+                     embedding BLOB NOT NULL,
+                     event_revision INTEGER,
+                     PRIMARY KEY(event_id, model_id, model_version)
+                 );",
+            )
+            .await?;
+        connection
+            .execute(
+                format!(
+                    "INSERT INTO recording_event_embeddings_migrated (
+                         event_id, model_id, model_version, producer_id, created_at_ms,
+                         dimensions, embedding, event_revision
+                     )
+                     SELECT event_id, model_id, '', '', NULL, dimensions, embedding, {revision_select}
+                     FROM recording_event_embeddings"
+                ),
+                (),
+            )
+            .await?;
+        connection
+            .execute_batch(
+                "DROP TRIGGER IF EXISTS recording_event_embeddings_invalidate_revision;
+                 DROP TABLE recording_event_embeddings;
+                 ALTER TABLE recording_event_embeddings_migrated
+                     RENAME TO recording_event_embeddings;
+                 CREATE TRIGGER IF NOT EXISTS recording_event_embeddings_invalidate_revision
+                 AFTER UPDATE OF revision ON recording_events
+                 WHEN NEW.revision <> OLD.revision
+                 BEGIN
+                     DELETE FROM recording_event_embeddings WHERE event_id = OLD.id;
+                 END;",
+            )
+            .await?;
+        anyhow::Ok(())
+    }
+    .await;
+    match result {
+        Ok(()) => connection.execute_batch("COMMIT").await.map_err(Into::into),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK").await;
+            Err(error)
+        }
+    }
+}
+
+async fn table_has_column(
+    connection: &turso::Connection,
+    table: &str,
+    column: &str,
+) -> anyhow::Result<bool> {
+    let mut rows = connection
+        .query(format!("PRAGMA table_info({table})"), ())
+        .await?;
+    while let Some(row) = rows.next().await? {
+        if row.get::<String>(1)? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+async fn prepare_catalog(
+    connection: &turso::Connection,
+) -> anyhow::Result<(Vec<LegacyRecording>, bool)> {
+    initialize_core_schema(connection).await?;
+    // A failed embedding migration disables semantic queries while ordinary recording and search continue.
+    let semantic_available = match migrate_embedding_provenance(connection).await {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "embedding provenance migration failed; semantic search is unavailable"
+            );
+            false
+        }
+    };
+    let legacy = prepare_legacy_backfill(connection).await?;
+    Ok((legacy, semantic_available))
 }
 
 async fn prepare_legacy_backfill(
@@ -5355,27 +5602,78 @@ async fn replace_event_search_terms(
     }
 }
 
+#[cfg(test)]
 async fn set_event_embedding(
     connection: &turso::Connection,
     event_id: &str,
-    embedding: EventEmbedding,
+    embedding: crate::storage::search::EventEmbedding,
 ) -> anyhow::Result<()> {
-    let dimensions = i64::try_from(embedding.values.len())?;
-    let encoded = serde_json::to_string(&embedding.values)?;
+    set_event_embedding_record(
+        connection,
+        event_id,
+        EventEmbeddingInput {
+            embedding,
+            provenance: crate::storage::search::EventEmbeddingProvenance::default(),
+        },
+    )
+    .await
+}
+
+async fn set_event_embedding_record(
+    connection: &turso::Connection,
+    event_id: &str,
+    input: EventEmbeddingInput,
+) -> anyhow::Result<()> {
+    let dimensions = i64::try_from(input.embedding.values.len())?;
+    let encoded = serde_json::to_string(&input.embedding.values)?;
+    let created_at_ms = input
+        .provenance
+        .created_at_ms
+        .unwrap_or_else(current_unix_time_ms);
     connection.execute_batch("BEGIN IMMEDIATE").await?;
     let result = async {
+        let mut rows = connection
+            .query(
+                "SELECT revision FROM recording_events WHERE id = ?1",
+                turso::params![event_id],
+            )
+            .await?;
+        let current_revision = rows
+            .next()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("event was not found"))?
+            .get::<i64>(0)?;
+        drop(rows);
+        if let Some(expected) = input.provenance.event_revision {
+            let expected = to_i64(expected, "embedding event revision")?;
+            anyhow::ensure!(
+                current_revision == expected,
+                "event revision changed; embedding was rejected"
+            );
+        }
         connection
             .execute(
                 "INSERT INTO recording_event_embeddings (
-                     event_id, model_id, dimensions, embedding, event_revision
+                     event_id, model_id, model_version, producer_id, created_at_ms,
+                     dimensions, embedding, event_revision
                  )
-                 SELECT id, ?2, ?3, vector32(?4), revision
-                 FROM recording_events WHERE id = ?1
-                 ON CONFLICT(event_id, model_id) DO UPDATE SET
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, vector32(?7), ?8)
+                 ON CONFLICT(event_id, model_id, model_version) DO UPDATE SET
+                     producer_id = excluded.producer_id,
+                     created_at_ms = excluded.created_at_ms,
                      dimensions = excluded.dimensions,
                      embedding = excluded.embedding,
                      event_revision = excluded.event_revision",
-                turso::params![event_id, embedding.model_id, dimensions, encoded],
+                turso::params![
+                    event_id,
+                    input.embedding.model_id,
+                    input.provenance.model_version,
+                    input.provenance.producer_id,
+                    created_at_ms,
+                    dimensions,
+                    encoded,
+                    current_revision
+                ],
             )
             .await?;
         record_event_search_mutation(connection, event_id).await
@@ -5383,6 +5681,50 @@ async fn set_event_embedding(
     .await;
     match result {
         Ok(()) => connection.execute_batch("COMMIT").await.map_err(Into::into),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK").await;
+            Err(error)
+        }
+    }
+}
+
+async fn delete_event_embedding(
+    connection: &turso::Connection,
+    event_id: &str,
+    model_id: &str,
+    model_version: Option<&str>,
+) -> anyhow::Result<u64> {
+    connection.execute_batch("BEGIN IMMEDIATE").await?;
+    let result = async {
+        let deleted = match model_version {
+            Some(version) => {
+                connection
+                    .execute(
+                        "DELETE FROM recording_event_embeddings
+                         WHERE event_id = ?1 AND model_id = ?2 AND model_version = ?3",
+                        turso::params![event_id, model_id, version],
+                    )
+                    .await?
+            }
+            None => {
+                connection
+                    .execute(
+                        "DELETE FROM recording_event_embeddings
+                         WHERE event_id = ?1 AND model_id = ?2",
+                        turso::params![event_id, model_id],
+                    )
+                    .await?
+            }
+        };
+        record_event_search_mutation(connection, event_id).await?;
+        Ok::<u64, anyhow::Error>(deleted)
+    }
+    .await;
+    match result {
+        Ok(deleted) => {
+            connection.execute_batch("COMMIT").await?;
+            Ok(deleted)
+        }
         Err(error) => {
             let _ = connection.execute_batch("ROLLBACK").await;
             Err(error)
@@ -5574,6 +5916,9 @@ async fn search_event_metadata_snapshot(
         next_page_token,
         candidates_truncated: false,
         workflow_counts,
+        normalized_summary: None,
+        semantic_summary: None,
+        diagnostics: None,
     })
 }
 
@@ -5734,6 +6079,9 @@ async fn search_event_text_snapshot(
         next_page_token,
         candidates_truncated: false,
         workflow_counts,
+        normalized_summary: None,
+        semantic_summary: None,
+        diagnostics: None,
     })
 }
 
@@ -5803,14 +6151,14 @@ async fn search_event_semantic_snapshot(
     let mut from_sql = String::from(
         "FROM recording_event_embeddings AS s JOIN recording_events AS e ON e.id = s.event_id
          WHERE COALESCE(s.event_revision, 1) = e.revision
-             AND s.model_id = ?2 AND s.dimensions = ?3 AND (?4 IS NULL OR e.camera_id = ?5)
+             AND s.model_id = ?2 AND s.model_version = '' AND s.dimensions = ?3 AND (?4 IS NULL OR e.camera_id = ?5)
              AND (e.stream IS NULL OR e.stream = ?6) AND e.start_time_ms < ?8
              AND COALESCE(e.end_time_ms, e.start_time_ms + 1) > ?7
              AND e.rowid <= ?9 AND s.rowid <= ?10",
     );
     let mut params = turso::params![
         encoded,
-        query.embedding.model_id,
+        query.embedding.model_id.clone(),
         dimensions,
         source_id.clone(),
         source_id,
@@ -5910,11 +6258,26 @@ async fn search_event_semantic_snapshot(
             })
         })
         .transpose()?;
+    let semantic_summary = Some(EventSearchSemanticSummary {
+        model_id: query.embedding.model_id,
+        model_version: String::new(),
+        producer_id: "unknown".to_owned(),
+        dimensions: u32::try_from(query.embedding.values.len()).unwrap_or(u32::MAX),
+        score_interpretation: "cosine_similarity_higher_is_closer".to_owned(),
+        minimum_score: None,
+        searched_start_time_ms: query.start_time_ms,
+        searched_end_time_ms: query.end_time_ms,
+        candidate_count: u64::try_from(hits.len()).unwrap_or(u64::MAX),
+        candidates_truncated,
+    });
     Ok(EventSearchPage {
         hits,
         next_page_token,
         candidates_truncated,
         workflow_counts,
+        normalized_summary: None,
+        semantic_summary,
+        diagnostics: None,
     })
 }
 
@@ -6587,6 +6950,7 @@ fn to_u64(value: i64, name: &str) -> anyhow::Result<u64> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::storage::search::EventEmbedding;
     use bytes::Bytes;
     use std::io::BufWriter;
 

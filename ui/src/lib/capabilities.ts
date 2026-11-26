@@ -69,6 +69,26 @@ export const serverCapabilityCatalog = {
 		failureGuarantee:
 			'Conflicts preserve drafts and never overwrite newer state; bookmarks do not protect recordings'
 	},
+	'keeppeek.event-search.advanced.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'Versioned bounded boolean AST evaluation, authorized snapshot pagination, and owner-scoped revisioned saved searches',
+		unlocks: 'Advanced nested boolean event search builder and durable saved searches',
+		whenMissing:
+			'Common Events filters remain fully usable; advanced builder and saved searches stay hidden',
+		failureGuarantee:
+			'Validation errors and revision conflicts preserve unsaved drafts; inaccessible cameras and counts never leak'
+	},
+	'keeppeek.event-search.semantic.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'Exact model-space cosine ranking, revision-bound embeddings, provenance, interval, and truncation reporting',
+		unlocks: 'Optional semantic similarity ranking alongside structured boolean filters',
+		whenMissing:
+			'Structured boolean and common event filters continue working without semantic ranking',
+		failureGuarantee:
+			'External embedding failures never affect recording or ordinary search; raw vectors never cross results or diagnostics'
+	},
 	'keeppeek.backup.v1': {
 		delivery: 'ships',
 		serverOwns:

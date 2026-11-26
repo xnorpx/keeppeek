@@ -1,22 +1,32 @@
-//! Indexed event metadata and model-scoped semantic search with lazy encoded previews.
+//! Indexed event metadata, boolean AST, and model-scoped semantic search with lazy previews.
+
+pub mod expression;
+pub mod predicate;
 
 use crate::storage::{
     EncodedEventKeyframe, EventKeyframeLocation, RecordingCatalogHandle, metadata::EventAttachment,
 };
+use expression::Expression;
+use predicate::Predicate;
 use serde::{Deserialize, Serialize};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{Arc, atomic::AtomicBool},
+};
 
 /// Default context included before an event start.
 pub const DEFAULT_PREVIEW_BEFORE_MS: u64 = 5_000;
 /// Default context included after an event end.
 pub const DEFAULT_PREVIEW_AFTER_MS: u64 = 10_000;
 const MAX_SEARCH_TERMS: usize = 64;
-const MAX_TERM_BYTES: usize = 256;
-const MAX_MODEL_ID_BYTES: usize = 128;
-const MAX_EMBEDDING_DIMENSIONS: usize = 4_096;
-const MAX_FILTER_VALUES: usize = 64;
-const MAX_PAGE_SIZE: u32 = 128;
-const MAX_SEMANTIC_WINDOW_MS: i64 = 31 * 86_400_000;
+pub(crate) const MAX_TERM_BYTES: usize = 256;
+pub(crate) const MAX_MODEL_ID_BYTES: usize = 128;
+pub(crate) const MAX_EMBEDDING_DIMENSIONS: usize = 4_096;
+pub(crate) const MAX_FILTER_VALUES: usize = 64;
+pub(crate) const MAX_PAGE_SIZE: u32 = 128;
+pub(crate) const MAX_SEARCH_WINDOW_MS: i64 = 31 * 86_400_000;
 const MAX_PREVIEW_WINDOW_MS: u64 = 60_000;
+pub(crate) const MAX_ADVANCED_CANDIDATES: u32 = 10_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -61,6 +71,80 @@ pub struct EventSearchTerm {
 pub struct EventEmbedding {
     pub model_id: String,
     pub values: Vec<f32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Provenance metadata recorded alongside a stored event embedding.
+pub struct EventEmbeddingProvenance {
+    pub model_version: String,
+    pub producer_id: String,
+    pub event_revision: Option<u64>,
+    pub created_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+/// A dense embedding paired with model-version and producer provenance.
+pub struct EventEmbeddingInput {
+    pub embedding: EventEmbedding,
+    pub provenance: EventEmbeddingProvenance,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+/// Optional semantic ranking attached to an advanced boolean event query.
+pub struct EventSemanticRanking {
+    pub embedding: EventEmbedding,
+    pub model_version: String,
+    pub minimum_score: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+/// A validated, authorized, bounded boolean and optional hybrid semantic query.
+pub struct EventAdvancedSearchQuery {
+    pub expression_version: u32,
+    pub expression: Expression<Predicate>,
+    pub canonical_hash: String,
+    pub normalized_summary: String,
+    pub authorized_cameras: Vec<String>,
+    pub camera_groups: BTreeMap<String, BTreeSet<String>>,
+    pub stream_id: String,
+    pub start_time_ms: i64,
+    pub end_time_ms: i64,
+    pub preview_before_ms: u64,
+    pub preview_after_ms: u64,
+    pub page_size: u32,
+    pub page_token: Option<String>,
+    pub include_preview_keyframes: bool,
+    pub workflow: Option<crate::storage::catalog::workflow::Query>,
+    pub workflow_actor: Option<String>,
+    pub semantic: Option<EventSemanticRanking>,
+    pub policy_revision: u64,
+    pub is_admin: bool,
+    pub max_candidates: u32,
+    pub cancelled: Option<Arc<AtomicBool>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+/// Semantic ranking provenance and searched-window metadata returned with a page.
+pub struct EventSearchSemanticSummary {
+    pub model_id: String,
+    pub model_version: String,
+    pub producer_id: String,
+    pub dimensions: u32,
+    pub score_interpretation: String,
+    pub minimum_score: Option<f64>,
+    pub searched_start_time_ms: i64,
+    pub searched_end_time_ms: i64,
+    pub candidate_count: u64,
+    pub candidates_truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Bounded planner diagnostics exposed only to Administrators.
+pub struct EventSearchPlannerDiagnostics {
+    pub plan_category: String,
+    pub estimated_candidates: u64,
+    pub scanned_candidates: u64,
+    pub wall_time_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -234,6 +318,9 @@ pub struct EventSearchPage {
     pub next_page_token: Option<String>,
     pub candidates_truncated: bool,
     pub workflow_counts: Option<crate::storage::catalog::workflow::Counts>,
+    pub normalized_summary: Option<String>,
+    pub semantic_summary: Option<EventSearchSemanticSummary>,
+    pub diagnostics: Option<EventSearchPlannerDiagnostics>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -283,9 +370,75 @@ impl EventSearch {
 
     /// Creates or replaces an event embedding for its model ID.
     pub fn set_embedding(&self, event_id: &str, embedding: EventEmbedding) -> anyhow::Result<()> {
+        self.set_embedding_with_provenance(
+            event_id,
+            EventEmbeddingInput {
+                embedding,
+                provenance: EventEmbeddingProvenance::default(),
+            },
+        )
+    }
+
+    /// Creates or replaces an event embedding with validated model-version and producer metadata.
+    pub fn set_embedding_with_provenance(
+        &self,
+        event_id: &str,
+        mut input: EventEmbeddingInput,
+    ) -> anyhow::Result<()> {
         validate_event_id(event_id)?;
-        validate_embedding(&embedding)?;
-        self.catalog.set_event_embedding(event_id, embedding)
+        validate_embedding(&input.embedding)?;
+        validate_provenance(&mut input.provenance)?;
+        self.catalog.set_event_embedding(event_id, input)
+    }
+
+    /// Deletes stored embeddings for an event matching the requested model space.
+    pub fn delete_embedding(
+        &self,
+        event_id: &str,
+        model_id: &str,
+        model_version: Option<&str>,
+    ) -> anyhow::Result<u64> {
+        validate_event_id(event_id)?;
+        let model_id = validate_model_identifier(model_id, "embedding model ID")?;
+        let model_version = model_version
+            .filter(|value| !value.is_empty())
+            .map(|value| validate_model_identifier(value, "embedding model version"))
+            .transpose()?;
+        self.catalog
+            .delete_event_embedding(event_id, &model_id, model_version.as_deref())
+    }
+
+    /// Evaluates a bounded versioned boolean AST with optional hybrid semantic ranking.
+    pub fn search_advanced(
+        &self,
+        mut query: EventAdvancedSearchQuery,
+    ) -> anyhow::Result<EventSearchPage> {
+        validate_search_window(
+            &query.stream_id,
+            query.start_time_ms,
+            query.end_time_ms,
+            query.preview_before_ms,
+            query.preview_after_ms,
+            query.page_size,
+        )?;
+        if query.end_time_ms.saturating_sub(query.start_time_ms) > MAX_SEARCH_WINDOW_MS {
+            anyhow::bail!("advanced event search window exceeds 31 days");
+        }
+        if query.max_candidates == 0 || query.max_candidates > MAX_ADVANCED_CANDIDATES {
+            anyhow::bail!("advanced event search candidate bound is invalid");
+        }
+        if let Some(semantic) = &mut query.semantic {
+            validate_embedding(&semantic.embedding)?;
+            semantic.model_version =
+                validate_optional_identifier(&semantic.model_version, "embedding model version")?;
+            if semantic
+                .minimum_score
+                .is_some_and(|score| !score.is_finite() || !(-1.0..=1.0).contains(&score))
+            {
+                anyhow::bail!("semantic minimum score must be finite and between -1 and 1");
+            }
+        }
+        self.catalog.search_event_advanced(query)
     }
 
     /// Browses newest-first event metadata with composable filters.
@@ -308,7 +461,7 @@ impl EventSearch {
             query.preview_after_ms,
             query.page_size,
         )?;
-        if query.end_time_ms.saturating_sub(query.start_time_ms) > MAX_SEMANTIC_WINDOW_MS {
+        if query.end_time_ms.saturating_sub(query.start_time_ms) > MAX_SEARCH_WINDOW_MS {
             anyhow::bail!("event text search window exceeds 31 days");
         }
         self.catalog.search_event_text(query)
@@ -328,7 +481,7 @@ impl EventSearch {
             query.preview_after_ms,
             query.page_size,
         )?;
-        if query.end_time_ms.saturating_sub(query.start_time_ms) > MAX_SEMANTIC_WINDOW_MS {
+        if query.end_time_ms.saturating_sub(query.start_time_ms) > MAX_SEARCH_WINDOW_MS {
             anyhow::bail!("semantic event search window exceeds 31 days");
         }
         self.catalog.search_event_semantic(query)
@@ -375,7 +528,7 @@ fn normalize_metadata_query(query: &mut EventMetadataQuery) -> anyhow::Result<()
         query.preview_after_ms,
         query.page_size,
     )?;
-    if query.end_time_ms.saturating_sub(query.start_time_ms) > MAX_SEMANTIC_WINDOW_MS {
+    if query.end_time_ms.saturating_sub(query.start_time_ms) > MAX_SEARCH_WINDOW_MS {
         anyhow::bail!("event metadata search window exceeds 31 days");
     }
     if query
@@ -403,7 +556,7 @@ fn normalize_metadata_query(query: &mut EventMetadataQuery) -> anyhow::Result<()
     Ok(())
 }
 
-fn normalize_event_ids(values: &mut Vec<String>) -> anyhow::Result<()> {
+pub(crate) fn normalize_event_ids(values: &mut Vec<String>) -> anyhow::Result<()> {
     if values.len() > MAX_FILTER_VALUES {
         anyhow::bail!("event ID filter count exceeds {MAX_FILTER_VALUES}");
     }
@@ -418,7 +571,7 @@ fn normalize_event_ids(values: &mut Vec<String>) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn normalize_source_ids(values: &mut Vec<String>) -> anyhow::Result<()> {
+pub(crate) fn normalize_source_ids(values: &mut Vec<String>) -> anyhow::Result<()> {
     if values.len() > MAX_FILTER_VALUES {
         anyhow::bail!("event source filter count exceeds {MAX_FILTER_VALUES}");
     }
@@ -433,7 +586,7 @@ fn normalize_source_ids(values: &mut Vec<String>) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn normalize_filter_values(values: &mut Vec<String>, label: &str) -> anyhow::Result<()> {
+pub(crate) fn normalize_filter_values(values: &mut Vec<String>, label: &str) -> anyhow::Result<()> {
     if values.len() > MAX_FILTER_VALUES {
         anyhow::bail!("event {label} filter count exceeds {MAX_FILTER_VALUES}");
     }
@@ -445,9 +598,42 @@ fn normalize_filter_values(values: &mut Vec<String>, label: &str) -> anyhow::Res
     Ok(())
 }
 
+pub(crate) fn validate_provenance(provenance: &mut EventEmbeddingProvenance) -> anyhow::Result<()> {
+    provenance.model_version =
+        validate_optional_identifier(&provenance.model_version, "embedding model version")?;
+    provenance.producer_id =
+        validate_optional_identifier(&provenance.producer_id, "embedding producer ID")?;
+    if provenance.event_revision == Some(0) {
+        anyhow::bail!("embedding event revision must be positive");
+    }
+    Ok(())
+}
+
+fn validate_model_identifier(value: &str, label: &str) -> anyhow::Result<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > MAX_MODEL_ID_BYTES
+        || trimmed.chars().any(char::is_control)
+    {
+        anyhow::bail!("{label} must contain 1 to {MAX_MODEL_ID_BYTES} UTF-8 bytes");
+    }
+    Ok(trimmed.to_owned())
+}
+
+fn validate_optional_identifier(value: &str, label: &str) -> anyhow::Result<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    validate_model_identifier(trimmed, label)
+}
+
 pub(crate) fn validate_embedding(embedding: &EventEmbedding) -> anyhow::Result<()> {
     let model_id = embedding.model_id.trim();
-    if model_id.is_empty() || model_id.len() > MAX_MODEL_ID_BYTES {
+    if model_id.is_empty()
+        || model_id.len() > MAX_MODEL_ID_BYTES
+        || model_id.chars().any(char::is_control)
+    {
         anyhow::bail!("embedding model ID must contain 1 to {MAX_MODEL_ID_BYTES} UTF-8 bytes");
     }
     if embedding.values.is_empty() || embedding.values.len() > MAX_EMBEDDING_DIMENSIONS {

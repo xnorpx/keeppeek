@@ -337,6 +337,15 @@ fn authorize_event_search(
     command: &proto::EventSearchCommand,
 ) -> Result<(), ControlCommandError> {
     match &command.action {
+        Some(event_search_command::Action::ReplaceTerms(request)) => {
+            require_camera(policy, &request.source_id)
+        }
+        Some(event_search_command::Action::SetEmbedding(request)) => {
+            require_camera(policy, &request.source_id)
+        }
+        Some(event_search_command::Action::DeleteEmbedding(request)) => {
+            require_camera(policy, &request.source_id)
+        }
         Some(event_search_command::Action::Query(request)) => {
             authorize_event_query(policy, request)
         }

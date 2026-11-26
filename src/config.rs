@@ -1985,6 +1985,7 @@ fn validated_configuration_table_with_secrets(
     config.storage.validate_safety_thresholds()?;
     crate::notifications::validate_configuration(path, root)?;
     crate::server::validate_peek_layout_configuration(root)?;
+    crate::server::validate_saved_event_search_configuration(root)?;
     crate::server::validate_template_configuration(root)?;
     cameras_from_table(root, secrets)?;
     camera_profile_identities_from_table(root, secrets)?;
@@ -2030,6 +2031,7 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
         "external_identities",
         "notifications",
         "peek_layouts",
+        "saved_event_searches",
         "configuration_templates",
     ] {
         runtime.remove(section);
@@ -2602,6 +2604,7 @@ pub(crate) fn is_reserved_section(namespace: &str) -> bool {
             | "event_forwarder"
             | "notifications"
             | "peek_layouts"
+            | "saved_event_searches"
             | "configuration_templates"
             | "runtime_profiles"
             | "isapi_callbacks"

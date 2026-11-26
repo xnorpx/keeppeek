@@ -303,7 +303,7 @@ fn validate_keys<'key>(
     Ok(())
 }
 
-fn validate_id(value: &str) -> anyhow::Result<()> {
+pub(super) fn validate_id(value: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         !value.is_empty() && value.len() <= MAX_ID_BYTES && !value.chars().any(char::is_control),
         Failure::Invalid("event workflow identity is invalid")

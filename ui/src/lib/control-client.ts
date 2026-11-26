@@ -1,5 +1,26 @@
 import { StoredFrameClock } from './stored-frame-clock';
 import {
+	buildAdvancedSearchProto,
+	buildDeleteSavedSearchCommand,
+	buildListSavedSearchesCommand,
+	buildSaveEventSearchCommand,
+	decodePlannerDiagnostics,
+	decodeSavedEventSearch,
+	decodeSemanticSummary,
+	type EventAdvancedSearchOptions,
+	type EventPlannerDiagnostics,
+	type EventSemanticSummary,
+	type SavedEventSearch,
+	type SaveEventSearchOptions
+} from './control-client-event-search';
+export type {
+	EventAdvancedSearchOptions,
+	EventPlannerDiagnostics,
+	EventSemanticSummary,
+	SavedEventSearch,
+	SaveEventSearchOptions
+} from './control-client-event-search';
+import {
 	awaitFrameOperation,
 	StoredFrameWindow,
 	type PresentedStoredFrame
@@ -359,6 +380,9 @@ export type EventPreviewPage = {
 	nextPageToken: string;
 	candidatesTruncated: boolean;
 	workflowCounts?: EventWorkflowCounts;
+	normalizedSummary?: string;
+	semanticSummary?: EventSemanticSummary;
+	diagnostics?: EventPlannerDiagnostics;
 };
 
 export type EventMetadataSearchOptions = {
@@ -1058,6 +1082,69 @@ export class ControlClient {
 				pageToken: options.pageToken ?? ''
 			})
 		);
+	}
+
+	async searchEventAdvanced(options: EventAdvancedSearchOptions): Promise<EventPreviewPage> {
+		if (options.workflow) await this.getServerCapabilities();
+		return this.runEventSearch(options.signal, (queryId) =>
+			create(QueryEventsSchema, {
+				queryId,
+				workflow: options.workflow ? this.#eventWorkflow.query(options.workflow) : undefined,
+				search: {
+					case: 'advanced',
+					value: buildAdvancedSearchProto(options)
+				},
+				sourceId: options.sourceId,
+				streamId: options.streamId,
+				startTime: timestampFromDate(new Date(options.startMs)),
+				endTime: timestampFromDate(new Date(options.endMs)),
+				previewBefore: durationFromMs(5_000),
+				previewAfter: durationFromMs(10_000),
+				pageSize: options.pageSize ?? 50,
+				channel: DataChannelKind.RELIABLE_DATA,
+				pageToken: options.pageToken ?? ''
+			})
+		);
+	}
+
+	async listSavedEventSearches(): Promise<{ ownerId: string; searches: SavedEventSearch[] }> {
+		await this.getServerCapabilities();
+		const workspaceId = this.savedSearchWorkspaceId();
+		const command = buildListSavedSearchesCommand(workspaceId);
+		const result = await this.request({ case: 'eventSearchCommand', value: command });
+		if (result.case !== 'savedEventSearchResult') {
+			throw new Error('Server returned an unexpected saved search list response.');
+		}
+		return {
+			ownerId: result.value.ownerId,
+			searches: result.value.searches.map(decodeSavedEventSearch)
+		};
+	}
+
+	async saveEventSearch(options: SaveEventSearchOptions): Promise<SavedEventSearch> {
+		await this.getServerCapabilities();
+		const workspaceId = this.savedSearchWorkspaceId();
+		const command = buildSaveEventSearchCommand(workspaceId, options);
+		const result = await this.request({ case: 'eventSearchCommand', value: command });
+		if (result.case !== 'savedEventSearchResult' || !result.value.search) {
+			throw new Error('Server returned an unexpected saved search response.');
+		}
+		return decodeSavedEventSearch(result.value.search);
+	}
+
+	async deleteSavedEventSearch(searchId: string, expectedRevision: number): Promise<void> {
+		await this.getServerCapabilities();
+		const workspaceId = this.savedSearchWorkspaceId();
+		const command = buildDeleteSavedSearchCommand(workspaceId, searchId, expectedRevision);
+		const result = await this.request({ case: 'eventSearchCommand', value: command });
+		if (result.case !== 'savedEventSearchResult') {
+			throw new Error('Server returned an unexpected saved search delete response.');
+		}
+	}
+
+	private savedSearchWorkspaceId(): string {
+		const identity = this.eventWorkflowIdentity();
+		return identity.localWorkspaceId ?? '';
 	}
 
 	private async admitEventSearch(
@@ -2911,11 +2998,16 @@ export class ControlClient {
 			return;
 		}
 		try {
+			const semanticSummary = decodeSemanticSummary(end.semantic);
+			const diagnostics = decodePlannerDiagnostics(end.diagnostics);
 			pending.resolve({
 				hits: pending.hits.map(eventPreviewHit),
 				nextPageToken: end.nextPageToken,
 				candidatesTruncated: end.candidatesTruncated,
-				...(end.workflowCounts ? { workflowCounts: eventWorkflowCounts(end.workflowCounts) } : {})
+				...(end.workflowCounts ? { workflowCounts: eventWorkflowCounts(end.workflowCounts) } : {}),
+				...(end.normalizedSummary ? { normalizedSummary: end.normalizedSummary } : {}),
+				...(semanticSummary ? { semanticSummary } : {}),
+				...(diagnostics ? { diagnostics } : {})
 			});
 		} catch (cause) {
 			pending.reject(

@@ -1268,6 +1268,10 @@ message EventSearchCommand {
     CancelEventSearchQuery cancel_query = 4;
     FetchEventSearchMedia fetch_media = 5;
     CancelEventSearchMedia cancel_media = 6;
+    DeleteEventSearchEmbedding delete_embedding = 7;
+    ListSavedEventSearches list_saved_searches = 8;
+    SaveEventSearch save_search = 9;
+    DeleteSavedEventSearch delete_saved_search = 10;
   }
 }
 
@@ -1281,6 +1285,13 @@ message SetEventSearchEmbedding {
   string event_id = 1;
   EventSearchEmbedding embedding = 2;
   string source_id = 3;
+}
+
+message DeleteEventSearchEmbedding {
+  string event_id = 1;
+  string source_id = 2;
+  string model_id = 3;
+  string model_version = 4;
 }
 
 message EventSearchTerm {
@@ -1299,6 +1310,10 @@ enum EventSearchField {
 message EventSearchEmbedding {
   string model_id = 1;
   repeated float values = 2;
+  string model_version = 3;
+  string producer_id = 4;
+  optional uint64 event_revision = 5;
+  google.protobuf.Timestamp created_at = 6;
 }
 
 message QueryEvents {
@@ -1307,6 +1322,7 @@ message QueryEvents {
     EventTextSearch text = 2;
     EventSemanticSearch semantic = 3;
     EventMetadataSearch metadata = 14;
+    EventAdvancedSearch advanced = 16;
   }
   optional string source_id = 4;
   string stream_id = 5;
@@ -1320,6 +1336,127 @@ message QueryEvents {
   DataChannelKind channel = 12;
   string page_token = 13;
   EventWorkflowQuery workflow = 15;
+}
+
+message EventAdvancedSearch {
+  uint32 expression_version = 1;
+  EventSearchExpression expression = 2;
+  EventSemanticRanking semantic = 3;
+  bool include_preview_keyframes = 4;
+}
+
+message EventSearchExpression {
+  oneof node {
+    EventSearchExpressionList and_group = 1;
+    EventSearchExpressionList or_group = 2;
+    EventSearchExpression not_expr = 3;
+    EventSearchPredicate predicate = 4;
+  }
+}
+
+message EventSearchExpressionList {
+  repeated EventSearchExpression children = 1;
+}
+
+message EventSearchPredicate {
+  oneof kind {
+    EventStringListPredicate camera_ids = 1;
+    EventStringListPredicate group_ids = 2;
+    EventStringListPredicate event_types = 3;
+    EventOriginListPredicate origins = 4;
+    EventStringListPredicate zones = 5;
+    bool missing_zone = 6;
+    EventConfidencePredicate confidence = 7;
+    bool missing_confidence = 8;
+    bool has_image = 9;
+    EventTimeRangePredicate time_range = 10;
+    EventTextPredicate text = 11;
+    EventWorkflowPredicate workflow = 12;
+    EventStringListPredicate producer_ids = 13;
+    EventStringListPredicate model_ids = 14;
+  }
+}
+
+message EventStringListPredicate {
+  repeated string values = 1;
+}
+
+message EventOriginListPredicate {
+  repeated EventOrigin origins = 1;
+}
+
+enum EventConfidenceOperator {
+  EVENT_CONFIDENCE_OPERATOR_UNSPECIFIED = 0;
+  EVENT_CONFIDENCE_OPERATOR_AT_LEAST = 1;
+  EVENT_CONFIDENCE_OPERATOR_AT_MOST = 2;
+}
+
+message EventConfidencePredicate {
+  EventConfidenceOperator operator = 1;
+  double threshold = 2;
+}
+
+message EventTimeRangePredicate {
+  google.protobuf.Timestamp start_time = 1;
+  google.protobuf.Timestamp end_time = 2;
+}
+
+message EventTextPredicate {
+  string prefix = 1;
+  optional EventSearchField field = 2;
+}
+
+enum EventWorkflowPredicate {
+  EVENT_WORKFLOW_PREDICATE_UNSPECIFIED = 0;
+  EVENT_WORKFLOW_PREDICATE_REVIEWED = 1;
+  EVENT_WORKFLOW_PREDICATE_DISMISSED = 2;
+  EVENT_WORKFLOW_PREDICATE_BOOKMARKED = 3;
+  EVENT_WORKFLOW_PREDICATE_BOOKMARKED_BY_ME = 4;
+}
+
+message EventSemanticRanking {
+  EventSearchEmbedding embedding = 1;
+  optional double minimum_score = 2;
+}
+
+message ListSavedEventSearches {
+  string local_workspace_id = 1;
+}
+
+message SaveEventSearch {
+  string local_workspace_id = 1;
+  string search_id = 2;
+  uint64 expected_revision = 3;
+  string name = 4;
+  uint32 expression_version = 5;
+  EventSearchExpression expression = 6;
+  string raw_draft_json = 7;
+}
+
+message DeleteSavedEventSearch {
+  string local_workspace_id = 1;
+  string search_id = 2;
+  uint64 expected_revision = 3;
+}
+
+message SavedEventSearchRecord {
+  string search_id = 1;
+  string owner_id = 2;
+  uint64 revision = 3;
+  string name = 4;
+  uint32 expression_version = 5;
+  EventSearchExpression expression = 6;
+  string unsupported_draft_json = 7;
+  google.protobuf.Timestamp updated_at = 8;
+  repeated string tombstoned_references = 9;
+  bool editable = 10;
+}
+
+message SavedEventSearchResult {
+  string owner_id = 1;
+  repeated SavedEventSearchRecord searches = 2;
+  SavedEventSearchRecord search = 3;
+  string deleted_search_id = 4;
 }
 
 message EventWorkflowQuery {
@@ -3024,6 +3161,7 @@ message Ok {
     ArchiveResult archive_result = 44;
     ShareResult share_result = 45;
     StoredFrameStepResult stored_frame_step_result = 46;
+    SavedEventSearchResult saved_event_search_result = 47;
   }
   reserved 17, 18;
   reserved "recording_activity_result", "live_session_result";
@@ -4004,6 +4142,29 @@ message EventSearchQueryEnd {
   string next_page_token = 4;
   bool candidates_truncated = 5;
   EventWorkflowCounts workflow_counts = 6;
+  string normalized_summary = 7;
+  EventSearchSemanticSummary semantic = 8;
+  EventSearchPlannerDiagnostics diagnostics = 9;
+}
+
+message EventSearchSemanticSummary {
+  string model_id = 1;
+  string model_version = 2;
+  string producer_id = 3;
+  uint32 dimensions = 4;
+  string score_interpretation = 5;
+  optional double minimum_score = 6;
+  google.protobuf.Timestamp searched_start_time = 7;
+  google.protobuf.Timestamp searched_end_time = 8;
+  uint64 candidate_count = 9;
+  bool candidates_truncated = 10;
+}
+
+message EventSearchPlannerDiagnostics {
+  string plan_category = 1;
+  uint64 estimated_candidates = 2;
+  uint64 scanned_candidates = 3;
+  uint64 wall_time_ms = 4;
 }
 
 message EventSearchMediaChunk {

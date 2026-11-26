@@ -1303,6 +1303,10 @@ include their byte count and SHA-256 digest, expire after 24 hours, and can be d
 
 The `keeppeek.event-search` capability enables `EventSearchCommand`. It searches durable event
 metadata without opening a playback cursor and fetches selected immutable media bytes separately.
+The `keeppeek.event-search.advanced.v1` capability enables `QueryEvents.advanced` boolean AST
+expressions and owner-scoped saved-search operations (`ListSavedEventSearches`, `SaveEventSearch`,
+`DeleteSavedEventSearch`). The `keeppeek.event-search.semantic.v1` capability advertises
+model-versioned semantic and hybrid ranking when compatible semantic search is available.
 Search result messages always use `reliable-data`; encoded object chunks use the explicitly
 requested data channel.
 
@@ -1310,13 +1314,44 @@ requested data channel.
 `FACE_NAME`, `OBJECT_CLASS`, and `TEXT` terms for one event. KeepPeek rejects attempts to mutate
 `EVENT_TYPE`, which it maintains from the durable event record. Terms are whitespace-normalized
 and matched case-insensitively by prefix. `SetEventSearchEmbedding` likewise names the source and
-creates or replaces one dense embedding under its model ID.
-The producer owns embedding generation. KeepPeek never compares vectors with different model IDs
-or dimensions.
+creates or replaces one dense embedding under its model ID and optional `model_version`,
+`producer_id`, `event_revision`, and `created_at` provenance metadata. Legacy embeddings without
+`model_version` or `producer_id` remain supported and report unknown provenance rather than
+fabricating metadata. `DeleteEventSearchEmbedding` removes stored embeddings for an event matching
+the requested `model_id` (and `model_version` when set).
+The producer owns embedding generation. KeepPeek never compares vectors with different model IDs,
+model versions, or dimensions, and never returns raw embedding vectors in search results or
+diagnostics.
 
-`QueryEvents` has exactly one `search`: `EventTextSearch` for structured prefix matching or
-`EventSemanticSearch` for exact cosine ranking. It selects an optional stable source, one logical
-stored stream, a half-open time interval, a bounded result page, and a preview interval. Omitted
+`QueryEvents` has exactly one `search`: `EventTextSearch` for structured prefix matching,
+`EventSemanticSearch` for exact cosine ranking, `EventMetadataSearch` for flat composable filters,
+or `EventAdvancedSearch` for versioned bounded boolean AST expressions (`expression_version = 1`)
+with optional hybrid `EventSemanticRanking`. Advanced expressions support nested `AND`, `OR`, and
+`NOT` over indexed predicates (camera, group, event type, origin, zone, missing zone, confidence
+threshold, missing confidence, image presence, absolute UTC time range, indexed text prefix,
+workflow review/bookmark state, embedding producer, and embedding model) within the
+caller's authorized camera scope and UTC window. Expressions are bounded to depth 8, 64 nodes, 64
+values per list, 16 KiB total text, and bounded candidate scan limits. When `semantic` is included,
+authorized structured predicates narrow candidates before exact cosine ranking, `minimum_score` is
+applied before top-K selection, and deterministic ordering uses descending score, descending start
+timestamp, and ascending event ID.
+
+`EventSearchQueryEnd` returns `normalized_summary` for advanced queries, `semantic` provenance
+(`model_id`, `model_version`, `producer_id`, `dimensions`, `score_interpretation`,
+`minimum_score`, actual searched interval, `candidate_count`, and `candidates_truncated`) when
+semantic ranking ran, and bounded `diagnostics` (`plan_category`, `estimated_candidates`,
+`scanned_candidates`, `wall_time_ms`) for Administrators only without exposing SQL, paths, secrets,
+or raw vectors.
+
+`ListSavedEventSearches`, `SaveEventSearch`, and `DeleteSavedEventSearch` manage owner-scoped saved
+searches stored in `config.toml` with compare-and-swap `expected_revision` concurrency control and
+return `Ok.saved_event_search_result`. Remote principals must leave `local_workspace_id` empty;
+trusted-local callers supply their workspace UUID. Records with unsupported `expression_version`
+values remain readable with `unsupported_draft_json` and `editable = false`. Deleted or unauthorized
+camera and group references are reported in `tombstoned_references` rather than silently widening the query.
+
+`QueryEvents` selects an optional stable source, one logical stored stream, a half-open time
+interval, a bounded result page, and a preview interval. Omitted
 preview durations use five seconds before event start and ten seconds after event end. Their sum
 cannot exceed 60 seconds. Every search is limited to 31 days. Page size defaults to 50 and is
 capped at 128. New clients leave the deprecated `offset` at zero and pass the opaque `page_token`

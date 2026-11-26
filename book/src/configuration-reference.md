@@ -71,6 +71,7 @@ Root fields must appear before a table header or they belong to that table.
 | `[<namespace>.<camera-key>.events]`                | `EventConfig`                                       | Native camera event selection and filters             |
 | `[access_credentials]`                             | `PersistedAccessCatalog`                            | Server-managed credential records                     |
 | `[peek_layouts]`                                   | `StoredRegistry`                                    | Server-managed layouts and per-user selection         |
+| `[saved_event_searches]`                           | `StoredRegistry`                                    | Server-managed owner-scoped saved event searches      |
 | `[configuration_templates]`                        | `StoredTemplateDocument`                            | Server-managed camera templates                       |
 | `[notifications]`                                  | `NotificationConfiguration`                         | Server-managed rule drafts and active rules           |
 | `[runtime_profiles]`                               | `ProfileRegistry`                                   | Server-managed profile definitions and selection      |
@@ -1020,6 +1021,34 @@ before any policy mutation. Runtime group-membership changes close affected grou
 and cancel their queued work so playback and event subscriptions cannot retain an obsolete grant.
 Grid audiences do not grant camera permissions. Custom roles remain unsupported, and trusted-local
 clients still follow the Administrator policy described above.
+
+## Saved event searches
+
+Source: [saved event searches](https://github.com/xnorpx/keeppeek/blob/main/src/server/saved_searches.rs).
+Saved event searches live in `config.toml` under `[saved_event_searches]` and use the
+`keeppeek.event-search.advanced.v1` capability. Manage them through `EventSearchCommand`
+compare-and-swap operations rather than editing the section manually.
+
+Type: `StoredRegistry`, section `[saved_event_searches]`.
+
+| Field            | Type                       | Rule                                                                                      |
+| ---------------- | -------------------------- | ----------------------------------------------------------------------------------------- |
+| `schema_version` | `u32`                      | Required; supported value is `1`.                                                         |
+| `owners`         | Map of `Vec<StoredSearch>` | Keyed by authenticated principal or local workspace ID; max 64 per owner and 1,024 total. |
+
+Type: `StoredSearch`, under `[saved_event_searches.owners."<owner-id>"]`.
+
+| Field                | Type     | Rule                                                                                               |
+| -------------------- | -------- | -------------------------------------------------------------------------------------------------- |
+| `id`                 | `String` | Stable UUID unique per owner; 1 to 128 characters.                                                 |
+| `name`               | `String` | Nonblank display name; 1 to 128 characters without control characters.                             |
+| `revision`           | `u64`    | Positive monotonic compare-and-swap revision.                                                      |
+| `expression_version` | `u32`    | Positive AST version (`1` editable; unsupported future versions remain readable and non-editable). |
+| `expression_json`    | `String` | Serialized AST draft, at most 32 KiB. Contains no credentials or secret references.                |
+| `updated_at_ms`      | `i64`    | UTC update timestamp in milliseconds.                                                              |
+
+Config-only backups validate and include `[saved_event_searches]` without copying the recording
+catalog database or stored embedding vectors.
 
 ## Peek layout registry
 

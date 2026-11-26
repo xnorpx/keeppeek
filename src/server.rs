@@ -98,6 +98,7 @@ mod camera_permissions;
 mod configuration;
 mod event_publication;
 mod event_search;
+mod event_search_proto;
 mod event_subscription;
 mod event_workflow;
 #[cfg(test)]
@@ -128,6 +129,7 @@ mod stored_playback;
 mod stored_read;
 use stored_read::StoredReadRange;
 mod runtime_configuration;
+mod saved_searches;
 mod session_lifecycle;
 mod session_recovery;
 mod sharing;
@@ -159,6 +161,10 @@ pub(crate) fn migrate_peek_layout_configuration(
 
 pub(crate) fn validate_peek_layout_configuration(root: &toml::Table) -> anyhow::Result<()> {
     peek_layouts::validate_configuration(root)
+}
+
+pub(crate) fn validate_saved_event_search_configuration(root: &toml::Table) -> anyhow::Result<()> {
+    saved_searches::validate_configuration(root)
 }
 
 pub(crate) fn migrate_template_store(config_path: &Path) -> anyhow::Result<()> {
@@ -460,7 +466,10 @@ fn required_access_role(command: Option<&control_request::Command>) -> AccessRol
             Some(event_search_command::Action::Query(_))
             | Some(event_search_command::Action::CancelQuery(_))
             | Some(event_search_command::Action::FetchMedia(_))
-            | Some(event_search_command::Action::CancelMedia(_)) => AccessRole::User,
+            | Some(event_search_command::Action::CancelMedia(_))
+            | Some(event_search_command::Action::ListSavedSearches(_))
+            | Some(event_search_command::Action::SaveSearch(_))
+            | Some(event_search_command::Action::DeleteSavedSearch(_)) => AccessRole::User,
             _ => AccessRole::Administrator,
         },
         Some(control_request::Command::NotificationRuleCommand(command)) => match command.action {
@@ -638,6 +647,13 @@ fn sensitive_administrator_operation(
         Some(control_request::Command::EventSearchCommand(command)) => match command.action {
             Some(event_search_command::Action::ReplaceTerms(_)) => Some("event_terms_replace"),
             Some(event_search_command::Action::SetEmbedding(_)) => Some("event_embedding_set"),
+            Some(event_search_command::Action::DeleteEmbedding(_)) => {
+                Some("event_embedding_delete")
+            }
+            Some(event_search_command::Action::SaveSearch(_)) => Some("event_saved_search_save"),
+            Some(event_search_command::Action::DeleteSavedSearch(_)) => {
+                Some("event_saved_search_delete")
+            }
             _ => None,
         },
         Some(control_request::Command::NotificationRuleCommand(command)) => match command.action {
@@ -1428,12 +1444,16 @@ fn server_capability_ids(state: &ServerState) -> Vec<String> {
     if state.notifications.is_some() {
         capability_ids.push("keeppeek.rules.v1".to_owned());
     }
-    if event_search_catalog(state).is_ok() {
+    if let Ok(catalog) = event_search_catalog(state) {
         if state.camera_config_path.is_some() {
             capability_ids.push("keeppeek.local-archive.v1".to_owned());
             capability_ids.push("keeppeek.local-archive-retention.v1".to_owned());
         }
         capability_ids.push("keeppeek.event-workflow.v1".to_owned());
+        capability_ids.push(event_search::ADVANCED_CAPABILITY_ID.to_owned());
+        if catalog.semantic_search_available() {
+            capability_ids.push(event_search::SEMANTIC_CAPABILITY_ID.to_owned());
+        }
         if cfg!(any(unix, windows)) {
             capability_ids.push("keeppeek.recording-maintenance.v1".to_owned());
         }
@@ -5125,6 +5145,7 @@ fn start_event_search_query(
     request: proto::QueryEvents,
     access: crate::access::CameraAccess,
     workflow: Option<crate::storage::catalog::workflow::Query>,
+    query_principal: event_search::EventSearchQueryPrincipal,
 ) -> Result<proto::EventSearchDelivery, ControlCommandError> {
     validate_client_id(&request.query_id, "event search query ID")?;
     let (_, channel) = data_channel_target(request.channel)?;
@@ -5149,8 +5170,15 @@ fn start_event_search_query(
     let spawn = std::thread::Builder::new()
         .name("event-search-query".to_owned())
         .spawn(move || {
-            let result = query_events(&worker_state, request, &access, workflow)
-                .map(|(_, messages)| messages);
+            let result = query_events(
+                &worker_state,
+                request,
+                &access,
+                workflow,
+                query_principal,
+                Some(worker_cancelled.clone()),
+            )
+            .map(|(_, messages)| messages);
             deliver_event_search_task(
                 &worker_state,
                 session_id,
@@ -5439,10 +5467,132 @@ fn set_event_search_embedding(
     validate_client_id(&request.source_id, "event source ID")?;
     let catalog = event_search_catalog(state)?;
     require_stored_event(catalog, &request.event_id, &request.source_id)?;
-    let embedding = proto_event_embedding(request.embedding.as_ref())?;
+    let input = event_search_proto::parse_embedding_input(request.embedding.as_ref())?;
     EventSearch::new(catalog.clone())
-        .set_embedding(&request.event_id, embedding)
-        .map_err(|error| stored_catalog_error("set event search embedding", error))
+        .set_embedding_with_provenance(&request.event_id, input)
+        .map_err(|error| event_search_error("set event search embedding", error))
+}
+
+fn delete_event_search_embedding(
+    state: &ServerState,
+    request: &proto::DeleteEventSearchEmbedding,
+) -> Result<(), ControlCommandError> {
+    validate_client_id(&request.event_id, "event ID")?;
+    validate_client_id(&request.source_id, "event source ID")?;
+    let catalog = event_search_catalog(state)?;
+    require_stored_event(catalog, &request.event_id, &request.source_id)?;
+    let version =
+        (!request.model_version.trim().is_empty()).then_some(request.model_version.as_str());
+    EventSearch::new(catalog.clone())
+        .delete_embedding(&request.event_id, &request.model_id, version)
+        .map(|_| ())
+        .map_err(|error| event_search_error("delete event search embedding", error))
+}
+
+struct AdvancedEventQueryScope {
+    start_ms: i64,
+    end_ms: i64,
+    preview_before_ms: u64,
+    preview_after_ms: u64,
+    page_size: u32,
+    page_token: Option<String>,
+    workflow: Option<crate::storage::catalog::workflow::Query>,
+    query_principal: event_search::EventSearchQueryPrincipal,
+    cancelled: Option<Arc<AtomicBool>>,
+}
+
+type AuthorizedCameraGroups =
+    std::collections::BTreeMap<String, std::collections::BTreeSet<String>>;
+
+fn collect_authorized_camera_scope(
+    state: &ServerState,
+    access: &crate::access::CameraAccess,
+    source_id: Option<&str>,
+    stream_id: &str,
+) -> Result<(Vec<String>, AuthorizedCameraGroups), ControlCommandError> {
+    let requested_sources: Vec<String> = source_id.map(str::to_owned).into_iter().collect();
+    let visible_entries = camera_access::query_cameras(state, access, &requested_sources)?;
+    let mut authorized_cameras = Vec::with_capacity(visible_entries.len());
+    let mut camera_groups: AuthorizedCameraGroups = std::collections::BTreeMap::new();
+    for entry in visible_entries {
+        if !entry
+            .info
+            .profiles
+            .iter()
+            .any(|profile| profile.stream == stream_id)
+        {
+            continue;
+        }
+        let camera_id = entry.info.id;
+        for group in entry.groups {
+            camera_groups
+                .entry(group)
+                .or_default()
+                .insert(camera_id.clone());
+        }
+        authorized_cameras.push(camera_id);
+    }
+    Ok((authorized_cameras, camera_groups))
+}
+
+fn execute_advanced_event_query(
+    state: &ServerState,
+    search: &EventSearch,
+    access: &crate::access::CameraAccess,
+    source_id: Option<&str>,
+    stream_id: &str,
+    advanced: proto::EventAdvancedSearch,
+    scope: AdvancedEventQueryScope,
+) -> Result<crate::storage::EventSearchPage, ControlCommandError> {
+    let raw_expr = advanced.expression.as_ref().ok_or_else(|| {
+        ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "advanced event search expression is required",
+        )
+    })?;
+    let parsed_expr = event_search_proto::parse_proto_expression(raw_expr)?;
+    let validated_expr = crate::storage::search::predicate::validate_expression(
+        advanced.expression_version,
+        &parsed_expr,
+    )
+    .map_err(|error| {
+        ControlCommandError::new(proto::ErrorCode::InvalidRequest, 400, error.message())
+    })?;
+    let canonical_hash = crate::storage::search::predicate::canonical_hash(
+        advanced.expression_version,
+        &validated_expr,
+    );
+    let normalized_summary =
+        crate::storage::search::predicate::summarize_expression(&validated_expr);
+    let semantic = event_search_proto::parse_semantic_ranking(advanced.semantic.as_ref())?;
+    let (authorized_cameras, camera_groups) =
+        collect_authorized_camera_scope(state, access, source_id, stream_id)?;
+    search
+        .search_advanced(crate::storage::EventAdvancedSearchQuery {
+            expression_version: advanced.expression_version,
+            expression: validated_expr,
+            canonical_hash,
+            normalized_summary,
+            authorized_cameras,
+            camera_groups,
+            stream_id: stream_id.to_owned(),
+            start_time_ms: scope.start_ms,
+            end_time_ms: scope.end_ms,
+            preview_before_ms: scope.preview_before_ms,
+            preview_after_ms: scope.preview_after_ms,
+            page_size: scope.page_size,
+            page_token: scope.page_token,
+            include_preview_keyframes: false,
+            workflow: scope.workflow,
+            workflow_actor: scope.query_principal.workflow_actor,
+            semantic,
+            policy_revision: scope.query_principal.policy_revision,
+            is_admin: scope.query_principal.is_admin,
+            max_candidates: 10_000,
+            cancelled: scope.cancelled,
+        })
+        .map_err(|error| event_search_error("search event expression", error))
 }
 
 fn query_events(
@@ -5450,6 +5600,8 @@ fn query_events(
     request: proto::QueryEvents,
     access: &crate::access::CameraAccess,
     workflow: Option<crate::storage::catalog::workflow::Query>,
+    query_principal: event_search::EventSearchQueryPrincipal,
+    cancelled: Option<Arc<AtomicBool>>,
 ) -> Result<(proto::EventSearchDelivery, Vec<OutboundDataMessage>), ControlCommandError> {
     camera_access::authorize_event_query(access, &request)?;
     validate_client_id(&request.query_id, "event search query ID")?;
@@ -5508,6 +5660,7 @@ fn query_events(
         .then(|| open_event_page_token(state, &request.page_token))
         .transpose()?;
 
+    let is_admin = query_principal.is_admin;
     let catalog = event_search_catalog(state)?;
     let search = EventSearch::new(catalog.clone());
     let mut include_preview_keyframes = true;
@@ -5563,6 +5716,9 @@ fn query_events(
                     next_page_token: None,
                     candidates_truncated: false,
                     workflow_counts: workflow.as_ref().map(|_| Default::default()),
+                    normalized_summary: None,
+                    semantic_summary: None,
+                    diagnostics: None,
                 }
             } else {
                 search
@@ -5628,6 +5784,28 @@ fn query_events(
                 workflow,
             })
             .map_err(|error| event_search_error("search event embeddings", error))?,
+        Some(proto::query_events::Search::Advanced(advanced)) => {
+            include_preview_keyframes = advanced.include_preview_keyframes;
+            execute_advanced_event_query(
+                state,
+                &search,
+                access,
+                request.source_id.as_deref(),
+                &request.stream_id,
+                advanced,
+                AdvancedEventQueryScope {
+                    start_ms,
+                    end_ms,
+                    preview_before_ms,
+                    preview_after_ms,
+                    page_size,
+                    page_token,
+                    workflow,
+                    query_principal,
+                    cancelled,
+                },
+            )?
+        }
         None => {
             return Err(ControlCommandError::new(
                 proto::ErrorCode::InvalidRequest,
@@ -5674,6 +5852,14 @@ fn query_events(
             next_page_token: next_page_token.unwrap_or_default(),
             candidates_truncated: page.candidates_truncated,
             workflow_counts: page.workflow_counts.map(event_workflow::proto_counts),
+            normalized_summary: page.normalized_summary.unwrap_or_default(),
+            semantic: page
+                .semantic_summary
+                .map(event_search_proto::proto_semantic_summary),
+            diagnostics: is_admin
+                .then_some(page.diagnostics)
+                .flatten()
+                .map(event_search_proto::proto_diagnostics),
         }),
     ));
     Ok((
@@ -6197,11 +6383,31 @@ fn event_search_catalog(
 }
 
 fn event_search_error(context: &str, error: anyhow::Error) -> ControlCommandError {
-    if error.to_string().contains("event search page token") {
-        return ControlCommandError::new(proto::ErrorCode::InvalidRequest, 400, error.to_string());
+    let text = error.to_string();
+    if text.contains("event search page token") || text.contains("advanced search page token") {
+        return ControlCommandError::new(proto::ErrorCode::InvalidRequest, 400, text);
     }
-    if error.to_string().contains("event search snapshot changed") {
-        return ControlCommandError::new(proto::ErrorCode::Rejected, 409, error.to_string());
+    if text.contains("event search snapshot changed")
+        || text.contains("advanced search snapshot changed")
+        || text.contains("event revision changed")
+    {
+        return ControlCommandError::new(proto::ErrorCode::Rejected, 409, text);
+    }
+    if text.contains("candidate budget exceeded") || text.contains("camera limit exceeded") {
+        return ControlCommandError::new(proto::ErrorCode::Rejected, 429, text);
+    }
+    if text.contains("deadline exceeded") {
+        return ControlCommandError::new(proto::ErrorCode::Timeout, 504, text);
+    }
+    if text.contains("semantic event search is currently unavailable") {
+        return ControlCommandError::new(proto::ErrorCode::Unavailable, 503, text);
+    }
+    if text.contains("must contain")
+        || text.contains("must be")
+        || text.contains("must not")
+        || text.contains("workflow predicates require")
+    {
+        return ControlCommandError::new(proto::ErrorCode::InvalidRequest, 400, text);
     }
     stored_catalog_error(context, error)
 }
@@ -19737,6 +19943,7 @@ mod tests {
         let embedding = proto::EventSearchEmbedding {
             model_id: "vision-embedding".to_owned(),
             values: vec![1.0, 0.0, 0.0],
+            ..Default::default()
         };
         let set_embedding = handler.handle(proto::Request {
             request_id: 203,
@@ -19838,6 +20045,186 @@ mod tests {
             )),
         });
         assert_eq!(semantic.data_messages.len(), 2);
+
+        let versioned_embedding = proto::EventSearchEmbedding {
+            model_id: "vision-embedding".to_owned(),
+            model_version: "v2".to_owned(),
+            producer_id: "cv-service".to_owned(),
+            values: vec![1.0, 0.0, 0.0],
+            ..Default::default()
+        };
+        let set_v2 = handler.handle(proto::Request {
+            request_id: 2071,
+            command: Some(control_request::Command::EventSearchCommand(
+                proto::EventSearchCommand {
+                    action: Some(event_search_command::Action::SetEmbedding(
+                        proto::SetEventSearchEmbedding {
+                            event_id: "face-1".to_owned(),
+                            embedding: Some(versioned_embedding.clone()),
+                            source_id: "127.0.0.1".to_owned(),
+                        },
+                    )),
+                },
+            )),
+        });
+        assert!(matches!(
+            set_v2.response.result,
+            Some(control_response::Result::Ok(_))
+        ));
+
+        let advanced_request = proto::QueryEvents {
+            query_id: "advanced-query-1".to_owned(),
+            workflow: None,
+            search: Some(proto::query_events::Search::Advanced(
+                proto::EventAdvancedSearch {
+                    expression_version: 1,
+                    expression: Some(proto::EventSearchExpression {
+                        node: Some(proto::event_search_expression::Node::Predicate(
+                            proto::EventSearchPredicate {
+                                kind: Some(proto::event_search_predicate::Kind::EventTypes(
+                                    proto::EventStringListPredicate {
+                                        values: vec!["face".to_owned()],
+                                    },
+                                )),
+                            },
+                        )),
+                    }),
+                    semantic: Some(proto::EventSemanticRanking {
+                        embedding: Some(versioned_embedding),
+                        minimum_score: Some(0.5),
+                    }),
+                    include_preview_keyframes: false,
+                },
+            )),
+            source_id: None,
+            stream_id: "main".to_owned(),
+            start_time: Some(millis_timestamp(fragments[0].start_ms - 1_000)),
+            end_time: Some(millis_timestamp(fragments[1].start_ms + 2_000)),
+            preview_before: None,
+            preview_after: None,
+            page_size: 10,
+            offset: 0,
+            channel: proto::DataChannelKind::ReliableData as i32,
+            page_token: String::new(),
+        };
+        let admin_advanced = handler.handle(proto::Request {
+            request_id: 2072,
+            command: Some(control_request::Command::EventSearchCommand(
+                proto::EventSearchCommand {
+                    action: Some(event_search_command::Action::Query(
+                        advanced_request.clone(),
+                    )),
+                },
+            )),
+        });
+        let Some(proto::message::Message::EventSearch(proto::EventSearchMessage {
+            message: Some(proto::event_search_message::Message::QueryEnd(admin_end)),
+        })) = admin_advanced
+            .data_messages
+            .last()
+            .and_then(|msg| msg.message.message.as_ref())
+        else {
+            panic!("advanced search must emit a terminal QueryEnd message");
+        };
+        assert!(admin_end.normalized_summary.contains("face"));
+        let sem_summary = admin_end.semantic.as_ref().unwrap();
+        assert_eq!(sem_summary.model_id, "vision-embedding");
+        assert_eq!(sem_summary.model_version, "v2");
+        assert_eq!(sem_summary.producer_id, "cv-service");
+        assert_eq!(sem_summary.dimensions, 3);
+        assert!(admin_end.diagnostics.is_some());
+
+        let (_, user_messages) = query_events(
+            &handler.state,
+            advanced_request.clone(),
+            &crate::access::CameraAccess::unrestricted(),
+            None,
+            event_search::EventSearchQueryPrincipal {
+                is_admin: false,
+                policy_revision: 0,
+                workflow_actor: Some("user-1".to_owned()),
+            },
+            None,
+        )
+        .unwrap();
+        let Some(proto::message::Message::EventSearch(proto::EventSearchMessage {
+            message: Some(proto::event_search_message::Message::QueryEnd(user_end)),
+        })) = user_messages
+            .last()
+            .and_then(|msg| msg.message.message.as_ref())
+        else {
+            panic!("non-admin advanced search must emit a terminal QueryEnd message");
+        };
+        assert!(user_end.diagnostics.is_none());
+        assert!(user_end.semantic.is_some());
+
+        // Authenticated non-local caller can use workflow AST predicates even when QueryEvents.workflow is omitted.
+        let mut wf_only_request = advanced_request.clone();
+        wf_only_request.query_id = "advanced-workflow-no-context".to_owned();
+        wf_only_request.search = Some(proto::query_events::Search::Advanced(
+            proto::EventAdvancedSearch {
+                expression_version: 1,
+                expression: Some(proto::EventSearchExpression {
+                    node: Some(proto::event_search_expression::Node::Predicate(
+                        proto::EventSearchPredicate {
+                            kind: Some(proto::event_search_predicate::Kind::Workflow(
+                                proto::EventWorkflowPredicate::Reviewed as i32,
+                            )),
+                        },
+                    )),
+                }),
+                semantic: None,
+                include_preview_keyframes: false,
+            },
+        ));
+        let (_, wf_only_messages) = query_events(
+            &handler.state,
+            wf_only_request,
+            &crate::access::CameraAccess::unrestricted(),
+            None,
+            event_search::EventSearchQueryPrincipal {
+                is_admin: false,
+                policy_revision: 0,
+                workflow_actor: Some("user-1".to_owned()),
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(wf_only_messages.len(), 1);
+
+        let delete_v2 = handler.handle(proto::Request {
+            request_id: 2073,
+            command: Some(control_request::Command::EventSearchCommand(
+                proto::EventSearchCommand {
+                    action: Some(event_search_command::Action::DeleteEmbedding(
+                        proto::DeleteEventSearchEmbedding {
+                            source_id: "127.0.0.1".to_owned(),
+                            event_id: "face-1".to_owned(),
+                            model_id: "vision-embedding".to_owned(),
+                            model_version: "v2".to_owned(),
+                        },
+                    )),
+                },
+            )),
+        });
+        assert!(matches!(
+            delete_v2.response.result,
+            Some(control_response::Result::Ok(_))
+        ));
+        let (_, post_delete_messages) = query_events(
+            &handler.state,
+            advanced_request,
+            &crate::access::CameraAccess::unrestricted(),
+            None,
+            event_search::EventSearchQueryPrincipal {
+                is_admin: true,
+                policy_revision: 0,
+                workflow_actor: None,
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(post_delete_messages.len(), 1);
 
         let keyframe = &hit.keyframes[0];
         let objects: Vec<proto::EventSearchMediaObject> = [

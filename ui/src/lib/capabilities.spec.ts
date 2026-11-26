@@ -17,6 +17,8 @@ describe('server capability contract', () => {
 			'keeppeek.recording.pre-roll.v1',
 			'keeppeek.recording-maintenance.v1',
 			'keeppeek.event-workflow.v1',
+			'keeppeek.event-search.advanced.v1',
+			'keeppeek.event-search.semantic.v1',
 			'keeppeek.backup.v1',
 			'keeppeek.configuration.v1',
 			'keeppeek.runtime-config.v1',
