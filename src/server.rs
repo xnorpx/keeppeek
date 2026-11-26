@@ -5139,15 +5139,13 @@ fn stored_catalog_error(context: &str, error: anyhow::Error) -> ControlCommandEr
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn start_event_search_query(
     state: &ServerState,
     session_id: SessionId,
     request: proto::QueryEvents,
     access: crate::access::CameraAccess,
     workflow: Option<crate::storage::catalog::workflow::Query>,
-    is_admin: bool,
-    policy_revision: u64,
+    query_principal: event_search::EventSearchQueryPrincipal,
 ) -> Result<proto::EventSearchDelivery, ControlCommandError> {
     validate_client_id(&request.query_id, "event search query ID")?;
     let (_, channel) = data_channel_target(request.channel)?;
@@ -5177,8 +5175,7 @@ fn start_event_search_query(
                 request,
                 &access,
                 workflow,
-                is_admin,
-                policy_revision,
+                query_principal,
                 Some(worker_cancelled.clone()),
             )
             .map(|(_, messages)| messages);
@@ -5492,7 +5489,6 @@ fn delete_event_search_embedding(
         .map_err(|error| event_search_error("delete event search embedding", error))
 }
 
-#[allow(clippy::too_many_arguments)]
 struct AdvancedEventQueryScope {
     start_ms: i64,
     end_ms: i64,
@@ -5501,9 +5497,42 @@ struct AdvancedEventQueryScope {
     page_size: u32,
     page_token: Option<String>,
     workflow: Option<crate::storage::catalog::workflow::Query>,
-    is_admin: bool,
-    policy_revision: u64,
+    query_principal: event_search::EventSearchQueryPrincipal,
     cancelled: Option<Arc<AtomicBool>>,
+}
+
+type AuthorizedCameraGroups =
+    std::collections::BTreeMap<String, std::collections::BTreeSet<String>>;
+
+fn collect_authorized_camera_scope(
+    state: &ServerState,
+    access: &crate::access::CameraAccess,
+    source_id: Option<&str>,
+    stream_id: &str,
+) -> Result<(Vec<String>, AuthorizedCameraGroups), ControlCommandError> {
+    let requested_sources: Vec<String> = source_id.map(str::to_owned).into_iter().collect();
+    let visible_entries = camera_access::query_cameras(state, access, &requested_sources)?;
+    let mut authorized_cameras = Vec::with_capacity(visible_entries.len());
+    let mut camera_groups: AuthorizedCameraGroups = std::collections::BTreeMap::new();
+    for entry in visible_entries {
+        if !entry
+            .info
+            .profiles
+            .iter()
+            .any(|profile| profile.stream == stream_id)
+        {
+            continue;
+        }
+        let camera_id = entry.info.id;
+        for group in entry.groups {
+            camera_groups
+                .entry(group)
+                .or_default()
+                .insert(camera_id.clone());
+        }
+        authorized_cameras.push(camera_id);
+    }
+    Ok((authorized_cameras, camera_groups))
 }
 
 fn execute_advanced_event_query(
@@ -5537,29 +5566,8 @@ fn execute_advanced_event_query(
     let normalized_summary =
         crate::storage::search::predicate::summarize_expression(&validated_expr);
     let semantic = event_search_proto::parse_semantic_ranking(advanced.semantic.as_ref())?;
-    let requested_sources: Vec<String> = source_id.map(str::to_owned).into_iter().collect();
-    let visible_entries = camera_access::query_cameras(state, access, &requested_sources)?;
-    let mut authorized_cameras = Vec::with_capacity(visible_entries.len());
-    let mut camera_groups: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
-        std::collections::BTreeMap::new();
-    for entry in visible_entries {
-        if !entry
-            .info
-            .profiles
-            .iter()
-            .any(|profile| profile.stream == stream_id)
-        {
-            continue;
-        }
-        let camera_id = entry.info.id;
-        for group in entry.groups {
-            camera_groups
-                .entry(group)
-                .or_default()
-                .insert(camera_id.clone());
-        }
-        authorized_cameras.push(camera_id);
-    }
+    let (authorized_cameras, camera_groups) =
+        collect_authorized_camera_scope(state, access, source_id, stream_id)?;
     search
         .search_advanced(crate::storage::EventAdvancedSearchQuery {
             expression_version: advanced.expression_version,
@@ -5577,9 +5585,10 @@ fn execute_advanced_event_query(
             page_token: scope.page_token,
             include_preview_keyframes: false,
             workflow: scope.workflow,
+            workflow_actor: scope.query_principal.workflow_actor,
             semantic,
-            policy_revision: scope.policy_revision,
-            is_admin: scope.is_admin,
+            policy_revision: scope.query_principal.policy_revision,
+            is_admin: scope.query_principal.is_admin,
             max_candidates: 10_000,
             cancelled: scope.cancelled,
         })
@@ -5591,8 +5600,7 @@ fn query_events(
     request: proto::QueryEvents,
     access: &crate::access::CameraAccess,
     workflow: Option<crate::storage::catalog::workflow::Query>,
-    is_admin: bool,
-    policy_revision: u64,
+    query_principal: event_search::EventSearchQueryPrincipal,
     cancelled: Option<Arc<AtomicBool>>,
 ) -> Result<(proto::EventSearchDelivery, Vec<OutboundDataMessage>), ControlCommandError> {
     camera_access::authorize_event_query(access, &request)?;
@@ -5652,6 +5660,7 @@ fn query_events(
         .then(|| open_event_page_token(state, &request.page_token))
         .transpose()?;
 
+    let is_admin = query_principal.is_admin;
     let catalog = event_search_catalog(state)?;
     let search = EventSearch::new(catalog.clone());
     let mut include_preview_keyframes = true;
@@ -5792,8 +5801,7 @@ fn query_events(
                     page_size,
                     page_token,
                     workflow,
-                    is_admin,
-                    policy_revision,
+                    query_principal,
                     cancelled,
                 },
             )?
@@ -20131,8 +20139,11 @@ mod tests {
             advanced_request.clone(),
             &crate::access::CameraAccess::unrestricted(),
             None,
-            false,
-            0,
+            event_search::EventSearchQueryPrincipal {
+                is_admin: false,
+                policy_revision: 0,
+                workflow_actor: Some("user-1".to_owned()),
+            },
             None,
         )
         .unwrap();
@@ -20146,6 +20157,40 @@ mod tests {
         };
         assert!(user_end.diagnostics.is_none());
         assert!(user_end.semantic.is_some());
+
+        // Authenticated non-local caller can use workflow AST predicates even when QueryEvents.workflow is omitted.
+        let mut wf_only_request = advanced_request.clone();
+        wf_only_request.query_id = "advanced-workflow-no-context".to_owned();
+        wf_only_request.search = Some(proto::query_events::Search::Advanced(
+            proto::EventAdvancedSearch {
+                expression_version: 1,
+                expression: Some(proto::EventSearchExpression {
+                    node: Some(proto::event_search_expression::Node::Predicate(
+                        proto::EventSearchPredicate {
+                            kind: Some(proto::event_search_predicate::Kind::Workflow(
+                                proto::EventWorkflowPredicate::Reviewed as i32,
+                            )),
+                        },
+                    )),
+                }),
+                semantic: None,
+                include_preview_keyframes: false,
+            },
+        ));
+        let (_, wf_only_messages) = query_events(
+            &handler.state,
+            wf_only_request,
+            &crate::access::CameraAccess::unrestricted(),
+            None,
+            event_search::EventSearchQueryPrincipal {
+                is_admin: false,
+                policy_revision: 0,
+                workflow_actor: Some("user-1".to_owned()),
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(wf_only_messages.len(), 1);
 
         let delete_v2 = handler.handle(proto::Request {
             request_id: 2073,
@@ -20171,8 +20216,11 @@ mod tests {
             advanced_request,
             &crate::access::CameraAccess::unrestricted(),
             None,
-            true,
-            0,
+            event_search::EventSearchQueryPrincipal {
+                is_admin: true,
+                policy_revision: 0,
+                workflow_actor: None,
+            },
             None,
         )
         .unwrap();

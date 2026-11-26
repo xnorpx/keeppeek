@@ -44,6 +44,19 @@
 
 	let validationError = $derived(validateEventExpression(draft));
 	let summaryText = $derived(normalizedSummary || summarizeEventExpression(draft));
+	let csvDrafts = $state<Record<string, string>>({});
+	let lastEmittedDraft: EventExpressionNode | null = null;
+
+	$effect(() => {
+		if (draft !== lastEmittedDraft) {
+			csvDrafts = {};
+		}
+	});
+
+	function emitDraft(next: EventExpressionNode): void {
+		lastEmittedDraft = next;
+		onchange(next);
+	}
 
 	const predicateKinds: readonly { value: EventExpressionPredicate['kind']; label: string }[] = [
 		{ value: 'camera_ids', label: 'Camera' },
@@ -55,11 +68,11 @@
 		{ value: 'confidence', label: 'Confidence' },
 		{ value: 'missing_confidence', label: 'Missing confidence' },
 		{ value: 'has_image', label: 'Has image' },
+		{ value: 'time_range', label: 'UTC time range' },
 		{ value: 'text', label: 'Indexed text' },
 		{ value: 'workflow', label: 'Review / bookmark' },
 		{ value: 'producer_ids', label: 'Embedding producer' },
-		{ value: 'model_ids', label: 'Embedding model' },
-		{ value: 'event_ids', label: 'Event ID' }
+		{ value: 'model_ids', label: 'Embedding model' }
 	];
 
 	function createPredicate(kind: EventExpressionPredicate['kind']): EventExpressionPredicate {
@@ -93,8 +106,6 @@
 			case 'producer_ids':
 				return { kind, values: [''] };
 			case 'model_ids':
-				return { kind, values: [''] };
-			case 'event_ids':
 				return { kind, values: [''] };
 		}
 	}
@@ -135,7 +146,8 @@
 	}
 
 	function moveChild(path: readonly number[], index: number, delta: -1 | 1): void {
-		onchange(
+		csvDrafts = {};
+		emitDraft(
 			updateAtPath(draft, path, (node) => {
 				if (node.op !== 'and' && node.op !== 'or') return node;
 				const target = index + delta;
@@ -149,7 +161,7 @@
 	}
 
 	function addCondition(path: readonly number[]): void {
-		onchange(
+		emitDraft(
 			updateAtPath(draft, path, (node) => {
 				const leaf: EventExpressionNode = {
 					op: 'predicate',
@@ -167,7 +179,7 @@
 	}
 
 	function addGroup(path: readonly number[], op: 'and' | 'or' | 'not'): void {
-		onchange(
+		emitDraft(
 			updateAtPath(draft, path, (node) => {
 				const group: EventExpressionNode =
 					op === 'not'
@@ -185,11 +197,13 @@
 	}
 
 	function removeAt(path: readonly number[]): void {
-		onchange(updateAtPath(draft, path, () => null));
+		csvDrafts = {};
+		emitDraft(updateAtPath(draft, path, () => null));
 	}
 
 	function changeGroupOp(path: readonly number[], nextOp: 'and' | 'or' | 'not'): void {
-		onchange(
+		csvDrafts = {};
+		emitDraft(
 			updateAtPath(draft, path, (node) => {
 				if (nextOp === 'not') {
 					const first =
@@ -214,7 +228,40 @@
 	}
 
 	function updatePredicate(path: readonly number[], predicate: EventExpressionPredicate): void {
-		onchange(updateAtPath(draft, path, () => ({ op: 'predicate', predicate })));
+		emitDraft(updateAtPath(draft, path, () => ({ op: 'predicate', predicate })));
+	}
+
+	function csvKey(path: readonly number[], kind: EventExpressionPredicate['kind']): string {
+		return `${path.join('.')}:${kind}`;
+	}
+
+	function updateCsvInput(
+		path: readonly number[],
+		kind: 'camera_ids' | 'group_ids' | 'event_types' | 'zones' | 'producer_ids' | 'model_ids',
+		raw: string
+	): void {
+		csvDrafts = { ...csvDrafts, [csvKey(path, kind)]: raw };
+		updatePredicate(path, { kind, values: splitCsv(raw) });
+	}
+
+	function clearCsvDraft(path: readonly number[], kind: EventExpressionPredicate['kind']): void {
+		const key = csvKey(path, kind);
+		if (!(key in csvDrafts)) return;
+		const next = { ...csvDrafts };
+		delete next[key];
+		csvDrafts = next;
+	}
+
+	function formatUtcDateTimeLocal(ms: number): string {
+		if (!Number.isFinite(ms)) return '';
+		return new Date(ms).toISOString().slice(0, 16);
+	}
+
+	function parseUtcDateTimeLocal(raw: string, fallbackMs: number): number {
+		const trimmed = raw.trim();
+		if (!trimmed) return fallbackMs;
+		const parsed = Date.parse(trimmed.endsWith('Z') ? trimmed : `${trimmed}Z`);
+		return Number.isFinite(parsed) ? parsed : fallbackMs;
 	}
 
 	function splitCsv(raw: string): string[] {
@@ -336,31 +383,57 @@
 				aria-label="Predicate field"
 				value={node.predicate.kind}
 				class="h-8 rounded-sm border border-hairline bg-raised px-2 text-xs"
-				onchange={(event) =>
+				onchange={(event) => {
+					clearCsvDraft(path, node.predicate.kind);
 					updatePredicate(
 						path,
 						createPredicate(event.currentTarget.value as EventExpressionPredicate['kind'])
-					)}
+					);
+				}}
 			>
 				{#each predicateKinds as item (item.value)}
 					<option value={item.value}>{item.label}</option>
 				{/each}
 			</select>
 
-			{#if node.predicate.kind === 'camera_ids' || node.predicate.kind === 'group_ids' || node.predicate.kind === 'event_types' || node.predicate.kind === 'zones' || node.predicate.kind === 'producer_ids' || node.predicate.kind === 'model_ids' || node.predicate.kind === 'event_ids'}
+			{#if node.predicate.kind === 'camera_ids' || node.predicate.kind === 'group_ids' || node.predicate.kind === 'event_types' || node.predicate.kind === 'zones' || node.predicate.kind === 'producer_ids' || node.predicate.kind === 'model_ids'}
 				{@const listPred = node.predicate}
+				{@const fieldKey = csvKey(path, listPred.kind)}
 				<input
 					type="text"
 					aria-label={`${listPred.kind} values`}
-					value={listPred.values.join(', ')}
+					value={csvDrafts[fieldKey] ?? listPred.values.join(', ')}
 					placeholder="Comma-separated values"
 					class="h-8 min-w-44 flex-1 rounded-sm border border-hairline bg-raised px-2 text-xs"
-					oninput={(event) =>
+					oninput={(event) => updateCsvInput(path, listPred.kind, event.currentTarget.value)}
+					onblur={() => clearCsvDraft(path, listPred.kind)}
+				/>
+			{:else if node.predicate.kind === 'time_range'}
+				{@const rangePred = node.predicate}
+				<input
+					type="datetime-local"
+					aria-label="UTC start time"
+					value={formatUtcDateTimeLocal(rangePred.startMs)}
+					class="h-8 rounded-sm border border-hairline bg-raised px-2 font-mono text-xs"
+					onchange={(event) =>
 						updatePredicate(path, {
-							kind: listPred.kind,
-							values: splitCsv(event.currentTarget.value)
+							...rangePred,
+							startMs: parseUtcDateTimeLocal(event.currentTarget.value, rangePred.startMs)
 						})}
 				/>
+				<span class="text-xs text-muted-foreground">to</span>
+				<input
+					type="datetime-local"
+					aria-label="UTC end time"
+					value={formatUtcDateTimeLocal(rangePred.endMs)}
+					class="h-8 rounded-sm border border-hairline bg-raised px-2 font-mono text-xs"
+					onchange={(event) =>
+						updatePredicate(path, {
+							...rangePred,
+							endMs: parseUtcDateTimeLocal(event.currentTarget.value, rangePred.endMs)
+						})}
+				/>
+				<span class="font-mono text-[11px] text-muted-foreground">UTC</span>
 			{:else if node.predicate.kind === 'origins'}
 				{@const originPred = node.predicate}
 				<select

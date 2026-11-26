@@ -92,6 +92,7 @@ fn snapshot_digest(
     for camera in &scope.cameras {
         put(camera.as_bytes());
     }
+    put(query.workflow_actor.as_deref().unwrap_or("").as_bytes());
     match &query.workflow {
         Some(workflow) => {
             put(b"workflow");

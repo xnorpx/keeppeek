@@ -19,7 +19,7 @@ saved searches stored in `config.toml`.
 Expressions are typed AST trees with `AND`, `OR`, `NOT` (single child), and indexed leaf
 predicates:
 
-- `camera_ids`, `group_ids`, `event_types`, `origins`, `zones`, `event_ids`;
+- `camera_ids`, `group_ids`, `event_types`, `origins`, `zones`;
 - `missing_zone`, `missing_confidence`, `has_image`;
 - `confidence` (`at_least` or `at_most`, finite `[0.0, 1.0]`);
 - `time_range` (half-open UTC `[start, end)`, span at most 31 days);

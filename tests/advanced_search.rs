@@ -110,6 +110,7 @@ fn build_query(
         page_token: None,
         include_preview_keyframes: false,
         workflow: None,
+        workflow_actor: None,
         semantic,
         policy_revision: 1,
         is_admin,
@@ -366,6 +367,51 @@ fn hybrid_semantic_enforces_exact_model_space_provenance_threshold_and_outage_is
     assert_eq!(sem.dimensions, 3);
     assert_eq!(sem.candidate_count, 2);
     assert!(!sem.candidates_truncated);
+
+    // Truncation: with 3 compatible v2 embeddings and max_candidates = 2, keep newest 2 deterministically.
+    search
+        .set_embedding_with_provenance(
+            "c",
+            EventEmbeddingInput {
+                embedding: EventEmbedding {
+                    model_id: "clip".to_owned(),
+                    values: vec![0.6, 0.8, 0.0],
+                },
+                provenance: EventEmbeddingProvenance {
+                    model_version: "v2".to_owned(),
+                    producer_id: "cv-service-1".to_owned(),
+                    event_revision: Some(1),
+                    created_at_ms: Some(32_000),
+                },
+            },
+        )
+        .unwrap();
+    let mut truncated_query = build_query(
+        expr.clone(),
+        vec!["cam-a".to_owned()],
+        BTreeMap::new(),
+        Some(EventSemanticRanking {
+            embedding: EventEmbedding {
+                model_id: "clip".to_owned(),
+                values: vec![1.0, 0.0, 0.0],
+            },
+            model_version: "v2".to_owned(),
+            minimum_score: Some(0.5),
+        }),
+        true,
+    );
+    truncated_query.max_candidates = 2;
+    let truncated_page = search.search_advanced(truncated_query).unwrap();
+    assert!(truncated_page.candidates_truncated);
+    let truncated_sem = truncated_page.semantic_summary.expect("summary returned");
+    assert!(truncated_sem.candidates_truncated);
+    assert_eq!(truncated_sem.candidate_count, 2);
+    let truncated_ids: Vec<_> = truncated_page
+        .hits
+        .iter()
+        .map(|hit| hit.event_id.as_str())
+        .collect();
+    assert_eq!(truncated_ids, vec!["b", "c"]);
 
     // Delete embedding removes it from semantic search immediately.
     let deleted = search.delete_embedding("a", "clip", Some("v2")).unwrap();

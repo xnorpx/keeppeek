@@ -34,6 +34,7 @@ pub(super) struct Scope<'a> {
 
 pub(super) struct MatchedEvent {
     pub id: String,
+    pub camera_id: String,
     pub start_ms: i64,
     pub revision: i64,
     pub distance: Option<f64>,
@@ -77,7 +78,10 @@ async fn execute_in_snapshot(
         query.start_time_ms,
         query.end_time_ms,
     )?;
-    let actor = query.workflow.as_ref().map(|item| item.actor_id.as_str());
+    let actor = query
+        .workflow_actor
+        .as_deref()
+        .or_else(|| query.workflow.as_ref().map(|item| item.actor_id.as_str()));
     let compiled = filter::compile(
         &query.expression,
         &scope.cameras,
@@ -91,22 +95,31 @@ async fn execute_in_snapshot(
         connection,
         &scope,
         &query.stream_id,
-        query.max_candidates,
+        scope_candidate_budget(&query),
         deadline,
         &query,
     )
     .await?;
-    let (matches, candidates_truncated, semantic_summary) =
-        evaluate_matches(connection, &scope, &compiled, &query, deadline).await?;
+    let (matches, candidates_truncated, semantic_summary) = evaluate_matches(
+        connection,
+        &scope,
+        &compiled,
+        &query,
+        estimated_candidates,
+        deadline,
+    )
+    .await?;
     let scanned_candidates = u64::try_from(matches.len()).unwrap_or(u64::MAX);
-    let workflow_counts =
-        compute_workflow_counts(connection, query.workflow.as_ref(), &matches).await?;
+    let workflow_counts = compute_workflow_counts(
+        connection,
+        query.workflow.as_ref(),
+        &matches,
+        deadline,
+        &query,
+    )
+    .await?;
     let (page_matches, next_page_token) = cursor::slice_page(&scope, &query, matches, previous)?;
-    let mut hits = hydrate_hits(connection, &page_matches, &query).await?;
-    if query.include_preview_keyframes {
-        attach_default_previews(connection, &mut hits, &query.stream_id).await?;
-    }
-    workflow::hydrate(connection, query.workflow.as_ref(), &mut hits).await?;
+    let hits = hydrate_page_hits(connection, &page_matches, &query).await?;
     let diagnostics = build_diagnostics(
         query.is_admin,
         query.semantic.is_some(),
@@ -125,16 +138,49 @@ async fn execute_in_snapshot(
     })
 }
 
+async fn hydrate_page_hits(
+    connection: &turso::Connection,
+    page_matches: &[MatchedEvent],
+    query: &EventAdvancedSearchQuery,
+) -> anyhow::Result<Vec<EventSearchHit>> {
+    let mut hits = hydrate_hits(connection, page_matches, query).await?;
+    if query.include_preview_keyframes {
+        attach_default_previews(connection, &mut hits, &query.stream_id).await?;
+    }
+    workflow::hydrate(connection, query.workflow.as_ref(), &mut hits).await?;
+    Ok(hits)
+}
+
+const fn scope_candidate_budget(query: &EventAdvancedSearchQuery) -> u32 {
+    if query.semantic.is_some() {
+        let expanded = query.max_candidates.saturating_mul(10);
+        let cap = MAX_ADVANCED_CANDIDATES.saturating_mul(10);
+        if expanded < cap { expanded } else { cap }
+    } else {
+        query.max_candidates
+    }
+}
+
 async fn evaluate_matches(
     connection: &turso::Connection,
     scope: &Scope<'_>,
     compiled: &filter::CompiledFilter,
     query: &EventAdvancedSearchQuery,
+    estimated_candidates: u32,
     deadline: Instant,
 ) -> anyhow::Result<(Vec<MatchedEvent>, bool, Option<EventSearchSemanticSummary>)> {
     match &query.semantic {
         Some(ranking) => {
-            collect_hybrid_matches(connection, scope, compiled, query, ranking, deadline).await
+            collect_hybrid_matches(
+                connection,
+                scope,
+                compiled,
+                query,
+                ranking,
+                estimated_candidates,
+                deadline,
+            )
+            .await
         }
         None => {
             let mut matched =
@@ -221,7 +267,7 @@ async fn check_candidate_budget(
     query: &EventAdvancedSearchQuery,
 ) -> anyhow::Result<u32> {
     ensure!(
-        limit > 0 && limit <= MAX_ADVANCED_CANDIDATES,
+        limit > 0 && limit <= MAX_ADVANCED_CANDIDATES.saturating_mul(10),
         "advanced search candidate budget is invalid"
     );
     check_request(deadline, query)?;
@@ -287,6 +333,7 @@ async fn collect_boolean_matches(
         while let Some(row) = rows.next().await? {
             matches.push(MatchedEvent {
                 id: row.get(0)?,
+                camera_id: camera.to_owned(),
                 start_ms: row.get(1)?,
                 revision: row.get(2)?,
                 distance: None,
@@ -303,14 +350,21 @@ async fn collect_boolean_matches(
     Ok(matches)
 }
 
-fn hybrid_query_sql(filter_sql: &str, base_len: usize) -> String {
+fn hybrid_query_sql(filter_sql: &str, base_len: usize, include_distance: bool) -> String {
     let model_param = base_len + 1;
     let version_param = base_len + 2;
     let dims_param = base_len + 3;
-    let vector_param = base_len + 4;
+    let select_list = if include_distance {
+        let vector_param = base_len + 4;
+        format!(
+            "e.id, e.start_time_ms, e.revision, s.producer_id, \
+             vector_distance_cos(s.embedding, ?{vector_param})"
+        )
+    } else {
+        "e.id, e.start_time_ms, e.revision, s.producer_id".to_owned()
+    };
     format!(
-        "SELECT e.id, e.start_time_ms, e.revision, \
-         vector_distance_cos(s.embedding, ?{vector_param}), s.producer_id \
+        "SELECT {select_list} \
          FROM recording_events AS e \
          INDEXED BY recording_events_camera_time \
          JOIN recording_event_embeddings AS s \
@@ -348,13 +402,67 @@ async fn collect_hybrid_matches(
     compiled: &filter::CompiledFilter,
     query: &EventAdvancedSearchQuery,
     ranking: &EventSemanticRanking,
+    estimated_candidates: u32,
     deadline: Instant,
 ) -> anyhow::Result<(Vec<MatchedEvent>, bool, Option<EventSearchSemanticSummary>)> {
-    let base_len = 4 + compiled.values.len();
     let query_blob = encode_query_vector(connection, &ranking.embedding.values).await?;
+    let single_pass = estimated_candidates <= query.max_candidates;
+    let mut candidates = stream_hybrid_candidates(
+        connection,
+        scope,
+        compiled,
+        query,
+        ranking,
+        single_pass.then_some(query_blob.as_slice()),
+        deadline,
+    )
+    .await?;
+    // Keep the newest compatible candidates deterministically before ranking.
+    candidates.sort_by(|left, right| {
+        right
+            .start_ms
+            .cmp(&left.start_ms)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let candidate_cap = usize::try_from(query.max_candidates).unwrap_or(0);
+    let candidates_truncated = candidates.len() > candidate_cap;
+    candidates.truncate(candidate_cap);
+    if !single_pass {
+        score_hybrid_candidates(
+            connection,
+            &mut candidates,
+            ranking,
+            &query_blob,
+            deadline,
+            query,
+        )
+        .await?;
+    }
+    Ok(finalize_hybrid_ranking(
+        candidates,
+        candidates_truncated,
+        scope,
+        ranking,
+    ))
+}
+
+async fn stream_hybrid_candidates(
+    connection: &turso::Connection,
+    scope: &Scope<'_>,
+    compiled: &filter::CompiledFilter,
+    query: &EventAdvancedSearchQuery,
+    ranking: &EventSemanticRanking,
+    query_blob: Option<&[u8]>,
+    deadline: Instant,
+) -> anyhow::Result<Vec<MatchedEvent>> {
+    let base_len = 4 + compiled.values.len();
     let dimensions = i64::try_from(ranking.embedding.values.len())?;
     let mut statement = connection
-        .prepare(hybrid_query_sql(&compiled.sql, base_len))
+        .prepare(hybrid_query_sql(
+            &compiled.sql,
+            base_len,
+            query_blob.is_some(),
+        ))
         .await?;
     let mut candidates = Vec::new();
     for &camera in &scope.cameras {
@@ -368,46 +476,87 @@ async fn collect_hybrid_matches(
         params.push(turso::Value::Text(ranking.embedding.model_id.clone()));
         params.push(turso::Value::Text(ranking.model_version.clone()));
         params.push(turso::Value::Integer(dimensions));
-        params.push(turso::Value::Blob(query_blob.clone()));
+        if let Some(blob) = query_blob {
+            params.push(turso::Value::Blob(blob.to_vec()));
+        }
         let mut rows = statement.query(turso::params_from_iter(params)).await?;
         while let Some(row) = rows.next().await? {
             if candidates.len().is_multiple_of(512) {
                 check_request(deadline, query)?;
             }
-            let distance: f64 = row.get(3)?;
-            if !distance.is_finite() {
-                continue;
-            }
+            let distance = match query_blob {
+                Some(_) => {
+                    let value: f64 = row.get(4)?;
+                    if !value.is_finite() {
+                        continue;
+                    }
+                    Some(value)
+                }
+                None => None,
+            };
             candidates.push(MatchedEvent {
                 id: row.get(0)?,
+                camera_id: camera.to_owned(),
                 start_ms: row.get(1)?,
                 revision: row.get(2)?,
-                distance: Some(distance),
-                producer_id: row.get::<Option<String>>(4)?,
+                distance,
+                producer_id: row.get::<Option<String>>(3)?,
             });
         }
         drop(rows);
         statement.reset()?;
     }
-    Ok(rank_hybrid_candidates(candidates, scope, query, ranking))
+    Ok(candidates)
 }
 
-fn rank_hybrid_candidates(
-    mut candidates: Vec<MatchedEvent>,
-    scope: &Scope<'_>,
+async fn score_hybrid_candidates(
+    connection: &turso::Connection,
+    candidates: &mut Vec<MatchedEvent>,
+    ranking: &EventSemanticRanking,
+    query_blob: &[u8],
+    deadline: Instant,
     query: &EventAdvancedSearchQuery,
+) -> anyhow::Result<()> {
+    let mut statement = connection
+        .prepare(
+            "SELECT vector_distance_cos(s.embedding, ?1) \
+             FROM recording_event_embeddings AS s \
+             WHERE s.event_id = ?2 AND s.model_id = ?3 AND s.model_version = ?4",
+        )
+        .await?;
+    let mut scored = Vec::with_capacity(candidates.len());
+    for (index, mut item) in candidates.drain(..).enumerate() {
+        if index.is_multiple_of(512) {
+            check_request(deadline, query)?;
+        }
+        let mut rows = statement
+            .query(turso::params![
+                query_blob.to_vec(),
+                item.id.as_str(),
+                ranking.embedding.model_id.as_str(),
+                ranking.model_version.as_str(),
+            ])
+            .await?;
+        if let Some(row) = rows.next().await? {
+            let distance: f64 = row.get(0)?;
+            if distance.is_finite() {
+                item.distance = Some(distance);
+                scored.push(item);
+            }
+        }
+        drop(rows);
+        statement.reset()?;
+    }
+    *candidates = scored;
+    Ok(())
+}
+
+fn finalize_hybrid_ranking(
+    mut candidates: Vec<MatchedEvent>,
+    candidates_truncated: bool,
+    scope: &Scope<'_>,
     ranking: &EventSemanticRanking,
 ) -> (Vec<MatchedEvent>, bool, Option<EventSearchSemanticSummary>) {
-    // Keep the newest compatible candidates deterministically before ranking.
-    candidates.sort_by(|left, right| {
-        right
-            .start_ms
-            .cmp(&left.start_ms)
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    let candidate_cap = usize::try_from(query.max_candidates).unwrap_or(0);
-    let candidates_truncated = candidates.len() > candidate_cap;
-    candidates.truncate(candidate_cap);
     let candidate_count = u64::try_from(candidates.len()).unwrap_or(u64::MAX);
     let producer_id = summarize_producers(&candidates);
     if let Some(min_score) = ranking.minimum_score {
@@ -457,61 +606,64 @@ fn summarize_producers(candidates: &[MatchedEvent]) -> String {
     }
 }
 
+const WORKFLOW_COUNT_BATCH_SIZE: usize = 128;
+
 async fn compute_workflow_counts(
     connection: &turso::Connection,
-    query: Option<&workflow::Query>,
+    workflow_filter: Option<&workflow::Query>,
     matches: &[MatchedEvent],
+    deadline: Instant,
+    query: &EventAdvancedSearchQuery,
 ) -> anyhow::Result<Option<workflow::Counts>> {
-    let Some(workflow_query) = query else {
+    let Some(workflow_query) = workflow_filter else {
         return Ok(None);
     };
     if matches.is_empty() {
         return Ok(Some(workflow::Counts::default()));
     }
     let mut counts = workflow::Counts::default();
-    let mut statement = connection
-        .prepare(
-            "SELECT COALESCE(review.reviewed, 0), COALESCE(review.dismissed, 0), \
-             COALESCE(bookmark.active, 0), COALESCE(bookmark.created_by, '') \
-             FROM recording_events AS e \
-             LEFT JOIN event_reviews AS review ON review.source_id = e.camera_id \
-               AND review.event_id = e.id AND review.principal_id = ?2 \
-             LEFT JOIN event_bookmarks AS bookmark ON bookmark.source_id = e.camera_id \
-               AND bookmark.event_id = e.id \
-             WHERE e.id = ?1",
-        )
-        .await?;
-    for item in matches {
-        let mut rows = statement
-            .query(turso::params![
-                item.id.as_str(),
-                workflow_query.actor_id.as_str()
-            ])
+    for chunk in matches.chunks(WORKFLOW_COUNT_BATCH_SIZE) {
+        check_request(deadline, query)?;
+        let mut params = Vec::with_capacity(1 + chunk.len() * 2);
+        params.push(turso::Value::Text(workflow_query.actor_id.clone()));
+        let targets = chunk
+            .iter()
+            .map(|item| {
+                let target = format!("(?{}, ?{})", params.len() + 1, params.len() + 2);
+                params.push(turso::Value::Text(item.camera_id.clone()));
+                params.push(turso::Value::Text(item.id.clone()));
+                target
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        // Drive counts from VALUES so Turso uses event_reviews and event_bookmarks primary keys instead of scanning recording_events.
+        let sql = format!(
+            "WITH requested(source_id, event_id) AS (VALUES {targets}) \
+             SELECT COUNT(*), \
+             COALESCE(SUM(CASE WHEN COALESCE(review.reviewed, 0) = 0 \
+               AND COALESCE(review.dismissed, 0) = 0 THEN 1 ELSE 0 END), 0), \
+             COALESCE(SUM(CASE WHEN COALESCE(review.reviewed, 0) <> 0 THEN 1 ELSE 0 END), 0), \
+             COALESCE(SUM(CASE WHEN COALESCE(review.dismissed, 0) <> 0 THEN 1 ELSE 0 END), 0), \
+             COALESCE(SUM(CASE WHEN COALESCE(bookmark.active, 0) <> 0 THEN 1 ELSE 0 END), 0), \
+             COALESCE(SUM(CASE WHEN COALESCE(bookmark.active, 0) <> 0 \
+               AND COALESCE(bookmark.created_by, '') = ?1 THEN 1 ELSE 0 END), 0) \
+             FROM requested \
+             LEFT JOIN event_reviews AS review ON review.source_id = requested.source_id \
+               AND review.event_id = requested.event_id AND review.principal_id = ?1 \
+             LEFT JOIN event_bookmarks AS bookmark ON bookmark.source_id = requested.source_id \
+               AND bookmark.event_id = requested.event_id"
+        );
+        let mut rows = connection
+            .query(sql, turso::params_from_iter(params))
             .await?;
         if let Some(row) = rows.next().await? {
-            let reviewed = row.get::<i64>(0)? != 0;
-            let dismissed = row.get::<i64>(1)? != 0;
-            let bookmarked = row.get::<i64>(2)? != 0;
-            let created_by = row.get::<String>(3)?;
-            counts.total += 1;
-            if !reviewed && !dismissed {
-                counts.unreviewed += 1;
-            }
-            if reviewed {
-                counts.reviewed += 1;
-            }
-            if dismissed {
-                counts.dismissed += 1;
-            }
-            if bookmarked {
-                counts.bookmarked += 1;
-                if created_by == workflow_query.actor_id {
-                    counts.bookmarked_by_me += 1;
-                }
-            }
+            counts.total += u64::try_from(row.get::<i64>(0)?.max(0)).unwrap_or(0);
+            counts.unreviewed += u64::try_from(row.get::<i64>(1)?.max(0)).unwrap_or(0);
+            counts.reviewed += u64::try_from(row.get::<i64>(2)?.max(0)).unwrap_or(0);
+            counts.dismissed += u64::try_from(row.get::<i64>(3)?.max(0)).unwrap_or(0);
+            counts.bookmarked += u64::try_from(row.get::<i64>(4)?.max(0)).unwrap_or(0);
+            counts.bookmarked_by_me += u64::try_from(row.get::<i64>(5)?.max(0)).unwrap_or(0);
         }
-        drop(rows);
-        statement.reset()?;
     }
     Ok(Some(counts))
 }
@@ -622,6 +774,7 @@ mod tests {
             page_token: None,
             include_preview_keyframes: false,
             workflow: Some(WorkflowQuery::new(actor)),
+            workflow_actor: None,
             semantic: None,
             policy_revision: 1,
             is_admin: false,

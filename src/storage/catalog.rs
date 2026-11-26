@@ -3264,70 +3264,8 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
 }
 
 async fn migrate_embedding_provenance(connection: &turso::Connection) -> anyhow::Result<()> {
-    let has_model_version =
-        table_has_column(connection, "recording_event_embeddings", "model_version").await?;
-    if !has_model_version {
-        let has_event_revision =
-            table_has_column(connection, "recording_event_embeddings", "event_revision").await?;
-        let revision_select = if has_event_revision {
-            "event_revision"
-        } else {
-            "NULL"
-        };
-        connection.execute_batch("BEGIN IMMEDIATE").await?;
-        let result = async {
-            connection
-                .execute_batch(
-                    "CREATE TABLE recording_event_embeddings_migrated (
-                         event_id TEXT NOT NULL REFERENCES recording_events(id) ON DELETE CASCADE,
-                         model_id TEXT NOT NULL,
-                         model_version TEXT NOT NULL DEFAULT '',
-                         producer_id TEXT NOT NULL DEFAULT '',
-                         created_at_ms INTEGER,
-                         dimensions INTEGER NOT NULL,
-                         embedding BLOB NOT NULL,
-                         event_revision INTEGER,
-                         PRIMARY KEY(event_id, model_id, model_version)
-                     );",
-                )
-                .await?;
-            connection
-                .execute(
-                    format!(
-                        "INSERT INTO recording_event_embeddings_migrated (
-                             event_id, model_id, model_version, producer_id, created_at_ms,
-                             dimensions, embedding, event_revision
-                         )
-                         SELECT event_id, model_id, '', '', NULL, dimensions, embedding, {revision_select}
-                         FROM recording_event_embeddings"
-                    ),
-                    (),
-                )
-                .await?;
-            connection
-                .execute_batch(
-                    "DROP TRIGGER IF EXISTS recording_event_embeddings_invalidate_revision;
-                     DROP TABLE recording_event_embeddings;
-                     ALTER TABLE recording_event_embeddings_migrated
-                         RENAME TO recording_event_embeddings;
-                     CREATE TRIGGER IF NOT EXISTS recording_event_embeddings_invalidate_revision
-                     AFTER UPDATE OF revision ON recording_events
-                     WHEN NEW.revision <> OLD.revision
-                     BEGIN
-                         DELETE FROM recording_event_embeddings WHERE event_id = OLD.id;
-                     END;",
-                )
-                .await?;
-            anyhow::Ok(())
-        }
-        .await;
-        match result {
-            Ok(()) => connection.execute_batch("COMMIT").await?,
-            Err(error) => {
-                let _ = connection.execute_batch("ROLLBACK").await;
-                return Err(error);
-            }
-        }
+    if !table_has_column(connection, "recording_event_embeddings", "model_version").await? {
+        rebuild_embedding_provenance_table(connection).await?;
     }
     ensure_column(
         connection,
@@ -3363,6 +3301,70 @@ async fn migrate_embedding_provenance(connection: &turso::Connection) -> anyhow:
         )
         .await?;
     Ok(())
+}
+
+async fn rebuild_embedding_provenance_table(connection: &turso::Connection) -> anyhow::Result<()> {
+    let has_event_revision =
+        table_has_column(connection, "recording_event_embeddings", "event_revision").await?;
+    let revision_select = if has_event_revision {
+        "event_revision"
+    } else {
+        "NULL"
+    };
+    connection.execute_batch("BEGIN IMMEDIATE").await?;
+    let result = async {
+        connection
+            .execute_batch(
+                "CREATE TABLE recording_event_embeddings_migrated (
+                     event_id TEXT NOT NULL REFERENCES recording_events(id) ON DELETE CASCADE,
+                     model_id TEXT NOT NULL,
+                     model_version TEXT NOT NULL DEFAULT '',
+                     producer_id TEXT NOT NULL DEFAULT '',
+                     created_at_ms INTEGER,
+                     dimensions INTEGER NOT NULL,
+                     embedding BLOB NOT NULL,
+                     event_revision INTEGER,
+                     PRIMARY KEY(event_id, model_id, model_version)
+                 );",
+            )
+            .await?;
+        connection
+            .execute(
+                format!(
+                    "INSERT INTO recording_event_embeddings_migrated (
+                         event_id, model_id, model_version, producer_id, created_at_ms,
+                         dimensions, embedding, event_revision
+                     )
+                     SELECT event_id, model_id, '', '', NULL, dimensions, embedding, {revision_select}
+                     FROM recording_event_embeddings"
+                ),
+                (),
+            )
+            .await?;
+        connection
+            .execute_batch(
+                "DROP TRIGGER IF EXISTS recording_event_embeddings_invalidate_revision;
+                 DROP TABLE recording_event_embeddings;
+                 ALTER TABLE recording_event_embeddings_migrated
+                     RENAME TO recording_event_embeddings;
+                 CREATE TRIGGER IF NOT EXISTS recording_event_embeddings_invalidate_revision
+                 AFTER UPDATE OF revision ON recording_events
+                 WHEN NEW.revision <> OLD.revision
+                 BEGIN
+                     DELETE FROM recording_event_embeddings WHERE event_id = OLD.id;
+                 END;",
+            )
+            .await?;
+        anyhow::Ok(())
+    }
+    .await;
+    match result {
+        Ok(()) => connection.execute_batch("COMMIT").await.map_err(Into::into),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK").await;
+            Err(error)
+        }
+    }
 }
 
 async fn table_has_column(

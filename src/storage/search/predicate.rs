@@ -3,7 +3,7 @@
 use super::{
     EventSearchField, MAX_FILTER_VALUES, MAX_MODEL_ID_BYTES, MAX_SEARCH_WINDOW_MS, MAX_TERM_BYTES,
     expression::{Expression, InvalidExpression, normalize},
-    normalize_event_ids, normalize_filter_values, normalize_search_text, normalize_source_ids,
+    normalize_filter_values, normalize_search_text, normalize_source_ids,
 };
 use crate::storage::metadata::EventSource;
 use sha2::{Digest, Sha256};
@@ -21,7 +21,6 @@ pub enum LabelField {
     Zone,
     Producer,
     Model,
-    EventId,
 }
 
 /// Comparison direction for a confidence threshold predicate.
@@ -214,9 +213,6 @@ impl Validator {
         match field {
             LabelField::Camera | LabelField::Group => {
                 normalize_source_ids(&mut values).map_err(|_| InvalidExpression::Predicate)?;
-            }
-            LabelField::EventId => {
-                normalize_event_ids(&mut values).map_err(|_| InvalidExpression::Predicate)?;
             }
             LabelField::Kind | LabelField::Zone => {
                 normalize_filter_values(&mut values, "label")
@@ -463,7 +459,6 @@ const fn label_name(field: LabelField) -> &'static str {
         LabelField::Zone => "zone",
         LabelField::Producer => "producer",
         LabelField::Model => "model",
-        LabelField::EventId => "event_id",
     }
 }
 

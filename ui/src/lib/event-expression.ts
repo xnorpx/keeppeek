@@ -48,8 +48,7 @@ export type EventExpressionPredicate =
 	| { kind: 'text'; field?: EventTextField; prefix: string }
 	| { kind: 'workflow'; state: EventWorkflowStatePredicate }
 	| { kind: 'producer_ids'; values: string[] }
-	| { kind: 'model_ids'; values: string[] }
-	| { kind: 'event_ids'; values: string[] };
+	| { kind: 'model_ids'; values: string[] };
 
 export type EventExpressionNode =
 	| { op: 'and'; children: EventExpressionNode[] }
@@ -151,7 +150,6 @@ function validatePredicate(
 		case 'group_ids':
 		case 'event_types':
 		case 'zones':
-		case 'event_ids':
 		case 'producer_ids':
 		case 'model_ids': {
 			if (predicate.values.length === 0) return 'Enter at least one value for every list filter.';
@@ -266,8 +264,6 @@ function summarizePredicate(predicate: EventExpressionPredicate): string {
 			return `producer in [${predicate.values.join(', ')}]`;
 		case 'model_ids':
 			return `model in [${predicate.values.join(', ')}]`;
-		case 'event_ids':
-			return `event ID in [${predicate.values.join(', ')}]`;
 	}
 }
 
@@ -612,13 +608,6 @@ function predicateToProto(predicate: EventExpressionPredicate) {
 					value: create(EventStringListPredicateSchema, { values: [...predicate.values] })
 				}
 			});
-		case 'event_ids':
-			return create(EventSearchPredicateSchema, {
-				kind: {
-					case: 'eventIds',
-					value: create(EventStringListPredicateSchema, { values: [...predicate.values] })
-				}
-			});
 	}
 }
 
@@ -708,8 +697,6 @@ function protoToPredicate(
 			return { kind: 'producer_ids', values: [...predicate.kind.value.values] };
 		case 'modelIds':
 			return { kind: 'model_ids', values: [...predicate.kind.value.values] };
-		case 'eventIds':
-			return { kind: 'event_ids', values: [...predicate.kind.value.values] };
 		default:
 			return null;
 	}

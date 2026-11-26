@@ -1,16 +1,13 @@
 //! Persist owner-scoped, revision-aware saved event searches in `config.toml`.
 
 use super::{
-    ApiPrincipal, ControlCommandError, ServerState, camera_access, event_search_catalog,
+    ApiPrincipal, ControlCommandError, ServerState, camera_access,
     event_search_proto::{
         SavedExpressionDoc, collect_references, proto_to_saved_doc, saved_doc_to_proto,
     },
     event_workflow, millis_timestamp, unix_time_ms,
 };
-use crate::{
-    api::proto,
-    storage::{EventMetadataQuery, EventSearch, search::expression::EXPRESSION_VERSION},
-};
+use crate::{api::proto, storage::search::expression::EXPRESSION_VERSION};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -310,12 +307,16 @@ fn detect_tombstones(
     doc: &SavedExpressionDoc,
 ) -> Vec<String> {
     let mut camera_ids = Vec::new();
-    let mut event_ids = Vec::new();
-    collect_references(doc, &mut camera_ids, &mut event_ids);
-    let visible_cameras: BTreeSet<String> = camera_access::query_cameras(state, access, &[])
-        .unwrap_or_default()
-        .into_iter()
-        .map(|entry| entry.info.id)
+    let mut group_ids = Vec::new();
+    collect_references(doc, &mut camera_ids, &mut group_ids);
+    let visible_entries = camera_access::query_cameras(state, access, &[]).unwrap_or_default();
+    let visible_cameras: BTreeSet<String> = visible_entries
+        .iter()
+        .map(|entry| entry.info.id.clone())
+        .collect();
+    let visible_groups: BTreeSet<String> = visible_entries
+        .iter()
+        .flat_map(|entry| entry.groups.iter().cloned())
         .collect();
     let mut tombstones = BTreeSet::new();
     for camera in camera_ids {
@@ -323,37 +324,12 @@ fn detect_tombstones(
             tombstones.insert(format!("camera:{camera}"));
         }
     }
-    if !event_ids.is_empty()
-        && let Ok(catalog) = event_search_catalog(state)
-    {
-        let search = EventSearch::new(catalog.clone());
-        let visible_list: Vec<String> = visible_cameras.into_iter().collect();
-        for event_id in event_ids {
-            if !event_exists_for_principal(&search, &visible_list, &event_id) {
-                tombstones.insert(format!("event:{event_id}"));
-            }
+    for group in group_ids {
+        if !visible_groups.contains(&group) {
+            tombstones.insert(format!("group:{group}"));
         }
     }
     tombstones.into_iter().collect()
-}
-
-fn event_exists_for_principal(
-    search: &EventSearch,
-    visible_cameras: &[String],
-    event_id: &str,
-) -> bool {
-    if visible_cameras.is_empty() {
-        return false;
-    }
-    let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
-    let start_ms = now_ms.saturating_sub(30 * 86_400_000);
-    let mut query = EventMetadataQuery::new("main", start_ms, now_ms.saturating_add(86_400_000));
-    query.source_ids = visible_cameras.to_vec();
-    query.event_ids = vec![event_id.to_owned()];
-    query.page_size = 1;
-    search
-        .search_metadata(query)
-        .is_ok_and(|page| !page.hits.is_empty())
 }
 
 fn config_path(state: &ServerState) -> Result<&Path, ControlCommandError> {
@@ -519,7 +495,7 @@ mod tests {
         ApiPrincipal::credential(authenticated)
     }
 
-    fn simple_expr(camera_id: &str, event_id: Option<&str>) -> proto::EventSearchExpression {
+    fn simple_expr(camera_id: &str, group_id: Option<&str>) -> proto::EventSearchExpression {
         let mut children = vec![proto::EventSearchExpression {
             node: Some(proto::event_search_expression::Node::Predicate(
                 proto::EventSearchPredicate {
@@ -531,13 +507,13 @@ mod tests {
                 },
             )),
         }];
-        if let Some(event_id) = event_id {
+        if let Some(group_id) = group_id {
             children.push(proto::EventSearchExpression {
                 node: Some(proto::event_search_expression::Node::Predicate(
                     proto::EventSearchPredicate {
-                        kind: Some(proto::event_search_predicate::Kind::EventIds(
+                        kind: Some(proto::event_search_predicate::Kind::GroupIds(
                             proto::EventStringListPredicate {
-                                values: vec![event_id.to_owned()],
+                                values: vec![group_id.to_owned()],
                             },
                         )),
                     },
@@ -556,7 +532,7 @@ mod tests {
         expected_revision: u64,
         name: &str,
         camera_id: &str,
-        event_id: Option<&str>,
+        group_id: Option<&str>,
     ) -> proto::SaveEventSearch {
         proto::SaveEventSearch {
             local_workspace_id: String::new(),
@@ -564,7 +540,7 @@ mod tests {
             expected_revision,
             name: name.to_owned(),
             expression_version: EXPRESSION_VERSION,
-            expression: Some(simple_expr(camera_id, event_id)),
+            expression: Some(simple_expr(camera_id, group_id)),
             raw_draft_json: String::new(),
         }
     }
@@ -661,7 +637,7 @@ mod tests {
         let created = save(
             &state,
             &alice,
-            &save_request("", 0, "Missing refs", "deleted-cam", Some("deleted-ev")),
+            &save_request("", 0, "Missing refs", "deleted-cam", Some("deleted-group")),
         )
         .unwrap();
         let record = created.search.unwrap();
@@ -675,7 +651,7 @@ mod tests {
         assert!(
             record
                 .tombstoned_references
-                .contains(&"event:deleted-ev".to_owned())
+                .contains(&"group:deleted-group".to_owned())
         );
 
         let bob_list = list(
@@ -726,5 +702,97 @@ mod tests {
         drop(state);
         catalog.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn test_camera_entry(ip: &str, group: &str) -> super::super::CameraEntry {
+        let config = crate::cameras::CameraConfig {
+            events: Default::default(),
+            ip: ip.parse().unwrap(),
+            name: None,
+            display_name: None,
+            manufacturer: None,
+            username: String::new(),
+            password: String::new(),
+            onvif_port: None,
+            http_port: None,
+            main_rtsp_url: None,
+            sub_rtsp_url: None,
+            uid: None,
+            backend: crate::cameras::CameraBackend::Retina,
+            transport: crate::cameras::CameraTransport::Tcp,
+            record_generic_motion_events: false,
+            recording_mode: crate::cameras::CameraRecordingMode::Main,
+            event_recording_duration_secs: 60,
+            event_pre_recording_duration_secs: 0,
+            event_recording_stream: Default::default(),
+            recorded_audio: Default::default(),
+            live_audio: Default::default(),
+        };
+        let mut entry = super::super::camera_entry(&config, None);
+        entry.groups = vec![group.to_owned()];
+        entry
+    }
+
+    #[test]
+    fn tombstone_check_reports_deleted_and_unauthorized_cameras_and_groups() {
+        let mut state = ServerState::empty();
+        state.cameras = std::sync::Arc::new(std::sync::RwLock::new(vec![
+            test_camera_entry("192.0.2.10", "Exterior"),
+            test_camera_entry("192.0.2.11", "Interior"),
+        ]));
+        let access = crate::access::CameraAccess {
+            all_cameras: false,
+            camera_ids: vec!["192.0.2.10".to_owned()],
+            group_ids: Vec::new(),
+        };
+        let doc = proto_to_saved_doc(&proto::EventSearchExpression {
+            node: Some(proto::event_search_expression::Node::AndGroup(
+                proto::EventSearchExpressionList {
+                    children: vec![
+                        proto::EventSearchExpression {
+                            node: Some(proto::event_search_expression::Node::Predicate(
+                                proto::EventSearchPredicate {
+                                    kind: Some(proto::event_search_predicate::Kind::CameraIds(
+                                        proto::EventStringListPredicate {
+                                            values: vec![
+                                                "192.0.2.10".to_owned(),
+                                                "192.0.2.11".to_owned(),
+                                                "deleted-cam".to_owned(),
+                                            ],
+                                        },
+                                    )),
+                                },
+                            )),
+                        },
+                        proto::EventSearchExpression {
+                            node: Some(proto::event_search_expression::Node::Predicate(
+                                proto::EventSearchPredicate {
+                                    kind: Some(proto::event_search_predicate::Kind::GroupIds(
+                                        proto::EventStringListPredicate {
+                                            values: vec![
+                                                "Exterior".to_owned(),
+                                                "Interior".to_owned(),
+                                                "deleted-group".to_owned(),
+                                            ],
+                                        },
+                                    )),
+                                },
+                            )),
+                        },
+                    ],
+                },
+            )),
+        })
+        .unwrap();
+        let tombstones = detect_tombstones(&state, &access, &doc);
+        assert_eq!(
+            tombstones,
+            vec![
+                "camera:192.0.2.11".to_owned(),
+                "camera:deleted-cam".to_owned(),
+                "group:Interior".to_owned(),
+                "group:deleted-group".to_owned(),
+            ]
+        );
     }
 }

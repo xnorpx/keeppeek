@@ -1374,7 +1374,6 @@ message EventSearchPredicate {
     EventWorkflowPredicate workflow = 12;
     EventStringListPredicate producer_ids = 13;
     EventStringListPredicate model_ids = 14;
-    EventStringListPredicate event_ids = 15;
   }
 }
 

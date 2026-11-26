@@ -80,9 +80,6 @@ impl Compiler<'_> {
             Predicate::Label(LabelField::Zone, values) => {
                 self.in_list("lower(e.zone)", values.iter().map(String::as_str), true)?
             }
-            Predicate::Label(LabelField::EventId, values) => {
-                self.in_list("e.id", values.iter().map(String::as_str), false)?
-            }
             Predicate::Label(LabelField::Producer, values) => {
                 self.embedding_exists_predicate("emb.producer_id", values)?
             }

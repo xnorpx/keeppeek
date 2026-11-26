@@ -267,12 +267,35 @@
 		const handlePopState = () => {
 			const url = new URL(window.location.href);
 			const nextFilters = parseEventBrowserFilters(url.searchParams, currentDate);
+			const nextExpr = decodeExpressionUrlParam(url.searchParams.get('expr'));
+			const nextSavedId = url.searchParams.get('saved')?.trim() || null;
+			const currentExprParam = activeExpression ? encodeExpressionUrlParam(activeExpression) : null;
+			const nextExprParam = nextExpr ? encodeExpressionUrlParam(nextExpr) : null;
 			const filtersChanged =
 				eventBrowserSearchParams(nextFilters).toString() !==
 				eventBrowserSearchParams(filters).toString();
+			const advancedChanged =
+				nextExprParam !== currentExprParam || nextSavedId !== activeSavedSearchId;
 			filters = nextFilters;
+			activeSavedSearchId = nextSavedId;
+			if (nextExpr) {
+				advancedOpen = true;
+				advancedDraft = nextExpr;
+				activeExpression = nextExpr;
+			} else if (nextSavedId) {
+				const matched = savedSearches.find((item) => item.searchId === nextSavedId);
+				if (matched?.expression) {
+					advancedOpen = true;
+					advancedDraft = matched.expression;
+					activeExpression = matched.expression;
+				} else {
+					activeExpression = null;
+				}
+			} else {
+				activeExpression = null;
+			}
 			restoreSelection(url.searchParams);
-			if (!filtersChanged) return;
+			if (!filtersChanged && !advancedChanged) return;
 			const state = history.state as EventPageState | null;
 			pageTokens = state?.eventPageTokens ?? [''];
 			pageTokenBase = Number.isInteger(state?.eventPageTokenBase)
@@ -1120,8 +1143,8 @@
 		if (activeExpression) {
 			const encoded = encodeExpressionUrlParam(activeExpression);
 			if (encoded) search.set('expr', encoded);
-			else if (activeSavedSearchId) search.set('saved', activeSavedSearchId);
-		} else if (activeSavedSearchId) {
+		}
+		if (activeSavedSearchId) {
 			search.set('saved', activeSavedSearchId);
 		}
 		const state: EventPageState = {
@@ -1270,7 +1293,7 @@
 		advancedOpen = true;
 		advancedDraft = record.expression;
 		activeExpression = record.expression;
-		syncUrl();
+		syncUrl('push');
 		void loadFirstPage();
 	}
 

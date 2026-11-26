@@ -132,10 +132,6 @@ fn parse_predicate(
             LabelField::Model,
             list.values.clone(),
         )),
-        Some(Kind::EventIds(list)) => Ok(PredicateInput::Label(
-            LabelField::EventId,
-            list.values.clone(),
-        )),
         None => Err(invalid("event search predicate kind is required")),
     }
 }
@@ -292,9 +288,6 @@ pub(super) enum SavedPredicateDoc {
     ModelIds {
         values: Vec<String>,
     },
-    EventIds {
-        values: Vec<String>,
-    },
 }
 
 /// Encodes a protobuf expression into its versioned JSON document while preserving draft order.
@@ -342,9 +335,6 @@ fn predicate_to_saved_doc(predicate: &PredicateInput) -> SavedPredicateDoc {
             values: values.clone(),
         },
         PredicateInput::Label(LabelField::Model, values) => SavedPredicateDoc::ModelIds {
-            values: values.clone(),
-        },
-        PredicateInput::Label(LabelField::EventId, values) => SavedPredicateDoc::EventIds {
             values: values.clone(),
         },
         PredicateInput::Origin(origins) => SavedPredicateDoc::Origins {
@@ -466,7 +456,6 @@ fn saved_predicate_to_proto(
         SavedPredicateDoc::Workflow { state } => Kind::Workflow(saved_workflow_to_proto(state)?),
         SavedPredicateDoc::ProducerIds { values } => Kind::ProducerIds(string_list_proto(values)),
         SavedPredicateDoc::ModelIds { values } => Kind::ModelIds(string_list_proto(values)),
-        SavedPredicateDoc::EventIds { values } => Kind::EventIds(string_list_proto(values)),
     };
     Ok(proto::EventSearchPredicate { kind: Some(kind) })
 }
@@ -518,22 +507,22 @@ fn saved_workflow_to_proto(state: &str) -> anyhow::Result<i32> {
     }
 }
 
-/// Collects explicit camera IDs and event IDs referenced anywhere in a saved document.
+/// Collects explicit camera IDs and group IDs referenced anywhere in a saved document.
 pub(super) fn collect_references(
     doc: &SavedExpressionDoc,
     camera_ids: &mut Vec<String>,
-    event_ids: &mut Vec<String>,
+    group_ids: &mut Vec<String>,
 ) {
     match doc {
         SavedExpressionDoc::And { children } | SavedExpressionDoc::Or { children } => {
             for child in children {
-                collect_references(child, camera_ids, event_ids);
+                collect_references(child, camera_ids, group_ids);
             }
         }
-        SavedExpressionDoc::Not { child } => collect_references(child, camera_ids, event_ids),
+        SavedExpressionDoc::Not { child } => collect_references(child, camera_ids, group_ids),
         SavedExpressionDoc::Predicate { predicate } => match predicate {
             SavedPredicateDoc::CameraIds { values } => camera_ids.extend(values.iter().cloned()),
-            SavedPredicateDoc::EventIds { values } => event_ids.extend(values.iter().cloned()),
+            SavedPredicateDoc::GroupIds { values } => group_ids.extend(values.iter().cloned()),
             _ => {}
         },
     }

@@ -1329,7 +1329,7 @@ or `EventAdvancedSearch` for versioned bounded boolean AST expressions (`express
 with optional hybrid `EventSemanticRanking`. Advanced expressions support nested `AND`, `OR`, and
 `NOT` over indexed predicates (camera, group, event type, origin, zone, missing zone, confidence
 threshold, missing confidence, image presence, absolute UTC time range, indexed text prefix,
-workflow review/bookmark state, embedding producer, embedding model, and exact event ID) within the
+workflow review/bookmark state, embedding producer, and embedding model) within the
 caller's authorized camera scope and UTC window. Expressions are bounded to depth 8, 64 nodes, 64
 values per list, 16 KiB total text, and bounded candidate scan limits. When `semantic` is included,
 authorized structured predicates narrow candidates before exact cosine ranking, `minimum_score` is
@@ -1347,8 +1347,8 @@ or raw vectors.
 searches stored in `config.toml` with compare-and-swap `expected_revision` concurrency control and
 return `Ok.saved_event_search_result`. Remote principals must leave `local_workspace_id` empty;
 trusted-local callers supply their workspace UUID. Records with unsupported `expression_version`
-values remain readable with `unsupported_draft_json` and `editable = false`. Deleted camera or
-event references are reported in `tombstoned_references` rather than silently widening the query.
+values remain readable with `unsupported_draft_json` and `editable = false`. Deleted or unauthorized
+camera and group references are reported in `tombstoned_references` rather than silently widening the query.
 
 `QueryEvents` selects an optional stable source, one logical stored stream, a half-open time
 interval, a bounded result page, and a preview interval. Omitted

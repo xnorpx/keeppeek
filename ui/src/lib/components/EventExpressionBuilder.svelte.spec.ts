@@ -76,4 +76,58 @@ describe('EventExpressionBuilder', () => {
 		await expect.element(page.getByText(/must contain at least one condition/)).toBeVisible();
 		await expect.element(page.getByRole('button', { name: 'Run advanced search' })).toBeDisabled();
 	});
+
+	it('preserves commas and spaces during interactive CSV typing and edits UTC time_range predicates', async () => {
+		let current: EventExpressionNode = {
+			op: 'and',
+			children: [
+				{ op: 'predicate', predicate: { kind: 'event_types', values: ['person'] } },
+				{
+					op: 'predicate',
+					predicate: {
+						kind: 'time_range',
+						startMs: Date.parse('2026-08-18T06:00:00Z'),
+						endMs: Date.parse('2026-08-18T08:00:00Z')
+					}
+				}
+			]
+		};
+		const rendered = await render(EventExpressionBuilder, {
+			props: {
+				draft: current,
+				cameras: [],
+				canConvertToCommon: false,
+				semanticAvailable: true,
+				onchange: (next) => {
+					current = next;
+					void rendered.rerender({
+						draft: next,
+						cameras: [],
+						canConvertToCommon: false,
+						semanticAvailable: true,
+						onchange: (updated) => {
+							current = updated;
+						},
+						onapply: () => {}
+					});
+				},
+				onapply: () => {}
+			}
+		});
+
+		const csvInput = page.getByLabelText('event_types values');
+		await userEvent.clear(csvInput);
+		await userEvent.type(csvInput, 'person, vehicle');
+		await expect.element(csvInput).toHaveValue('person, vehicle');
+		expect(current.op).toBe('and');
+		if (current.op === 'and' && current.children[0]?.op === 'predicate') {
+			expect(current.children[0].predicate).toEqual({
+				kind: 'event_types',
+				values: ['person', 'vehicle']
+			});
+		}
+
+		await expect.element(page.getByLabelText('UTC start time')).toHaveValue('2026-08-18T06:00');
+		await expect.element(page.getByLabelText('UTC end time')).toHaveValue('2026-08-18T08:00');
+	});
 });

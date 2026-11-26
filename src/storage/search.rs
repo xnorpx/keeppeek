@@ -115,6 +115,7 @@ pub struct EventAdvancedSearchQuery {
     pub page_token: Option<String>,
     pub include_preview_keyframes: bool,
     pub workflow: Option<crate::storage::catalog::workflow::Query>,
+    pub workflow_actor: Option<String>,
     pub semantic: Option<EventSemanticRanking>,
     pub policy_revision: u64,
     pub is_admin: bool,

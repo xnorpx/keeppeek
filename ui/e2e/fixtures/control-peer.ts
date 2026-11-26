@@ -158,6 +158,7 @@ import {
 	RuntimeConfigurationResultSchema,
 	RuntimeStorageConfigurationSchema,
 	SanitizedRuntimeConfigurationSchema,
+	SavedEventSearchResultSchema,
 	ServerCapabilitiesSchema,
 	ServerHealthSnapshotSchema,
 	SourceSessionSchema,
@@ -1792,6 +1793,12 @@ export async function mockControlPeer(
 						queryId: query.queryId,
 						channel: DataChannelKind.RELIABLE_DATA
 					})
+				});
+			}
+			if (action.case === 'listSavedSearches') {
+				return encodedOk(request.requestId, {
+					case: 'savedEventSearchResult',
+					value: create(SavedEventSearchResultSchema, { ownerId: 'mock', searches: [] })
 				});
 			}
 			if (action.case === 'cancelQuery') {

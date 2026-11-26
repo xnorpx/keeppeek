@@ -14,6 +14,12 @@ use std::sync::atomic::Ordering;
 pub(super) const ADVANCED_CAPABILITY_ID: &str = "keeppeek.event-search.advanced.v1";
 pub(super) const SEMANTIC_CAPABILITY_ID: &str = "keeppeek.event-search.semantic.v1";
 
+pub(super) struct EventSearchQueryPrincipal {
+    pub(super) is_admin: bool,
+    pub(super) policy_revision: u64,
+    pub(super) workflow_actor: Option<String>,
+}
+
 pub(super) fn dispatch(
     state: &ServerState,
     session_id: SessionId,
@@ -130,10 +136,21 @@ fn query(
         .as_ref()
         .map(|context| super::event_workflow::query_filter(principal, context))
         .transpose()?;
-    let is_admin = principal.role == AccessRole::Administrator;
-    let policy_revision = principal
-        .credential_binding()
-        .map_or(0, |(_, revision)| revision);
+    let workflow_actor = workflow
+        .as_ref()
+        .map(|item| item.actor_id.clone())
+        .or_else(|| {
+            (!principal.is_local())
+                .then(|| super::event_workflow::actor_id(principal, "").ok())
+                .flatten()
+        });
+    let query_principal = EventSearchQueryPrincipal {
+        is_admin: principal.role == AccessRole::Administrator,
+        policy_revision: principal
+            .credential_binding()
+            .map_or(0, |(_, revision)| revision),
+        workflow_actor,
+    };
     if state.webrtc.has_api_session(session_id) {
         let delivery = start_event_search_query(
             state,
@@ -141,23 +158,15 @@ fn query(
             request,
             access,
             workflow,
-            is_admin,
-            policy_revision,
+            query_principal,
         )?;
         return Ok((
             Some(control_ok::Result::EventSearchDelivery(delivery)),
             Vec::new(),
         ));
     }
-    let (delivery, messages) = query_events(
-        state,
-        request,
-        &access,
-        workflow,
-        is_admin,
-        policy_revision,
-        None,
-    )?;
+    let (delivery, messages) =
+        query_events(state, request, &access, workflow, query_principal, None)?;
     Ok((
         Some(control_ok::Result::EventSearchDelivery(delivery)),
         messages,

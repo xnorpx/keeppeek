@@ -107,6 +107,7 @@ fn run_bench() -> anyhow::Result<()> {
         page_token: None,
         include_preview_keyframes: false,
         workflow: None,
+        workflow_actor: None,
         semantic: None,
         policy_revision: 1,
         is_admin: true,
@@ -116,6 +117,16 @@ fn run_bench() -> anyhow::Result<()> {
 
     let ast_times = measure_runs(RUNS, || {
         let page = search.search_advanced(ast_query.clone())?;
+        Ok(page.hits.len())
+    })?;
+
+    // 2b. Equivalent advanced boolean AST query with workflow counts enabled (matching UI path).
+    let mut ast_workflow_query = ast_query.clone();
+    ast_workflow_query.workflow = Some(keeppeek::storage::catalog::workflow::Query::new(
+        "bench-actor",
+    ));
+    let ast_workflow_times = measure_runs(RUNS, || {
+        let page = search.search_advanced(ast_workflow_query.clone())?;
         Ok(page.hits.len())
     })?;
 
@@ -162,6 +173,7 @@ fn run_bench() -> anyhow::Result<()> {
         page_token: None,
         include_preview_keyframes: false,
         workflow: None,
+        workflow_actor: None,
         semantic: Some(EventSemanticRanking {
             embedding: EventEmbedding {
                 model_id: "clip-bench".to_owned(),
@@ -237,6 +249,7 @@ fn run_bench() -> anyhow::Result<()> {
     );
     print_stats("flat_metadata", &flat_times);
     print_stats("advanced_ast", &ast_times);
+    print_stats("advanced_ast_with_workflow", &ast_workflow_times);
     print_stats("over_budget_reject", &reject_times);
     print_stats("hybrid_semantic_10k_4096d", &semantic_times);
     print_stats("catalog_write_event_plus_4096d", &write_times);
