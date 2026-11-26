@@ -63,9 +63,26 @@ detector regions, schedules and vendor-specific target filters in the camera int
 ## Audio and unsupported controls
 
 Listening to an available camera audio stream is separate from sending microphone audio back to
-its speaker. **Talk is not implemented in the browser application**, including on devices that
-advertise a speaker or two-way-audio capability. KeepPeek's reusable vendor libraries contain
-audio transport support, but this does not provide an application talk session.
+its speaker. **Talk** sends the browser microphone to the camera speaker. It is available only to
+an Administrator, and only for a camera whose speaker KeepPeek has confirmed:
+
+- **Reolink:** a powered, direct camera on the native TCP backend. The configured channel must
+  grant talk permission, and the camera must report a compatible mono ADPCM speaker profile at
+  8 or 16 kHz. Firmware that answers the speaker query only while a speaker stream is open
+  leaves **Talk** unavailable.
+- **Hikvision/Annke:** a camera whose ISAPI audio discovery reports an explicit speaker channel.
+  KeepPeek sends the camera-advertised 8 kHz G.711 A-law or mu-law codec. A microphone channel
+  alone does not enable **Talk**.
+
+Select **Talk** in the focused live view and grant microphone permission when the browser asks.
+Select it again to stop; stopping or closing the page releases the microphone. The camera's
+incoming audio stays available while you talk. On the Dashboard, an Administrator can use
+**Broadcast talkback** to talk to a selected target. Users do not see **Talk** or broadcast
+controls, but can still use supported quick replies and chimes on their permitted cameras.
+
+Talk was verified with simulated cameras. Speaker volume, latency, and half- or full-duplex
+behavior depend on the camera model, firmware, and network, so test them on your device before
+relying on them.
 
 Relative PTZ movement, preset save/delete and vendor-specific focus, guard, sensitivity or smart
 rule editing are not shared browser controls. Disabled controls describe unavailable application

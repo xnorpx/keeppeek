@@ -102,7 +102,8 @@ describe future client possibilities are not an installation checklist for a shi
 
 Read the reason shown by an unavailable control. Do not interpret an unavailable count as zero,
 a saved configuration as a healthy connection, or advertised camera support as a successful
-operation. Browser Talk and live participant groups remain unavailable.
+operation. Live participant groups remain unavailable. Browser Talk works only for an
+Administrator on a camera with a confirmed speaker; see [Camera controls](./camera-controls.md).
 
 Camera access labels, dashboard audiences, and planned live participant groups are different
 concepts. [Groups](./groups.md) explains that distinction. The
