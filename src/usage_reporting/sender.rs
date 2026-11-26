@@ -401,46 +401,10 @@ impl UsageReportingController {
             return SendAttemptOutcome::Disabled;
         }
         let now_ms = self.clock.now_ms();
-        let (installation_id, installation_token, next_sequence) = {
-            let mut guard = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(last_attempt) = guard.last_attempt_at_ms
-                && now_ms < last_attempt
-            {
-                // Clamp rollback once so sends never accelerate, while allowing recovery after a full interval.
-                guard.last_attempt_at_ms = Some(now_ms);
-                guard.next_scheduled_at_ms = Some(compute_next_schedule_ms(
-                    now_ms,
-                    self.started_at_ms,
-                    Some(now_ms),
-                    self.jitter.as_ref(),
-                ));
-                let _ = guard.save_atomically(&self.state_path);
-                return SendAttemptOutcome::NotDue;
-            }
-            let due_at = guard.next_scheduled_at_ms.unwrap_or_else(|| {
-                let computed = compute_next_schedule_ms(
-                    now_ms,
-                    self.started_at_ms,
-                    guard.last_attempt_at_ms,
-                    self.jitter.as_ref(),
-                );
-                guard.next_scheduled_at_ms = Some(computed);
-                let _ = guard.save_atomically(&self.state_path);
-                computed
-            });
-            if now_ms < due_at {
-                return SendAttemptOutcome::NotDue;
-            }
-            let identity = guard.ensure_identity(now_ms).clone();
-            let next_sequence = identity.report_sequence.saturating_add(1);
-            (
-                identity.installation_id,
-                identity.installation_token,
-                next_sequence,
-            )
+        let Some((installation_id, installation_token, next_sequence)) =
+            self.prepare_due_send(now_ms)
+        else {
+            return SendAttemptOutcome::NotDue;
         };
 
         if self
@@ -471,32 +435,80 @@ impl UsageReportingController {
             return SendAttemptOutcome::AbortedConsentChanged;
         }
 
-        let Some(origin) = config.receiver_origin.as_deref() else {
-            self.record_attempt_outcome(
-                now_ms,
-                &installation_id,
-                next_sequence,
-                Err(FailureKind::ReceiverUnconfigured),
-            );
-            return SendAttemptOutcome::Failed(FailureKind::ReceiverUnconfigured);
-        };
-
-        let result = match self.transport.put_report(
-            origin,
+        let result = self.deliver_report_bytes(
+            config.receiver_origin.as_deref(),
             &installation_id,
             &installation_token,
             payload_json.as_bytes(),
-        ) {
-            Ok(response) if matches!(response.status, 200 | 201 | 204) => Ok(()),
-            Ok(response) => Err(classify_http_status(response.status, false)),
-            Err(kind) => Err(kind),
-        };
+        );
 
         self.record_attempt_outcome(now_ms, &installation_id, next_sequence, result);
         match result {
             Ok(()) => SendAttemptOutcome::Succeeded,
             Err(kind) => SendAttemptOutcome::Failed(kind),
         }
+    }
+
+    fn deliver_report_bytes(
+        &self,
+        origin: Option<&str>,
+        installation_id: &str,
+        installation_token: &str,
+        body: &[u8],
+    ) -> Result<(), FailureKind> {
+        let Some(origin) = origin else {
+            return Err(FailureKind::ReceiverUnconfigured);
+        };
+        match self
+            .transport
+            .put_report(origin, installation_id, installation_token, body)
+        {
+            Ok(response) if matches!(response.status, 200 | 201 | 204) => Ok(()),
+            Ok(response) => Err(classify_http_status(response.status, false)),
+            Err(kind) => Err(kind),
+        }
+    }
+
+    fn prepare_due_send(&self, now_ms: i64) -> Option<(String, String, u64)> {
+        let mut guard = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(last_attempt) = guard.last_attempt_at_ms
+            && now_ms < last_attempt
+        {
+            // Clamp rollback once so sends never accelerate, while allowing recovery after a full interval.
+            guard.last_attempt_at_ms = Some(now_ms);
+            guard.next_scheduled_at_ms = Some(compute_next_schedule_ms(
+                now_ms,
+                self.started_at_ms,
+                Some(now_ms),
+                self.jitter.as_ref(),
+            ));
+            let _ = guard.save_atomically(&self.state_path);
+            return None;
+        }
+        let due_at = guard.next_scheduled_at_ms.unwrap_or_else(|| {
+            let computed = compute_next_schedule_ms(
+                now_ms,
+                self.started_at_ms,
+                guard.last_attempt_at_ms,
+                self.jitter.as_ref(),
+            );
+            guard.next_scheduled_at_ms = Some(computed);
+            let _ = guard.save_atomically(&self.state_path);
+            computed
+        });
+        if now_ms < due_at {
+            return None;
+        }
+        let identity = guard.ensure_identity(now_ms).clone();
+        let next_sequence = identity.report_sequence.saturating_add(1);
+        Some((
+            identity.installation_id,
+            identity.installation_token,
+            next_sequence,
+        ))
     }
 
     fn identity_is_still_active(&self, installation_id: &str) -> bool {

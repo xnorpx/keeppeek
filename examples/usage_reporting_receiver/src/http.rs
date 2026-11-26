@@ -5,7 +5,9 @@
 
 use crate::aggregate::compute_public_aggregates;
 use crate::retention::run_expiry_pass;
-use crate::schema::{MAX_PAYLOAD_BYTES, ValidationError, is_canonical_uuid_v4, parse_and_validate};
+use crate::schema::{
+    MAX_PAYLOAD_BYTES, UsageReportV1, ValidationError, is_canonical_uuid_v4, parse_and_validate,
+};
 use crate::store::{ReceiverStore, StoreError, UpsertOutcome, hashes_match, sha256_bytes};
 use rouille::{Request, Response};
 use serde::Serialize;
@@ -147,51 +149,11 @@ impl ReceiverService {
         let Some(token) = extract_bearer_token(request) else {
             return error_response(401, "unauthorized", "missing or malformed bearer token");
         };
-        if !has_json_content_type(request) {
-            return error_response(
-                415,
-                "unsupported_media_type",
-                "request must use application/json",
-            );
-        }
-        let body = match read_bounded_body(request, MAX_PAYLOAD_BYTES) {
-            Ok(bytes) => bytes,
-            Err(BodyReadError::TooLarge) => {
-                return error_response(
-                    413,
-                    "payload_too_large",
-                    "payload exceeds 65536 uncompressed bytes",
-                );
-            }
-            Err(BodyReadError::ReadFailed) => {
-                return error_response(400, "invalid_body", "failed to read request body");
-            }
-        };
-
-        let (report, canonical_json) = match parse_and_validate(&body) {
+        let (report, canonical_json) = match parse_installation_put_report(request, installation_id)
+        {
             Ok(parsed) => parsed,
-            Err(ValidationError::PayloadTooLarge) => {
-                return error_response(
-                    413,
-                    "payload_too_large",
-                    "payload exceeds 65536 uncompressed bytes",
-                );
-            }
-            Err(_) => {
-                return error_response(
-                    400,
-                    "schema_validation_failed",
-                    "payload failed closed v1 schema validation",
-                );
-            }
+            Err(response) => return response,
         };
-        if report.installation_id != installation_id {
-            return error_response(
-                400,
-                "installation_id_mismatch",
-                "path installation_id must match payload installation_id",
-            );
-        }
 
         let mut store = match self.store.lock() {
             Ok(guard) => guard,
@@ -516,6 +478,61 @@ impl RateLimiter {
         self.global_count += 1;
         true
     }
+}
+
+fn parse_installation_put_report(
+    request: &Request,
+    installation_id: &str,
+) -> Result<(UsageReportV1, String), Response> {
+    if !has_json_content_type(request) {
+        return Err(error_response(
+            415,
+            "unsupported_media_type",
+            "request must use application/json",
+        ));
+    }
+    let body = match read_bounded_body(request, MAX_PAYLOAD_BYTES) {
+        Ok(bytes) => bytes,
+        Err(BodyReadError::TooLarge) => {
+            return Err(error_response(
+                413,
+                "payload_too_large",
+                "payload exceeds 65536 uncompressed bytes",
+            ));
+        }
+        Err(BodyReadError::ReadFailed) => {
+            return Err(error_response(
+                400,
+                "invalid_body",
+                "failed to read request body",
+            ));
+        }
+    };
+    let (report, canonical_json) = match parse_and_validate(&body) {
+        Ok(parsed) => parsed,
+        Err(ValidationError::PayloadTooLarge) => {
+            return Err(error_response(
+                413,
+                "payload_too_large",
+                "payload exceeds 65536 uncompressed bytes",
+            ));
+        }
+        Err(_) => {
+            return Err(error_response(
+                400,
+                "schema_validation_failed",
+                "payload failed closed v1 schema validation",
+            ));
+        }
+    };
+    if report.installation_id != installation_id {
+        return Err(error_response(
+            400,
+            "installation_id_mismatch",
+            "path installation_id must match payload installation_id",
+        ));
+    }
+    Ok((report, canonical_json))
 }
 
 fn system_unix_secs() -> i64 {

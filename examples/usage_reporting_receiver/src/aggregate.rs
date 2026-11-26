@@ -95,7 +95,27 @@ pub fn compute_public_aggregates(
 
     let camera_total = publish_category_total(acc.camera_installations, total_active);
     let feature_total = publish_category_total(acc.feature_installations, total_active);
+    let (dimensions, combined_dimensions) = build_dimensions(acc, total_active, feature_total);
 
+    PublicAggregateDataset {
+        schema_version: SCHEMA_VERSION_V1,
+        generated_at_unix_secs,
+        min_installations_per_cell: MIN_INSTALLATIONS_PER_CELL,
+        max_retention_days: MAX_RETENTION_DAYS,
+        suppressed: false,
+        active_installations: Some(total_active),
+        camera_compatibility_installations: camera_total,
+        feature_adoption_installations: feature_total,
+        dimensions,
+        combined_dimensions,
+    }
+}
+
+fn build_dimensions(
+    acc: Accumulator,
+    total_active: u64,
+    feature_total: Option<u64>,
+) -> (AggregateDimensions, CombinedAggregateDimensions) {
     let dimensions = AggregateDimensions {
         keeppeek_version: suppress_partitioned(acc.keeppeek_version, total_active),
         release_channel: suppress_partitioned(acc.release_channel, total_active),
@@ -123,25 +143,12 @@ pub fn compute_public_aggregates(
         enabled_integration: suppress_independent(acc.enabled_integration),
         event_source_type: suppress_independent(acc.event_source_type),
     };
-
     let combined_dimensions = CombinedAggregateDimensions {
         os_x_architecture: suppress_partitioned(acc.os_x_architecture, total_active),
         manufacturer_x_backend: suppress_independent(acc.manufacturer_x_backend),
         codec_x_resolution: suppress_independent(acc.codec_x_resolution),
     };
-
-    PublicAggregateDataset {
-        schema_version: SCHEMA_VERSION_V1,
-        generated_at_unix_secs,
-        min_installations_per_cell: MIN_INSTALLATIONS_PER_CELL,
-        max_retention_days: MAX_RETENTION_DAYS,
-        suppressed: false,
-        active_installations: Some(total_active),
-        camera_compatibility_installations: camera_total,
-        feature_adoption_installations: feature_total,
-        dimensions,
-        combined_dimensions,
-    }
+    (dimensions, combined_dimensions)
 }
 
 /// Suppresses a category total if either the category or its non-opted-in complement is in 1..10.
