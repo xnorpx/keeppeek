@@ -28,7 +28,7 @@ fn measure_accepted_rtp_packets() {
     let mut nanos_per_packet = Vec::with_capacity(30);
     for run in 0..31 {
         let mut timeline = Timeline::new(Some(97_000), 90_000, None).unwrap();
-        let mut parser = InorderParser::new(Some(source), None, UnknownRtcpSsrcPolicy::Default);
+        let mut parser = InorderParser::new(Some(source), None, 96, UnknownRtcpSsrcPolicy::Default);
         let start = Instant::now();
         for packet in &data {
             let result = parser

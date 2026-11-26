@@ -1469,6 +1469,7 @@ impl RtspClient {
                     rtp_handler: super::rtp::InorderParser::new(
                         init.ssrc,
                         initial_seq,
+                        stream.rtp_payload_type,
                         policy.unknown_rtcp_ssrc,
                     ),
                     ctx: init.ctx,

@@ -22,7 +22,11 @@ use h264_reader::rbsp::{BitRead, BitReaderError};
 /// Whether a unit type is VCL or non-VCL, as defined in T.REC H.265 Table 7-1.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum UnitTypeClass {
-    Vcl { intra_coded: bool },
+    Vcl {
+        /// True when the unit belongs to an intra random access point (IRAP) picture
+        /// (`BLA_W_LP..=RSV_IRAP_VCL23`).
+        irap: bool,
+    },
     NonVcl,
 }
 
@@ -103,6 +107,11 @@ pub enum UnitType {
 }
 
 impl UnitType {
+    /// Returns true iff this is a VCL NAL unit of a sub-layer non-reference picture.
+    pub const fn is_sub_layer_non_reference(self) -> bool {
+        (self as u8) < 16 && (self as u8).is_multiple_of(2)
+    }
+
     pub const fn unit_type_class(self) -> UnitTypeClass {
         match self {
             Self::TrailN
@@ -121,12 +130,6 @@ impl UnitType {
             | Self::RsvVclR13
             | Self::RsvVclN14
             | Self::RsvVclR15
-            | Self::BlaWLp
-            | Self::BlaWRadl
-            | Self::BlaNLp
-            | Self::CraNut
-            | Self::RsvIrapVcl22
-            | Self::RsvIrapVcl23
             | Self::RsvVcl24
             | Self::RsvVcl25
             | Self::RsvVcl26
@@ -134,8 +137,16 @@ impl UnitType {
             | Self::RsvVcl28
             | Self::RsvVcl29
             | Self::RsvVcl30
-            | Self::RsvVcl31 => UnitTypeClass::Vcl { intra_coded: false },
-            Self::IdrWRadl | Self::IdrNLp => UnitTypeClass::Vcl { intra_coded: true },
+            | Self::RsvVcl31 => UnitTypeClass::Vcl { irap: false },
+            // H.265 Table 7-1 classifies BLA_W_LP..=RSV_IRAP_VCL23 as IRAP pictures.
+            Self::BlaWLp
+            | Self::BlaWRadl
+            | Self::BlaNLp
+            | Self::IdrWRadl
+            | Self::IdrNLp
+            | Self::CraNut
+            | Self::RsvIrapVcl22
+            | Self::RsvIrapVcl23 => UnitTypeClass::Vcl { irap: true },
             _ => UnitTypeClass::NonVcl,
         }
     }
@@ -322,6 +333,11 @@ impl Sps {
         }
         let bit_depth_chroma_minus8 = bit_depth_chroma_minus8 as u8;
         let log2_max_pic_order_cnt_lsb_minus4 = r.read_ue("log2_max_pic_order_cnt_lsb_minus4")?;
+        if log2_max_pic_order_cnt_lsb_minus4 > 12 {
+            return Err(Error(
+                "log2_max_pic_order_cnt_lsb_minus4 must be in [0, 12]".to_owned(),
+            ));
+        }
         let sps_sub_layer_ordering_info_present_flag =
             r.read_bit("sps_sub_layer_ordering_info_present_flag")?;
         {
@@ -419,6 +435,7 @@ impl Sps {
                 r.skip(1, "inter_view_mv_vert_constraint_flag")?;
             }
             if sps_3d_extension_flag {
+                // H.265 section I.7.3.2.2.5, `sps_3d_extension`.
                 // d == 0
                 r.skip(1, "iv_di_mc_enabled_flag")?;
                 r.skip(1, "iv_mv_scal_enabled_flag")?;
@@ -429,6 +446,8 @@ impl Sps {
                 r.skip(1, "dbbp_enabled_flag")?;
 
                 // d == 1
+                r.skip(1, "iv_di_mc_enabled_flag")?;
+                r.skip(1, "iv_mv_scal_enabled_flag")?;
                 r.skip(1, "tex_mc_enabled_flag")?;
                 let _ = r.read_ue("log2_texmc_sub_pb_size_minus3")?;
                 r.skip(1, "intra_contour_enabled_flag")?;
@@ -441,12 +460,26 @@ impl Sps {
                 // H.265 section 7.3.2.2.3, `sps_scc_extension`.
                 r.skip(1, "sps_curr_pic_ref_enabled_flag")?;
                 if r.read_bit("palette_mode_enabled_flag")? {
-                    let _ = r.read_ue("palette_max_size");
+                    let _ = r.read_ue("palette_max_size")?;
                     let _ = r.read_ue("delta_palette_max_predictor_size")?;
                     if r.read_bit("sps_palette_predictor_initializers_present_flag")? {
-                        let _ = r.read_ue("sps_num_palette_predictor_initializers_minus1")?;
+                        let num_minus1 =
+                            r.read_ue("sps_num_palette_predictor_initializers_minus1")?;
+                        let num_comps = if chroma_format_idc == 0 { 1 } else { 3 };
+                        for comp in 0..num_comps {
+                            let bit_depth = 8 + u32::from(if comp == 0 {
+                                bit_depth_luma_minus8
+                            } else {
+                                bit_depth_chroma_minus8
+                            });
+                            for _ in 0..=num_minus1 {
+                                r.skip(bit_depth, "sps_palette_predictor_initializer")?;
+                            }
+                        }
                     }
                 }
+                r.skip(2, "motion_vector_resolution_control_idc")?;
+                r.skip(1, "intra_boundary_filtering_disabled_flag")?;
             }
             if sps_extension_4bits != 0 {
                 return Err(Error("sps_extension_4bits unimplemented".to_owned()));
@@ -868,7 +901,7 @@ impl ScalingListData {
                         let _ = r.read_se("scaling_list_dc_coef_minus8")?;
                     }
                     for _ in 0..coef_num {
-                        let _ = r.read_se("scaling_list_delta_coef");
+                        let _ = r.read_se("scaling_list_delta_coef")?;
                     }
                 }
             }
@@ -1544,6 +1577,37 @@ mod tests {
         let bits = LoggingBitReader(bits);
         let _pps = dbg!(Pps::from_bits(bits).unwrap());
         // panic!("pps: {pps:#?}");
+    }
+
+    #[test]
+    fn parse_sps_log2_max_pic_order_cnt_lsb_out_of_range() {
+        init_logging();
+        let data = &b"\x42\xcb\x00\x23\x11\xff\xfe\xff\x2c\xff\xff\xff\x05\xc1\xff\xff\
+                      \x1f\x80\x00\x00\x03\x00\xff\xff\xff\xff\xff\x41\x00\x42\xcb\x00\
+                      \x23\x11\xff\xfe\xff\x2c\xff\xff\xff\x05\xc1\xff\xff\x1f\x80\x00\
+                      \x00\x03\x00\x00"[..];
+        let (h, bits) = split(data).unwrap();
+        assert_eq!(h.unit_type(), UnitType::SpsNut);
+        let e = Sps::from_bits(LoggingBitReader(bits)).unwrap_err();
+        assert!(
+            e.to_string().contains("log2_max_pic_order_cnt_lsb_minus4"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn parse_pps_scaling_list_error() {
+        init_logging();
+        let data = &b"\x44\x02\xc6\x41\x45\x57\x57\x57\x53\x53\x53\x53\x53\xb1\xb1\x57\
+                      \x57\x01\x01\x00\x60\x00\x03\x00\x04\x00\x00\x03\x00\x00\x03\x00\
+                      \x5a\xa0\x05\x82\xfe\xe1\x63\x6b\x92\x13\x53\x53\x53\x52\x53\x53\
+                      \x53\x53\x5d\x53\x53\x53\x53\x53\x53\x53\x53\x53\x53\x51\x53\x53\
+                      \x53\x53\x53\xad\x45\x53\x57\xa2\x57\x57\x18\x57\x57\x57\x5b\x57\
+                      \xb3\xa8\x57\x57\x57\x57\x57\x57\x00\x57\x18\x57\x57\x57\x5b"[..];
+        let (h, bits) = split(data).unwrap();
+        assert_eq!(h.unit_type(), UnitType::PpsNut);
+        let e = Pps::from_bits(LoggingBitReader(bits)).unwrap_err();
+        assert!(e.to_string().contains("scaling_list_delta_coef"), "{e}");
     }
 
     #[test]

@@ -1,9 +1,5 @@
 use crate::soap::client::Credentials;
-use nonzero_ext::nonzero;
-use std::{
-    fmt::{Debug, Formatter},
-    num::NonZeroU8,
-};
+use std::fmt::{Debug, Formatter};
 use thiserror::Error;
 use url::Url;
 
@@ -20,13 +16,11 @@ pub enum Error {
 pub struct Digest {
     creds: Option<Credentials>,
     uri: Url,
-    state: State,
     reuse_headers: bool,
-}
-
-enum State {
-    Default,
-    Got401 { challenge: String, count: NonZeroU8 },
+    /// The last 401 WWW-Authenticate challenge that the next request answers.
+    challenge: Option<String>,
+    /// Count of 401 responses to credentialed requests since the last success.
+    rejections: u8,
 }
 
 impl Digest {
@@ -34,8 +28,9 @@ impl Digest {
         Self {
             creds: creds.clone(),
             uri: uri.clone(),
-            state: State::Default,
             reuse_headers,
+            challenge: None,
+            rejections: 0,
         }
     }
 }
@@ -43,53 +38,38 @@ impl Digest {
 impl Digest {
     /// Call this when the authentication was successful.
     pub fn set_success(&mut self) {
-        if !self.reuse_headers {
-            // Since we don't need to preserve the headers, reset all the state to default.
-            *self = Self::new(&self.uri, &self.creds, self.reuse_headers);
-            return;
-        }
+        self.rejections = 0;
 
-        if let State::Got401 { count, .. } = &mut self.state {
-            // We always store at least one request, so it's never zero.
-            *count = nonzero!(1_u8);
+        if !self.reuse_headers {
+            self.challenge = None;
         }
+    }
+
+    /// Call this when a non-success, non-401 response consumed the challenge.
+    pub fn discard_challenge(&mut self) {
+        self.challenge = None;
     }
 
     /// Call this when received 401 Unauthorized.
     pub fn set_401(&mut self, challenge: String) {
-        self.state = match self.state {
-            State::Default => State::Got401 {
-                challenge,
-                count: nonzero!(1_u8),
-            },
-            State::Got401 { count, .. } => State::Got401 {
-                challenge,
-                count: count.saturating_add(1),
-            },
+        if self.challenge.is_some() {
+            self.rejections = self.rejections.saturating_add(1);
         }
+
+        self.challenge = Some(challenge);
     }
 
     pub const fn is_failed(&self) -> bool {
-        match &self.state {
-            State::Default => false,
-            // Possible scenarios:
-            // - We've got 401 with a challenge for the first time, we calculate the answer, then
-            //   we get 200 OK. So, a single 401 is never a failure.
-            // - After successful auth the count is 1 because we always store at least one request,
-            //   and the caller decided to reuse the same challenge for multiple requests. But at
-            //   some point, we'll get a 401 with a new challenge and `stale=true`.
-            //   So, we'll get a second 401, and this is also not a failure because after
-            //   calculating the answer to the challenge, we'll get a 200 OK, and will reset the
-            //   counter in `set_success()`.
-            // - Three 401's in a row is certainly a failure.
-            State::Got401 { count, .. } => count.get() >= 3,
-        }
+        // A 401 to an unauthenticated request supplies the initial challenge.
+        // One rejected credentialed request can be a stale nonce retry; a second
+        // rejected answer since the last success indicates failed credentials.
+        self.challenge.is_some() && self.rejections >= 2
     }
 
     pub fn authorization_header(&self) -> Result<Option<String>, Error> {
-        match &self.state {
-            State::Default => Ok(None),
-            State::Got401 { challenge, .. } => {
+        match &self.challenge {
+            None => Ok(None),
+            Some(challenge) => {
                 let creds = self.creds.as_ref().ok_or(Error::NoCredentials)?;
                 Ok(Some(digest_auth(challenge, creds, &self.uri)?))
             }
@@ -113,19 +93,9 @@ impl Debug for Digest {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Digest")
             .field("creds", &self.creds)
-            .field("state", &self.state)
+            .field("challenge", &self.challenge.is_some())
+            .field("rejections", &self.rejections)
             .finish()
-    }
-}
-
-impl Debug for State {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Default => write!(f, "FirstRequest")?,
-            Self::Got401 { count, .. } => write!(f, "Got401({count})")?,
-        };
-
-        Ok(())
     }
 }
 

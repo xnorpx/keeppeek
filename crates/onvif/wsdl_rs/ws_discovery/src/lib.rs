@@ -49,7 +49,8 @@ pub mod probe {
         namespaces = {
             "s" = "http://www.w3.org/2003/05/soap-envelope",
             "d" = "http://schemas.xmlsoap.org/ws/2005/04/discovery",
-            "w" = "http://schemas.xmlsoap.org/ws/2004/08/addressing"
+            "w" = "http://schemas.xmlsoap.org/ws/2004/08/addressing",
+            "dn" = "http://www.onvif.org/ver10/network/wsdl"
         }
     )]
     pub struct Envelope {

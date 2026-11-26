@@ -67,6 +67,9 @@ pub struct InorderParser {
     ssrc: Option<Ssrc>,
     seq: Option<Seq>,
 
+    /// The stream's RTP payload type from the SDP description.
+    payload_type: u8,
+
     /// Total RTP packets seen in this stream.
     seen_rtp_packets: u64,
     clock: Option<PacketClock>,
@@ -77,6 +80,9 @@ pub struct InorderParser {
 
     unknown_rtcp_session: UnknownRtcpSsrcPolicy,
     seen_unknown_rtcp_session: bool,
+
+    /// Tracks whether this parser already logged a packet from another stream.
+    seen_other_stream: bool,
 }
 
 /// Source clock readings from accepted RTP packets in one RTSP PLAY session.
@@ -111,6 +117,7 @@ impl InorderParser {
     pub fn new(
         ssrc: Option<u32>,
         next_seq: Option<u16>,
+        payload_type: u8,
         unknown_rtcp_session: UnknownRtcpSsrcPolicy,
     ) -> Self {
         Self {
@@ -122,13 +129,25 @@ impl InorderParser {
                 init: InitialExpectation::PlayResponseHeader,
                 next,
             }),
+            payload_type,
             seen_rtp_packets: 0,
             clock: None,
             sender_report: None,
             seen_rtcp_packets: 0,
             unknown_rtcp_session,
             seen_unknown_rtcp_session: false,
+            seen_other_stream: false,
         }
+    }
+
+    /// Returns true if `raw` belongs to another stream sent on this channel.
+    ///
+    /// Some cameras send unsubscribed audio and its RTCP packets on the video
+    /// stream's interleaved channel. Stale data from a prior session still uses
+    /// this stream's payload type and remains an error.
+    pub(crate) fn is_other_stream(&self, raw: &RawPacket) -> bool {
+        raw.payload_type() != self.payload_type
+            && !matches!(self.ssrc, Some(s) if s.ssrc == raw.ssrc())
     }
 
     pub(super) fn clock_snapshot(
@@ -178,6 +197,21 @@ impl InorderParser {
         // packet with the same sequence number to be skipped.
         if raw.payload_type() == 50 {
             debug!("skipping pkt with invalid payload type 50");
+            return Ok(None);
+        }
+
+        if self.is_other_stream(&raw) {
+            if !self.seen_other_stream {
+                warn!(
+                    "skipping RTP packets of another stream on stream {stream_id}'s channel: \
+                     ssrc={:08x} pt={} while expecting ssrc={:08x?} pt={}; won't log further ones",
+                    raw.ssrc(),
+                    raw.payload_type(),
+                    self.ssrc.map(|s| s.ssrc),
+                    self.payload_type,
+                );
+                self.seen_other_stream = true;
+            }
             return Ok(None);
         }
 
@@ -277,13 +311,8 @@ impl InorderParser {
         let first_pkt = crate::rtcp::ReceivedCompoundPacket::validate(&data[..])?;
         let mut rtp_timestamp = None;
         if let Ok(Some(sr)) = first_pkt.as_sender_report() {
-            rtp_timestamp = Some(timeline.place(sr.rtp_timestamp()).map_err(
-                |mut description| {
-                    description.push_str(" in RTCP SR");
-                    description
-                },
-            )?);
-
+            // Check the SSRC before placing the timestamp so a dropped sender
+            // report cannot establish the stream NPT epoch.
             let ssrc = sr.ssrc();
             if matches!(self.ssrc, Some(s) if s.ssrc != ssrc) {
                 match self.unknown_rtcp_session {
@@ -323,6 +352,12 @@ impl InorderParser {
                     ssrc,
                 });
             }
+            rtp_timestamp = Some(timeline.place(sr.rtp_timestamp()).map_err(
+                |mut description| {
+                    description.push_str(" in RTCP SR");
+                    description
+                },
+            )?);
             // ProcessPackets can deliver other senders' control packets to the caller.
             if self.ssrc.is_some_and(|source| source.ssrc == ssrc) {
                 self.sender_report =
@@ -353,7 +388,8 @@ mod tests {
     #[test]
     fn geovision_pt50_packet() {
         let mut timeline = Timeline::new(None, 90_000, None).unwrap();
-        let mut parser = InorderParser::new(Some(0xd25614e), None, UnknownRtcpSsrcPolicy::Default);
+        let mut parser =
+            InorderParser::new(Some(0xd25614e), None, 105, UnknownRtcpSsrcPolicy::Default);
         let stream_ctx = StreamContext::dummy();
 
         // Normal packet.
@@ -408,7 +444,8 @@ mod tests {
     #[test]
     fn out_of_order_tcp_packet_fails() {
         let mut timeline = Timeline::new(None, 90_000, None).unwrap();
-        let mut parser = InorderParser::new(Some(0xd25614e), None, UnknownRtcpSsrcPolicy::Default);
+        let mut parser =
+            InorderParser::new(Some(0xd25614e), None, 96, UnknownRtcpSsrcPolicy::Default);
         let stream_ctx = StreamContext::dummy();
         let session_options = SessionOptions::default();
         let (pkt, _payload_range) = crate::rtp::RawPacketBuilder {
@@ -462,7 +499,8 @@ mod tests {
     #[test]
     fn sequence_and_timestamp_rollovers_are_unwrapped_together() {
         let mut timeline = Timeline::new(None, 90_000, None).unwrap();
-        let mut parser = InorderParser::new(Some(0xd25614e), None, UnknownRtcpSsrcPolicy::Default);
+        let mut parser =
+            InorderParser::new(Some(0xd25614e), None, 96, UnknownRtcpSsrcPolicy::Default);
         let stream_ctx = StreamContext::dummy();
         let session_options = SessionOptions::default();
 
@@ -520,5 +558,72 @@ mod tests {
             second.timestamp().elapsed_duration(),
             Some(Duration::new(0, 33_333_333))
         );
+    }
+
+    fn push_rtp(
+        parser: &mut InorderParser,
+        timeline: &mut Timeline,
+        seq: u16,
+        payload_type: u8,
+        ssrc: u32,
+    ) -> Result<bool, Error> {
+        let (pkt, _) = crate::rtp::RawPacketBuilder {
+            sequence_number: seq,
+            timestamp: u32::from(seq) * 3000,
+            payload_type,
+            ssrc,
+            mark: true,
+        }
+        .build(*b"pkt")
+        .unwrap();
+        parser
+            .rtp(
+                &SessionOptions::default(),
+                &StreamContext::dummy(),
+                None,
+                &ConnectionContext::dummy(),
+                &PacketContext::dummy(),
+                timeline,
+                0,
+                pkt.0,
+            )
+            .map(|packet| packet.is_some())
+    }
+
+    #[test]
+    fn other_stream_on_the_channel() {
+        let mut timeline = Timeline::new(None, 90_000, None).unwrap();
+        let mut parser = InorderParser::new(None, None, 96, UnknownRtcpSsrcPolicy::Default);
+
+        assert!(!push_rtp(&mut parser, &mut timeline, 23161, 8, 0x111).unwrap());
+        assert!(!push_rtp(&mut parser, &mut timeline, 0x1c, 72, 0xec8e_2b37).unwrap());
+        assert!(push_rtp(&mut parser, &mut timeline, 1, 96, 0x110).unwrap());
+        assert!(!push_rtp(&mut parser, &mut timeline, 23162, 8, 0x111).unwrap());
+        assert!(push_rtp(&mut parser, &mut timeline, 2, 96, 0x110).unwrap());
+        assert!(push_rtp(&mut parser, &mut timeline, 3, 96, 0x112).is_err());
+    }
+
+    #[test]
+    fn stray_sender_report() {
+        let mut timeline = Timeline::new(None, 90_000, None).unwrap();
+        let mut parser = InorderParser::new(Some(0x110), None, 96, UnknownRtcpSsrcPolicy::Default);
+        let mut sr = [0_u8; 28];
+        sr[..4].copy_from_slice(&[0x80, 200, 0, 6]);
+        sr[4..8].copy_from_slice(&0x111_u32.to_be_bytes());
+        sr[16..20].copy_from_slice(&1_000_000_u32.to_be_bytes());
+        let item = parser
+            .rtcp(
+                &SessionOptions::default(),
+                &StreamContext::dummy(),
+                None,
+                &ConnectionContext::dummy(),
+                &PacketContext::dummy(),
+                &mut timeline,
+                0,
+                Bytes::copy_from_slice(&sr),
+            )
+            .unwrap();
+        assert!(item.is_none());
+        assert_eq!(timeline.advance_to(3_000).unwrap().elapsed(), 0);
     }
 }

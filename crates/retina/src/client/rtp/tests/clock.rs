@@ -59,7 +59,7 @@ fn sender_report(parser: &mut InorderParser, timeline: &mut Timeline, ssrc: u32,
 #[test]
 fn original_packet_clock_distinguishes_wrap_gap_backward_step_and_reconnect() {
     let mut timeline = Timeline::new(Some(u32::MAX - 15), 90_000, None).unwrap();
-    let mut parser = InorderParser::new(Some(SOURCE), None, UnknownRtcpSsrcPolicy::Default);
+    let mut parser = InorderParser::new(Some(SOURCE), None, 96, UnknownRtcpSsrcPolicy::Default);
     receive(&mut parser, &mut timeline, u16::MAX - 1, u32::MAX - 7);
     receive(&mut parser, &mut timeline, u16::MAX, u32::MAX - 7);
     receive(&mut parser, &mut timeline, 1, 32);
@@ -72,7 +72,7 @@ fn original_packet_clock_distinguishes_wrap_gap_backward_step_and_reconnect() {
     assert_eq!(snapshot.packets, 4);
     assert_eq!(snapshot.play_origin, Some(u32::MAX - 15));
     let mut timeline = Timeline::new(None, 48_000, None).unwrap();
-    let mut next = InorderParser::new(Some(SOURCE), None, UnknownRtcpSsrcPolicy::Default);
+    let mut next = InorderParser::new(Some(SOURCE), None, 96, UnknownRtcpSsrcPolicy::Default);
     assert!(next.clock_snapshot(timeline.play_origin).is_none());
     receive(&mut next, &mut timeline, 9, 1_001);
     let snapshot = next.clock_snapshot(timeline.play_origin).unwrap();
@@ -85,7 +85,12 @@ fn original_packet_clock_distinguishes_wrap_gap_backward_step_and_reconnect() {
 
 #[test]
 fn only_matching_nonzero_sender_reports_supply_a_clock_anchor() {
-    let mut parser = InorderParser::new(Some(SOURCE), None, UnknownRtcpSsrcPolicy::ProcessPackets);
+    let mut parser = InorderParser::new(
+        Some(SOURCE),
+        None,
+        96,
+        UnknownRtcpSsrcPolicy::ProcessPackets,
+    );
     let mut timeline = Timeline::new(None, 48_000, None).unwrap();
     let ntp = 0xe436_2f99_cccc_cccc;
     sender_report(&mut parser, &mut timeline, SOURCE, ntp);

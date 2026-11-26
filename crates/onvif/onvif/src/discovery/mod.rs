@@ -76,6 +76,7 @@ pub struct DiscoveryBuilder {
     duration: Duration,
     listen_address: IpAddr,
     discovery_mode: DiscoveryMode,
+    probe_types: String,
 }
 
 impl Default for DiscoveryBuilder {
@@ -84,6 +85,7 @@ impl Default for DiscoveryBuilder {
             duration: Duration::from_secs(5),
             listen_address: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             discovery_mode: DiscoveryMode::Multicast,
+            probe_types: String::new(),
         }
     }
 }
@@ -117,6 +119,14 @@ impl DiscoveryBuilder {
         self
     }
 
+    /// Only ask for devices advertising these WS-Discovery types, e.g.
+    /// `dn:NetworkVideoTransmitter`. Empty (the default) asks for every device,
+    /// though some cameras only answer a probe that names their type.
+    pub fn probe_types(&mut self, probe_types: impl Into<String>) -> &mut Self {
+        self.probe_types = probe_types.into();
+        self
+    }
+
     fn discover_unicast(
         &self,
         duration: Duration,
@@ -128,7 +138,7 @@ impl DiscoveryBuilder {
             return Err(Error::Unsupported("Discovery with IPv6".to_owned()));
         }
 
-        let probe = build_probe();
+        let probe = build_probe(&self.probe_types);
         let probe_xml =
             yaserde::ser::to_string(&probe).map_err(|error| Error::Serde(error.to_string()))?;
         debug!(
@@ -200,7 +210,7 @@ impl DiscoveryBuilder {
             return Err(Error::Unsupported("Discovery with IPv6".to_owned()));
         };
 
-        let probe = build_probe();
+        let probe = build_probe(&self.probe_types);
         let probe_xml =
             yaserde::ser::to_string(&probe).map_err(|error| Error::Serde(error.to_string()))?;
         debug!("Probe XML: {probe_xml}");
@@ -359,7 +369,7 @@ fn device_from_envelope(envelope: probe_matches::Envelope) -> Option<Device> {
     })
 }
 
-fn build_probe() -> probe::Envelope {
+fn build_probe(types: &str) -> probe::Envelope {
     use probe::*;
 
     Envelope {
@@ -368,13 +378,28 @@ fn build_probe() -> probe::Envelope {
             action: "http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe".into(),
             to: "urn:schemas-xmlsoap-org:ws:2005:04:discovery".into(),
         },
-        ..Default::default()
+        body: Body {
+            probe: Probe {
+                types: types.to_string(),
+            },
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probe_names_the_requested_types() {
+        let xml = |types| yaserde::ser::to_string(&build_probe(types)).unwrap();
+
+        assert!(
+            xml("dn:NetworkVideoTransmitter")
+                .contains("<d:Types>dn:NetworkVideoTransmitter</d:Types>")
+        );
+        assert!(xml("").contains("<d:Types>") && !xml("").contains("NetworkVideoTransmitter"));
+    }
 
     /// This test serves more as an example of how the unicast discovery works.
     #[test]
