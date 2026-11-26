@@ -44,12 +44,15 @@ impl Drop for RecorderProcess {
     }
 }
 
+const RECENT_TAIL_BYTES: usize = 1024;
+
 struct TerminalOutput {
     input: Box<dyn Write + Send>,
     chunks: Receiver<Vec<u8>>,
     #[cfg(windows)]
     query: [u8; 4],
     pending: Vec<u8>,
+    recent: Vec<u8>,
 }
 
 impl TerminalOutput {
@@ -71,6 +74,7 @@ impl TerminalOutput {
             #[cfg(windows)]
             query: [0; 4],
             pending: Vec::new(),
+            recent: Vec::new(),
         })
     }
 
@@ -86,6 +90,11 @@ impl TerminalOutput {
             }
         }
         self.pending.extend_from_slice(chunk);
+        self.recent.extend_from_slice(chunk);
+        if self.recent.len() > RECENT_TAIL_BYTES {
+            let drop_prefix = self.recent.len() - RECENT_TAIL_BYTES;
+            self.recent.drain(..drop_prefix);
+        }
         Ok(())
     }
 
@@ -116,12 +125,17 @@ impl TerminalOutput {
             let keep_from = self.pending.len().saturating_sub(marker.len() - 1);
             self.pending.drain(..keep_from);
             let remaining = deadline.saturating_duration_since(Instant::now());
-            ensure!(!remaining.is_zero(), "terminal marker deadline elapsed");
+            ensure!(
+                !remaining.is_zero(),
+                "terminal marker {:?} deadline elapsed; recent={:?}",
+                String::from_utf8_lossy(marker),
+                String::from_utf8_lossy(&self.recent)
+            );
             let chunk = self.chunks.recv_timeout(remaining).with_context(|| {
                 format!(
-                    "terminal did not emit {:?}; tail={:?}",
+                    "terminal did not emit {:?}; recent={:?}",
                     String::from_utf8_lossy(marker),
-                    String::from_utf8_lossy(&self.pending)
+                    String::from_utf8_lossy(&self.recent)
                 )
             })?;
             self.handle_chunk(&chunk)?;
@@ -157,8 +171,14 @@ fn spawn_pty_recorder(
     test_name: &str,
 ) -> Result<(RecorderProcess, u16)> {
     let port = TcpListener::bind(("127.0.0.1", 0))?.local_addr()?.port();
-    let directory = std::env::temp_dir().join(format!("keeppeek-tui-rec-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&directory)?;
+    let temp_root = std::env::temp_dir();
+    // Resolve symlinked Unix temp roots such as macOS /var -> /private/var before Root::open checks them.
+    #[cfg(unix)]
+    let temp_root = fs::canonicalize(&temp_root)
+        .with_context(|| format!("unable to canonicalize temp root {}", temp_root.display()))?;
+    let directory = temp_root.join(format!("keeppeek-tui-rec-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&directory)
+        .with_context(|| format!("unable to create test directory {}", directory.display()))?;
     let config_path = directory.join("config.toml");
     let config_text = format!(
         "host = \"127.0.0.1\"\nport = {port}\n\n[storage]\nshort_term_secs = 0\nmedium_term_secs = 60\nflush_interval_secs = 1\nwrite_buffer_bytes = 8192\n\n{}recording_mode = \"both\"\n",
@@ -197,11 +217,32 @@ fn maybe_run_child_server() -> Result<bool> {
     let source_config = PathBuf::from(config_path);
     let target_config = config::config_path();
     if let Some(parent) = target_config.parent() {
-        fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "unable to create child configuration directory {}",
+                parent.display()
+            )
+        })?;
     }
-    fs::copy(&source_config, &target_config)?;
-    let (cfg, config_path) = config::load()?;
-    let logging = initialize_global_logging(&config_path)?;
+    fs::copy(&source_config, &target_config).with_context(|| {
+        format!(
+            "unable to copy child configuration from {} to {}",
+            source_config.display(),
+            target_config.display()
+        )
+    })?;
+    let (cfg, config_path) = config::load().with_context(|| {
+        format!(
+            "unable to load child configuration from {}",
+            target_config.display()
+        )
+    })?;
+    let logging = initialize_global_logging(&config_path).with_context(|| {
+        format!(
+            "unable to initialize child logging for {}",
+            config_path.display()
+        )
+    })?;
     let shutdown = Shutdown::new();
     let restart = Restart::default();
     let signal_shutdown = shutdown.clone();
@@ -212,7 +253,13 @@ fn maybe_run_child_server() -> Result<bool> {
     })
     .context("unable to install Ctrl+C handler in continuity child")?;
     let restarted =
-        keeppeek::app::run_with_dashboard(cfg, &config_path, logging, shutdown, restart, mode)?;
+        keeppeek::app::run_with_dashboard(cfg, &config_path, logging, shutdown, restart, mode)
+            .with_context(|| {
+                format!(
+                    "continuity child server failed for {}",
+                    config_path.display()
+                )
+            })?;
     ensure!(
         !restarted,
         "continuity child requested an unexpected restart"
