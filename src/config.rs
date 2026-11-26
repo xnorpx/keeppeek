@@ -149,6 +149,9 @@ pub struct Config {
     pub operational_events: OperationalEventsConfig,
 
     #[serde(default)]
+    pub analytics: AnalyticsConfig,
+
+    #[serde(default)]
     pub privacy: PrivacyConfig,
 
     #[serde(
@@ -168,6 +171,55 @@ pub struct Config {
 
     #[serde(skip)]
     pub(crate) secrets_snapshot: Secrets,
+}
+
+/// Site defaults and derived-storage bounds for activity analytics (`[analytics]`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct AnalyticsConfig {
+    #[serde(default = "default_analytics_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_analytics_timezone")]
+    pub timezone: String,
+    #[serde(default)]
+    pub week_start: crate::storage::analytics::WeekStart,
+    #[serde(default = "default_analytics_max_rollup_rows")]
+    pub max_rollup_rows: u64,
+}
+
+impl AnalyticsConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        crate::storage::analytics::time::parse_timezone(&self.timezone)?;
+        let min = crate::storage::analytics::MIN_MAX_ROLLUP_ROWS;
+        let max = crate::storage::analytics::MAX_CONFIGURABLE_ROLLUP_ROWS;
+        anyhow::ensure!(
+            (min..=max).contains(&self.max_rollup_rows),
+            "analytics.max_rollup_rows must be between {min} and {max}"
+        );
+        Ok(())
+    }
+}
+
+impl Default for AnalyticsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            timezone: default_analytics_timezone(),
+            week_start: crate::storage::analytics::WeekStart::Monday,
+            max_rollup_rows: default_analytics_max_rollup_rows(),
+        }
+    }
+}
+
+const fn default_analytics_enabled() -> bool {
+    true
+}
+
+fn default_analytics_timezone() -> String {
+    "UTC".to_owned()
+}
+
+const fn default_analytics_max_rollup_rows() -> u64 {
+    crate::storage::analytics::DEFAULT_MAX_ROLLUP_ROWS
 }
 
 /// Server-enforced recurring privacy policies keyed by camera identity.
@@ -1115,6 +1167,7 @@ impl Default for Config {
             battery_wake: BatteryWakeConfig::default(),
             logging: LoggingConfig::default(),
             operational_events: OperationalEventsConfig::default(),
+            analytics: AnalyticsConfig::default(),
             privacy: PrivacyConfig::default(),
             runtime_profiles: crate::profiles::ProfileRegistry::default(),
             event_forwarder: EventForwarderConfig::default(),
@@ -1530,6 +1583,7 @@ fn load_from_path(path: PathBuf) -> anyhow::Result<(Config, PathBuf)> {
     cfg.direct_card.validate()?;
     cfg.desktop.validate()?;
     cfg.operational_events.validate()?;
+    cfg.analytics.validate()?;
     cfg.privacy.validate()?;
     cfg.event_forwarder.mqtt.validate()?;
 
@@ -1980,6 +2034,7 @@ fn validated_configuration_table_with_secrets(
     config.desktop.validate()?;
     config.battery_wake.validate()?;
     config.operational_events.validate()?;
+    config.analytics.validate()?;
     config.privacy.validate()?;
     config.event_forwarder.mqtt.validate()?;
     config.storage.validate_safety_thresholds()?;
@@ -2601,6 +2656,7 @@ pub(crate) fn is_reserved_section(namespace: &str) -> bool {
             | "homekit"
             | "logging"
             | "operational_events"
+            | "analytics"
             | "event_forwarder"
             | "notifications"
             | "peek_layouts"

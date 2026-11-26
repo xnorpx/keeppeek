@@ -12,6 +12,7 @@ use serde::Serialize;
 use crate::cameras::events::{EventConfig, EventMode, MetadataMode};
 use crate::keeppeek::StreamKind;
 use crate::shutdown::Shutdown;
+use crate::storage::{RecordingCatalogHandle, analytics::ExpectedSourceState};
 use retina::codec::CompressionType;
 
 const QUEUED_BYTES_MAX: usize = 8 * 1024 * 1024;
@@ -55,6 +56,7 @@ pub struct Registry {
     observed: Arc<Mutex<HashMap<IpAddr, Vec<String>>>>,
     services: Arc<Mutex<HashMap<IpAddr, onvif::event::Service>>>,
     snapshot_endpoints: Arc<Mutex<HashMap<IpAddr, onvif::event::Endpoint>>>,
+    analytics_catalog: Arc<Mutex<Option<RecordingCatalogHandle>>>,
 }
 
 #[derive(Default)]
@@ -78,6 +80,9 @@ pub(super) struct Slot {
     policy: EventConfig,
     metadata_owner: Mutex<MetadataOwner>,
     interruptions: Mutex<(Option<Instant>, Option<Instant>)>,
+    camera_id: String,
+    analytics_catalog: Option<RecordingCatalogHandle>,
+    last_analytics_health: Mutex<Option<ExpectedSourceState>>,
 }
 
 #[derive(Default)]
@@ -148,6 +153,20 @@ impl Input {
 }
 
 impl Registry {
+    /// Attaches the recording catalog used to persist camera event-source health transitions.
+    pub(crate) fn set_analytics_catalog(&self, catalog: RecordingCatalogHandle) {
+        *self
+            .analytics_catalog
+            .lock()
+            .expect("analytics catalog handle is not poisoned") = Some(catalog);
+    }
+
+    fn analytics_catalog(&self) -> Option<RecordingCatalogHandle> {
+        self.analytics_catalog
+            .lock()
+            .expect("analytics catalog handle is not poisoned")
+            .clone()
+    }
     pub(crate) fn record_snapshot(&self, ip: IpAddr, uri: Option<&str>) -> bool {
         let Some(uri) = uri else {
             return false;
@@ -241,6 +260,7 @@ impl Registry {
                 .expect("event policy revision exhausted");
             policies.revision
         });
+        let disabled_changed = unchanged.is_none() && policy.mode == EventMode::Disabled;
         policies.entries.insert(
             ip,
             Policy {
@@ -250,6 +270,14 @@ impl Registry {
                 revision,
             },
         );
+        drop(policies);
+        if disabled_changed && let Some(catalog) = self.analytics_catalog() {
+            let _ = catalog.record_source_health_transition(
+                &ip.to_string(),
+                super::unix_ms(),
+                ExpectedSourceState::NoExpectedSource,
+            );
+        }
     }
 
     pub(crate) fn vendor_revision(&self, ip: IpAddr) -> u64 {
@@ -320,6 +348,9 @@ impl Registry {
             policy,
             metadata_owner: Mutex::new(MetadataOwner::default()),
             interruptions: Mutex::new((None, None)),
+            camera_id: ip.to_string(),
+            analytics_catalog: self.analytics_catalog(),
+            last_analytics_health: Mutex::new(None),
         });
         let mut slots = self
             .slots
@@ -396,9 +427,18 @@ impl Registry {
         if observed.len() >= 1024 && !observed.contains_key(&ip) {
             return false;
         }
+        let first_observation = !observed.contains_key(&ip);
         let kinds = observed.entry(ip).or_default();
         if kinds.len() < 32 && !kinds.iter().any(|existing| existing == kind) {
             kinds.push(kind.to_owned());
+            drop(observed);
+            if first_observation && let Some(catalog) = self.analytics_catalog() {
+                let _ = catalog.record_source_health_transition(
+                    &ip.to_string(),
+                    super::unix_ms(),
+                    ExpectedSourceState::Healthy,
+                );
+            }
             return true;
         }
         false
@@ -596,12 +636,59 @@ impl Slot {
     }
 
     pub fn update(&self, update: impl FnOnce(&mut Evidence)) {
-        update(
-            &mut self
+        let (state, metadata_available) = {
+            let mut evidence = self
                 .evidence
                 .lock()
-                .expect("native event evidence is not poisoned"),
-        );
+                .expect("native event evidence is not poisoned");
+            update(&mut evidence);
+            (evidence.state, evidence.metadata_available)
+        };
+        self.sync_analytics_health(state, metadata_available);
+    }
+
+    fn sync_analytics_health(&self, state: &'static str, metadata_available: bool) {
+        let Some(catalog) = &self.analytics_catalog else {
+            return;
+        };
+        let Some(next) = map_evidence_health_state(state, metadata_available) else {
+            return;
+        };
+        let mut last = self
+            .last_analytics_health
+            .lock()
+            .expect("analytics health transition cache is not poisoned");
+        if *last == Some(next) {
+            return;
+        }
+        *last = Some(next);
+        drop(last);
+        if let Err(error) =
+            catalog.record_source_health_transition(&self.camera_id, super::unix_ms(), next)
+        {
+            tracing::debug!(
+                camera_id = %self.camera_id,
+                %error,
+                "unable to persist camera event-source health transition"
+            );
+        }
+    }
+}
+
+fn map_evidence_health_state(
+    state: &'static str,
+    metadata_available: bool,
+) -> Option<ExpectedSourceState> {
+    match state {
+        "unsupported" | "disabled" => Some(ExpectedSourceState::NoExpectedSource),
+        "reconnecting"
+        | "delivery-stalled"
+        | "authentication-failed"
+        | "commit_unknown"
+        | "stopped" => Some(ExpectedSourceState::MissingHealth),
+        "subscribed" | "observed" => Some(ExpectedSourceState::Healthy),
+        _ if metadata_available => Some(ExpectedSourceState::Healthy),
+        _ => None,
     }
 }
 
@@ -617,6 +704,64 @@ mod tests {
     };
     use std::time::Duration;
     use test_hikvision::onvif::FakeOnvif;
+
+    #[test]
+    fn registry_persists_analytics_source_health_transitions() {
+        let dir = std::env::temp_dir().join(format!(
+            "keeppeek-event-health-reg-{}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let catalog = crate::storage::RecordingCatalog::open(&dir.join("recordings.db")).unwrap();
+        let handle = catalog.handle();
+        let registry = Registry::default();
+        registry.set_analytics_catalog(handle.clone());
+
+        let ip: IpAddr = "192.0.2.44".parse().unwrap();
+        let (tx, _rx) = std::sync::mpsc::sync_channel(4);
+        let slot = registry
+            .install(ip, tx, Shutdown::new(), EventConfig::default())
+            .unwrap();
+        // Verify permanent metadata_available=true does not mask subsequent authentication failures.
+        slot.update(|e| e.metadata_available = true);
+        slot.update(|e| e.state = "authentication-failed");
+
+        let disabled_ip: IpAddr = "192.0.2.45".parse().unwrap();
+        registry.configure(
+            disabled_ip,
+            EventConfig {
+                mode: EventMode::Disabled,
+                ..EventConfig::default()
+            },
+            false,
+            Shutdown::new(),
+        );
+
+        let now = super::super::unix_ms() + 10_000;
+        let mut cams = std::collections::BTreeMap::new();
+        for (addr, label) in [(ip, "Cam 44"), (disabled_ip, "Cam 45")] {
+            cams.insert(
+                addr.to_string(),
+                crate::storage::analytics::AuthorizedCamera {
+                    camera_id: addr.to_string(),
+                    display_name: label.to_owned(),
+                    group_ids: Vec::new(),
+                },
+            );
+        }
+        let q = crate::storage::analytics::ActivitySummaryQuery::new(
+            now - 60_000,
+            now,
+            "UTC",
+            crate::storage::analytics::BucketGranularity::Hour,
+            now,
+            cams,
+        );
+        let summary = handle.query_activity_summary(q).unwrap();
+        assert_eq!(summary.source_health.missing_health_cameras, 1);
+        assert_eq!(summary.source_health.no_expected_source_cameras, 1);
+        assert_eq!(summary.source_health.unknown_history_cameras, 0);
+    }
 
     #[test]
     fn unavailable_pull_limits_do_not_become_positive_advertisement() {

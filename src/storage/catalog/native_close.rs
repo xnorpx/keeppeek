@@ -87,6 +87,9 @@ async fn persist(
         )
         .await?;
     anyhow::ensure!(state_rows == 1, "missing event search revision");
+    for event in events.iter().flatten() {
+        super::analytics::delta::sync_event_upsert(connection, event).await?;
+    }
     Ok(())
 }
 

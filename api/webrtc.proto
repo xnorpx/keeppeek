@@ -52,6 +52,7 @@ message Request {
     StorageVolumeCommand storage_volume_command = 29;
     ArchiveCommand archive_command = 30;
     ShareCommand share_command = 31;
+    ActivityAnalyticsCommand activity_analytics_command = 32;
   }
   reserved 19, 20;
   reserved "recording_command", "live_session_command";
@@ -3162,6 +3163,7 @@ message Ok {
     ShareResult share_result = 45;
     StoredFrameStepResult stored_frame_step_result = 46;
     SavedEventSearchResult saved_event_search_result = 47;
+    ActivityAnalyticsResult activity_analytics_result = 50;
   }
   reserved 17, 18;
   reserved "recording_activity_result", "live_session_result";
@@ -4066,6 +4068,7 @@ message Message {
     EventMessage event = 6;
     ExportMessage export = 7;
     EventSearchMessage event_search = 8;
+    ActivityAnalyticsMessage activity_analytics = 9;
   }
 }
 
@@ -4390,6 +4393,8 @@ message EventMetadataSearch {
   optional string text = 7;
   repeated string event_ids = 8;
   bool include_preview_keyframes = 9;
+  repeated EventConfidenceBand confidence_bands = 10;
+  bool include_missing_zone = 11;
 }
 
 enum EventImageFilter {
@@ -4781,4 +4786,297 @@ message StoredFrameStepChunk {
   google.protobuf.Timestamp stored_time = 11;
   // Exclusive end when the stored sample has a positive duration representable in nanoseconds.
   google.protobuf.Timestamp stored_end_time = 12;
+}
+
+// Fixed confidence bands shared by activity analytics and bounded Events drill-down.
+enum EventConfidenceBand {
+  EVENT_CONFIDENCE_BAND_UNSPECIFIED = 0;
+  EVENT_CONFIDENCE_BAND_UNKNOWN = 1;
+  EVENT_CONFIDENCE_BAND_LOW = 2;
+  EVENT_CONFIDENCE_BAND_MEDIUM = 3;
+  EVENT_CONFIDENCE_BAND_HIGH = 4;
+}
+
+enum ActivityBucketGranularity {
+  ACTIVITY_BUCKET_GRANULARITY_UNSPECIFIED = 0;
+  ACTIVITY_BUCKET_GRANULARITY_HOUR = 1;
+  ACTIVITY_BUCKET_GRANULARITY_DAY = 2;
+  ACTIVITY_BUCKET_GRANULARITY_WEEK = 3;
+  ACTIVITY_BUCKET_GRANULARITY_MONTH = 4;
+  ACTIVITY_BUCKET_GRANULARITY_HOUR_OF_DAY = 5;
+  ACTIVITY_BUCKET_GRANULARITY_WEEKDAY_WEEKEND = 6;
+}
+
+enum ActivityWeekStart {
+  ACTIVITY_WEEK_START_UNSPECIFIED = 0;
+  ACTIVITY_WEEK_START_MONDAY = 1;
+  ACTIVITY_WEEK_START_SUNDAY = 2;
+}
+
+enum ActivityDimension {
+  ACTIVITY_DIMENSION_UNSPECIFIED = 0;
+  ACTIVITY_DIMENSION_CAMERA = 1;
+  ACTIVITY_DIMENSION_GROUP = 2;
+  ACTIVITY_DIMENSION_EVENT_TYPE = 3;
+  ACTIVITY_DIMENSION_ORIGIN = 4;
+  ACTIVITY_DIMENSION_ZONE = 5;
+  ACTIVITY_DIMENSION_CONFIDENCE_BAND = 6;
+  ACTIVITY_DIMENSION_IMAGE = 7;
+  ACTIVITY_DIMENSION_WORKFLOW = 8;
+}
+
+enum ActivityComparisonMode {
+  ACTIVITY_COMPARISON_MODE_UNSPECIFIED = 0;
+  ACTIVITY_COMPARISON_MODE_NONE = 1;
+  ACTIVITY_COMPARISON_MODE_PREVIOUS_DURATION = 2;
+  ACTIVITY_COMPARISON_MODE_PREVIOUS_CALENDAR = 3;
+}
+
+enum ActivityRollupState {
+  ACTIVITY_ROLLUP_STATE_UNSPECIFIED = 0;
+  ACTIVITY_ROLLUP_STATE_READY = 1;
+  ACTIVITY_ROLLUP_STATE_REBUILDING = 2;
+  ACTIVITY_ROLLUP_STATE_DEGRADED = 3;
+  ACTIVITY_ROLLUP_STATE_UNAVAILABLE = 4;
+}
+
+enum ActivityCompletenessState {
+  ACTIVITY_COMPLETENESS_STATE_UNSPECIFIED = 0;
+  ACTIVITY_COMPLETENESS_STATE_COMPLETE = 1;
+  ACTIVITY_COMPLETENESS_STATE_PARTIAL_CURRENT = 2;
+  ACTIVITY_COMPLETENESS_STATE_PARTIAL_RETENTION = 3;
+  ACTIVITY_COMPLETENESS_STATE_SOURCE_GAP = 4;
+  ACTIVITY_COMPLETENESS_STATE_UNKNOWN = 5;
+}
+
+enum ActivityCameraHealthStatus {
+  ACTIVITY_CAMERA_HEALTH_STATUS_UNSPECIFIED = 0;
+  ACTIVITY_CAMERA_HEALTH_STATUS_REPORTING = 1;
+  ACTIVITY_CAMERA_HEALTH_STATUS_HEALTHY_NO_REPORTS = 2;
+  ACTIVITY_CAMERA_HEALTH_STATUS_MISSING_HEALTH = 3;
+  ACTIVITY_CAMERA_HEALTH_STATUS_NO_EXPECTED_SOURCE = 4;
+  ACTIVITY_CAMERA_HEALTH_STATUS_UNKNOWN_HISTORY = 5;
+}
+
+message ActivityAnalyticsCommand {
+  oneof action {
+    QueryActivitySummary query = 1;
+    CancelActivityAnalyticsQuery cancel_query = 2;
+    GetActivityAnalyticsStatus get_status = 3;
+    RebuildActivityAnalytics rebuild = 4;
+  }
+}
+
+message ActivitySummaryFilter {
+  repeated string source_ids = 1;
+  repeated string group_ids = 2;
+  repeated string event_types = 3;
+  repeated EventOrigin origins = 4;
+  repeated string zones = 5;
+  bool include_missing_zone = 6;
+  repeated EventConfidenceBand confidence_bands = 7;
+  EventImageFilter image = 8;
+  EventWorkflowQuery workflow = 9;
+}
+
+message QueryActivitySummary {
+  string query_id = 1;
+  google.protobuf.Timestamp start_time = 2;
+  google.protobuf.Timestamp end_time = 3;
+  string timezone = 4;
+  ActivityBucketGranularity granularity = 5;
+  ActivityWeekStart week_start = 6;
+  ActivitySummaryFilter filter = 7;
+  repeated ActivityDimension group_by = 8;
+  ActivityComparisonMode comparison = 9;
+  bool dense_buckets = 10;
+  uint32 max_buckets = 11;
+  uint32 max_series = 12;
+  uint32 max_ranked_rows = 13;
+  bool include_heatmap = 14;
+  DataChannelKind channel = 15;
+}
+
+message CancelActivityAnalyticsQuery {
+  string query_id = 1;
+}
+
+message GetActivityAnalyticsStatus {}
+
+message RebuildActivityAnalytics {}
+
+message ActivityAnalyticsDelivery {
+  string query_id = 1;
+  DataChannelKind channel = 2;
+}
+
+message ActivityAnalyticsStatus {
+  ActivityRollupState state = 1;
+  uint64 analytics_generation = 2;
+  uint32 schema_version = 3;
+  string site_timezone = 4;
+  ActivityWeekStart week_start = 5;
+  string tzdb_version = 6;
+  uint64 rollup_row_count = 7;
+  uint64 max_rollup_rows = 8;
+  optional google.protobuf.Timestamp oldest_retained_event_time = 9;
+  optional google.protobuf.Timestamp last_rebuild_completed_at = 10;
+  optional string status_detail = 11;
+}
+
+message ActivityAnalyticsResult {
+  oneof result {
+    ActivityAnalyticsDelivery delivery = 1;
+    ActivityAnalyticsStatus status = 2;
+  }
+}
+
+message ActivityAnalyticsMessage {
+  oneof message {
+    ActivityAnalyticsChunk chunk = 1;
+    ActivityAnalyticsError error = 2;
+  }
+}
+
+message ActivityAnalyticsChunk {
+  string query_id = 1;
+  uint32 chunk_index = 2;
+  uint32 chunk_count = 3;
+  bytes payload = 4;
+}
+
+message ActivityAnalyticsError {
+  string query_id = 1;
+  ErrorCode code = 2;
+  string message = 3;
+}
+
+message ActivityMeasures {
+  uint64 event_count = 1;
+  uint64 distinct_event_count = 2;
+  uint64 interval_event_count = 3;
+  uint64 open_interval_event_count = 4;
+  uint64 total_duration_ms = 5;
+  optional double average_duration_ms = 6;
+  uint64 with_image_count = 7;
+  uint64 with_confidence_count = 8;
+  uint64 with_zone_count = 9;
+  optional double percent_with_image = 10;
+  optional double percent_with_confidence = 11;
+  optional double percent_with_zone = 12;
+}
+
+message ActivityTimeBucket {
+  google.protobuf.Timestamp start_time = 1;
+  google.protobuf.Timestamp end_time = 2;
+  string label = 3;
+  sint32 utc_offset_seconds = 4;
+  uint32 dst_fold = 5;
+  bool partial_current = 6;
+  ActivityCompletenessState completeness = 7;
+  bool retention_partial = 8;
+  bool source_health_gap = 9;
+  ActivityMeasures measures = 10;
+}
+
+message ActivityDimensionEntry {
+  ActivityDimension dimension = 1;
+  string value = 2;
+}
+
+message ActivitySeries {
+  repeated ActivityDimensionEntry dimensions = 1;
+  string label = 2;
+  ActivityMeasures totals = 3;
+  repeated uint64 bucket_counts = 4;
+}
+
+message ActivityHeatmapCell {
+  uint32 weekday = 1;
+  uint32 local_hour = 2;
+  uint64 event_count = 3;
+  uint64 distinct_event_count = 4;
+  ActivityCompletenessState completeness = 5;
+}
+
+message ActivityBreakdownRow {
+  string key = 1;
+  string label = 2;
+  bool is_unknown = 3;
+  ActivityMeasures measures = 4;
+  double share_percent = 5;
+}
+
+message ActivityComparisonSummary {
+  ActivityComparisonMode mode = 1;
+  google.protobuf.Timestamp start_time = 2;
+  google.protobuf.Timestamp end_time = 3;
+  ActivityMeasures totals = 4;
+  sint64 event_count_delta = 5;
+  optional double event_count_delta_percent = 6;
+  ActivityCompletenessState completeness = 7;
+  bool retention_partial = 8;
+  bool source_health_gap = 9;
+}
+
+message ActivityTimeInterval {
+  google.protobuf.Timestamp start_time = 1;
+  google.protobuf.Timestamp end_time = 2;
+}
+
+message ActivityRetentionEvidence {
+  bool partial_retention = 1;
+  optional google.protobuf.Timestamp oldest_retained_event_time = 2;
+  uint64 deleted_event_count_in_range = 3;
+  repeated ActivityTimeInterval deleted_intervals = 4;
+}
+
+message ActivityCameraSourceHealth {
+  string camera_id = 1;
+  string display_name = 2;
+  ActivityCameraHealthStatus status = 3;
+  uint64 reported_events = 4;
+  uint64 missing_health_ms = 5;
+  uint64 healthy_observed_ms = 6;
+}
+
+message ActivitySourceHealthSummary {
+  uint64 authorized_cameras = 1;
+  uint64 reporting_cameras = 2;
+  uint64 healthy_no_reports_cameras = 3;
+  uint64 missing_health_cameras = 4;
+  uint64 no_expected_source_cameras = 5;
+  uint64 unknown_history_cameras = 6;
+  repeated ActivityCameraSourceHealth cameras = 7;
+}
+
+message ActivitySummaryResponse {
+  string query_id = 1;
+  google.protobuf.Timestamp generated_at = 2;
+  google.protobuf.Timestamp start_time = 3;
+  google.protobuf.Timestamp end_time = 4;
+  string timezone = 5;
+  string tzdb_version = 6;
+  ActivityBucketGranularity granularity = 7;
+  ActivityWeekStart week_start = 8;
+  uint64 analytics_generation = 9;
+  uint64 group_policy_revision = 10;
+  string data_source = 11;
+  ActivityRollupState rollup_state = 12;
+  ActivityMeasures totals = 13;
+  ActivityComparisonSummary comparison = 14;
+  repeated ActivityTimeBucket buckets = 15;
+  repeated ActivitySeries series = 16;
+  bool series_truncated = 17;
+  repeated ActivityHeatmapCell heatmap = 18;
+  repeated ActivityBreakdownRow by_camera = 19;
+  repeated ActivityBreakdownRow by_event_type = 20;
+  repeated ActivityBreakdownRow by_zone = 21;
+  repeated ActivityBreakdownRow by_origin = 22;
+  repeated ActivityBreakdownRow by_confidence_band = 23;
+  repeated ActivityBreakdownRow by_group = 24;
+  ActivityRetentionEvidence retention = 25;
+  ActivitySourceHealthSummary source_health = 26;
+  string provenance_notice = 27;
+  bool exact = 28;
 }

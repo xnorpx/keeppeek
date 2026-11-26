@@ -180,7 +180,9 @@ pub struct EventMetadataQuery {
     pub event_types: Vec<String>,
     pub origins: Vec<crate::storage::metadata::EventSource>,
     pub zones: Vec<String>,
+    pub include_missing_zone: bool,
     pub minimum_confidence: Option<f64>,
+    pub confidence_bands: Vec<crate::storage::analytics::ConfidenceBand>,
     pub image: EventImageFilter,
     pub text: Option<String>,
     pub stream_id: String,
@@ -203,7 +205,9 @@ impl EventMetadataQuery {
             event_types: Vec::new(),
             origins: Vec::new(),
             zones: Vec::new(),
+            include_missing_zone: false,
             minimum_confidence: None,
+            confidence_bands: Vec::new(),
             image: EventImageFilter::Any,
             text: None,
             stream_id: stream_id.into(),
@@ -548,6 +552,11 @@ fn normalize_metadata_query(query: &mut EventMetadataQuery) -> anyhow::Result<()
         .origins
         .sort_unstable_by(|left, right| left.as_str().cmp(right.as_str()));
     query.origins.dedup();
+    if query.confidence_bands.len() > 4 {
+        anyhow::bail!("event confidence band filter count exceeds 4");
+    }
+    query.confidence_bands.sort_unstable();
+    query.confidence_bands.dedup();
     query.text = query
         .text
         .as_deref()
@@ -572,8 +581,9 @@ pub(crate) fn normalize_event_ids(values: &mut Vec<String>) -> anyhow::Result<()
 }
 
 pub(crate) fn normalize_source_ids(values: &mut Vec<String>) -> anyhow::Result<()> {
-    if values.len() > MAX_FILTER_VALUES {
-        anyhow::bail!("event source filter count exceeds {MAX_FILTER_VALUES}");
+    const MAX_SOURCE_IDS: usize = crate::storage::analytics::MAX_CAMERAS;
+    if values.len() > MAX_SOURCE_IDS {
+        anyhow::bail!("event source filter count exceeds {MAX_SOURCE_IDS}");
     }
     for value in &mut *values {
         *value = value.trim().to_owned();

@@ -19,6 +19,7 @@ describe('server capability contract', () => {
 			'keeppeek.event-workflow.v1',
 			'keeppeek.event-search.advanced.v1',
 			'keeppeek.event-search.semantic.v1',
+			'keeppeek.activity-analytics.v1',
 			'keeppeek.backup.v1',
 			'keeppeek.configuration.v1',
 			'keeppeek.runtime-config.v1',

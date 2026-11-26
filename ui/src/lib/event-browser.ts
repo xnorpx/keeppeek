@@ -3,6 +3,11 @@ import type { EventPreviewKeyframe } from './control-client';
 import { canonicalEventAttachment } from './event-presentation';
 import { keepMomentSearchParams } from './keep-link';
 import type { EventReviewFilter } from './event-workflow';
+import {
+	isEventConfidenceBand,
+	MAX_EVENTS_DRILLDOWN_WINDOW_MS,
+	type EventConfidenceBand
+} from './activity-analytics';
 
 export type EventImageFilter = 'all' | 'with' | 'without';
 
@@ -12,11 +17,16 @@ export type EventBrowserFilters = {
 	date: string;
 	startTime: string | null;
 	endTime: string | null;
+	rangeStartMs?: number | null;
+	rangeEndMs?: number | null;
 	cameraId: string | null;
+	cameraIds?: string[];
 	type: string | null;
 	source: RecordingEvent['source'] | null;
 	zone: string | null;
+	missingZone?: boolean;
 	minimumConfidence: number | null;
+	confidenceBand?: EventConfidenceBand | null;
 	image: EventImageFilter;
 	query: string;
 	review?: EventReviewFilter;
@@ -80,9 +90,22 @@ export function eventBrowserDayBounds(
 }
 
 export function eventBrowserQueryBounds(
-	filters: Pick<EventBrowserFilters, 'date' | 'startTime' | 'endTime'>,
+	filters: Pick<
+		EventBrowserFilters,
+		'date' | 'startTime' | 'endTime' | 'rangeStartMs' | 'rangeEndMs'
+	>,
 	nowMs = Date.now()
 ): { startMs: number; endMs: number } {
+	if (
+		typeof filters.rangeStartMs === 'number' &&
+		typeof filters.rangeEndMs === 'number' &&
+		Number.isFinite(filters.rangeStartMs) &&
+		Number.isFinite(filters.rangeEndMs) &&
+		filters.rangeStartMs < filters.rangeEndMs &&
+		filters.rangeEndMs - filters.rangeStartMs <= MAX_EVENTS_DRILLDOWN_WINDOW_MS
+	) {
+		return { startMs: filters.rangeStartMs, endMs: filters.rangeEndMs };
+	}
 	const day = eventBrowserDayBounds(filters.date, nowMs);
 	const startMs = filters.startTime
 		? Date.parse(`${filters.date}T${filters.startTime}:00Z`)
@@ -123,6 +146,29 @@ export function parseEventBrowserFilters(
 	const requestedEndTime = params.get('to');
 	const requestedReview = params.get('review');
 	const requestedBookmarks = params.get('bookmarks');
+	const parsedRangeStart = params.get('startMs');
+	const parsedRangeEnd = params.get('endMs');
+	const rangeStartMs = parsedRangeStart !== null ? Number(parsedRangeStart) : Number.NaN;
+	const rangeEndMs = parsedRangeEnd !== null ? Number(parsedRangeEnd) : Number.NaN;
+	const hasValidRange =
+		Number.isFinite(rangeStartMs) &&
+		Number.isFinite(rangeEndMs) &&
+		rangeStartMs < rangeEndMs &&
+		rangeEndMs - rangeStartMs <= MAX_EVENTS_DRILLDOWN_WINDOW_MS;
+	const rawCameras = params.get('cameras');
+	const cameraIds = rawCameras
+		? [
+				...new Set(
+					rawCameras
+						.split(',')
+						.map((entry) => entry.trim())
+						.filter((entry) => entry.length > 0)
+				)
+			].slice(0, 127)
+		: [];
+	const requestedBand = params.get('confidenceBand');
+	const confidenceBand = isEventConfidenceBand(requestedBand) ? requestedBand : null;
+	const missingZone = params.get('missingZone') === '1';
 	const startTime =
 		requestedStartTime !== null && UTC_TIME.test(requestedStartTime) ? requestedStartTime : null;
 	const endTime =
@@ -130,6 +176,10 @@ export function parseEventBrowserFilters(
 	const validTimeRange = startTime === null || endTime === null || startTime < endTime;
 	return {
 		date: requestedDate !== null && ISO_DATE.test(requestedDate) ? requestedDate : fallbackDate,
+		...(hasValidRange ? { rangeStartMs, rangeEndMs } : {}),
+		...(cameraIds.length > 0 ? { cameraIds } : {}),
+		...(missingZone ? { missingZone: true } : {}),
+		...(confidenceBand ? { confidenceBand } : {}),
 		...(requestedReview === 'unreviewed' ||
 		requestedReview === 'reviewed' ||
 		requestedReview === 'dismissed'
@@ -159,17 +209,28 @@ export function eventBrowserSearchParams(
 ): URLSearchParams {
 	return new URLSearchParams({
 		date: filters.date,
+		...(typeof filters.rangeStartMs === 'number' && typeof filters.rangeEndMs === 'number'
+			? {
+					startMs: String(Math.trunc(filters.rangeStartMs)),
+					endMs: String(Math.trunc(filters.rangeEndMs))
+				}
+			: {}),
 		...(filters.review && filters.review !== 'all' ? { review: filters.review } : {}),
 		...(filters.bookmarks && filters.bookmarks !== 'all' ? { bookmarks: filters.bookmarks } : {}),
 		...(filters.startTime ? { from: filters.startTime } : {}),
 		...(filters.endTime ? { to: filters.endTime } : {}),
 		...(filters.cameraId ? { camera: filters.cameraId } : {}),
+		...(filters.cameraIds && filters.cameraIds.length > 0 && !filters.cameraId
+			? { cameras: filters.cameraIds.join(',') }
+			: {}),
 		...(filters.type ? { type: filters.type } : {}),
 		...(filters.source ? { source: filters.source } : {}),
 		...(filters.zone ? { zone: filters.zone } : {}),
+		...(filters.missingZone ? { missingZone: '1' } : {}),
 		...(filters.minimumConfidence === null
 			? {}
 			: { confidence: String(filters.minimumConfidence) }),
+		...(filters.confidenceBand ? { confidenceBand: filters.confidenceBand } : {}),
 		...(filters.image === 'all' ? {} : { image: filters.image }),
 		...(filters.query ? { q: filters.query } : {}),
 		...(selected ? { event: selected.event.id, eventCamera: selected.camera.id } : {})
@@ -231,6 +292,10 @@ export function eventBrowserRecordKey(record: EventBrowserRecord): string {
 }
 
 export function eventFilterSummary(filters: EventBrowserFilters): string {
+	const hasExplicitRange =
+		typeof filters.rangeStartMs === 'number' &&
+		typeof filters.rangeEndMs === 'number' &&
+		filters.rangeStartMs < filters.rangeEndMs;
 	const clauses = [
 		filters.review && filters.review !== 'all' ? filters.review : null,
 		filters.bookmarks === 'mine'
@@ -238,12 +303,20 @@ export function eventFilterSummary(filters: EventBrowserFilters): string {
 			: filters.bookmarks === 'bookmarked'
 				? 'bookmarked'
 				: null,
-		filters.startTime ? `from ${filters.startTime} UTC` : null,
-		filters.endTime ? `until ${filters.endTime} UTC` : null,
-		filters.cameraId ? `camera ${filters.cameraId}` : null,
+		hasExplicitRange
+			? `${new Date(filters.rangeStartMs!).toISOString()} to ${new Date(filters.rangeEndMs!).toISOString()}`
+			: null,
+		!hasExplicitRange && filters.startTime ? `from ${filters.startTime} UTC` : null,
+		!hasExplicitRange && filters.endTime ? `until ${filters.endTime} UTC` : null,
+		filters.cameraId
+			? `camera ${filters.cameraId}`
+			: filters.cameraIds && filters.cameraIds.length > 0
+				? `${filters.cameraIds.length} cameras`
+				: null,
 		filters.type ? `type ${filters.type}` : null,
 		filters.source ? `source ${filters.source}` : null,
-		filters.zone ? `zone ${filters.zone}` : null,
+		filters.missingZone ? 'missing zone' : filters.zone ? `zone ${filters.zone}` : null,
+		filters.confidenceBand ? `confidence band ${filters.confidenceBand}` : null,
 		filters.minimumConfidence === null ? null : `confidence at least ${filters.minimumConfidence}`,
 		filters.image === 'with'
 			? 'with images'
@@ -252,6 +325,7 @@ export function eventFilterSummary(filters: EventBrowserFilters): string {
 				: null,
 		filters.query ? `matching “${filters.query}”` : null
 	].filter((clause): clause is string => clause !== null);
+	if (hasExplicitRange) return clauses.join(', ');
 	return clauses.length === 0 ? `on ${filters.date}` : `${clauses.join(', ')} on ${filters.date}`;
 }
 

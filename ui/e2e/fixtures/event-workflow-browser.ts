@@ -28,7 +28,7 @@ async function fixtureClient() {
 	return new loaded.ControlClient();
 }
 
-export async function seedEventWorkflow(count: number) {
+export async function seedEventWorkflow(count: number, startTimeMs?: number) {
 	if (count < 1 || count > 32) throw new Error('Workflow fixture count is out of bounds.');
 	const client = await fixtureClient();
 	const cameras = await client.getCameras();
@@ -39,7 +39,8 @@ export async function seedEventWorkflow(count: number) {
 	const camera = cameras[0];
 	if (!camera || !source) throw new Error('The real camera fixture is not ready.');
 	const zone = `workflow-${crypto.randomUUID()}`;
-	const date = '2026-08-18';
+	const baseMs = startTimeMs ?? Date.parse('2026-08-18T12:00:00Z');
+	const date = new Date(baseMs).toISOString().slice(0, 10);
 	for (let index = 0; index < count; index += 1) {
 		await client.request({
 			case: 'publishEvent',
@@ -52,7 +53,13 @@ export async function seedEventWorkflow(count: number) {
 					origin: EventOrigin.KEEPPEEK,
 					eventType: 'person',
 					zone,
-					startTime: timestampFromDate(new Date(Date.parse(`${date}T12:00:00Z`) + index * 1000))
+					...(startTimeMs !== undefined
+						? {
+								confidence: 0.92,
+								endTime: timestampFromDate(new Date(baseMs + index * 1000 + 15_000))
+							}
+						: {}),
+					startTime: timestampFromDate(new Date(baseMs + index * 1000))
 				})
 			})
 		});
