@@ -56,7 +56,7 @@ cargo build --locked --release -p keeppeek-desktop --bin keeppeek-desktop
   installer/keeppeek.nsi
 ```
 
-Release and `Windows Signing` CI workflows use a two-pass NSIS build on `installer/keeppeek.nsi` so no unsigned `uninstall.exe` is written on user machines:
+Release and `Windows Signing` CI workflows use a two-pass NSIS build on `installer/keeppeek.nsi` so no unsigned `uninstall.exe` is written on user machines. On every push to `main`, CI builds `--release` binaries for `windows-x86_64` and `windows-aarch64`, signs all binaries, `uninstall.exe`, and unified installers on `windows-latest`, and publishes them with `.sha256` checksums as `keeppeek-main-<platform>-signed` build artifacts:
 
 1. Compile with `/DWRITE_UNINSTALLER_ONLY` and `/DUNINST_OUT=<path>\uninstall.exe` and execute the temporary generator (`__COMPAT_LAYER=RunAsInvoker`) to extract `uninstall.exe`.
 2. Authenticode-sign and RFC 3161 timestamp `uninstall.exe` with Azure Artifact Signing and verify `Get-AuthenticodeSignature` returns `Status == 'Valid'` with a non-null `TimestamperCertificate`.
