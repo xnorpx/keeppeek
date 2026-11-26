@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d3186091.js";
+            window.path_to_searchindex_js = "searchindex-094e09a8.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-738fe896.js"></script>
@@ -6531,11 +6531,11 @@ with Bun from the public npm registry and do not create or commit an npm, pnpm, 
 <li>Windows PowerShell: <code>$env:KEEPPEEK_RUN_SLOW_TESTS = '1'; .\check.bat</code></li>
 </ul>
 <p>Pull-request CI keeps feedback fast by splitting static UI checks, unit tests, coverage, and Linux
-Playwright tests into non-overlapping jobs. On pull requests targeting <code>main</code>, the <code>Main</code> workflow
-runs Rust CodeQL so reviewers can inspect security findings before merging. The <code>Security</code> workflow
-runs JavaScript/TypeScript CodeQL. After each merge and once per hour, <code>Main</code> also runs the opt-in
-slow Rust tests, ARM builds and tests, Windows installer lifecycles, Rust coverage, and full
-Playwright suites on macOS and Windows.</p>
+Playwright tests into non-overlapping jobs. The <code>CodeQL</code> workflow runs Actions,
+JavaScript/TypeScript, Python, and Rust CodeQL on pull requests targeting <code>main</code>, pushes to <code>main</code>,
+and a weekly schedule. After each merge and once per hour, <code>Main</code> runs the opt-in slow Rust tests,
+ARM builds and tests, Windows installer lifecycles, Rust coverage, and full Playwright suites on
+macOS and Windows.</p>
 <p>Windows pull-request core tests run only the runtime-profile regressions and native volume-root
 validation. Windows pull-request durable-state tests retain ordinary regressions and defer
 scale/quota/churn qualification. The full Windows core and durable-state suites run on every push to
