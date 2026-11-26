@@ -374,7 +374,7 @@ pub fn seed_playback_corpus(options: &PlaybackCorpusOptions) -> anyhow::Result<(
             };
 
             let confidence =
-                0.78 + f64::from((event_index * 7 + camera_index as u32 * 5) % 21) * 0.01;
+                f64::from((event_index * 7 + camera_index as u32 * 5) % 21).mul_add(0.01, 0.78);
             let jpeg = thumbnails
                 .get(&(zone, is_bunny, variant_index))
                 .context("precomputed bunny thumbnail is missing")?;
@@ -494,8 +494,7 @@ fn collect_cameras(
             let display_name = camera
                 .display_name()
                 .map_or_else(|| label.clone(), str::to_owned);
-            seen.entry(source_id.clone())
-                .or_insert((label, display_name));
+            seen.entry(source_id).or_insert((label, display_name));
         }
     }
     ensure!(
