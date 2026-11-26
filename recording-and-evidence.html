@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-cd67e044.js";
+            window.path_to_searchindex_js = "searchindex-77e5402f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-738fe896.js"></script>
@@ -181,7 +181,7 @@ reviewed later. The underlying live evidence dimensions are defined in
 <a href="./camera-health.html">Camera and stream health</a>.</p>
 <h2 id="find-and-play-a-recording"><a class="header" href="#find-and-play-a-recording">Find and play a recording</a></h2>
 <p>Open <strong>Keep</strong>, choose the camera and recorded day, then select footage or an event on the timeline.
-The four modes serve different investigations:</p>
+The five modes serve different investigations:</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -191,6 +191,7 @@ The four modes serve different investigations:</p>
 <tr><td>Timeline</td><td>Follow footage and event intervals around the selected playback time.</td></tr>
 <tr><td>Stories</td><td>Review available event stories and their associated media.</td></tr>
 <tr><td>Swimlanes</td><td>Compare the available camera histories around a common time.</td></tr>
+<tr><td>Timelapse</td><td>Review sparse sampled frames across a range and export a silent MP4 with a JSON manifest.</td></tr>
 <tr><td>Export</td><td>Prepare and inspect an evidence-export job; creation requires Administrator access.</td></tr>
 </tbody>
 </table>
@@ -266,9 +267,22 @@ arrows choose available days, with unavailable directions disabled.</p>
 <strong>Refresh recordings</strong>. Changes apply immediately. <strong>Done</strong>, the close button, Escape or browser
 Back closes the sheet and returns focus to a visible control. Opening a sheet keeps the player
 open. In recording fullscreen, rate and volume remain available beside the player controls.</p>
-<p>The compact controls do not remove Timeline, Stories, Swimlanes or Export. Rotate the device or
+<p>The compact controls do not remove Timeline, Stories, Swimlanes, Timelapse or Export. Rotate the device or
 close the sheet to return to the history view. The timeline changes recording time; the separate
 Digital controls above the image change only the inspection crop.</p>
+<h3 id="review-and-export-a-bounded-timelapse"><a class="header" href="#review-and-export-a-bounded-timelapse">Review and export a bounded timelapse</a></h3>
+<p>Open <strong>Timelapse</strong> in <strong>Keep</strong> to inspect a quiet period without loading every recorded frame.
+Choose <strong>Last 15 min</strong>, <strong>Last hour</strong>, or a bounded <strong>Custom</strong> range (up to 31 days and 3,600
+sampled frames). KeepPeek plans sampled timestamps first and loads visible thumbnails lazily.
+Gaps, retained intervals, privacy windows, open recordings, and unsupported codecs appear as
+explicit gap cards and are never filled with repeated stale frames. Selecting any sampled frame
+opens <strong>Timeline</strong> at its exact recorded source timestamp.</p>
+<p>Generating a timelapse MP4 is a separate Administrator action that produces a <strong>silent</strong>
+time-compressed derivative (up to 1920x1080, 1–30 FPS, 512 MiB) rather than continuous source
+evidence. Optional timestamp overlays render in the configured site timezone while the companion
+SHA-256-verified JSON provenance manifest records exact UTC source timestamps, source identities,
+sampling settings, and omitted intervals. Source recordings remain immutable. See
+<a href="https://github.com/xnorpx/keeppeek/blob/main/docs/timelapse.md">Bounded Timelapse Review and Export</a>.</p>
 <h3 id="keep-the-requested-utc-time-explicit"><a class="header" href="#keep-the-requested-utc-time-explicit">Keep the requested UTC time explicit</a></h3>
 <p>Recorded days and event time filters use UTC. Switching cameras preserves the selected absolute
 moment, including when the destination camera has no footage there. Choosing another recorded day
