@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-77e5402f.js";
+            window.path_to_searchindex_js = "searchindex-d3186091.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-738fe896.js"></script>
@@ -347,7 +347,8 @@ describe future client possibilities are not an installation checklist for a shi
 <h2 id="understand-unavailable-controls"><a class="header" href="#understand-unavailable-controls">Understand unavailable controls</a></h2>
 <p>Read the reason shown by an unavailable control. Do not interpret an unavailable count as zero,
 a saved configuration as a healthy connection, or advertised camera support as a successful
-operation. Browser Talk and live participant groups remain unavailable.</p>
+operation. Live participant groups remain unavailable. Browser Talk works only for an
+Administrator on a camera with a confirmed speaker; see <a href="#camera-controls">Camera controls</a>.</p>
 <p>Camera access labels, dashboard audiences, and planned live participant groups are different
 concepts. <a href="#groups-and-two-way-audio-current-status">Groups</a> explains that distinction. The
 <a href="#release-readiness-and-known-limitations">release-readiness chapter</a> records remaining qualification boundaries;
@@ -943,9 +944,25 @@ detector regions, schedules and vendor-specific target filters in the camera int
 <a href="#recording-and-evidence">Recording and evidence</a>.</p>
 <h2 id="audio-and-unsupported-controls"><a class="header" href="#audio-and-unsupported-controls">Audio and unsupported controls</a></h2>
 <p>Listening to an available camera audio stream is separate from sending microphone audio back to
-its speaker. <strong>Talk is not implemented in the browser application</strong>, including on devices that
-advertise a speaker or two-way-audio capability. KeepPeek’s reusable vendor libraries contain
-audio transport support, but this does not provide an application talk session.</p>
+its speaker. <strong>Talk</strong> sends the browser microphone to the camera speaker. It is available only to
+an Administrator, and only for a camera whose speaker KeepPeek has confirmed:</p>
+<ul>
+<li><strong>Reolink:</strong> a powered, direct camera on the native TCP backend. The configured channel must
+grant talk permission, and the camera must report a compatible mono ADPCM speaker profile at
+8 or 16 kHz. Firmware that answers the speaker query only while a speaker stream is open
+leaves <strong>Talk</strong> unavailable.</li>
+<li><strong>Hikvision/Annke:</strong> a camera whose ISAPI audio discovery reports an explicit speaker channel.
+KeepPeek sends the camera-advertised 8 kHz G.711 A-law or mu-law codec. A microphone channel
+alone does not enable <strong>Talk</strong>.</li>
+</ul>
+<p>Select <strong>Talk</strong> in the focused live view and grant microphone permission when the browser asks.
+Select it again to stop; stopping or closing the page releases the microphone. The camera’s
+incoming audio stays available while you talk. On the Dashboard, an Administrator can use
+<strong>Broadcast talkback</strong> to talk to a selected target. Users do not see <strong>Talk</strong> or broadcast
+controls, but can still use supported quick replies and chimes on their permitted cameras.</p>
+<p>Talk was verified with simulated cameras. Speaker volume, latency, and half- or full-duplex
+behavior depend on the camera model, firmware, and network, so test them on your device before
+relying on them.</p>
 <p>Relative PTZ movement, preset save/delete and vendor-specific focus, guard, sensitivity or smart
 rule editing are not shared browser controls. Disabled controls describe unavailable application
 operations; they are not a reason to grant broader access or enable an unsupported protocol.</p>
@@ -1877,7 +1894,7 @@ recordings and offline-camera event images. It does not require PTZ permission o
 camera. Physical pan, tilt, and optical zoom remain separate camera commands with their existing
 capability and permission checks.</p>
 <p>See <a href="#camera-controls">Camera controls</a> for physical PTZ, detector configuration and the
-current limits of browser Talk.</p>
+requirements of browser Talk.</p>
 <p>Magnifying a low-resolution stream does not reveal detail that the camera did not send. Choose a
 higher available stream quality separately when you need more decoded pixels.</p>
 <div style="break-before: page; page-break-before: always;"></div>
@@ -5240,8 +5257,9 @@ this chapter can provide operational setup instructions.</p>
 <h2 id="camera-talkback-is-separate"><a class="header" href="#camera-talkback-is-separate">Camera talkback is separate</a></h2>
 <p>Talkback sends audio to a supported physical camera. A live participant group would exchange media
 between clients through KeepPeek. Support for one does not imply support for the other.</p>
-<p>The current browser Talk control is unavailable. Consult <a href="#camera-controls">Camera controls</a>
-for supported physical camera operations and the availability reason shown for the selected device.</p>
+<p>Browser Talk to a camera speaker is available for supported cameras. Consult
+<a href="#camera-controls">Camera controls</a> for its requirements and the availability reason shown for
+the selected device.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="how-keeppeek-works"><a class="header" href="#how-keeppeek-works">How KeepPeek works</a></h1>
 <p>KeepPeek puts recording, live media, event storage, and investigation in one local service. The
