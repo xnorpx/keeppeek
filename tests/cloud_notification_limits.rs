@@ -2,8 +2,9 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -40,7 +41,18 @@ impl SignalTransport for CountingAcceptTransport {
     }
 }
 
-fn setup_runtime(name: &str) -> (PathBuf, CloudSignalRuntime, Arc<CountingAcceptTransport>) {
+fn unix_time_ms() -> i64 {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    i64::try_from(millis).unwrap_or(i64::MAX)
+}
+
+fn setup_runtime(
+    name: &str,
+    now_ms: i64,
+) -> (PathBuf, CloudSignalRuntime, Arc<CountingAcceptTransport>) {
     let dir = std::env::temp_dir().join(format!(
         "keeppeek-cloud-limits-{name}-{}",
         uuid::Uuid::new_v4()
@@ -70,15 +82,41 @@ fn setup_runtime(name: &str) -> (PathBuf, CloudSignalRuntime, Arc<CountingAccept
         &dir.join("cloud-notifications.db"),
         settings,
         transport.clone(),
-        1_000_000,
+        now_ms,
     )
     .unwrap();
     (dir, cloud, transport)
 }
 
+fn stage_concurrent_storm(cloud: &CloudSignalRuntime, rule_id: &'static str, base_ms: i64) {
+    let mut producers = Vec::new();
+    for producer in 0..2_u64 {
+        let cloud_clone = cloud.clone();
+        producers.push(std::thread::spawn(move || {
+            for index in 0..5_000_u64 {
+                let seq = producer * 5_000 + index;
+                assert!(cloud_clone.stage_logical_event(
+                    &format!("logical-{seq}"),
+                    rule_id,
+                    &format!("evt-{seq}"),
+                    "cam-1",
+                    1,
+                    base_ms + i64::try_from(seq).unwrap(),
+                ));
+            }
+        }));
+    }
+    for producer in producers {
+        producer.join().unwrap();
+    }
+}
+
 #[test]
 fn ten_thousand_concurrent_candidates_bound_pending_state_and_preserve_browser_delivery() {
-    let (dir, cloud, _transport) = setup_runtime("storm");
+    // Align test timestamps with wall-clock time because Runtime::open_with_cloud runs
+    // CloudSignalWorker against unix_time_ms().
+    let base_now_ms = unix_time_ms().saturating_sub(20_000);
+    let (dir, cloud, _transport) = setup_runtime("storm", base_now_ms);
     let config_path = dir.join("config.toml");
     let runtime = Runtime::open_with_cloud(&config_path, cloud.clone()).unwrap();
     let handle = runtime.handle();
@@ -139,44 +177,28 @@ fn ten_thousand_concurrent_candidates_bound_pending_state_and_preserve_browser_d
             expiry_ms: 60_000,
         },
     };
-    let saved = handle.save_draft(rule, 0, 1_000_000).unwrap();
+    let saved = handle.save_draft(rule, 0, base_now_ms).unwrap();
     handle
         .activate(
             "cloud-and-browser",
             "owner-1",
             0,
             saved.draft_revision,
-            1_000_001,
+            base_now_ms + 1,
         )
         .unwrap();
 
     // Two concurrent producers drive 10,000 candidates directly into the cloud staging boundary.
-    let mut producers = Vec::new();
-    for producer in 0..2_u64 {
-        let cloud_clone = cloud.clone();
-        producers.push(std::thread::spawn(move || {
-            for index in 0..5_000_u64 {
-                let seq = producer * 5_000 + index;
-                assert!(cloud_clone.stage_logical_event(
-                    &format!("logical-{seq}"),
-                    "cloud-and-browser",
-                    &format!("evt-{seq}"),
-                    "cam-1",
-                    1,
-                    2_000_000 + i64::try_from(seq).unwrap(),
-                ));
-            }
-        }));
-    }
-    for producer in producers {
-        producer.join().unwrap();
-    }
+    stage_concurrent_storm(&cloud, "cloud-and-browser", base_now_ms + 5_000);
     cloud.flush_staged().unwrap();
+    // Run one wall-clock worker step to exercise the slow-scheduler race deterministically.
+    let _ = cloud.step_once(unix_time_ms(), 0.5).unwrap();
     let (pending, claimed) = cloud.store().queue_depth();
     assert!(pending <= 1, "pending queue must be <= 1, got {pending}");
     assert!(claimed <= 1, "claimed queue must be <= 1, got {claimed}");
 
     // Publishing through #134 runtime delivers browser notifications independently of cloud state.
+    let publish_now_ms = unix_time_ms();
     handle.publish(Candidate {
         trigger: Trigger::EventCreated,
         source_id: "cam-1".to_owned(),
@@ -199,7 +221,7 @@ fn ten_thousand_concurrent_candidates_bound_pending_state_and_preserve_browser_d
         privacy_active: false,
         revision: 1,
         stage: Stage::Preliminary,
-        occurred_at_ms: 3_000_000,
+        occurred_at_ms: publish_now_ms,
         deep_link: "/events/evt-browser-check".to_owned(),
     });
     let inbox = handle.inbox_unrestricted("owner-1", 10).unwrap();
@@ -210,16 +232,83 @@ fn ten_thousand_concurrent_candidates_bound_pending_state_and_preserve_browser_d
             .any(|item| item.source_identity == "evt-browser-check"),
         "browser notification delivery must remain independent of cloud pacing"
     );
-    let status = cloud.status(3_000_000);
-    assert!(status.suppressed_last_day >= 9_998);
+    let status = cloud.status(unix_time_ms());
+    assert!(
+        status.suppressed_last_day >= 9_998,
+        "expected >= 9_998 suppressions, got {} (accepted={})",
+        status.suppressed_last_day,
+        status.accepted_last_day
+    );
 
     runtime.shutdown();
     std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
+fn concurrent_stage_flush_and_worker_steps_preserve_suppressions_and_newest_alias() {
+    let base_ms = 10_000_000_i64;
+    let step_now_ms = base_ms + 10_000;
+    let final_now_ms = base_ms + 10_001;
+    let (dir, cloud, transport) = setup_runtime("concurrent-flush", base_ms);
+    let done = Arc::new(AtomicBool::new(false));
+
+    let mut flushers = Vec::new();
+    for _ in 0..2 {
+        let flusher_cloud = cloud.clone();
+        let flusher_done = done.clone();
+        flushers.push(std::thread::spawn(move || {
+            while !flusher_done.load(Ordering::Acquire) {
+                let _ = flusher_cloud.flush_staged().unwrap();
+                let _ = flusher_cloud.step_once(step_now_ms, 0.5).unwrap();
+                let _ = flusher_cloud.status(step_now_ms);
+            }
+        }));
+    }
+
+    stage_concurrent_storm(&cloud, "rule-1", base_ms);
+    done.store(true, Ordering::Release);
+    for flusher in flushers {
+        flusher.join().unwrap();
+    }
+
+    assert!(cloud.stage_logical_event(
+        "logical-final",
+        "rule-1",
+        "evt-final",
+        "cam-1",
+        1,
+        final_now_ms,
+    ));
+    let final_outcome = cloud.flush_staged().unwrap().unwrap();
+    let (pending, claimed) = cloud.store().queue_depth();
+    assert_eq!((pending, claimed), (1, 0));
+
+    let status = cloud.status(final_now_ms);
+    assert!(status.accepted_last_day <= 1);
+    assert!(status.suppressed_last_day >= 9_999);
+    assert_eq!(
+        usize::try_from(status.suppressed_last_day).unwrap()
+            + usize::try_from(status.accepted_last_day).unwrap()
+            + pending
+            + claimed,
+        10_001
+    );
+    assert_eq!(
+        transport.sent.load(Ordering::Relaxed),
+        usize::try_from(status.accepted_last_day).unwrap()
+    );
+    let alias = cloud
+        .resolve_alias(&final_outcome.cloud_event_id, final_now_ms)
+        .unwrap()
+        .unwrap();
+    assert_eq!(alias.logical_id, "logical-final");
+
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn controlled_clock_enforces_exact_120_per_hour_and_500_per_day_output() {
-    let (dir, cloud, transport) = setup_runtime("exact-windows");
+    let (dir, cloud, transport) = setup_runtime("exact-windows", 1_000_000);
     let mut now = 10_000_000_i64;
     let start = now;
 
