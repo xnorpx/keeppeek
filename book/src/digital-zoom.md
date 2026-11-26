@@ -84,7 +84,7 @@ camera. Physical pan, tilt, and optical zoom remain separate camera commands wit
 capability and permission checks.
 
 See [Camera controls](./camera-controls.md) for physical PTZ, detector configuration and the
-current limits of browser Talk.
+requirements of browser Talk.
 
 Magnifying a low-resolution stream does not reveal detail that the camera did not send. Choose a
 higher available stream quality separately when you need more decoded pixels.
