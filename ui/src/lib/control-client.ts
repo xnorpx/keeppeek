@@ -1,4 +1,17 @@
 import { StoredFrameClock } from './stored-frame-clock';
+import type {
+	ActivityAnalyticsStatusData,
+	ActivitySummaryData,
+	ActivitySummaryQueryOptions,
+	EventConfidenceBand
+} from './activity-analytics';
+import {
+	appendAnalyticsChunk,
+	buildProtoActivityQuery,
+	decodeAnalyticsStatus,
+	protoConfidenceBand,
+	type PendingAnalyticsTransfer
+} from './control-client-analytics';
 import {
 	buildAdvancedSearchProto,
 	buildDeleteSavedSearchCommand,
@@ -109,6 +122,8 @@ import {
 import {
 	AccessRole as ProtoAccessRole,
 	CameraBackend as ProtoCameraBackend,
+	ActivityAnalyticsCommandSchema,
+	CancelActivityAnalyticsQuerySchema,
 	CameraConfigurationCommandSchema,
 	CameraControlCommandSchema,
 	CameraRecordingMode as ProtoCameraRecordingMode,
@@ -141,6 +156,7 @@ import {
 	ExportJobStatus,
 	FetchEventSearchMediaSchema,
 	GetAccessSessionSchema,
+	GetActivityAnalyticsStatusSchema,
 	GetCameraCatalogSchema,
 	GetCameraConfigurationsSchema,
 	GetCameraDiscoverySchema,
@@ -163,6 +179,7 @@ import {
 	PtzStopSchema,
 	QueryEventsSchema,
 	QueryStoredMediaTimelineSchema,
+	RebuildActivityAnalyticsSchema,
 	RecordedAudioPreviewSchema,
 	RefillStoredMediaSchema,
 	RemoveCameraConfigurationSchema,
@@ -187,6 +204,8 @@ import {
 	type AccessAuditEvent as ProtoAccessAuditEvent,
 	type AccessCredential as ProtoAccessCredential,
 	type AccessSession as ProtoAccessSession,
+	type ActivityAnalyticsChunk,
+	type ActivityAnalyticsError,
 	type Event as ProtoEvent,
 	type EventSearchHit as ProtoEventSearchHit,
 	type EventSearchMediaObject as ProtoEventSearchMediaObject,
@@ -394,7 +413,9 @@ export type EventMetadataSearchOptions = {
 	eventTypes?: readonly string[];
 	origins?: readonly RecordingEvent['source'][];
 	zones?: readonly string[];
+	includeMissingZone?: boolean;
 	minimumConfidence?: number;
+	confidenceBands?: readonly EventConfidenceBand[];
 	image?: 'all' | 'with' | 'without';
 	text?: string;
 	pageSize?: number;
@@ -546,6 +567,7 @@ export class ControlClient {
 	#pending = new Map<bigint, PendingRequest>();
 	#timelinePending = new Map<string, TimelinePending>();
 	#eventSearchPending = new Map<string, EventSearchPending>();
+	#analyticsPending = new Map<string, PendingAnalyticsTransfer>();
 	#eventMediaPending = new Map<string, EventMediaPending>();
 	#playbacks = new Map<string, StoredMediaPlayback>();
 	#exportDownloads = new Map<string, ExportDownloadPending>();
@@ -1066,7 +1088,9 @@ export class ControlClient {
 							origin === 'keeppeek' ? EventOrigin.KEEPPEEK : EventOrigin.CAMERA
 						),
 						zones: [...(options.zones ?? [])],
+						includeMissingZone: options.includeMissingZone ?? false,
 						minimumConfidence: options.minimumConfidence,
+						confidenceBands: (options.confidenceBands ?? []).map(protoConfidenceBand),
 						image,
 						text: options.text?.trim() || undefined,
 						includePreviewKeyframes: options.includePreviewKeyframes ?? false
@@ -1219,6 +1243,148 @@ export class ControlClient {
 			this.#eventSearchPending.delete(queryId);
 			admission.abort();
 		}
+	}
+
+	async getActivityAnalyticsStatus(signal?: AbortSignal): Promise<ActivityAnalyticsStatusData> {
+		const command = create(ActivityAnalyticsCommandSchema, {
+			action: { case: 'getStatus', value: create(GetActivityAnalyticsStatusSchema, {}) }
+		});
+		const result = await this.request(
+			{ case: 'activityAnalyticsCommand', value: command },
+			controlTimeoutMs,
+			{ signal }
+		);
+		if (result.case !== 'activityAnalyticsResult' || result.value.result.case !== 'status') {
+			throw new Error('Server returned an unexpected activity analytics status response.');
+		}
+		return decodeAnalyticsStatus(result.value.result.value);
+	}
+
+	async rebuildActivityAnalytics(signal?: AbortSignal): Promise<ActivityAnalyticsStatusData> {
+		const command = create(ActivityAnalyticsCommandSchema, {
+			action: { case: 'rebuild', value: create(RebuildActivityAnalyticsSchema, {}) }
+		});
+		const result = await this.request(
+			{ case: 'activityAnalyticsCommand', value: command },
+			controlTimeoutMs,
+			{ signal }
+		);
+		if (result.case !== 'activityAnalyticsResult' || result.value.result.case !== 'status') {
+			throw new Error('Server returned an unexpected activity analytics rebuild response.');
+		}
+		return decodeAnalyticsStatus(result.value.result.value);
+	}
+
+	async cancelActivityAnalyticsQuery(queryId: string): Promise<void> {
+		const command = create(ActivityAnalyticsCommandSchema, {
+			action: {
+				case: 'cancelQuery',
+				value: create(CancelActivityAnalyticsQuerySchema, { queryId })
+			}
+		});
+		await this.request({ case: 'activityAnalyticsCommand', value: command });
+	}
+
+	async queryActivitySummary(options: ActivitySummaryQueryOptions): Promise<ActivitySummaryData> {
+		options.signal?.throwIfAborted();
+		const needsWorkflow =
+			(options.filter?.review && options.filter.review !== 'all') ||
+			(options.filter?.bookmarks && options.filter.bookmarks !== 'all') ||
+			options.groupBy?.includes('workflow');
+		if (needsWorkflow) await this.getServerCapabilities();
+		const workflowQuery = needsWorkflow
+			? this.#eventWorkflow.query({
+					review: options.filter?.review ?? 'all',
+					bookmarked:
+						options.filter?.bookmarks && options.filter.bookmarks !== 'all' ? true : undefined,
+					bookmarkedByMe: options.filter?.bookmarks === 'mine'
+				})
+			: undefined;
+		const queryId = `activity-analytics-${this.#nextStoredId++}`;
+		const admission = new AbortController();
+		let sent = false;
+		const completed = new Promise<ActivitySummaryData>((resolve, reject) => {
+			this.#analyticsPending.set(queryId, {
+				chunks: new Map(),
+				chunkCount: null,
+				totalBytes: 0,
+				resolve,
+				reject
+			});
+		});
+		const cancel = (reason: unknown) => {
+			if (admission.signal.aborted) return;
+			const pending = this.#analyticsPending.get(queryId);
+			this.#analyticsPending.delete(queryId);
+			admission.abort(reason);
+			pending?.reject(reason);
+			if (sent) void this.cancelActivityAnalyticsQuery(queryId).catch(() => undefined);
+		};
+		const abort = () => cancel(options.signal?.reason ?? timelineAbortError());
+		const deadline = setTimeout(
+			() => cancel(new Error('Activity analytics query timed out.')),
+			controlTimeoutMs
+		);
+		options.signal?.addEventListener('abort', abort, { once: true });
+		try {
+			const command = create(ActivityAnalyticsCommandSchema, {
+				action: {
+					case: 'query',
+					value: buildProtoActivityQuery(queryId, options, workflowQuery)
+				}
+			});
+			const admitted = this.request(
+				{ case: 'activityAnalyticsCommand', value: command },
+				controlTimeoutMs,
+				{
+					signal: admission.signal,
+					onSent: () => {
+						sent = true;
+					}
+				}
+			).then((result) => {
+				if (
+					result.case !== 'activityAnalyticsResult' ||
+					result.value.result.case !== 'delivery' ||
+					result.value.result.value.queryId !== queryId ||
+					result.value.result.value.channel !== DataChannelKind.RELIABLE_DATA
+				) {
+					throw new Error('Server returned an unexpected activity analytics delivery response.');
+				}
+			});
+			const [, data] = await Promise.all([admitted, completed]);
+			return data;
+		} catch (error) {
+			if (admission.signal.aborted) throw admission.signal.reason;
+			throw error;
+		} finally {
+			clearTimeout(deadline);
+			options.signal?.removeEventListener('abort', abort);
+			this.#analyticsPending.delete(queryId);
+			admission.abort();
+		}
+	}
+
+	private receiveAnalyticsChunk(chunk: ActivityAnalyticsChunk): void {
+		const pending = this.#analyticsPending.get(chunk.queryId);
+		if (!pending) return;
+		try {
+			const decoded = appendAnalyticsChunk(pending, chunk);
+			if (decoded) {
+				this.#analyticsPending.delete(chunk.queryId);
+				pending.resolve(decoded);
+			}
+		} catch (error) {
+			this.#analyticsPending.delete(chunk.queryId);
+			pending.reject(error instanceof Error ? error : new Error('Invalid analytics response.'));
+		}
+	}
+
+	private failAnalyticsQuery(error: ActivityAnalyticsError): void {
+		const pending = this.#analyticsPending.get(error.queryId);
+		if (!pending) return;
+		this.#analyticsPending.delete(error.queryId);
+		pending.reject(new Error(error.message || 'Activity analytics query failed.'));
 	}
 
 	async fetchEventPreviewKeyframe(
@@ -2869,6 +3035,12 @@ export class ControlClient {
 			this.failData('WebRTC data message was invalid.');
 			return;
 		}
+		if (message.message.case === 'activityAnalytics') {
+			const analytics = message.message.value.message;
+			if (analytics.case === 'chunk') this.receiveAnalyticsChunk(analytics.value);
+			if (analytics.case === 'error') this.failAnalyticsQuery(analytics.value);
+			return;
+		}
 		if (message.message.case === 'eventSearch') {
 			const search = message.message.value.message;
 			if (search.case === 'result') this.receiveEventSearchResult(search.value);
@@ -3243,6 +3415,10 @@ export class ControlClient {
 	}
 
 	private failData(message: string): void {
+		for (const [queryId, pending] of this.#analyticsPending) {
+			this.#analyticsPending.delete(queryId);
+			pending.reject(new Error(message));
+		}
 		for (const queryId of this.#eventSearchPending.keys()) {
 			this.failEventSearchPending(queryId, message);
 		}

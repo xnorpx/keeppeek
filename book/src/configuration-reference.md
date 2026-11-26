@@ -1357,6 +1357,19 @@ selection over WebRTC CAS). Unknown `identity_schema` versions fail closed witho
 `identity_schema = 1`, and camera `profile_identity` bindings; rolling back to a pre-migration
 binary requires restoring a verified pre-migration configuration backup.
 
+## Activity analytics
+
+Type: `AnalyticsConfig`, section `[analytics]`. Controls site display defaults and derived rollup
+storage bounds for bounded event activity summaries. Derived rollup tables live in the recording
+catalog database and can be rebuilt from canonical events without affecting recordings.
+
+| Field             | Type        | Default    | Validation and meaning                                                                                          |
+| ----------------- | ----------- | ---------- | --------------------------------------------------------------------------------------------------------------- |
+| `enabled`         | `bool`      | `true`     | Enables site activity summary queries and rollup maintenance.                                                   |
+| `timezone`        | `String`    | `"UTC"`    | Recognized IANA timezone used as the default display timezone for civil-time buckets and comparisons.           |
+| `week_start`      | `WeekStart` | `"monday"` | First day of the calendar week (`"monday"` or `"sunday"`).                                                      |
+| `max_rollup_rows` | `u64`       | `500000`   | Derived rollup row quota (`1000..=5000000`). Exceeding the quota degrades analytics without blocking recording. |
+
 ## Pending storage migration
 
 Type: `StorageMigration`, section `[storage_migration]`. The server creates this journal for a

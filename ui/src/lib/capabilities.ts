@@ -89,6 +89,16 @@ export const serverCapabilityCatalog = {
 		failureGuarantee:
 			'External embedding failures never affect recording or ordinary search; raw vectors never cross results or diagnostics'
 	},
+	'keeppeek.activity-analytics.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'Bounded revision-correct activity rollups, IANA timezone buckets, retention and source-health completeness, and shadow rebuilds',
+		unlocks:
+			'Activity summary dashboard, trend charts, weekday-hour heatmap, ranked breakdowns, and aggregate CSV/JSON exports',
+		whenMissing: 'Events remain browsable; server activity summaries require a server update',
+		failureGuarantee:
+			'Rollup degradation never alters canonical events and rejects unverified long-range totals instead of serving stale counts'
+	},
 	'keeppeek.backup.v1': {
 		delivery: 'ships',
 		serverOwns:

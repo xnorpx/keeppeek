@@ -83,6 +83,7 @@ use std::{
 use url::Url;
 use uuid::Uuid;
 
+mod analytics;
 mod authentication;
 #[cfg(test)]
 mod authentication_benchmarks;
@@ -472,6 +473,12 @@ fn required_access_role(command: Option<&control_request::Command>) -> AccessRol
             | Some(event_search_command::Action::DeleteSavedSearch(_)) => AccessRole::User,
             _ => AccessRole::Administrator,
         },
+        Some(control_request::Command::ActivityAnalyticsCommand(command)) => match command.action {
+            Some(proto::activity_analytics_command::Action::Query(_))
+            | Some(proto::activity_analytics_command::Action::CancelQuery(_))
+            | Some(proto::activity_analytics_command::Action::GetStatus(_)) => AccessRole::User,
+            _ => AccessRole::Administrator,
+        },
         Some(control_request::Command::NotificationRuleCommand(command)) => match command.action {
             Some(notification_rule_command::Action::GetInbox(_))
             | Some(notification_rule_command::Action::GetHistory(_))
@@ -542,6 +549,7 @@ const fn access_operation(command: Option<&control_request::Command>) -> &'stati
         Some(control_request::Command::HealthCommand(_)) => "health",
         Some(control_request::Command::ExportCommand(_)) => "export",
         Some(control_request::Command::ShareCommand(_)) => "sharing",
+        Some(control_request::Command::ActivityAnalyticsCommand(_)) => "activity_analytics",
         Some(control_request::Command::EventSearchCommand(_)) => "event_search",
         Some(control_request::Command::EventWorkflowCommand(_)) => "event_workflow",
         Some(control_request::Command::RecordingMaintenanceCommand(_)) => "recording_maintenance",
@@ -653,6 +661,12 @@ fn sensitive_administrator_operation(
             Some(event_search_command::Action::SaveSearch(_)) => Some("event_saved_search_save"),
             Some(event_search_command::Action::DeleteSavedSearch(_)) => {
                 Some("event_saved_search_delete")
+            }
+            _ => None,
+        },
+        Some(control_request::Command::ActivityAnalyticsCommand(command)) => match command.action {
+            Some(proto::activity_analytics_command::Action::Rebuild(_)) => {
+                Some("activity_analytics_rebuild")
             }
             _ => None,
         },
@@ -854,6 +868,15 @@ impl ControlRequestHandler for ServerControlHandler {
                     }
                     Some(control_request::Command::EventSearchCommand(command)) => {
                         match event_search::dispatch(&self.state, session_id, &principal, command) {
+                            Ok((result, messages)) => {
+                                data_messages = messages;
+                                Ok(result)
+                            }
+                            Err(error) => Err(error),
+                        }
+                    }
+                    Some(control_request::Command::ActivityAnalyticsCommand(command)) => {
+                        match analytics::dispatch(&self.state, session_id, &principal, command) {
                             Ok((result, messages)) => {
                                 data_messages = messages;
                                 Ok(result)
@@ -1453,6 +1476,9 @@ fn server_capability_ids(state: &ServerState) -> Vec<String> {
         capability_ids.push(event_search::ADVANCED_CAPABILITY_ID.to_owned());
         if catalog.semantic_search_available() {
             capability_ids.push(event_search::SEMANTIC_CAPABILITY_ID.to_owned());
+        }
+        if state.analytics.enabled() {
+            capability_ids.push(analytics::CAPABILITY_ID.to_owned());
         }
         if cfg!(any(unix, windows)) {
             capability_ids.push("keeppeek.recording-maintenance.v1".to_owned());
@@ -5710,6 +5736,12 @@ fn query_events(
                     ));
                 }
             };
+            let confidence_bands = metadata
+                .confidence_bands
+                .iter()
+                .copied()
+                .map(analytics::proto_map::parse_confidence_band)
+                .collect::<Result<Vec<_>, _>>()?;
             if source_ids.is_empty() {
                 crate::storage::EventSearchPage {
                     hits: Vec::new(),
@@ -5728,7 +5760,9 @@ fn query_events(
                         event_types: metadata.event_types,
                         origins,
                         zones: metadata.zones,
+                        include_missing_zone: metadata.include_missing_zone,
                         minimum_confidence: metadata.minimum_confidence,
+                        confidence_bands,
                         image,
                         text: metadata.text,
                         stream_id: request.stream_id.clone(),
@@ -6536,15 +6570,16 @@ fn validate_event_metadata_search(
 ) -> Result<(), ControlCommandError> {
     const MAX_FILTER_VALUES: usize = 64;
     if search.event_ids.len() > MAX_FILTER_VALUES
-        || search.source_ids.len() > MAX_FILTER_VALUES
+        || search.source_ids.len() > crate::storage::analytics::MAX_CAMERAS
         || search.event_types.len() > MAX_FILTER_VALUES
         || search.origins.len() > MAX_FILTER_VALUES
         || search.zones.len() > MAX_FILTER_VALUES
+        || search.confidence_bands.len() > 4
     {
         return Err(ControlCommandError::new(
             proto::ErrorCode::InvalidRequest,
             400,
-            "event metadata filter count exceeds 64",
+            "event metadata filter count exceeds limit",
         ));
     }
     for event_id in &search.event_ids {
@@ -8889,6 +8924,7 @@ pub struct ServerState {
     backup_manager: Option<Arc<BackupManager>>,
     logging: Option<LoggingService>,
     reporting: reporting::Runtime,
+    analytics: analytics::Runtime,
     notifications: Option<NotificationHandle>,
     event_forwarder: Option<EventForwarderHandle>,
     started_at: Instant,
@@ -9084,6 +9120,7 @@ impl ServerState {
             backup_manager: None,
             logging: None,
             reporting: reporting::Runtime::new(config.reporting.clone()),
+            analytics: analytics::Runtime::new(config.analytics.clone()),
             notifications: None,
             event_forwarder: None,
             started_at: Instant::now(),
@@ -9578,6 +9615,11 @@ impl ServerState {
     }
 
     pub fn with_recording_catalog(mut self, catalog: RecordingCatalogHandle) -> Self {
+        if let Err(error) =
+            catalog.set_analytics_max_rollup_rows(self.analytics.config().max_rollup_rows)
+        {
+            tracing::warn!(%error, "unable to apply configured analytics rollup row quota");
+        }
         self.catalog = Some(catalog);
         export_storage::history::restore(&mut self);
         self
@@ -12408,6 +12450,7 @@ fn prometheus_metrics(router_tx: &FacadeSender<RouterMessage>, state: &ServerSta
             notifications,
             mqtt: mqtt.as_ref(),
             external_analysis: Some(external_analysis),
+            analytics: state.analytics.metric_snapshot(state),
         },
         &event_reports,
     ) {
@@ -19902,6 +19945,8 @@ mod tests {
                                 image: proto::EventImageFilter::WithImage as i32,
                                 text: Some("ali".to_owned()),
                                 include_preview_keyframes: true,
+                                confidence_bands: Vec::new(),
+                                include_missing_zone: false,
                             },
                         )),
                         source_id: None,

@@ -184,6 +184,7 @@ pub fn run_with_dashboard(
     let mut storage_config = StorageConfig::from_toml(&cfg.storage);
     let recording_catalog = open_recording_catalog(&storage_config)?;
     let catalog_handle = recording_catalog.handle();
+    catalog_handle.set_analytics_max_rollup_rows(cfg.analytics.max_rollup_rows)?;
     storage_config.initialize_named_volumes(catalog_handle.clone())?;
     let volume_worker = storage_config
         .volume_runtime
@@ -246,6 +247,9 @@ pub fn run_with_dashboard(
     let recording_health = storage_engine.health();
     let webrtc = WebRtc::with_recording_demand(recording_demand.clone());
     let health_registry = HealthRegistry::new();
+    health_registry
+        .events
+        .set_analytics_catalog(recording_catalog.handle());
     let mut server_state = ServerState::new(
         &cfg,
         &camera_configs,

@@ -130,6 +130,17 @@ pub struct ExternalAnalysisMetricsSnapshot {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AnalyticsMetricsSnapshot {
+    pub(crate) rollup_state: u64,
+    pub(crate) rollup_rows: u64,
+    pub(crate) active_queries: u64,
+    pub(crate) queries_total: u64,
+    pub(crate) query_errors_total: u64,
+    pub(crate) rebuild_runs_total: u64,
+    pub(crate) last_query_duration_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BackupMetricsSnapshot {
     pub(crate) operation_successes: u64,
     pub(crate) operation_failures: u64,
@@ -185,6 +196,7 @@ pub struct HealthMetricSnapshots<'a> {
     pub notifications: Option<NotificationMetricsSnapshot>,
     pub mqtt: Option<&'a MqttStatus>,
     pub external_analysis: Option<ExternalAnalysisMetricsSnapshot>,
+    pub analytics: Option<AnalyticsMetricsSnapshot>,
 }
 
 /// Encodes health and event evidence using configured camera identities.
@@ -202,8 +214,9 @@ pub fn encode_health_with_events(
         notifications,
         mqtt,
         external_analysis,
+        analytics,
     } = snapshots;
-    if event_reports.is_empty() {
+    if event_reports.is_empty() && analytics.is_none() {
         return encode_health_metrics(
             health,
             access,
@@ -223,7 +236,12 @@ pub fn encode_health_with_events(
         mqtt,
         external_analysis,
     );
-    events::register(&mut registry, health, event_reports);
+    if let Some(analytics) = analytics {
+        register_analytics_metrics(&mut registry, analytics);
+    }
+    if !event_reports.is_empty() {
+        events::register(&mut registry, health, event_reports);
+    }
     let mut output = String::new();
     encode_registry(&mut output, &registry)?;
     Ok(output)
@@ -879,6 +897,51 @@ fn health_registry(
     }
 
     registry
+}
+
+fn register_analytics_metrics(registry: &mut Registry, snapshot: AnalyticsMetricsSnapshot) {
+    register_gauge(
+        registry,
+        "analytics_rollup_state",
+        "Activity analytics rollup state (0=ready, 1=rebuilding, 2=degraded, 3=unavailable)",
+        snapshot.rollup_state,
+    );
+    register_gauge(
+        registry,
+        "analytics_rollup_rows",
+        "Current row count stored across active derived analytics rollup tables",
+        snapshot.rollup_rows,
+    );
+    register_gauge(
+        registry,
+        "analytics_active_queries",
+        "Currently executing bounded activity analytics summary queries",
+        snapshot.active_queries,
+    );
+    register_counter(
+        registry,
+        "analytics_queries",
+        "Total bounded activity analytics summary queries executed",
+        snapshot.queries_total,
+    );
+    register_counter(
+        registry,
+        "analytics_query_errors",
+        "Total failed or rejected activity analytics summary queries",
+        snapshot.query_errors_total,
+    );
+    register_counter(
+        registry,
+        "analytics_rebuild_runs",
+        "Total bounded shadow-table analytics rebuilds triggered",
+        snapshot.rebuild_runs_total,
+    );
+    register_gauge(
+        registry,
+        "analytics_last_query_duration_ms",
+        "Duration of the most recent activity analytics query in milliseconds",
+        snapshot.last_query_duration_ms,
+    );
 }
 
 fn register_external_analysis_metrics(

@@ -31,6 +31,7 @@ use std::{
 };
 
 mod advanced_search;
+pub(crate) mod analytics;
 pub(crate) mod archive;
 pub mod archive_playback;
 pub(crate) mod authority;
@@ -608,6 +609,7 @@ enum Command {
     Stats {
         reply: SyncSender<anyhow::Result<CatalogStats>>,
     },
+    Analytics(analytics::WriteCommand),
     #[cfg(test)]
     Snapshot {
         destination: PathBuf,
@@ -619,6 +621,7 @@ enum Command {
 
 enum SearchCommand {
     Maintenance(maintenance::ReadRequest),
+    Analytics(analytics::ReadCommand),
     Bookmarks {
         query: workflow::BookmarkQuery,
         reply: SyncSender<anyhow::Result<workflow::BookmarkPage>>,
@@ -2185,6 +2188,9 @@ fn run_catalog(
             Command::Stats { reply } => {
                 let _ = reply.send(pollster::block_on(catalog_stats(&connection)));
             }
+            Command::Analytics(command) => {
+                pollster::block_on(analytics::execute_write(&connection, command));
+            }
             #[cfg(test)]
             Command::Snapshot {
                 destination,
@@ -2210,6 +2216,9 @@ fn run_search_catalog(
     while let Ok(command) = rx.recv() {
         match command {
             SearchCommand::Maintenance(request) => maintenance::read(&connection, request),
+            SearchCommand::Analytics(command) => {
+                pollster::block_on(analytics::execute_read(&connection, command));
+            }
             SearchCommand::Bookmarks { query, reply } => {
                 let _ = reply.send(pollster::block_on(workflow::list_bookmarks(
                     &connection,
@@ -3254,6 +3263,7 @@ async fn initialize_core_schema(connection: &turso::Connection) -> anyhow::Resul
     initialize_operational_schema(connection).await?;
     archive::initialize(connection).await?;
     relocation::initialize(connection).await?;
+    analytics::initialize(connection).await?;
     Ok(())
 }
 
@@ -5040,6 +5050,7 @@ async fn close_event_in_transaction(
     if changed == 0 {
         anyhow::bail!("event was not found or its end precedes its start");
     }
+    analytics::delta::sync_event_by_id(connection, id).await?;
     record_event_search_mutation(connection, id).await
 }
 
@@ -5123,6 +5134,7 @@ async fn attach_event_thumbnail(
                 ],
             )
             .await?;
+        analytics::delta::sync_event_by_id(connection, id).await?;
         record_event_search_mutation(connection, id).await
     }
     .await;
@@ -5151,6 +5163,7 @@ async fn detach_event_thumbnail(connection: &turso::Connection, id: &str) -> any
             anyhow::bail!("event was not found");
         }
         locations::images::detach(connection, id).await?;
+        analytics::delta::sync_event_by_id(connection, id).await?;
         record_event_search_mutation(connection, id).await
     }
     .await;
@@ -5193,6 +5206,7 @@ async fn detach_event_thumbnail_file(
                 .await?;
             if changed == 1 {
                 locations::images::detach(connection, &event_id).await?;
+                analytics::delta::sync_event_by_id(connection, &event_id).await?;
                 record_event_search_mutation(connection, &event_id).await?;
             }
         }
@@ -5826,11 +5840,17 @@ async fn search_event_metadata_snapshot(
         .map(|origin| origin.as_str().to_owned())
         .collect::<Vec<_>>();
     append_text_filter(&mut sql, "e.source", &origins, &mut params);
-    append_text_filter(&mut sql, "lower(e.zone)", &query.zones, &mut params);
+    append_zone_filter(
+        &mut sql,
+        &query.zones,
+        query.include_missing_zone,
+        &mut params,
+    );
     if let Some(confidence) = query.minimum_confidence {
         sql.push_str(&format!(" AND e.confidence >= ?{}", params.len() + 1));
         params.push(turso::Value::Real(confidence));
     }
+    append_confidence_band_filter(&mut sql, &query.confidence_bands);
     match query.image {
         EventImageFilter::Any => {}
         EventImageFilter::WithImage => sql.push_str(" AND e.canonical_attachment_id IS NOT NULL"),
@@ -5920,6 +5940,63 @@ async fn search_event_metadata_snapshot(
         semantic_summary: None,
         diagnostics: None,
     })
+}
+
+fn append_zone_filter(
+    sql: &mut String,
+    zones: &[String],
+    include_missing_zone: bool,
+    params: &mut Vec<turso::Value>,
+) {
+    if zones.is_empty() && !include_missing_zone {
+        return;
+    }
+    let mut clauses = Vec::new();
+    if !zones.is_empty() {
+        let placeholders: Vec<String> = zones
+            .iter()
+            .map(|value| {
+                params.push(turso::Value::Text(value.clone()));
+                format!("?{}", params.len())
+            })
+            .collect();
+        clauses.push(format!(
+            "lower(trim(e.zone)) IN ({})",
+            placeholders.join(",")
+        ));
+    }
+    if include_missing_zone {
+        clauses.push("(e.zone IS NULL OR trim(e.zone) = '')".to_owned());
+    }
+    sql.push_str(&format!(" AND ({})", clauses.join(" OR ")));
+}
+
+fn append_confidence_band_filter(
+    sql: &mut String,
+    bands: &[crate::storage::analytics::ConfidenceBand],
+) {
+    if bands.is_empty() {
+        return;
+    }
+    let mut clauses = Vec::with_capacity(bands.len());
+    for band in bands {
+        let expr = match band {
+            crate::storage::analytics::ConfidenceBand::Unknown => {
+                "(e.confidence IS NULL OR e.confidence < 0.0 OR e.confidence > 1.0)"
+            }
+            crate::storage::analytics::ConfidenceBand::Low => {
+                "(e.confidence >= 0.0 AND e.confidence < 0.5)"
+            }
+            crate::storage::analytics::ConfidenceBand::Medium => {
+                "(e.confidence >= 0.5 AND e.confidence < 0.8)"
+            }
+            crate::storage::analytics::ConfidenceBand::High => {
+                "(e.confidence >= 0.8 AND e.confidence <= 1.0)"
+            }
+        };
+        clauses.push(expr);
+    }
+    sql.push_str(&format!(" AND ({})", clauses.join(" OR ")));
 }
 
 fn append_text_filter(
@@ -6330,6 +6407,7 @@ fn metadata_search_fingerprint(query: &EventMetadataQuery) -> String {
     for zone in &query.zones {
         update_search_fingerprint(&mut hasher, zone.as_bytes());
     }
+    update_search_fingerprint(&mut hasher, &[u8::from(query.include_missing_zone)]);
     update_search_fingerprint(
         &mut hasher,
         &query
@@ -6338,6 +6416,10 @@ fn metadata_search_fingerprint(query: &EventMetadataQuery) -> String {
             .unwrap_or_default()
             .to_le_bytes(),
     );
+    update_search_fingerprint(&mut hasher, b"confidence_bands");
+    for band in &query.confidence_bands {
+        update_search_fingerprint(&mut hasher, band.as_str().as_bytes());
+    }
     let image = match query.image {
         EventImageFilter::Any => b"any".as_slice(),
         EventImageFilter::WithImage => b"with".as_slice(),

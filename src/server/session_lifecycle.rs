@@ -74,6 +74,7 @@ pub(super) fn close(state: &ServerState, id: SessionId) -> Option<ApiSessionReco
     // The owner remains visible until cleanup finishes so concurrent revokers wait for it.
     state.talkback.stop_for_session(id, &state.webrtc);
     event_search::close_session(state, id);
+    analytics::close_session(state, id);
     state.state_store_watches.close_session(id);
     state.event_publications.close_session(id);
     state.event_subscriptions.close_session(id);

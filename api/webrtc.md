@@ -1932,3 +1932,33 @@ is two seconds and the decode deadline is five seconds. Drops, timeouts, unsuppo
 configurations, missing source evidence and gaps leave the displayed frame unchanged. Closing
 or changing the cursor invalidates its token and pending output. At a configuration change,
 the client must close the previous decoder and configure the new one before showing a frame.
+
+## Activity analytics
+
+A recorder advertises `keeppeek.activity-analytics.v1` when bounded event activity summaries are
+available. `Request.activity_analytics_command` (field `32`) accepts four typed actions:
+
+- `query` (`QueryActivitySummary`): Authorized for Administrators and Users, strictly scoped to
+  the session's authorized cameras and principal-local workflow state. The control channel returns
+  `Ok.activity_analytics_result.delivery` (field `50`) and delivers the serialized
+  `ActivitySummaryResponse` over the reliable data channel (`Message.activity_analytics`, field `9`)
+  in `ActivityAnalyticsChunk` payloads of at most 48 KiB each, capped at 1 MiB total. Failures are
+  delivered as `ActivityAnalyticsError`.
+- `cancel_query` (`CancelActivityAnalyticsQuery`): Cancels an in-flight query owned by the session
+  and releases its worker slot.
+- `get_status` (`GetActivityAnalyticsStatus`): Authorized for Administrators and Users. Returns
+  `ActivityAnalyticsStatus` directly on the control channel, including configured site timezone,
+  week-start preference, IANA tzdata version, rollup health state, generation, and row quota.
+- `rebuild` (`RebuildActivityAnalytics`): Administrator-only. Starts a bounded shadow-table
+  rebuild from canonical `recording_events` without modifying source events and returns
+  `ActivityAnalyticsStatus`.
+
+Query bounds are enforced server-side: UTC half-open `[start_time, end_time)` spanning at most
+10 years, at most 366 returned buckets, 64 series, 64 ranked breakdown rows per dimension, 127
+authorized cameras, 8 allowlisted `group_by` dimensions, 2 active queries per principal, 8 active
+queries server-wide, and a 5-second deadline. Counts represent producer-reported event metadata
+within current retention and authorization scope, never authoritative identity or threat totals.
+
+`EventMetadataSearch` adds `confidence_bands` (field `10`, repeated `EventConfidenceBand`) and
+`include_missing_zone` (field `11`, `bool`) so every analytics bucket and breakdown row opens an
+exact server-filtered Events query without client-side full-history filtering.

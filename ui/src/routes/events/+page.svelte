@@ -61,6 +61,7 @@
 	} from '$lib/control-client';
 	import type { CameraListItem, RecordingEvent } from '$lib/types';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
+	import BarChart3Icon from '@lucide/svelte/icons/bar-chart-3';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import SlidersHorizontalIcon from '@lucide/svelte/icons/sliders-horizontal';
 
@@ -216,11 +217,21 @@
 		const constrains = (key: keyof EventBrowserFilters) =>
 			Object.prototype.hasOwnProperty.call(update, key);
 		const cameraName = cameras.find((camera) => camera.id === filters.cameraId)?.name;
+		const hasExplicitRange =
+			typeof filters.rangeStartMs === 'number' &&
+			typeof filters.rangeEndMs === 'number' &&
+			filters.rangeStartMs < filters.rangeEndMs;
 		return [
-			filters.startTime
+			hasExplicitRange
+				? {
+						label: `range:${new Date(filters.rangeStartMs!).toISOString()}..${new Date(filters.rangeEndMs!).toISOString()}`,
+						constraining: constrains('rangeStartMs')
+					}
+				: null,
+			!hasExplicitRange && filters.startTime
 				? { label: `from:${filters.startTime} UTC`, constraining: constrains('startTime') }
 				: null,
-			filters.endTime
+			!hasExplicitRange && filters.endTime
 				? { label: `to:${filters.endTime} UTC`, constraining: constrains('endTime') }
 				: null,
 			filters.cameraId
@@ -228,12 +239,27 @@
 						label: `camera:${cameraName ?? filters.cameraId}`,
 						constraining: constrains('cameraId')
 					}
-				: null,
+				: filters.cameraIds && filters.cameraIds.length > 0
+					? {
+							label: `cameras:${filters.cameraIds.length}`,
+							constraining: constrains('cameraIds')
+						}
+					: null,
 			filters.type ? { label: `type:${filters.type}`, constraining: constrains('type') } : null,
 			filters.source
 				? { label: `source:${filters.source}`, constraining: constrains('source') }
 				: null,
-			filters.zone ? { label: `zone:${filters.zone}`, constraining: constrains('zone') } : null,
+			filters.missingZone
+				? { label: 'zone:missing', constraining: constrains('missingZone') }
+				: filters.zone
+					? { label: `zone:${filters.zone}`, constraining: constrains('zone') }
+					: null,
+			filters.confidenceBand
+				? {
+						label: `confidence-band:${filters.confidenceBand}`,
+						constraining: constrains('confidenceBand')
+					}
+				: null,
 			filters.minimumConfidence === null
 				? null
 				: {
@@ -244,7 +270,7 @@
 				? null
 				: { label: `image:${filters.image}`, constraining: constrains('image') },
 			filters.query ? { label: `query:${filters.query}`, constraining: constrains('query') } : null,
-			{ label: filters.date }
+			!hasExplicitRange ? { label: filters.date } : null
 		].filter((clause): clause is { label: string; constraining?: boolean } => clause !== null);
 	});
 
@@ -578,14 +604,18 @@
 			eventIds,
 			sourceIds: queryFilters.cameraId
 				? [queryFilters.cameraId]
-				: cameras.map((camera) => camera.id),
+				: queryFilters.cameraIds && queryFilters.cameraIds.length > 0
+					? queryFilters.cameraIds
+					: cameras.map((camera) => camera.id),
 			streamId: 'main',
 			startMs: bounds.startMs,
 			endMs: bounds.endMs,
 			eventTypes: queryFilters.type ? [queryFilters.type] : [],
 			origins: queryFilters.source ? [queryFilters.source] : [],
 			zones: queryFilters.zone ? [queryFilters.zone] : [],
+			includeMissingZone: queryFilters.missingZone ?? false,
 			minimumConfidence: queryFilters.minimumConfidence ?? undefined,
+			confidenceBands: queryFilters.confidenceBand ? [queryFilters.confidenceBand] : [],
 			image: queryFilters.image,
 			text: queryFilters.query || undefined,
 			pageSize,
@@ -977,7 +1007,22 @@
 	}
 
 	function updateFilters(update: Partial<EventBrowserFilters>, debounce = false): void {
-		const next = { ...filters, ...update };
+		const normalizedUpdate: Partial<EventBrowserFilters> = { ...update };
+		const changesDateOrTime = 'date' in update || 'startTime' in update || 'endTime' in update;
+		if (changesDateOrTime && !('rangeStartMs' in update) && !('rangeEndMs' in update)) {
+			normalizedUpdate.rangeStartMs = null;
+			normalizedUpdate.rangeEndMs = null;
+		}
+		if ('cameraId' in update && !('cameraIds' in update)) {
+			normalizedUpdate.cameraIds = [];
+		}
+		if ('zone' in update && !('missingZone' in update)) {
+			normalizedUpdate.missingZone = false;
+		}
+		if ('minimumConfidence' in update && !('confidenceBand' in update)) {
+			normalizedUpdate.confidenceBand = null;
+		}
+		const next = { ...filters, ...normalizedUpdate };
 		loadController?.abort();
 		refreshController?.abort();
 		requestVersion += 1;
@@ -1180,19 +1225,33 @@
 			update: Partial<EventBrowserFilters>;
 		}> = [
 			...(filters.query ? [{ label: `Clear “${filters.query}”`, update: { query: '' } }] : []),
+			...(filters.confidenceBand
+				? [{ label: 'Any confidence band', update: { confidenceBand: null } }]
+				: []),
 			...(filters.minimumConfidence !== null
 				? [{ label: 'Remove confidence limit', update: { minimumConfidence: null } }]
 				: []),
 			...(filters.cameraId ? [{ label: 'Any camera', update: { cameraId: null } }] : []),
+			...(filters.cameraIds && filters.cameraIds.length > 0
+				? [{ label: 'Any camera group', update: { cameraIds: [] } }]
+				: []),
 			...(filters.type ? [{ label: 'Any event type', update: { type: null } }] : []),
 			...(filters.source ? [{ label: 'Any source', update: { source: null } }] : []),
+			...(filters.missingZone ? [{ label: 'Any zone state', update: { missingZone: false } }] : []),
 			...(filters.zone ? [{ label: 'Any zone', update: { zone: null } }] : []),
 			...(filters.image !== 'all'
 				? [{ label: 'Any image state', update: { image: 'all' as const } }]
 				: []),
-			...(filters.startTime || filters.endTime
-				? [{ label: 'Use the full day', update: { startTime: null, endTime: null } }]
-				: [])
+			...(filters.rangeStartMs !== null || filters.rangeEndMs !== null
+				? [
+						{
+							label: 'Use the full day',
+							update: { rangeStartMs: null, rangeEndMs: null, startTime: null, endTime: null }
+						}
+					]
+				: filters.startTime || filters.endTime
+					? [{ label: 'Use the full day', update: { startTime: null, endTime: null } }]
+					: [])
 		];
 		for (const candidate of candidates) {
 			try {
@@ -1226,11 +1285,16 @@
 			bookmarks: 'all',
 			startTime: null,
 			endTime: null,
+			rangeStartMs: null,
+			rangeEndMs: null,
 			cameraId: null,
+			cameraIds: [],
 			type: null,
 			source: null,
 			zone: null,
+			missingZone: false,
 			minimumConfidence: null,
+			confidenceBand: null,
 			image: 'all',
 			query: ''
 		});
@@ -1370,6 +1434,11 @@
 		</div>
 		<div class="min-w-2 flex-1"></div>
 		<div class="flex items-center gap-2">
+			{#if capabilities.supports('keeppeek.activity-analytics.v1')}<a
+					href={resolve('/activity')}
+					class="inline-flex min-h-11 items-center gap-2 rounded-sm border border-border px-3 text-xs hover:bg-raised focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+					><BarChart3Icon class="size-4" />Activity summary</a
+				>{/if}
 			{#if workflowIdentity}<button
 					type="button"
 					class="inline-flex min-h-11 items-center gap-2 rounded-sm px-3 text-xs hover:bg-raised"

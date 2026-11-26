@@ -202,11 +202,27 @@ pub(super) fn authorize_command(
         Some(control_request::Command::EventSearchCommand(command)) => {
             authorize_event_search(&policy, command)
         }
+        Some(control_request::Command::ActivityAnalyticsCommand(command)) => {
+            authorize_activity_analytics(&policy, command)
+        }
         Some(control_request::Command::TalkbackCommand(command)) => {
             authorize_talkback(state, &policy, command)
         }
         _ => Ok(()),
     }
+}
+
+fn authorize_activity_analytics(
+    policy: &CameraAccess,
+    command: &proto::ActivityAnalyticsCommand,
+) -> Result<(), ControlCommandError> {
+    let Some(proto::activity_analytics_command::Action::Query(query)) = &command.action else {
+        return Ok(());
+    };
+    if let Some(filter) = &query.filter {
+        require_cameras(policy, &filter.source_ids)?;
+    }
+    Ok(())
 }
 
 fn authorize_talkback(
