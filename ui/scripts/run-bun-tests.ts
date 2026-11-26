@@ -6,6 +6,7 @@ const testGlob = new Bun.Glob('src/**/*.{test,spec}.{js,ts}');
 const testFiles = [
 	'scripts/bun-test-selection.spec.ts',
 	'scripts/storybook-readiness.spec.ts',
+	'scripts/run-loki-ci.spec.ts',
 	'scripts/paper-guest-contract.spec.ts'
 ];
 
