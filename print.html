@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-16306811.js";
+            window.path_to_searchindex_js = "searchindex-c25f5a4b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-738fe896.js"></script>
@@ -2282,6 +2282,7 @@ Root fields must appear before a table header or they belong to that table.</p>
 <tr><td>Root fields</td><td><code>Config</code></td><td>Operator settings</td></tr>
 <tr><td><code>[sharing]</code></td><td><code>sharing::SharingConfig</code></td><td>Guest review deployment policy; server-owned revision</td></tr>
 <tr><td><code>[reporting]</code></td><td><code>reporting::Settings</code></td><td>Optional bug reporting service settings</td></tr>
+<tr><td><code>[usage_reporting]</code></td><td><code>usage_reporting::UsageReportingConfig</code></td><td>Opt-in privacy-preserving usage reporting consent</td></tr>
 <tr><td><code>[access]</code></td><td><code>AccessConfig</code></td><td>Administrator security policy</td></tr>
 <tr><td><code>[direct_card]</code></td><td><code>DirectCardConfig</code></td><td>Exact browser-origin allowlist</td></tr>
 <tr><td><code>[desktop]</code></td><td><code>DesktopConfig</code></td><td>Optional default server URL for KeepPeek Desktop</td></tr>
@@ -3106,6 +3107,31 @@ endpoint requires Administrator authorization and the existing secure remote-acc
 <code>config.toml</code> and validates its syntax without resolving it at recorder startup. The recorder
 resolves the secret only when forwarding a confirmed grant request to <code>POST {origin}/v1/reports</code>
 and registers both the resolved credential and issued grant token for log redaction.</p>
+<h2 id="usage-reporting"><a class="header" href="#usage-reporting">Usage reporting</a></h2>
+<p>The optional <code>[usage_reporting]</code> section stores explicit Administrator opt-in consent for
+privacy-preserving usage reporting. Every category defaults to <code>false</code>, so fresh installations and
+upgrades generate no telemetry installation ID, start no recurring telemetry collection worker, and
+make zero receiver requests.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>basic</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable basic system data. Required before enabling any additional reporting category.</td></tr>
+<tr><td><code>camera_compatibility</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable aggregated, normalized camera compatibility counts (requires <code>basic = true</code>).</td></tr>
+<tr><td><code>feature_adoption</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable coarse recording-mode, storage/retention bucket, and integration adoption summaries.</td></tr>
+<tr><td><code>consented_disclosure_revision</code></td><td><code>u32</code></td><td><code>0</code></td><td>Disclosure revision accepted by an Administrator (<code>1</code> required when <code>basic = true</code>).</td></tr>
+<tr><td><code>receiver_origin</code></td><td>Optional string</td><td>Absent</td><td>Canonical HTTPS origin (<code>&lt;= 512</code> bytes, no path or credentials) for the telemetry receiver.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Dedicated telemetry installation identities, proof tokens, send schedules, and bounded pending
+deletions (<code>&lt;= 16</code> entries) are persisted separately in the private application-owned runtime record
+(<code>.keeppeek-usage-reporting-state.json</code> beside <code>config.toml</code>) only after explicit opt-in. They are
+excluded from <code>config.toml</code> backups and from general <code>StateStore</code> namespaces so restores do not
+clone one installation’s proof token across machines. See
+<a href="https://github.com/xnorpx/keeppeek/blob/main/docs/usage-reporting.md">usage reporting</a>.</p>
 <h2 id="operational-events"><a class="header" href="#operational-events">Operational events</a></h2>
 <p>Type: <code>OperationalEventsConfig</code>, section <code>[operational_events]</code>.</p>
 <div class="table-wrapper">
