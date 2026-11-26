@@ -236,7 +236,8 @@ test('default disabled install and non-administrator sessions make zero receiver
 
 	await page.setViewportSize({ width: 1440, height: 900 });
 	await page.goto('/settings');
-	await expect(page.getByText('Server', { exact: true })).toBeVisible();
+	await expect(page).toHaveURL(/\/$/);
+	await expect(page.getByRole('heading', { name: 'Dashboard', level: 1 })).toBeVisible();
 	await expect(page.getByRole('heading', { name: 'Usage reporting' })).toHaveCount(0);
 	expect(receiverRequests).toEqual([]);
 	expect(harness.actions).toEqual([]);
