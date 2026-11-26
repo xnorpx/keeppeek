@@ -164,6 +164,9 @@ pub struct CloudSignalRuntime {
     config_path: Arc<PathBuf>,
     settings: Arc<RwLock<Settings>>,
     active_gate: Arc<AtomicBool>,
+    // This lock serializes durable flushes. Concurrent callers cannot commit stale work out of
+    // order or read status before an active flush finishes.
+    flush_lock: Arc<Mutex<()>>,
     staged: Arc<Mutex<Option<StagedCloudEvent>>>,
     state: CloudStateStore,
     transport: Arc<dyn SignalTransport>,
@@ -226,6 +229,7 @@ impl CloudSignalRuntime {
             config_path: Arc::new(config_path),
             settings: Arc::new(RwLock::new(settings)),
             active_gate: Arc::new(AtomicBool::new(active)),
+            flush_lock: Arc::new(Mutex::new(())),
             staged: Arc::new(Mutex::new(None)),
             state,
             transport,
@@ -253,6 +257,10 @@ impl CloudSignalRuntime {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = next;
         self.state.reconcile_pairing(next_pairing, now_ms)?;
         if !active {
+            let _flush_guard = self
+                .flush_lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             *self
                 .staged
                 .lock()
@@ -318,6 +326,14 @@ impl CloudSignalRuntime {
 
     /// Commits any staged newest-only event into durable Turso storage.
     pub fn flush_staged(&self) -> anyhow::Result<Option<EnqueueOutcome>> {
+        let _flush_guard = self
+            .flush_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.flush_staged_locked()
+    }
+
+    fn flush_staged_locked(&self) -> anyhow::Result<Option<EnqueueOutcome>> {
         let staged = self
             .staged
             .lock()
@@ -366,7 +382,14 @@ impl CloudSignalRuntime {
         if !self.active_gate.load(Ordering::Acquire) {
             return Ok(None);
         }
-        let _ = self.flush_staged()?;
+        let _flush_guard = self
+            .flush_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.active_gate.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        let _ = self.flush_staged_locked()?;
         let outcome = self.state.enqueue_logical_event(
             logical_id,
             rule_id,
