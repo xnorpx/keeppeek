@@ -861,7 +861,11 @@ impl std::fmt::Debug for VideoFrame {
 /// This interface unstable and for internal use; it's exposed for direct fuzzing and benchmarking.
 #[doc(hidden)]
 #[derive(Debug)]
-pub struct Depacketizer(DepacketizerInner);
+pub struct Depacketizer {
+    inner: DepacketizerInner,
+    payload_type: Option<u8>,
+    skipped_loss: u16,
+}
 
 #[derive(Debug)]
 enum DepacketizerInner {
@@ -896,68 +900,88 @@ impl Depacketizer {
         channels: Option<NonZeroU16>,
         format_specific_params: Option<&str>,
     ) -> Result<Self, String> {
+        let encoding_name = encoding_name.to_ascii_lowercase();
+        let encoding_name = encoding_name.as_str();
         if media == "application"
             && let Some(compression_type) = onvif::compression_type(encoding_name)
         {
-            return Ok(Self(DepacketizerInner::Onvif(Box::new(
-                onvif::Depacketizer::new(compression_type),
-            ))));
+            return Ok(Self {
+                inner: DepacketizerInner::Onvif(Box::new(onvif::Depacketizer::new(
+                    compression_type,
+                ))),
+                payload_type: None,
+                skipped_loss: 0,
+            });
         }
         // RTP Payload Format Media Types
         // https://www.iana.org/assignments/rtp-parameters/rtp-parameters.xhtml#rtp-parameters-2
-        Ok(Self(match (media, encoding_name) {
-            ("video", "h264") => DepacketizerInner::H264(Box::new(h264::Depacketizer::new(
-                clock_rate,
-                format_specific_params,
-            )?)),
-            #[cfg(feature = "h265")]
-            ("video", "h265") => DepacketizerInner::H265(Box::new(h265::Depacketizer::new(
-                clock_rate,
-                format_specific_params,
-            )?)),
-            ("image" | "video", "jpeg") => DepacketizerInner::Jpeg(Box::default()),
-            ("audio", "mpeg4-generic") => DepacketizerInner::Aac(Box::new(aac::Depacketizer::new(
-                clock_rate,
-                channels,
-                format_specific_params,
-            )?)),
-            ("audio", "g726-16") => DepacketizerInner::SimpleAudio(Box::new(
-                simple_audio::Depacketizer::new(clock_rate, 2, channels),
-            )),
-            ("audio", "g726-24") => DepacketizerInner::SimpleAudio(Box::new(
-                simple_audio::Depacketizer::new(clock_rate, 3, channels),
-            )),
-            ("audio", "dvi4") | ("audio", "g726-32") => DepacketizerInner::SimpleAudio(Box::new(
-                simple_audio::Depacketizer::new(clock_rate, 4, channels),
-            )),
-            ("audio", "g726-40") => DepacketizerInner::SimpleAudio(Box::new(
-                simple_audio::Depacketizer::new(clock_rate, 5, channels),
-            )),
-            ("audio", "pcma") | ("audio", "pcmu") | ("audio", "u8") | ("audio", "g722") => {
-                DepacketizerInner::SimpleAudio(Box::new(simple_audio::Depacketizer::new(
-                    clock_rate, 8, channels,
-                )))
-            }
-            ("audio", "l16") => DepacketizerInner::SimpleAudio(Box::new(
-                simple_audio::Depacketizer::new(clock_rate, 16, channels),
-            )),
-            // Dahua cameras when configured with G723 send packets with a
-            // non-standard encoding-name "G723.1" and length 40, which doesn't
-            // make sense. Don't try to depacketize these.
-            ("audio", "g723") => {
-                DepacketizerInner::G723(Box::new(g723::Depacketizer::new(clock_rate)?))
-            }
-            (_, _) => {
-                log::info!("no depacketizer for media/encoding_name {media}/{encoding_name}");
-                return Err(format!(
-                    "no depacketizer for media/encoding_name {media}/{encoding_name}"
-                ));
-            }
-        }))
+        let inner =
+            match (media, encoding_name) {
+                ("video", "h264") => DepacketizerInner::H264(Box::new(h264::Depacketizer::new(
+                    clock_rate,
+                    format_specific_params,
+                )?)),
+                #[cfg(feature = "h265")]
+                ("video", "h265") => DepacketizerInner::H265(Box::new(h265::Depacketizer::new(
+                    clock_rate,
+                    format_specific_params,
+                )?)),
+                ("image" | "video", "jpeg") => DepacketizerInner::Jpeg(Box::default()),
+                ("audio", "mpeg4-generic") => DepacketizerInner::Aac(Box::new(
+                    aac::Depacketizer::new(clock_rate, channels, format_specific_params)?,
+                )),
+                ("audio", "g726-16") => DepacketizerInner::SimpleAudio(Box::new(
+                    simple_audio::Depacketizer::new(clock_rate, 2, channels),
+                )),
+                ("audio", "g726-24") => DepacketizerInner::SimpleAudio(Box::new(
+                    simple_audio::Depacketizer::new(clock_rate, 3, channels),
+                )),
+                ("audio", "dvi4") | ("audio", "g726-32") => DepacketizerInner::SimpleAudio(
+                    Box::new(simple_audio::Depacketizer::new(clock_rate, 4, channels)),
+                ),
+                ("audio", "g726-40") => DepacketizerInner::SimpleAudio(Box::new(
+                    simple_audio::Depacketizer::new(clock_rate, 5, channels),
+                )),
+                ("audio", "pcma") | ("audio", "pcmu") | ("audio", "u8") | ("audio", "g722") => {
+                    DepacketizerInner::SimpleAudio(Box::new(simple_audio::Depacketizer::new(
+                        clock_rate, 8, channels,
+                    )))
+                }
+                ("audio", "l16") => DepacketizerInner::SimpleAudio(Box::new(
+                    simple_audio::Depacketizer::new(clock_rate, 16, channels),
+                )),
+                // Dahua cameras when configured with G723 send packets with a
+                // non-standard encoding-name "G723.1" and length 40, which doesn't
+                // make sense. Don't try to depacketize these.
+                ("audio", "g723") => {
+                    DepacketizerInner::G723(Box::new(g723::Depacketizer::new(clock_rate)?))
+                }
+                (_, _) => {
+                    log::info!("no depacketizer for media/encoding_name {media}/{encoding_name}");
+                    return Err(format!(
+                        "no depacketizer for media/encoding_name {media}/{encoding_name}"
+                    ));
+                }
+            };
+        Ok(Self {
+            inner,
+            payload_type: None,
+            skipped_loss: 0,
+        })
+    }
+
+    /// Limits depacketization to RTP packets carrying `payload_type`.
+    ///
+    /// Packets with any other payload type (for example comfort noise or
+    /// telephone-event packets sharing the same SSRC) are skipped, and any
+    /// loss reported on them carries forward to the next matching packet.
+    pub const fn with_payload_type(mut self, payload_type: u8) -> Self {
+        self.payload_type = Some(payload_type);
+        self
     }
 
     pub fn check_invariants(&self) {
-        match &self.0 {
+        match &self.inner {
             DepacketizerInner::Aac(_) => {}
             DepacketizerInner::G723(_) => {}
             DepacketizerInner::H264(d) => d.check_invariants(),
@@ -975,7 +999,7 @@ impl Depacketizer {
     /// set insertion. No-op for codecs that don't use these settings.
     #[doc(hidden)]
     pub fn set_frame_format(&mut self, format: FrameFormat) {
-        match &mut self.0 {
+        match &mut self.inner {
             DepacketizerInner::Aac(d) => d.set_frame_format(format),
             DepacketizerInner::H264(d) => d.set_frame_format(format),
             #[cfg(feature = "h265")]
@@ -992,7 +1016,7 @@ impl Depacketizer {
     /// whether the depacketizer returns parameters as of the most recently pulled or the upcoming
     /// frame.
     pub fn parameters(&self) -> Option<ParametersRef<'_>> {
-        match &self.0 {
+        match &self.inner {
             DepacketizerInner::Aac(d) => d.parameters(),
             DepacketizerInner::G723(d) => d.parameters(),
             DepacketizerInner::H264(d) => d.parameters(),
@@ -1009,8 +1033,20 @@ impl Depacketizer {
     /// Depacketizers are not required to buffer unbounded numbers of packets. Between any two
     /// calls to `push`, the caller must call `pull` until `pull` returns `None`. The later
     /// `push` call may panic or drop data if this expectation is violated.
-    pub fn push(&mut self, input: ReceivedPacket) -> Result<(), String> {
-        match &mut self.0 {
+    pub fn push(&mut self, mut input: ReceivedPacket) -> Result<(), String> {
+        if self
+            .payload_type
+            .is_some_and(|pt| input.raw.payload_type() != pt)
+        {
+            self.skipped_loss = self.skipped_loss.saturating_add(input.loss());
+            return Ok(());
+        }
+        if self.skipped_loss > 0 {
+            input.loss = input
+                .loss
+                .saturating_add(std::mem::take(&mut self.skipped_loss));
+        }
+        match &mut self.inner {
             DepacketizerInner::Aac(d) => d.push(input),
             DepacketizerInner::G723(d) => d.push(input),
             DepacketizerInner::H264(d) => d.push(input),
@@ -1027,7 +1063,7 @@ impl Depacketizer {
     /// Some packetization formats support aggregating multiple frames into one packet, so a single
     /// `push` call may cause `pull` to return `Some(...))` more than once.
     pub fn pull(&mut self) -> Option<Result<CodecItem, DepacketizeError>> {
-        match &mut self.0 {
+        match &mut self.inner {
             DepacketizerInner::Aac(d) => d.pull(),
             DepacketizerInner::G723(d) => d.pull(),
             DepacketizerInner::H264(d) => d.pull(),
@@ -1132,5 +1168,41 @@ mod tests {
             FmtpParser::new(";;a=b;cd;e=f==;;").collect::<Vec<_>>(),
             vec![("a", "b"), ("cd", ""), ("e", "f==")]
         );
+    }
+
+    #[test]
+    fn depacketizer_skips_other_payload_type_and_carries_loss() {
+        let mut d = Depacketizer::new("audio", "PCMU", 8_000, NonZeroU16::new(1), None)
+            .unwrap()
+            .with_payload_type(0);
+        let mk = |seq: u16, ts: i64, loss: u16, pt: u8, payload: &[u8]| {
+            crate::rtp::ReceivedPacketBuilder {
+                ctx: crate::PacketContext::dummy(),
+                stream_id: 0,
+                timestamp: crate::Timestamp {
+                    timestamp: ts,
+                    clock_rate: NonZeroU32::new(8_000).unwrap(),
+                    start: 0,
+                },
+                ssrc: 1,
+                sequence_number: seq,
+                loss,
+                mark: false,
+                payload_type: pt,
+            }
+            .build(payload.iter().copied())
+            .unwrap()
+        };
+
+        // Telephone-event packet on the same SSRC with loss carried forward.
+        d.push(mk(2, 160, 1, 101, b"\x00\x0a\x00\xa0")).unwrap();
+        assert!(d.pull().is_none());
+
+        d.push(mk(3, 320, 0, 0, b"\x7f\x7f")).unwrap();
+        let Some(Ok(CodecItem::AudioFrame(frame))) = d.pull() else {
+            panic!("expected audio frame");
+        };
+        assert_eq!(frame.loss(), 1);
+        assert_eq!(frame.data(), b"\x7f\x7f");
     }
 }

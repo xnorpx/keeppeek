@@ -7,7 +7,10 @@
 use super::{CodecItem, FmtpParser, VideoFrame, VideoParameters};
 use crate::{
     Error, Timestamp,
-    codec::{AllPixelDimensions, DepacketizeError, h26x::TolerantBitReader},
+    codec::{
+        AllPixelDimensions, DepacketizeError,
+        h26x::{RbspEnd, TolerantBitReader},
+    },
     rtp::{ReceivedPacket, ReceivedPacketBuilder},
 };
 use base64::Engine as _;
@@ -749,7 +752,7 @@ impl Depacketizer {
                     if self
                         .parameters
                         .as_ref()
-                        .map(|p| !nal_matches(&p.sps_nal[..], nal.hdr, nal_pieces))
+                        .map(|p| !nal_matches(&p.sps_nal[..], true, nal.hdr, nal_pieces))
                         .unwrap_or(true) =>
                 {
                     new_sps = Some(to_bytes(nal.hdr, nal.len, nal_pieces));
@@ -758,7 +761,7 @@ impl Depacketizer {
                     if self
                         .parameters
                         .as_ref()
-                        .map(|p| !nal_matches(&p.pps_nal[..], nal.hdr, nal_pieces))
+                        .map(|p| !nal_matches(&p.pps_nal[..], false, nal.hdr, nal_pieces))
                         .unwrap_or(true) =>
                 {
                     new_pps = Some(to_bytes(nal.hdr, nal.len, nal_pieces));
@@ -772,14 +775,14 @@ impl Depacketizer {
                 | UnitType::SliceLayerWithoutPartitioningNonIdr => has_non_idr_slice = true,
                 _ => {}
             }
-            if nal.hdr.nal_ref_idc() != 0 {
+            if is_vcl(nal.hdr.nal_unit_type()) && nal.hdr.nal_ref_idc() != 0 {
                 is_disposable = false;
             }
-            // Always strip inline parameter sets; they're handled via
-            // ParameterSetInsertion and the canonical copy in self.parameters.
+            // Strip inline parameter sets (handled via `ParameterSetInsertion`)
+            // and filler data (no effect on decoding).
             if !matches!(
                 nal.hdr.nal_unit_type(),
-                UnitType::SeqParameterSet | UnitType::PicParameterSet
+                UnitType::SeqParameterSet | UnitType::PicParameterSet | UnitType::FillerData
             ) {
                 retained_len += 4usize + crate::to_usize(nal.len);
             }
@@ -854,7 +857,7 @@ impl Depacketizer {
             let nal_pieces = &self.pieces[piece_idx..next_piece_idx];
             if !matches!(
                 nal.hdr.nal_unit_type(),
-                UnitType::SeqParameterSet | UnitType::PicParameterSet
+                UnitType::SeqParameterSet | UnitType::PicParameterSet | UnitType::FillerData
             ) {
                 let prefix = match self.frame_format.h26x_framing {
                     Framing::FourByteLength => nal.len.to_be_bytes(),
@@ -918,6 +921,17 @@ fn has_recovery_point_sei(pieces: &[Bytes]) -> bool {
             Ok(None) | Err(_) => return false,
         }
     }
+}
+
+const fn is_vcl(nal_unit_type: UnitType) -> bool {
+    matches!(
+        nal_unit_type,
+        UnitType::SliceLayerWithoutPartitioningNonIdr
+            | UnitType::SliceDataPartitionALayer
+            | UnitType::SliceDataPartitionBLayer
+            | UnitType::SliceDataPartitionCLayer
+            | UnitType::SliceLayerWithoutPartitioningIdr
+    )
 }
 
 /// Returns true if we allow the given NAL unit type to end an access unit.
@@ -1094,20 +1108,25 @@ impl InternalParameters {
             sps_rbsp[0], sps_rbsp[1], sps_rbsp[2]
         );
 
-        let mut sps_has_extra_trailing_data = false;
+        let mut sps_end = RbspEnd::default();
         let sps_hex = crate::hex::LimitedHex::new(sps_nal, 256);
-        let sps = h264_reader::nal::sps::SeqParameterSet::from_bits(TolerantBitReader {
-            inner: h264_reader::rbsp::BitReader::new(&*sps_rbsp),
-            has_extra_trailing_data: &mut sps_has_extra_trailing_data,
-        })
+        let sps = h264_reader::nal::sps::SeqParameterSet::from_bits(TolerantBitReader::new(
+            h264_reader::rbsp::BitReader::new(&*sps_rbsp),
+            &mut sps_end,
+        ))
         .map_err(|e| format!("Bad SPS {sps_hex}: {e:?}"))?;
         debug!("SPS {sps_hex}: {sps:#?}");
-        if sps_has_extra_trailing_data && !seen_extra_trailing_data {
+        if sps_end.has_extra_trailing_data && !seen_extra_trailing_data {
             log::warn!(
                 "Ignoring trailing data in SPS {sps_hex}; will not log about trailing data again for this stream."
             );
             seen_extra_trailing_data = true;
         }
+
+        // Drop trailing bytes after `rbsp_trailing_bits` so repeated SPSs with
+        // varying trailing garbage do not look like parameter changes.
+        let canonical_sps = super::h26x::canonical_nal(sps_nal, 1, &sps_end);
+        let sps_nal = &*canonical_sps;
 
         let all_pixel_dimensions = Self::all_pixel_dimensions(&sps)
             .map_err(|e| format!("SPS has invalid pixel dimensions: {e:?}"))?;
@@ -1315,23 +1334,19 @@ impl InternalParameters {
     }
 }
 
-/// Returns true iff the bytes of `nal` equal the bytes of `[hdr, ..data]`.
-fn nal_matches(nal: &[u8], hdr: NalHeader, pieces: &[Bytes]) -> bool {
-    if nal.first() != Some(&u8::from(hdr)) {
-        return false;
-    }
-    let mut nal_pos = 1;
-    for piece in pieces {
-        let new_pos = nal_pos + piece.len();
-        if nal.len() < new_pos {
-            return false;
-        }
-        if piece[..] != nal[nal_pos..new_pos] {
-            return false;
-        }
-        nal_pos = new_pos;
-    }
-    nal_pos == nal.len()
+/// Returns true iff stored parameter set `nal` is equivalent to `[hdr, ..pieces]`.
+fn nal_matches(
+    nal: &[u8],
+    tolerates_trailing_data: bool,
+    hdr: NalHeader,
+    pieces: &[Bytes],
+) -> bool {
+    let hdr = [u8::from(hdr)];
+    super::h26x::set_matches(
+        nal,
+        tolerates_trailing_data,
+        std::iter::once(&hdr[..]).chain(pieces.iter().map(Bytes::as_ref)),
+    )
 }
 
 /// Saves the given NAL to a contiguous `Bytes`.
@@ -3222,6 +3237,165 @@ mod tests {
             expected.extend_from_slice(&u32::try_from(slice.len()).unwrap().to_be_bytes());
             expected.extend_from_slice(slice);
             assert_eq_hex!(frame.data(), &expected);
+        }
+    }
+
+    #[test]
+    fn sps_trailing_data_not_a_change() {
+        init_logging();
+        let sps =
+            b"\x67\x64\x00\x33\xac\x15\x14\xa0\xa0\x3d\xa1\x00\x00\x04\xf6\x00\x00\x63\x38\x04";
+        let pps = b"\x68\xee\x3c\xb0";
+        let mut d =
+            super::Depacketizer::new(90_000, Some("packetization-mode=1;profile-level-id=640033"))
+                .unwrap();
+        d.set_frame_format(crate::codec::FrameFormat {
+            parameter_set_insertion: crate::codec::ParameterSetInsertion::OnChange,
+            ..crate::codec::FrameFormat::MP4
+        });
+        let mut seq = 0u16;
+        let mut push_frame = |in_band_sps: &[u8]| {
+            let nals: [&[u8]; 3] = [in_band_sps, pps, b"\x65idr slice"];
+            for (i, nal) in nals.iter().enumerate() {
+                d.push(
+                    ReceivedPacketBuilder {
+                        ctx: crate::PacketContext::dummy(),
+                        stream_id: 0,
+                        timestamp: crate::Timestamp {
+                            timestamp: i64::from(seq),
+                            clock_rate: NonZeroU32::new(90_000).unwrap(),
+                            start: 0,
+                        },
+                        ssrc: 0,
+                        sequence_number: seq,
+                        loss: 0,
+                        mark: i == nals.len() - 1,
+                        payload_type: 0,
+                    }
+                    .build(nal.iter().copied())
+                    .unwrap(),
+                )
+                .unwrap();
+                seq += 1;
+            }
+            let frame = match d.pull() {
+                Some(Ok(CodecItem::VideoFrame(frame))) => frame,
+                o => panic!("unexpected pull result {o:#?}"),
+            };
+            let crate::codec::ParametersRef::Video(params) = d.parameters().unwrap() else {
+                panic!("expected video parameters");
+            };
+            let crate::codec::VideoParametersCodec::H264 {
+                sps: stored_sps,
+                pps: stored_pps,
+            } = &params.codec
+            else {
+                panic!("expected H.264 parameters");
+            };
+            assert_eq!(
+                (stored_sps.as_ref(), stored_pps.as_ref()),
+                (&sps[..], &pps[..])
+            );
+            (frame.has_new_parameters(), frame.data().to_vec())
+        };
+
+        let with_trailing = |trailing: &[u8]| -> Vec<u8> { [&sps[..], trailing].concat() };
+        let (new, data) = push_frame(&with_trailing(b"\x04"));
+        assert!(new);
+        let mut expected = Vec::new();
+        for nal in [&sps[..], &pps[..], b"\x65idr slice"] {
+            expected.extend_from_slice(&u32::try_from(nal.len()).unwrap().to_be_bytes());
+            expected.extend_from_slice(nal);
+        }
+        assert_eq_hex!(data, expected);
+
+        let mut garbage_in_stop_byte = sps.to_vec();
+        *garbage_in_stop_byte.last_mut().unwrap() = 0x07;
+        for in_band_sps in [
+            with_trailing(b"\x05\x06"),
+            with_trailing(b"\x00\x00"),
+            with_trailing(b""),
+            with_trailing(b"\x00\x01"),
+            garbage_in_stop_byte,
+        ] {
+            let (new, _) = push_frame(&in_band_sps);
+            assert!(!new, "SPS {in_band_sps:02x?}");
+        }
+    }
+
+    #[test]
+    fn filler_dropped() {
+        init_logging();
+        let mut d = super::Depacketizer::new(90_000, None).unwrap();
+        let payloads: [&[u8]; 4] = [
+            b"\x65slice",
+            b"\x1c\x8c\xff\xff",
+            b"\x1c\x4c\xff\x80",
+            b"\x0c\xff\x80",
+        ];
+        for (i, payload) in payloads.iter().enumerate() {
+            d.push(
+                ReceivedPacketBuilder {
+                    ctx: crate::PacketContext::dummy(),
+                    stream_id: 0,
+                    timestamp: crate::Timestamp {
+                        timestamp: 0,
+                        clock_rate: NonZeroU32::new(90_000).unwrap(),
+                        start: 0,
+                    },
+                    ssrc: 0,
+                    sequence_number: i as u16,
+                    loss: 0,
+                    mark: i == payloads.len() - 1,
+                    payload_type: 0,
+                }
+                .build(payload.iter().copied())
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let frame = match d.pull() {
+            Some(Ok(CodecItem::VideoFrame(frame))) => frame,
+            o => panic!("unexpected pull result {o:#?}"),
+        };
+        assert_eq_hex!(frame.data(), b"\x00\x00\x00\x06\x65slice");
+    }
+
+    #[test]
+    fn disposable_with_parameter_sets() {
+        init_logging();
+        let sps =
+            b"\x67\x4d\x00\x2a\x95\xa8\x1e\x00\x89\xf9\x61\x00\x00\x03\x00\x01\x00\x00\x03\x00\x32\x84";
+        let pps = b"\x68\xee\x3c\x80";
+        for (slice, want) in [(&b"\x01slice"[..], true), (&b"\x21slice"[..], false)] {
+            let mut d = super::Depacketizer::new(90_000, None).unwrap();
+            let nals: [&[u8]; 3] = [sps, pps, slice];
+            for (i, nal) in nals.iter().enumerate() {
+                d.push(
+                    ReceivedPacketBuilder {
+                        ctx: crate::PacketContext::dummy(),
+                        stream_id: 0,
+                        timestamp: crate::Timestamp {
+                            timestamp: 0,
+                            clock_rate: NonZeroU32::new(90_000).unwrap(),
+                            start: 0,
+                        },
+                        ssrc: 0,
+                        sequence_number: i as u16,
+                        loss: 0,
+                        mark: i == nals.len() - 1,
+                        payload_type: 0,
+                    }
+                    .build(nal.iter().copied())
+                    .unwrap(),
+                )
+                .unwrap();
+            }
+            let frame = match d.pull() {
+                Some(Ok(CodecItem::VideoFrame(frame))) => frame,
+                o => panic!("unexpected pull result {o:#?}"),
+            };
+            assert_eq!(frame.is_disposable(), want);
         }
     }
 }

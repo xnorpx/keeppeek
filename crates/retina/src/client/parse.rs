@@ -380,7 +380,8 @@ fn parse_media(base_url: &Url, media_description: &Media) -> Result<Stream, Stri
 
     let encoding_name = encoding_name.to_ascii_lowercase().into_boxed_str();
     let depacketizer =
-        crate::codec::Depacketizer::new(&media, &encoding_name, clock_rate, channels, fmtp);
+        crate::codec::Depacketizer::new(&media, &encoding_name, clock_rate, channels, fmtp)
+            .map(|d| d.with_payload_type(rtp_payload_type));
 
     Ok(Stream {
         media,
