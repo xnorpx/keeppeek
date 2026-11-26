@@ -1,0 +1,138 @@
+//! Pure-Rust bitmap timestamp overlay rendered in a configured site timezone.
+
+use anyhow::Context as _;
+use chrono::{DateTime, TimeZone as _, Utc};
+use chrono_tz::Tz;
+
+/// Formats an absolute UTC millisecond timestamp in the configured site timezone.
+pub fn format_site_timestamp(actual_time_ms: i64, site_timezone: &str) -> anyhow::Result<String> {
+    let tz: Tz = site_timezone
+        .parse()
+        .with_context(|| format!("invalid site timezone {site_timezone:?}"))?;
+    let utc: DateTime<Utc> = Utc
+        .timestamp_millis_opt(actual_time_ms)
+        .single()
+        .context("timelapse sample timestamp out of representable UTC range")?;
+    let local = utc.with_timezone(&tz);
+    Ok(local.format("%Y-%m-%d %H:%M:%S %Z").to_string())
+}
+
+/// Draws a legible dark-backed timestamp banner in the top-left corner of an RGB24 frame.
+pub fn draw_timestamp_overlay(frame: &mut [u8], width: u32, height: u32, text: &str) {
+    let w = width as usize;
+    let h = height as usize;
+    if w < 32 || h < 20 || frame.len() < w.saturating_mul(h).saturating_mul(3) {
+        return;
+    }
+    let scale = if width >= 1280 { 2usize } else { 1usize };
+    let glyph_w = 6 * scale;
+    let glyph_h = 7 * scale;
+    let pad = 4 * scale;
+    let max_chars = w.saturating_sub(pad * 2) / glyph_w.max(1);
+    let visible: Vec<char> = text.chars().take(max_chars).collect();
+    if visible.is_empty() {
+        return;
+    }
+    let box_x = pad;
+    let box_y = pad;
+    let box_w = (visible.len() * glyph_w + pad * 2).min(w.saturating_sub(box_x));
+    let box_h = (glyph_h + pad * 2).min(h.saturating_sub(box_y));
+    darken_rect(frame, w, box_x, box_y, box_w, box_h);
+    for (idx, ch) in visible.iter().enumerate() {
+        let gx = box_x + pad + idx * glyph_w;
+        let gy = box_y + pad;
+        draw_glyph(frame, w, h, gx, gy, scale, glyph_5x7(*ch));
+    }
+}
+
+fn darken_rect(frame: &mut [u8], stride_px: usize, x: usize, y: usize, w: usize, h: usize) {
+    for row in y..y + h {
+        let row_start = row * stride_px * 3;
+        for col in x..x + w {
+            let idx = row_start + col * 3;
+            frame[idx] /= 4;
+            frame[idx + 1] /= 4;
+            frame[idx + 2] /= 4;
+        }
+    }
+}
+
+fn draw_glyph(
+    frame: &mut [u8],
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    scale: usize,
+    rows: [u8; 7],
+) {
+    for (ry, bits) in rows.iter().enumerate() {
+        for rx in 0..5usize {
+            if (bits >> (4 - rx)) & 1 == 0 {
+                continue;
+            }
+            for sy in 0..scale {
+                let py = y + ry * scale + sy;
+                if py >= height {
+                    continue;
+                }
+                for sx in 0..scale {
+                    let px = x + rx * scale + sx;
+                    if px >= width {
+                        continue;
+                    }
+                    let idx = (py * width + px) * 3;
+                    frame[idx] = 248;
+                    frame[idx + 1] = 248;
+                    frame[idx + 2] = 248;
+                }
+            }
+        }
+    }
+}
+
+const fn glyph_5x7(ch: char) -> [u8; 7] {
+    match ch.to_ascii_uppercase() {
+        '0' => [0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E],
+        '1' => [0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E],
+        '2' => [0x0E, 0x11, 0x01, 0x06, 0x08, 0x10, 0x1F],
+        '3' => [0x1E, 0x01, 0x01, 0x0E, 0x01, 0x01, 0x1E],
+        '4' => [0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02],
+        '5' => [0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E],
+        '6' => [0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E],
+        '7' => [0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08],
+        '8' => [0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E],
+        '9' => [0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C],
+        '-' => [0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00],
+        '+' => [0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00],
+        ':' => [0x00, 0x04, 0x04, 0x00, 0x04, 0x04, 0x00],
+        '/' => [0x01, 0x02, 0x02, 0x04, 0x08, 0x08, 0x10],
+        'A' => [0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],
+        'B' => [0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E],
+        'C' => [0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E],
+        'D' => [0x1C, 0x12, 0x11, 0x11, 0x11, 0x12, 0x1C],
+        'E' => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F],
+        'F' => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10],
+        'G' => [0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F],
+        'H' => [0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],
+        'I' => [0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E],
+        'J' => [0x07, 0x02, 0x02, 0x02, 0x12, 0x12, 0x0C],
+        'K' => [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11],
+        'L' => [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F],
+        'M' => [0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11],
+        'N' => [0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11],
+        'O' => [0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
+        'P' => [0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10],
+        'Q' => [0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D],
+        'R' => [0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11],
+        'S' => [0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E],
+        'T' => [0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
+        'U' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
+        'V' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04],
+        'W' => [0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11],
+        'X' => [0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11],
+        'Y' => [0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04],
+        'Z' => [0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F],
+        _ => [0x00; 7],
+    }
+}

@@ -206,6 +206,15 @@ pub(super) fn dispatch(
             messages: Vec::new(),
             notifications: Vec::new(),
         }),
+        Some(stored_media_command::Action::PlanTimelapse(plan)) => {
+            super::timelapse::handle_plan(state, session_id, plan)
+        }
+        Some(stored_media_command::Action::FetchTimelapseSamples(fetch)) => {
+            super::timelapse::handle_fetch_samples(state, session_id, fetch)
+        }
+        Some(stored_media_command::Action::CancelTimelapseSamples(cancel)) => {
+            super::timelapse::handle_cancel_samples(state, session_id, cancel)
+        }
         None => Err(ControlCommandError::new(
             proto::ErrorCode::InvalidRequest,
             400,
@@ -291,6 +300,7 @@ pub(super) fn close_session(state: &ServerState, session_id: SessionId) {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     cursors.retain(|(owner_session_id, _), _| *owner_session_id != session_id);
     reservations.retain(|(owner_session_id, _), _| *owner_session_id != session_id);
+    state.timelapse.close_session(session_id);
 }
 
 #[cfg(test)]

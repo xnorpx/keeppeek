@@ -15,6 +15,7 @@ fn download_still_works(state: &ServerState) {
         proto::DownloadExport {
             job_id: "named-export".into(),
             channel: proto::DataChannelKind::ReliableData as i32,
+            artifact: 0,
         },
     )
     .unwrap();

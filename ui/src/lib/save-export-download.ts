@@ -4,7 +4,7 @@ export function saveExportDownload(download: MediaExportDownload): void {
 	const url = URL.createObjectURL(download.blob);
 	const anchor = document.createElement('a');
 	anchor.href = url;
-	anchor.download = download.job.fileName ?? 'keeppeek-export.mp4';
+	anchor.download = download.fileName ?? download.job.fileName ?? 'keeppeek-export.mp4';
 	document.body.append(anchor);
 	anchor.click();
 	anchor.remove();

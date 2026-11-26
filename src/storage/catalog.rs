@@ -168,6 +168,19 @@ pub struct CatalogMediaFragment {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogTimelapseFragment {
+    pub fragment: CatalogMediaFragment,
+    pub finalized: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogTimelapseLookup {
+    pub catalog_revision: u64,
+    pub candidates: Vec<Option<CatalogTimelapseFragment>>,
+    pub retained_ranges: Vec<(i64, i64)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CatalogKeyframe {
     pub recording_id: String,
     pub fragment_sequence: u64,
@@ -654,6 +667,14 @@ enum SearchCommand {
         end_ms: i64,
         reply: SyncSender<anyhow::Result<CatalogCoverageSnapshot>>,
     },
+    TimelapseLookup {
+        stream_id: String,
+        start_ms: i64,
+        end_ms: i64,
+        targets_ms: Vec<i64>,
+        tolerance_ms: i64,
+        reply: SyncSender<anyhow::Result<CatalogTimelapseLookup>>,
+    },
     Shutdown,
 }
 
@@ -1061,6 +1082,42 @@ impl RecordingCatalogHandle {
                 stream_id: stream_id.to_owned(),
                 start_ms,
                 end_ms,
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
+    pub fn timelapse_lookup(
+        &self,
+        stream_id: &str,
+        start_ms: i64,
+        end_ms: i64,
+        targets_ms: &[i64],
+        tolerance_ms: i64,
+    ) -> anyhow::Result<CatalogTimelapseLookup> {
+        anyhow::ensure!(
+            start_ms < end_ms,
+            "timelapse lookup start must be before end"
+        );
+        anyhow::ensure!(
+            tolerance_ms >= 0,
+            "timelapse tolerance must not be negative"
+        );
+        anyhow::ensure!(
+            targets_ms.len() <= crate::storage::timelapse::MAX_SAMPLES as usize,
+            "timelapse target count exceeds maximum"
+        );
+        let (reply, response) = mpsc::sync_channel(1);
+        self.search_tx
+            .send(SearchCommand::TimelapseLookup {
+                stream_id: stream_id.to_owned(),
+                start_ms,
+                end_ms,
+                targets_ms: targets_ms.to_vec(),
+                tolerance_ms,
                 reply,
             })
             .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
@@ -2275,6 +2332,23 @@ fn run_search_catalog(
                 let _ = reply.send(pollster::block_on(catalog_coverage(
                     &connection,
                     start_ms..end_ms,
+                )));
+            }
+            SearchCommand::TimelapseLookup {
+                stream_id,
+                start_ms,
+                end_ms,
+                targets_ms,
+                tolerance_ms,
+                reply,
+            } => {
+                let _ = reply.send(pollster::block_on(timelapse_lookup_candidates(
+                    &connection,
+                    &stream_id,
+                    start_ms,
+                    end_ms,
+                    &targets_ms,
+                    tolerance_ms,
                 )));
             }
             SearchCommand::Shutdown => break,
@@ -3989,6 +4063,265 @@ pub(super) async fn media_fragments_in_range_with_limit(
         fragment.archive = archive;
     }
     Ok(fragments)
+}
+
+#[derive(Clone)]
+struct TimelapseRecordingRow {
+    id: String,
+    started_at_ms: i64,
+    ended_at_ms: Option<i64>,
+    path: String,
+    init_offset: u64,
+    init_len: u64,
+    finalized: bool,
+}
+
+async fn load_timelapse_recordings(
+    connection: &turso::Connection,
+    stream_id: &str,
+    start_ms: i64,
+    search_end_ms: i64,
+) -> anyhow::Result<Vec<TimelapseRecordingRow>> {
+    let mut rows = connection
+        .query(
+            "SELECT r.id, r.started_at_ms, r.ended_at_ms, r.path, r.init_offset, r.init_len,
+                    r.finalized
+             FROM recording_files AS r
+             WHERE r.stream_id = ?1
+               AND r.started_at_ms <= ?3
+               AND COALESCE(r.ended_at_ms, ?3) >= ?2
+               AND NOT EXISTS (
+                   SELECT 1 FROM recording_maintenance_claims
+                   WHERE recording_id = r.id AND active = 1
+               )
+             ORDER BY r.started_at_ms, r.id",
+            (stream_id, start_ms, search_end_ms),
+        )
+        .await?;
+    let mut recordings = Vec::new();
+    while let Some(row) = rows.next().await? {
+        recordings.push(TimelapseRecordingRow {
+            id: row.get(0)?,
+            started_at_ms: row.get(1)?,
+            ended_at_ms: row.get(2)?,
+            path: row.get(3)?,
+            init_offset: to_u64(row.get(4)?, "initialization offset")?,
+            init_len: to_u64(row.get(5)?, "initialization length")?,
+            finalized: row.get::<i64>(6)? != 0,
+        });
+    }
+    Ok(recordings)
+}
+
+async fn load_timelapse_retained_ranges(
+    connection: &turso::Connection,
+    stream_id: &str,
+    start_ms: i64,
+    end_ms: i64,
+) -> anyhow::Result<Vec<(i64, i64)>> {
+    let mut rows = connection
+        .query(
+            "SELECT start_ms, end_ms
+             FROM recording_deletions
+             WHERE stream_id = ?1 AND start_ms < ?3 AND end_ms > ?2
+             ORDER BY start_ms
+             LIMIT 4096",
+            (stream_id, start_ms, end_ms),
+        )
+        .await?;
+    let mut ranges = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let start: i64 = row.get(0)?;
+        let end: i64 = row.get(1)?;
+        if end > start {
+            ranges.push((start, end));
+        }
+    }
+    Ok(ranges)
+}
+
+async fn find_fragment_for_recording(
+    connection: &turso::Connection,
+    recording: &TimelapseRecordingRow,
+    target_ms: i64,
+    window_end_ms: i64,
+    archives: &mut BTreeMap<String, Option<archive_playback::ArchiveRead>>,
+) -> anyhow::Result<Option<CatalogTimelapseFragment>> {
+    // Use two bounded index seeks instead of scanning all earlier fragments in the recording.
+    let mut chosen = seek_fragment_row(
+        connection,
+        "SELECT f.sequence, f.start_ms, f.duration_ms, f.byte_offset, f.byte_len
+         FROM recording_fragments AS f
+         WHERE f.recording_id = ?1 AND f.start_ms <= ?2
+         ORDER BY f.start_ms DESC, f.sequence DESC
+         LIMIT 1",
+        (recording.id.as_str(), target_ms),
+    )
+    .await?
+    .filter(|row| {
+        row.start_ms
+            .saturating_add(i64::try_from(row.duration_ms).unwrap_or(i64::MAX))
+            > target_ms
+    });
+    if chosen.is_none() {
+        chosen = seek_fragment_row(
+            connection,
+            "SELECT f.sequence, f.start_ms, f.duration_ms, f.byte_offset, f.byte_len
+             FROM recording_fragments AS f
+             WHERE f.recording_id = ?1 AND f.start_ms > ?2 AND f.start_ms <= ?3
+             ORDER BY f.start_ms ASC, f.sequence ASC
+             LIMIT 1",
+            (recording.id.as_str(), target_ms, window_end_ms),
+        )
+        .await?;
+    }
+    let Some(row) = chosen else {
+        return Ok(None);
+    };
+    let archive = if let Some(cached) = archives.get(&recording.id) {
+        cached.clone()
+    } else {
+        let archive = archive_playback::read(connection, &recording.id).await?;
+        archives.insert(recording.id.clone(), archive.clone());
+        archive
+    };
+    Ok(Some(CatalogTimelapseFragment {
+        fragment: CatalogMediaFragment {
+            recording_id: recording.id.clone(),
+            recording_started_at_ms: recording.started_at_ms,
+            path: recording.path.clone(),
+            init_offset: recording.init_offset,
+            init_len: recording.init_len,
+            sequence: row.sequence,
+            start_ms: row.start_ms,
+            duration_ms: row.duration_ms,
+            byte_offset: row.byte_offset,
+            byte_len: row.byte_len,
+            archive,
+        },
+        finalized: recording.finalized,
+    }))
+}
+
+struct SeekFragmentRow {
+    sequence: u64,
+    start_ms: i64,
+    duration_ms: u64,
+    byte_offset: u64,
+    byte_len: u64,
+}
+
+async fn seek_fragment_row(
+    connection: &turso::Connection,
+    sql: &str,
+    params: impl turso::IntoParams,
+) -> anyhow::Result<Option<SeekFragmentRow>> {
+    let mut rows = connection.query(sql, params).await?;
+    let Some(row) = rows.next().await? else {
+        return Ok(None);
+    };
+    Ok(Some(SeekFragmentRow {
+        sequence: to_u64(row.get(0)?, "fragment sequence")?,
+        start_ms: row.get(1)?,
+        duration_ms: to_u64(row.get(2)?, "fragment duration")?,
+        byte_offset: to_u64(row.get(3)?, "fragment byte offset")?,
+        byte_len: to_u64(row.get(4)?, "fragment byte length")?,
+    }))
+}
+
+async fn find_candidate_for_target(
+    connection: &turso::Connection,
+    recordings: &[TimelapseRecordingRow],
+    target_ms: i64,
+    window_end_ms: i64,
+    archives: &mut BTreeMap<String, Option<archive_playback::ArchiveRead>>,
+) -> anyhow::Result<Option<CatalogTimelapseFragment>> {
+    let first_after = recordings.partition_point(|rec| rec.started_at_ms <= window_end_ms);
+    let mut start_idx = first_after;
+    while start_idx > 0 {
+        let rec = &recordings[start_idx - 1];
+        if rec.ended_at_ms.is_some_and(|ended| ended <= target_ms) {
+            break;
+        }
+        start_idx -= 1;
+    }
+    let mut chosen: Option<CatalogTimelapseFragment> = None;
+    for rec in &recordings[start_idx..first_after] {
+        if rec.ended_at_ms.is_some_and(|ended| ended <= target_ms) {
+            continue;
+        }
+        if let Some(found) =
+            find_fragment_for_recording(connection, rec, target_ms, window_end_ms, archives).await?
+        {
+            let replace = chosen.as_ref().is_none_or(|current| {
+                (found.fragment.start_ms, found.fragment.sequence)
+                    < (current.fragment.start_ms, current.fragment.sequence)
+            });
+            if replace {
+                chosen = Some(found);
+            }
+        }
+    }
+    Ok(chosen)
+}
+
+async fn timelapse_lookup_candidates(
+    connection: &turso::Connection,
+    stream_id: &str,
+    start_ms: i64,
+    end_ms: i64,
+    targets_ms: &[i64],
+    tolerance_ms: i64,
+) -> anyhow::Result<CatalogTimelapseLookup> {
+    let mut rev_rows = connection
+        .query(
+            "SELECT revision FROM recording_catalog_state WHERE id = 1",
+            (),
+        )
+        .await?;
+    let catalog_revision = match rev_rows.next().await? {
+        Some(row) => to_u64(row.get(0)?, "catalog revision")?,
+        None => 0,
+    };
+    drop(rev_rows);
+    let search_end_ms = end_ms.saturating_add(tolerance_ms);
+    let recordings =
+        load_timelapse_recordings(connection, stream_id, start_ms, search_end_ms).await?;
+    let retained_ranges =
+        load_timelapse_retained_ranges(connection, stream_id, start_ms, end_ms).await?;
+    let mut archives = BTreeMap::new();
+    let mut candidates = Vec::with_capacity(targets_ms.len());
+    let mut last_found: Option<CatalogTimelapseFragment> = None;
+    for &target_ms in targets_ms {
+        let window_end_ms = target_ms.saturating_add(tolerance_ms);
+        if let Some(prev) = last_found.as_ref() {
+            let prev_end = prev
+                .fragment
+                .start_ms
+                .saturating_add(i64::try_from(prev.fragment.duration_ms).unwrap_or(i64::MAX));
+            if prev.fragment.start_ms <= target_ms && prev_end > target_ms {
+                candidates.push(Some(prev.clone()));
+                continue;
+            }
+        }
+        let chosen = find_candidate_for_target(
+            connection,
+            &recordings,
+            target_ms,
+            window_end_ms,
+            &mut archives,
+        )
+        .await?;
+        if chosen.is_some() {
+            last_found.clone_from(&chosen);
+        }
+        candidates.push(chosen);
+    }
+    Ok(CatalogTimelapseLookup {
+        catalog_revision,
+        candidates,
+        retained_ranges,
+    })
 }
 
 async fn availability_ranges_in_range(

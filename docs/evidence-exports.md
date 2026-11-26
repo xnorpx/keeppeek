@@ -1,8 +1,11 @@
 # Evidence exports
 
 KeepPeek exports indexed recording fragments into a new MP4 without modifying source recordings.
-The browser submits a range of at most two minutes and can leave the page while the server finishes
-the job.
+The browser submits an evidence clip range of at most two minutes and can leave the page while the
+server finishes the job. Silent timelapse exports share the durable export lifecycle and history
+with independent explicit limits (up to 31 days, 3,600 samples, 1920x1080, 1–30 FPS, 512 MiB, and
+a paired SHA-256-verified JSON provenance manifest); see [Bounded Timelapse Review and Export](timelapse.md).
+Evidence exports always preserve their two-minute limit unchanged.
 
 ## Durable history
 

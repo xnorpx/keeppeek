@@ -33,6 +33,7 @@ fn download(id: &str) -> ExportAction {
     ExportAction::Download(proto::DownloadExport {
         job_id: id.into(),
         channel: proto::DataChannelKind::ReliableData as i32,
+        artifact: 0,
     })
 }
 

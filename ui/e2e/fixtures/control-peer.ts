@@ -12,6 +12,18 @@ import {
 	ExternalAuthenticationResultSchema,
 	ExternalIdentityListSchema,
 	BrowserSessionListSchema,
+	ExportArtifactKind,
+	StoredMediaMessageSchema,
+	TimelapseEstimateSchema,
+	TimelapseGapReason,
+	TimelapseGapSchema,
+	TimelapseJobSummarySchema,
+	TimelapsePlanItemSchema,
+	TimelapsePlanResultSchema,
+	TimelapseSampleDeliverySchema,
+	TimelapseSampleEndSchema,
+	TimelapseSampleSchema,
+	type PlanTimelapse,
 	type UsageReportingCommand,
 	type UsageReportingResult
 } from '../../src/lib/proto/webrtc_pb';
@@ -515,6 +527,28 @@ export type MockControlPeerOptions = {
 	onUsageReportingCommand?: (
 		command: UsageReportingCommand
 	) => UsageReportingResult | Promise<UsageReportingResult>;
+	timelapsePlan?: (request: PlanTimelapse) => {
+		samples: Array<{
+			index: number;
+			requestedMs: number;
+			actualMs: number;
+			recordingId?: string;
+			codec?: string;
+			width?: number;
+			height?: number;
+		}>;
+		gaps?: Array<{
+			startMs: number;
+			endMs: number;
+			reason:
+				'missing' | 'retained' | 'privacy' | 'unsupported_codec' | 'corrupt' | 'open_recording';
+		}>;
+		requiresConfirmation?: boolean;
+		encoderAvailable?: boolean;
+		siteTimezone?: string;
+		nextPageToken?: string;
+	};
+	timelapseManifestFile?: Uint8Array;
 };
 
 function encodedOk(requestId: bigint, result?: Ok['result']): number[] {
@@ -2081,6 +2115,134 @@ export async function mockControlPeer(
 		}
 		if (request.command.case === 'storedMediaCommand') {
 			const action = request.command.value.action;
+			if (action.case === 'planTimelapse') {
+				const req = action.value;
+				const startMs = req.startTime ? timestampFromProto(req.startTime) : 0;
+				const endMs = req.endTime ? timestampFromProto(req.endTime) : startMs + 3_600_000;
+				const planned = options.timelapsePlan?.(req) ?? {
+					samples: [
+						{ index: 0, requestedMs: startMs, actualMs: startMs + 1000 },
+						{ index: 1, requestedMs: startMs + 600_000, actualMs: startMs + 601_000 }
+					],
+					gaps: []
+				};
+				const gapReasonCode = (
+					reason:
+						'missing' | 'retained' | 'privacy' | 'unsupported_codec' | 'corrupt' | 'open_recording'
+				) => {
+					switch (reason) {
+						case 'retained':
+							return TimelapseGapReason.RETAINED;
+						case 'privacy':
+							return TimelapseGapReason.PRIVACY;
+						case 'unsupported_codec':
+							return TimelapseGapReason.UNSUPPORTED_CODEC;
+						case 'corrupt':
+							return TimelapseGapReason.CORRUPT;
+						case 'open_recording':
+							return TimelapseGapReason.OPEN_RECORDING;
+						default:
+							return TimelapseGapReason.MISSING;
+					}
+				};
+				const items = [
+					...planned.samples.map((sample) =>
+						create(TimelapsePlanItemSchema, {
+							entry: {
+								case: 'sample',
+								value: create(TimelapseSampleSchema, {
+									index: sample.index,
+									requestedTime: timestampFromDate(new Date(sample.requestedMs)),
+									actualTime: timestampFromDate(new Date(sample.actualMs)),
+									recordingId: sample.recordingId ?? 'rec-1',
+									fragmentSequence: 1n,
+									sampleOrdinal: sample.index + 1,
+									codec: sample.codec ?? 'h264',
+									width: sample.width ?? 640,
+									height: sample.height ?? 360,
+									encodedBytes: 4096,
+									sampleToken: new Uint8Array([1, 2, 3, sample.index & 0xff])
+								})
+							}
+						})
+					),
+					...(planned.gaps ?? []).map((gap) =>
+						create(TimelapsePlanItemSchema, {
+							entry: {
+								case: 'gap',
+								value: create(TimelapseGapSchema, {
+									startTime: timestampFromDate(new Date(gap.startMs)),
+									endTime: timestampFromDate(new Date(gap.endMs)),
+									reason: gapReasonCode(gap.reason)
+								})
+							}
+						})
+					)
+				];
+				const fps = req.outputPreview?.outputFps || 10;
+				const gapDurationMs = (planned.gaps ?? []).reduce(
+					(acc, gap) => acc + Math.max(0, gap.endMs - gap.startMs),
+					0
+				);
+				return encodedOk(request.requestId, {
+					case: 'timelapsePlan',
+					value: create(TimelapsePlanResultSchema, {
+						sourceId: req.sourceId,
+						streamId: req.streamId,
+						requestedStartTime: timestampFromDate(new Date(startMs)),
+						requestedEndTime: timestampFromDate(new Date(endMs)),
+						sourceFingerprint: 'fp-mock-timelapse-1',
+						catalogRevision: 1n,
+						estimate: create(TimelapseEstimateSchema, {
+							sampleCount: planned.samples.length,
+							gapCount: planned.gaps?.length ?? 0,
+							gapDurationMs: BigInt(gapDurationMs),
+							outputDurationMs: BigInt(Math.round((planned.samples.length * 1000) / fps)),
+							estimatedSourceBytes: BigInt(planned.samples.length * 32_768),
+							estimatedOutputBytes: BigInt(planned.samples.length * 16_384 + 65_536),
+							requiresConfirmation: planned.requiresConfirmation ?? false,
+							encoderAvailable: planned.encoderAvailable ?? true,
+							siteTimezone: planned.siteTimezone ?? 'UTC'
+						}),
+						items,
+						totalSamples: planned.samples.length,
+						nextPageToken: planned.nextPageToken ?? ''
+					})
+				});
+			}
+			if (action.case === 'fetchTimelapseSamples') {
+				pendingDataMessages.push(
+					encodedData(
+						create(MessageSchema, {
+							message: {
+								case: 'storedMedia',
+								value: create(StoredMediaMessageSchema, {
+									message: {
+										case: 'timelapseSampleEnd',
+										value: create(TimelapseSampleEndSchema, {
+											transferId: action.value.transferId,
+											deliveredCount: 0,
+											cancelled: false
+										})
+									}
+								})
+							}
+						})
+					)
+				);
+				return encodedOk(request.requestId, {
+					case: 'timelapseSampleDelivery',
+					value: create(TimelapseSampleDeliverySchema, {
+						transferId: action.value.transferId,
+						channel: DataChannelKind.RELIABLE_DATA,
+						acceptedCount: 0,
+						rejected: []
+					})
+				});
+			}
+			if (action.case === 'cancelTimelapseSamples') {
+				return encodedOk(request.requestId);
+			}
 			if (action.case === 'queryTimeline') {
 				const query = action.value;
 				await options.beforeStoredTimelineQuery?.(query.sourceIds);
@@ -2325,6 +2487,17 @@ export async function mockControlPeer(
 			}
 			if (action.case === 'create') {
 				const command = action.value;
+				const manifestBytes =
+					options.timelapseManifestFile ??
+					new TextEncoder().encode(
+						JSON.stringify({
+							schema_version: 1,
+							silent: true,
+							utc_provenance: true,
+							output_sha256: exportFileHash
+						})
+					);
+				const manifestHash = createHash('sha256').update(manifestBytes).digest('hex');
 				const base = create(ExportJobSchema, {
 					jobId: command.jobId,
 					sourceId: command.sourceId,
@@ -2336,7 +2509,24 @@ export async function mockControlPeer(
 						? 'Timestamp burn-in requires a configured re-encoding worker'
 						: undefined,
 					burnInTimestamp: command.burnInTimestamp,
-					eventSeed: command.eventSeed
+					eventSeed: command.eventSeed,
+					timelapse: command.timelapse
+						? create(TimelapseJobSummarySchema, {
+								options: command.timelapse,
+								sampleCount: 2,
+								gapCount: 0,
+								outputDurationMs: 200n,
+								outputWidth: command.timelapse.maxWidth,
+								outputHeight: command.timelapse.maxHeight,
+								silent: true,
+								sourceFingerprint: 'fp-mock-timelapse-1',
+								siteTimezone: 'UTC',
+								manifestSchemaVersion: 1,
+								manifestFileName: `${command.jobId}.manifest.json`,
+								manifestSha256: manifestHash,
+								manifestBytes: BigInt(manifestBytes.byteLength)
+							})
+						: undefined
 				});
 				const fixture = exportCreateResults.shift();
 				const exportJob = fixture ? applyExportFixture(base, fixture, exportFileHash) : base;
@@ -2375,8 +2565,26 @@ export async function mockControlPeer(
 			if (current.status !== ExportJobStatus.READY) {
 				return encodedError(request.requestId, 'export job is not ready');
 			}
-			const chunkSize = Math.max(1, Math.ceil(exportFile.byteLength / 2));
-			const chunkCount = Math.ceil(exportFile.byteLength / chunkSize);
+			const isManifest = action.value.artifact === ExportArtifactKind.MANIFEST;
+			const manifestPayload =
+				options.timelapseManifestFile ??
+				new TextEncoder().encode(
+					JSON.stringify({
+						schema_version: 1,
+						silent: true,
+						utc_provenance: true,
+						output_sha256: exportFileHash
+					})
+				);
+			const downloadPayload = isManifest ? manifestPayload : exportFile;
+			const downloadSha = isManifest
+				? createHash('sha256').update(manifestPayload).digest('hex')
+				: exportFileHash;
+			const downloadFileName = isManifest
+				? (current.timelapse?.manifestFileName ?? `${current.jobId}.manifest.json`)
+				: current.fileName;
+			const chunkSize = Math.max(1, Math.ceil(downloadPayload.byteLength / 2));
+			const chunkCount = Math.ceil(downloadPayload.byteLength / chunkSize);
 			for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
 				pendingDataMessages.push(
 					encodedData(
@@ -2390,9 +2598,9 @@ export async function mockControlPeer(
 											jobId: current.jobId,
 											chunkIndex,
 											chunkCount,
-											payload: exportFile.slice(
+											payload: downloadPayload.slice(
 												chunkIndex * chunkSize,
-												Math.min(exportFile.byteLength, (chunkIndex + 1) * chunkSize)
+												Math.min(downloadPayload.byteLength, (chunkIndex + 1) * chunkSize)
 											)
 										})
 									}
@@ -2407,7 +2615,10 @@ export async function mockControlPeer(
 				value: create(ExportDownloadResultSchema, {
 					job: current,
 					channel: DataChannelKind.RELIABLE_DATA,
-					chunkCount
+					chunkCount,
+					artifact: isManifest ? ExportArtifactKind.MANIFEST : ExportArtifactKind.MEDIA,
+					fileName: downloadFileName,
+					sha256: downloadSha
 				})
 			});
 		}

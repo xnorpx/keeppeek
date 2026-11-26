@@ -36,7 +36,9 @@ describe('server capability contract', () => {
 			'keeppeek.peek-layouts.v1',
 			'keeppeek.group-admin.v1',
 			'keeppeek.offsite-archive.v1',
-			'keeppeek.bookmarks.v1'
+			'keeppeek.bookmarks.v1',
+			'keeppeek.timelapse.v1',
+			'keeppeek.timelapse-export.v1'
 		]);
 		expect(new Set(serverCapabilityIds).size).toBe(serverCapabilityIds.length);
 	});

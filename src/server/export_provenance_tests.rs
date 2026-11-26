@@ -125,6 +125,7 @@ fn legacy_export_provenance_remains_absent_and_normal_download_still_works() {
         proto::DownloadExport {
             job_id: "named-export".into(),
             channel: proto::DataChannelKind::ReliableData as i32,
+            artifact: 0,
         },
     )
     .unwrap();

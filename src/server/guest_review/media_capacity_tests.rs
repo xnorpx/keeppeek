@@ -21,6 +21,7 @@ fn record_administrator_download(
         proto::DownloadExport {
             job_id: expected.job_id.clone(),
             channel: proto::DataChannelKind::ReliableData as i32,
+            artifact: 0,
         },
     )
     .unwrap();

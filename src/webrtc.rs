@@ -5075,6 +5075,8 @@ const fn is_background_control_request(request: &crate::api::proto::Request) -> 
             Some(
                 crate::api::proto::stored_media_command::Action::Open(_)
                     | crate::api::proto::stored_media_command::Action::StepFrame(_)
+                    | crate::api::proto::stored_media_command::Action::PlanTimelapse(_)
+                    | crate::api::proto::stored_media_command::Action::FetchTimelapseSamples(_)
                     | crate::api::proto::stored_media_command::Action::Seek(_)
                     | crate::api::proto::stored_media_command::Action::Refill(_)
                     | crate::api::proto::stored_media_command::Action::SetPlayback(_)
@@ -5600,7 +5602,13 @@ fn control_data_group(command: Option<&crate::api::proto::request::Command>) -> 
                 Action::Close(close) => Some(format!("stored:{}", close.stored_media_id)),
                 Action::QueryTimeline(query) => Some(format!("query:{}", query.query_id)),
                 Action::CancelTimelineQuery(cancel) => Some(format!("query:{}", cancel.query_id)),
-                Action::SetPlayback(_) | Action::Refill(_) => None,
+                Action::FetchTimelapseSamples(fetch) => {
+                    Some(format!("timelapse:{}", fetch.transfer_id))
+                }
+                Action::CancelTimelapseSamples(cancel) => {
+                    Some(format!("timelapse:{}", cancel.transfer_id))
+                }
+                Action::PlanTimelapse(_) | Action::SetPlayback(_) | Action::Refill(_) => None,
             }
         }
         crate::api::proto::request::Command::ExportCommand(command) => {

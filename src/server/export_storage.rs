@@ -9,6 +9,7 @@ pub(super) mod creation;
 pub(super) mod download;
 pub(super) mod history;
 pub(super) mod provenance;
+pub(super) mod timelapse;
 use crate::storage::{
     catalog::{
         locations::{Kind, Object, Reply, Request, export_cleanup::Action},

@@ -196,6 +196,9 @@ fn create_locked(
 ) -> Result<proto::ExportJob, ControlCommandError> {
     admit(state, &request)?;
     let camera = source(state, &request)?;
+    if let Some(options) = request.timelapse.clone() {
+        return create_timelapse_locked(state, requester, owner_key, request, camera, options);
+    }
     let range = range(&request)?;
     let timing = match timing {
         TimingSource::Configured => Some(recorded_audio::configured(
@@ -247,6 +250,51 @@ fn create_locked(
             candidate.range.end_ms,
             candidate.file_name,
         );
+    }
+    Ok(job)
+}
+
+fn create_timelapse_locked(
+    state: &ServerState,
+    requester: &str,
+    owner_key: Option<String>,
+    request: proto::CreateExportJob,
+    camera: CameraEntry,
+    options: proto::TimelapseExportOptions,
+) -> Result<proto::ExportJob, ControlCommandError> {
+    {
+        let jobs = state
+            .export_jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let stream_id = recording_stream_id(&camera, &request.stream_id);
+        if let Some(existing) = duplicate(&jobs, requester, &request, None, Some(&stream_id), None)
+        {
+            return Ok(existing);
+        }
+        reject_existing_id(&jobs, &request.job_id)?;
+    }
+    let prepared =
+        super::timelapse::prepare_timelapse_export(state, requester, &request, &camera, &options)?;
+    let candidate = Candidate {
+        request: request.clone(),
+        job: prepared.job.clone(),
+        fragments: Vec::new(),
+        range: Range {
+            start_ms: prepared.plan.requested_start_ms,
+            end_ms: prepared.plan.requested_end_ms,
+        },
+        file_name: prepared.file_name.clone(),
+        artifact_id: prepared.artifact_id.clone(),
+        cancel: Arc::clone(&prepared.cancel),
+        recording_stream_id: Some(prepared.recording_stream_id.clone()),
+    };
+    if let Some(existing) = register(state, requester, owner_key, &candidate)? {
+        return Ok(existing);
+    }
+    let job = candidate.job;
+    if job.status == proto::ExportJobStatus::Running as i32 {
+        super::timelapse::spawn_timelapse_worker(state.clone(), request, prepared);
     }
     Ok(job)
 }
@@ -459,6 +507,7 @@ fn job(
         burn_in_timestamp: request.burn_in_timestamp,
         event_seed: event,
         recorded_audio: timing,
+        timelapse: None,
     }
 }
 

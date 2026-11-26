@@ -60,6 +60,7 @@
 	import KeepCameraSwitcher from '$lib/components/KeepCameraSwitcher.svelte';
 	import CopyMomentLink from '$lib/components/CopyMomentLink.svelte';
 	import KeepExportPanel from '$lib/components/KeepExportPanel.svelte';
+	import TimelapseReview from '$lib/components/TimelapseReview.svelte';
 	import ColdSeekState from '$lib/components/ColdSeekState.svelte';
 	import KeepStories from '$lib/components/KeepStories.svelte';
 	import KeepSwimlanes from '$lib/components/KeepSwimlanes.svelte';
@@ -2961,7 +2962,7 @@
 					>
 						Coverage
 					</a>
-					{#each ['timeline', 'stories', 'swimlanes', 'export'] as nextMode (nextMode)}
+					{#each ['timeline', 'stories', 'swimlanes', 'timelapse', 'export'] as nextMode (nextMode)}
 						<button
 							type="button"
 							class="h-11 min-w-11 shrink-0 rounded-xs px-2.5 text-2xs font-semibold md:h-7 {mode ===
@@ -3158,6 +3159,14 @@
 					anchorMs={swimlaneAnchorMs}
 					{playheadMs}
 					onselect={selectSwimlane}
+				/>
+			{:else if mode === 'timelapse'}
+				<TimelapseReview
+					sourceId={cameraId}
+					sourceName={selectedCamera?.name ?? cameraId}
+					streamId={selected?.stream === 'sub' ? 'sub' : 'main'}
+					anchorMs={playheadMs}
+					onseek={openTimestamp}
 				/>
 			{:else if mode === 'export'}
 				<div class="space-y-3">
