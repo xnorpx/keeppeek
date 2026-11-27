@@ -94,6 +94,10 @@ update check or update-channel selector is not available. Use the [upgrade proce
   integration is configured separately.
 - **Embed a camera in Home Assistant:** Use the direct browser card with an appropriate named
   credential and browser-to-recorder connectivity.
+- **Connect an AI assistant or MCP client:** Use the local `keeppeek mcp` `stdio` bridge or enable
+  the opt-in `POST /mcp` endpoint to inspect health, logs, events, and coverage or preview and
+  apply configuration changes with explicit approval. See
+  [MCP server and LLM configuration](./mcp.md).
 
 The integration chapters explain their requirements and failure behavior. Protocol scenarios that
 describe future client possibilities are not an installation checklist for a shipped service.
