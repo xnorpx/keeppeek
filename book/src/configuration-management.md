@@ -1,102 +1,99 @@
 # Visual configuration management
 
-Use **Cameras** to inspect and change shared camera defaults, effective inherited values, versioned
-templates, and explicit camera sets. These operations require Administrator access and the server's
-`keeppeek.configuration.v1` capability. If it is unavailable, the fleet remains readable and the
-unsupported actions stay disabled.
+This chapter covers visual configuration across `/settings` and `/cameras`, including draft vs. live-apply vs. restart behavior, browser-local preferences, shared camera inheritance, camera templates, and runtime profiles. Configuration writes require **Administrator** access (Users can change only browser-local theme settings and observe active runtime-profile status); KeepPeek stores all durable settings in `config.toml` and file-backed secrets in sibling `secrets.toml` with no raw TOML editor, no general secret editor, and no blind overwrites.
+
+## Video walkthrough
+
+Watch how Administrators inspect shared camera inheritance, create templates with `{secret:...}` references, and preview and apply bulk fleet changes on `/cameras`.
+
+<video controls crossorigin="anonymous" preload="metadata" playsinline style="width: 100%; height: auto">
+  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.fleet-config.mp4" type="video/mp4">
+  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.fleet-config.vtt" kind="captions" srclang="en" label="English">
+  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.fleet-config.mp4">Download the camera fleet configuration demo</a>.
+</video>
 
 ## Choose the right editor
 
-| Task                                                                 | Location                                                                                                        |
-| -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| Change one camera's connection, streams, or recording policy         | Open its Camera page and edit its configuration.                                                                |
-| Change inherited policy, manage templates, or preview a fleet change | Open the Cameras fleet configuration controls.                                                                  |
-| Change storage, retention, or listener settings                      | Settings. Use the storage editor's move/restart review when changing paths.                                     |
-| Change a dashboard or its display and audience                       | The [live-wall layout controls](./live-wall.md).                                                                |
-| Change User camera grants or credentials                             | [Settings > Access & roles](./authentication.md#camera-and-dashboard-access).                                   |
-| Change notification rules or MQTT                                    | The [notification and integration editors](./notifications-and-integrations.md).                                |
-| Transfer the complete settings and file-backed secrets               | [Configuration ZIP export and apply](./configuration-export-import.md).                                         |
-| Configure file-only native event policy                              | Stop the server and edit the [supported camera event table](./configuration-reference.md#native-camera-events). |
+| Task                                                       | Route / surface                                      | Requires restart?                 | Details                                                                                   |
+| ---------------------------------------------------------- | ---------------------------------------------------- | --------------------------------- | ----------------------------------------------------------------------------------------- |
+| Edit one camera's connection, streams, or recording policy | `/camera`                                            | No (restarts camera worker)       | Uses `config.toml` revision compare-and-set.                                              |
+| Change shared camera defaults, templates, or bulk policy   | `/cameras` (**Configuration** / **Manage selected**) | No (per-camera worker activation) | Requires `keeppeek.configuration.v1`.                                                     |
+| Switch or edit camera runtime profiles                     | `/settings#runtime-profiles`                         | No (async worker convergence)     | Durable in `[runtime_profiles]`; WebRTC-only activation.                                  |
+| Change server host/port, retention, or storage paths       | `/settings` (**Server**, **Storage & retention**)    | Yes                               | Drafts stage changes until **Apply changes** / restart.                                   |
+| Manage named storage volumes or metadata relocation        | `/settings#storage` (**Named storage volumes**)      | Yes (except live drain/moves)     | See [Move storage deliberately](./upgrades-and-migrations.md#move-storage-deliberately).  |
+| Configure fourth-tier local archive                        | `/settings#storage` (**Local archive**)              | Yes                               | See [Recording maintenance](./recording-maintenance.md).                                  |
+| Edit dashboards, audience, or kiosk wake lock              | `/settings#dashboards`                               | No                                | See [Live wall and kiosk display](./live-wall.md).                                        |
+| Manage access keys, User grants, or guest sharing          | `/settings#access`                                   | No                                | See [Authentication and access control](./authentication.md#camera-and-dashboard-access). |
+| Edit notification rules, cloud push, or MQTT               | `/settings#notifications`, `/settings#integrations`  | No                                | See [Notifications and integrations](./notifications-and-integrations.md).                |
+| Export or apply full settings + `secrets.toml` ZIP         | `/settings#backups`                                  | Yes (apply only)                  | See [Export and import configuration](./configuration-export-import.md).                  |
+| Change UI theme or view server identity / logs             | `/settings#appearance`, `/settings/logs`             | No                                | Theme is browser-local; system fields are read-only evidence.                             |
+| Configure file-only native camera events                   | Stopped `config.toml` (`[cameras.<name>.events]`)    | Yes (manual restart)              | See [Native camera events](./configuration-reference.md#native-camera-events).            |
 
-The browser has no general secret editor or raw TOML editor. Use the
-[configuration reference](./configuration-reference.md) for supported file fields. Preserve unrelated
-sections and existing secret references when editing a stopped installation.
+## Persistence, drafts, and restart boundaries
 
-## Inspect inheritance before changing it
+Every persisted write holds the shared configuration-update lock, checks the edit-start revision, validates the complete candidate with the startup loaders, preserves unrelated TOML sections and `{secret:KEY}` / `{secret:KEY|url}` references, and atomically replaces `config.toml` with owner-only permissions. The browser never receives resolved secret values.
 
-Every inheritable policy shows its configured default, camera override, final effective value,
-source, and current runtime state. **Use inherited value** removes an override so future default
-changes continue to flow to that camera.
+| Change class                       | Examples                                                                                                                                                                                                                     | When it takes effect                                                           | Failure or reload behavior                                                                                                  |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| **Browser-local preference**       | **Settings → Appearance & time** theme (**Dark**, **Light**, **Match system**)                                                                                                                                               | Immediately in this browser only                                               | Never written to `config.toml`; video surfaces always remain dark.                                                          |
+| **Live durable apply**             | Single-camera edit, `/cameras` defaults/templates/bulk plan, **Runtime profiles**                                                                                                                                            | Commits atomically, then activates workers                                     | If a worker fails to activate, persisted settings stay saved and the UI reports the per-camera reconnect or restart action. |
+| **Staged save (restart required)** | **Edit server** (**Save server settings**), **Change storage** (**Continue to review** → **Stage storage changes**), **Edit volume draft**, **Edit archive settings** (**Save archive settings**), **Confirm metadata move** | Only after **Apply changes**, **Restart and move storage**, or service restart | Current runtime configuration stays active until restart; navigating away prompts before discarding unsaved drafts.         |
 
-A built-in value is the fallback shipped by KeepPeek. A shared default changes the fallback for
-cameras without that override. An explicit camera value takes precedence. **Use built-in value**
-removes a shared default. Removing an override does not freeze the current value into the camera.
+### Browser-local appearance and read-only system evidence
 
-For example, changing a shared recording mode affects cameras that inherit it. A camera with an
-explicit `main` override keeps that policy. Check both the effective value and runtime status after
-applying a change, especially if a camera is disconnected.
+Under `/settings#appearance`, **Appearance & time** persists only your local browser theme (**Dark**, **Light**, or **Match system**). **Language** is fixed to English, **Browser reduced motion** reflects your OS/browser preference, and **Server time zone**, **Clock preference**, and **Week starts** are unavailable rather than cosmetic overrides—timeline and export timestamps stay unambiguous UTC.
 
-## Preview and apply a fleet change
+Under **System & updates**, server version, host, OS, process, uptime, and camera-catalog metadata are read-only health evidence. **Update channel**, **Update check**, and **Erase all recordings** are intentionally disabled; use **Restart** to bounce the recorder cleanly, **Open logs** (`/settings/logs`) or **Download diagnostics** for scrubbed troubleshooting bundles, and [Upgrades and migrations](./upgrades-and-migrations.md) for version updates.
 
-1. Open the shared-default or bulk-change view and choose the fields to change.
-2. For bulk changes, select explicit camera IDs, the complete filtered result, one configured group,
-   or all configured cameras. The all-cameras scope requires explicit confirmation.
-3. Request a preview. Confirm the server's authoritative camera count, old and new values, skipped
-   targets, validation issues, and reconnect or restart consequences.
-4. Resolve issues before applying. A missing target makes the plan invalid; an oversized preview
-   requires a smaller selection or fewer changed fields.
-5. Apply the current preview, then check the per-camera activation result and camera health.
+## Camera fleet configuration (`/cameras`)
 
-The filtered scope means the complete filter result, including rows outside the visible viewport.
-One plan includes at most 64 cameras and expires after ten minutes. The server retains at most 128
-plans and bounds control responses to 64 KiB. A preview that cannot fit fails explicitly.
+Open **Cameras** and select **Configuration** (or select cameras and choose **Manage selected**) to manage shared defaults, templates, and bulk updates. This surface requires the `keeppeek.configuration.v1` capability; if unavailable, the camera fleet stays readable while write controls remain disabled.
 
-Template and bulk operations always produce a server-owned preview before apply. The preview lists
-the exact authoritative cameras, semantic old and new values, skipped targets, validation issues,
-and reconnect or restart consequences. Applying a template creates explicit overrides; later
-template edits or deletion do not silently change cameras.
+### Inheritance and secret references
 
-Configuration writes use the edit-start revision, validate the complete candidate, preserve
-unrelated fields and secret references, and replace the configuration atomically. A conflict
-reloads current evidence without discarding the local draft. If a committed change cannot activate
-on one camera worker, KeepPeek reports that camera and the required restart recovery action.
+Inheritable camera policies resolve in strict order: **Built-in fallback → Shared default (`[camera_defaults]`) → Explicit camera override**. The **Overview** and **Defaults** tabs show the shared default, camera override, final effective value, source, and whether the live camera worker currently matches the saved value.
 
-## Create and reuse a camera template
+- **Use inherited value** deletes a camera override so future shared-default edits flow to that camera; it does not freeze the current value.
+- **Use built-in value** deletes a shared default.
+- Credential fields display configured-state booleans only and accept complete `{secret:KEY}` references. Define the matching key in local `secrets.toml`; never enter raw secret values in templates.
 
-In the templates view, create a named template with supported connection or recording-policy fields
-you want to reuse. Templates can be edited, duplicated, deleted, imported, and exported. They do not
-include notification rules; manage those in their own editor.
+### Preview and apply a fleet change
 
-Credential fields accept complete references such as `{secret:CAMERA_PASSWORD}`. Create the
-corresponding secret in the existing companion `secrets.toml` through your protected local workflow.
-A template does not carry the secret value to another recorder.
+1. Open **Configuration** on `/cameras` and choose the **Defaults** or **Bulk** tab.
+2. For **Bulk** changes, select a target scope: explicit camera IDs, the complete filtered result (including rows outside the virtualized viewport), one configured group, or all configured cameras (requires explicit confirmation).
+3. Choose a field patch or a saved template, then request a server preview.
+4. Inspect the authoritative camera count, semantic old/new values, skipped targets, validation issues, and reconnect or restart impact. Resolve any missing targets or validation errors before continuing.
+5. Apply the active preview, then verify per-camera activation status and [Camera and stream health](./camera-health.md).
 
-To use a template, choose it for a bulk target set, review the server preview, then apply. Applying
-creates explicit camera overrides. Later template edits or deletion do not change cameras that
-previously used it. To return a camera to shared defaults, remove the relevant overrides with
-**Use inherited value**.
+**Fleet plan bounds:** A plan targets at most **64 cameras**, expires after **10 minutes**, and must fit within the **64 KiB** WebRTC control-message ceiling (oversized previews fail explicitly—split into smaller batches or fewer fields). The server retains at most **128 plans**.
 
-Template exchange uses versioned JSON, not a configuration ZIP or raw TOML. Export the template
-document, choose it for import on the target, review its validated contents, and apply the preview.
-Unsupported versions, unknown fields, duplicate IDs or names, inline credentials, invalid values,
-and oversized documents are rejected before mutation. Documents are limited to 16 KiB and contain
-at most 64 templates. Template names are unique ignoring case.
+### Create and exchange camera templates
+
+In the **Templates** tab, create, edit, duplicate, delete, import, or export named templates stored in `[configuration_templates]` inside `config.toml`. Templates carry supported camera connection and recording-policy fields plus `{secret:KEY}` credential references; they do not store secret values or notification rules.
+
+- Applying a template writes **explicit camera overrides** onto the selected targets. Later edits or deletion of the template never mutate previously configured cameras.
+- Template exchange uses **versioned JSON** (not configuration ZIP or TOML), bounded to **16 KiB** and **64 templates** with case-insensitive unique names.
+- Import preview validates before mutation and rejects unsupported versions, unknown fields, duplicate IDs or names, inline credentials, invalid enums, and out-of-range numbers.
+
+## Runtime profiles (`/settings#runtime-profiles`)
+
+Runtime profiles let an Administrator switch camera behavior between **Base** and up to **32 named profiles** stored in `[runtime_profiles]` in `config.toml`. Profiles commit atomically and converge asynchronously across camera workers without restarting the recorder.
+
+- **Activation boundary:** Manage and activate profiles only in **Settings → Runtime profiles** or via an authorized WebRTC `StateStoreCommand` client on `service/runtime-profiles/`. No HTTP, MQTT, Home Assistant, CLI, webhook, or scheduled activation surface exists.
+- **Target identity:** Up to **127 camera overrides** per profile are keyed by server-managed `profile_identity` UUIDs (`identity_schema = 1` rollback guard). Editing a camera's IP preserves its UUID; deleting and re-adding a camera creates a new UUID and leaves the old target listed as unavailable (`configured camera is missing`) until removed or **Select Base** is chosen.
+- **Allowed override fields only:** Each camera entry accepts only **Availability**, **Recording** (`off`, `sub`, `main`, `both`, `event-boost`, `event-only`), **Privacy** (feeds `PrivacyRegistry`; cannot weaken an active privacy schedule), and **Notifications** (suppresses candidates and queued outbox delivery without editing saved rules). Omitted fields inherit **Base**; profiles cannot enable a disabled Base camera or Base `off` recording.
+- **Convergence and recovery:** Visible cameras report `pending`, `applied`, or `degraded` with per-field provenance (`base` or `profile`). Camera stops share a 6-second deadline; failures or timeouts stay `degraded` (never silently reverting to Base) while restrictive privacy stays closed. After fixing the underlying camera or storage fault, choose **Reapply active policy** (requires no unsaved draft) or **Select Base**.
 
 ## Resolve conflicts and activation failures
 
-| Result                                           | What to do                                                                                                               |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| The configuration changed while you were editing | Read the refreshed evidence, compare it with the retained draft, and request a new preview. There is no blind overwrite. |
-| A preview expired                                | Request and review a new preview. A ten-minute-old target set may no longer be valid.                                    |
-| A target is missing or the preview is too large  | Correct the target selection or split it into smaller explicit batches.                                                  |
-| A value fails validation                         | Correct the indicated field. Check the reference for units, bounds, inheritance, and supported secret syntax.            |
-| Saved values differ from runtime                 | Follow the reported per-camera reconnect or restart action, then verify health and effective values again.               |
-| The capability is unavailable                    | Check the connected server version. The visible fleet does not imply configuration writes are supported.                 |
+| Symptom                                 | Cause                                                                                   | Next action                                                                                                                                                                                                                                                                     |
+| --------------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Configuration changed while editing     | Compare-and-set revision mismatch (no blind overwrite)                                  | Review the reloaded current values against your retained local draft and request a new preview. Single-camera edits track `config.toml` revision; fleet/template edits track combined config + template revision so template changes do not conflict with single-camera drafts. |
+| Preview expired                         | Plan exceeded its 10-minute lifetime                                                    | Request and review a fresh preview before applying.                                                                                                                                                                                                                             |
+| Missing target or oversized preview     | Target camera deleted or response exceeds 64 KiB / 64 cameras                           | Update target selection or split into smaller explicit batches.                                                                                                                                                                                                                 |
+| Validation error                        | Out-of-range value, unknown field, or malformed `{secret:KEY}`                          | Fix the highlighted field using the [configuration reference](./configuration-reference.md).                                                                                                                                                                                    |
+| Saved value differs from runtime        | Camera worker activation failed or requires restart                                     | Follow the reported per-camera reconnect/restart action, then verify health and effective values.                                                                                                                                                                               |
+| Runtime profile camera stays `degraded` | Worker stop timeout, missing credentials, storage write failure, or deleted camera UUID | Fix the camera/storage fault or remove stale unavailable targets, save/discard drafts, then select **Reapply active policy**.                                                                                                                                                   |
+| Write controls disabled                 | Missing `keeppeek.configuration.v1` or non-Administrator role                           | Check server version and sign in as an Administrator.                                                                                                                                                                                                                           |
 
-Conflicts retain the complete local draft while reloading current evidence. Single-camera edits use
-the configuration revision; template transactions also account for the template document. A
-template-only edit therefore does not create a false conflict for an unrelated camera draft.
-
-The detailed contract, limits, and ownership boundaries are in
-[configuration engineering guide](https://github.com/xnorpx/keeppeek/blob/main/docs/configuration-management.md).
-Use [configuration exchange](./configuration-export-import.md) for full-recorder settings recovery.
+For the full schema, defaults, and bounds, see the [configuration reference](./configuration-reference.md) and [configuration engineering guide](https://github.com/xnorpx/keeppeek/blob/main/docs/configuration-management.md).

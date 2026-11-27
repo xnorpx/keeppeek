@@ -1,186 +1,87 @@
 # Release readiness and known limitations
 
-KeepPeek is in Alpha qualification. POC and MVP gates are complete; Alpha implementation issue
-closure does not establish the early-adopter matrix or a feature freeze. Passing automated tests
-is necessary, but it is not enough to call a camera recorder production-ready. The promotion
-decision belongs to the tested release build and representative deployment recorded in the active
-[Alpha gate #145](https://github.com/xnorpx/keeppeek/issues/145). The
-[roadmap](https://github.com/xnorpx/keeppeek/issues/147) describes the subsequent release phases.
+This page defines KeepPeek's Alpha qualification bar, supply-chain and release checks, representative deployment evidence, soak criteria, and known current limitations. Use it before promoting or relying on a build; active evidence is tracked in [Alpha gate #145](https://github.com/xnorpx/keeppeek/issues/145), and later phases live on the [roadmap](https://github.com/xnorpx/keeppeek/issues/147).
+
+KeepPeek is in **Alpha qualification** (POC and MVP gates are complete). Closing Alpha implementation issues does not establish an early-adopter matrix or feature freeze, and passing automated tests alone does not certify production readiness.
 
 ## What automated validation proves
 
-The repository gate builds the Rust workspace and browser application, runs Rust, TypeScript,
-Svelte, browser, real-media, and Playwright tests, checks formatting and dependencies, and validates
-the versioned Paper scenario and visual-harness manifests.
+The repository validation gate builds the Rust workspace (including `keeppeek-desktop` on Windows and macOS) and browser UI; runs Rust (`cargo nextest`), TypeScript, Svelte, real-media, playback-performance, and Playwright E2E suites; checks formatting, Clippy, unused dependencies (`cargo-machete`), mdBook/Mermaid output, and Wiki link integrity; and validates versioned Paper storyboard and visual-harness manifests.
 
-Focused benchmarks cover latency and memory budgets for recording coverage, operational events,
-notifications, MQTT enqueue, storage, and event lookup. Some are ignored tests or standalone Cargo
-benchmarks and require separate explicit runs; a green ordinary check or CI run does not establish
-their results. Record the exact benchmark command, build, workload, host, and measurements with the
-qualification evidence.
+Focused benchmarks under `benches/` (`event_preroll`, `event_keyframe_lookup`, `storage_safety`, `recording_coverage`, `advanced_event_search`, `cloud_notifications`, `timelapse`, `health_metrics_http.sh`), `crates/keeppeek-desktop/scripts/benchmark-desktop.ts`, and `src/tui/benchmark.rs` test latency and memory budgets. Some are ignored tests or standalone Cargo benchmarks that require explicit runs—an ordinary green CI run does not prove their results. Always record the exact benchmark command, build, workload, host, and measurements with qualification evidence.
 
-Those checks prove deterministic contracts and regression fixtures. They do not prove that a
-particular camera firmware, network, disk, browser, reverse proxy, notification account, or broker
-will behave correctly under sustained load.
-
-Paper reference integrity tests check the exported design bundle, scenario identities, assets,
-dimensions, hashes, and shared tokens. They do not by themselves compare every production page
-with every Paper artboard. Story-based visual checks and route-level browser checks cover their
-declared fixtures. Treat the accepted mobile Keep proposal as a design reference and verify the
-implemented workflow on the target device; a reference file is not deployment evidence.
+Automated checks prove deterministic contracts and regression fixtures; they do not prove that a specific camera firmware, network, disk, browser, reverse proxy, push provider, or MQTT broker will hold up under sustained load. Paper integrity tests verify exported bundle assets, dimensions, hashes, and tokens rather than comparing every live page to every artboard; verify mobile Keep workflows directly on target devices.
 
 ## Release and dependency integrity
 
-`Cargo.lock` is a tracked release input. Direct Cargo requirements name a compatible version, and
-repository build, test, benchmark, container, and release commands use `--locked`. CI runs
-`cargo audit --deny warnings` without advisory exceptions.
-
-The UI and visual harness intentionally do not track JavaScript lockfiles. Every direct Bun
-dependency uses an exact version, while transitive dependencies resolve from the public npm
-registry on each clean install. CI creates a separate temporary lockfile for each manifest with
-dependency scripts disabled, runs `bun audit`, and rejects high or critical advisories. This policy
-detects current ecosystem breakage but does not make JavaScript transitive resolution reproducible
-between runs.
-
-The object-detection example intentionally tests the newest compatible Python packages. CI uses
-Python 3.12 and resolves `requirements.txt` through `pip-audit` without installing the full model
-runtime in the audit job.
-
-The embedded CCTV Camera Database comes from the v2.8.0 release archive. The build verifies its
-SHA-256 digest before opening the ZIP. Container builds use Bun 1.4.5 and immutable base-image
-digests, then CI starts the production image and probes its HTTP listener. A version tag can create
-release artifacts only when it points to a commit on `main` and that exact commit has a successful
-push CI run.
+| Surface                                                   | Integrity and audit policy                                                                                                                                                                                                                                                 | Scope and caveat                                                                                                                       |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| **Rust workspace (`Cargo.lock`)**                         | Tracked lockfile; build, test, benchmark, container, and release commands use `--locked`. Security workflow runs `cargo audit --deny warnings` with zero advisory exceptions.                                                                                              | Reproducible locked Rust resolution.                                                                                                   |
+| **UI and visual harness (`ui/package.json`)**             | No committed JS lockfiles; exact direct versions resolve from public npm using Bun `1.4.5`. Security workflow generates temporary `--lockfile-only --ignore-scripts` lockfiles and runs `bun audit --audit-level high`.                                                    | Surfaces upstream breakage quickly; transitive JS resolution is not pinned across clean runs.                                          |
+| **Python example (`examples/object_detection_service/`)** | Python 3.12 with intentionally unpinned `requirements.txt`. Security workflow audits public PyPI resolution via `pip-audit` without installing model runtimes.                                                                                                             | Tracks latest upstream packages by design.                                                                                             |
+| **Embedded CCTV Camera Database**                         | Pinned to release `v2.8.0`; `build.rs` verifies its SHA-256 digest and ZIP entry safety before unpacking.                                                                                                                                                                  | Deterministic embedded camera catalog.                                                                                                 |
+| **Containers and signed releases**                        | Docker builds use Bun `1.4.5` and immutable base-image digests, followed by an HTTP listener probe. Windows `x86_64`/`aarch64` binaries and NSIS installer/uninstaller are Authenticode-signed and RFC 3161 timestamped; macOS `aarch64` bundles are signed and notarized. | Version tags publish release artifacts only for commits on `main` with a matching `Cargo.toml` version and a successful `push` CI run. |
 
 ## Representative deployment matrix
 
-Before promotion, record exact evidence for the deployment that will rely on KeepPeek:
+Record concrete deployment evidence across all dimensions below before promotion. This matrix documents tested configurations and is not a universal compatibility guarantee.
 
-- at least one direct RTSP or ONVIF camera and the established native camera path;
-- main and sub streams, including browser-compatible and incompatible codec profiles;
-- desktop and mobile browser workflows;
-- local access and remote access through the intended VPN or reverse proxy;
-- healthy, stale, reconnecting, recording-failed, storage-pressure, and recovered states;
-- events with and without images, revised events, and a dense event day;
-- Pushover success, failure, and retry plus MQTT success, outage, and recovery;
-- normal, partial, failed, cancelled, retried, and independently decoded exports.
-
-This matrix documents tested configurations. It is not a universal camera, browser, broker, or
-provider support claim.
+| Dimension                  | Required qualification evidence                                                                                                             |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Cameras and transports** | At least one direct RTSP/ONVIF camera and the established native camera path (e.g., Reolink `reo-proto`, Hikvision ISAPI, ONVIF PullPoint). |
+| **Streams and codecs**     | Main and sub streams, including both browser-compatible and browser-incompatible codec profiles.                                            |
+| **Client surfaces**        | Desktop and mobile browser workflows, plus `keeppeek-desktop` and foreground TUI if used in the deployment.                                 |
+| **Network and access**     | Local access, remote access through the intended VPN or reverse proxy, and bounded guest review links (`/share`).                           |
+| **Health transitions**     | Healthy, stale, reconnecting, recording-failed, storage-pressure, and recovered states.                                                     |
+| **Events and analytics**   | Events with and without images, revised events, a dense event day, boolean/hybrid search (`/events`), and temporal summaries (`/activity`). |
+| **Notifications and MQTT** | Pushover success, failure, and retry; optional Keeppeek Service signaling limits/backoff if enabled; MQTT success, outage, and recovery.    |
+| **Exports and timelapse**  | Normal, partial, failed, cancelled, retried, and independently decoded MP4 clip exports (plus silent timelapse MP4 export if used).         |
 
 ## Continuous recording soak
 
-Run the final release build long enough to cross normal segment finalization, catalog maintenance,
-camera reconnect, provider retry, and storage cleanup cycles. During the soak:
+Run the final release build across segment finalization, catalog maintenance, camera reconnect, provider retry, and storage cleanup cycles:
 
-- account for every unexpected recording gap with camera, writer, storage, or catalog evidence;
-- verify primary recorded playback remains at source rate while timelines refresh and exports run;
-- monitor memory, recording databases, thumbnails, export jobs, the in-memory notification outbox, MQTT outbox, logs,
-  threads or tasks, file descriptors, sessions, and browser object URLs for bounded growth;
-- restart and verify that notification runtime state, the MQTT outbox and deduplication history,
-  access audit/activity, and active sessions reset; credentials and grants, durable operational
-  events, export jobs, and recording catalog state recover according to their documented contracts;
-- rerun the complete workflow without manual database or recording-file edits.
+1. **Account for every unexpected gap** using camera, writer, storage, or catalog evidence.
+2. **Verify primary recorded playback** stays at source rate while timelines refresh and exports execute.
+3. **Confirm bounded resource growth** across memory, SQLite databases, thumbnails, export jobs, in-memory notification and MQTT outboxes, logs, threads/tasks, file descriptors, sessions, and browser object URLs.
+4. **Restart and verify state contracts:** confirm notification runtime state, MQTT outbox/deduplication, access audit/activity, and active sessions reset cleanly, while credentials, grants, durable events, export jobs, and catalog state recover as documented.
+5. **Rerun end-to-end workflows** without manual database or recording-file edits.
 
-Stop qualification on any silent recording-loss path, remote authentication bypass, secret leak,
-indefinitely running job, or open release-blocking defect.
+Stop qualification immediately on any silent recording-loss path, remote authentication bypass, secret leak, runaway job, or open release-blocking defect.
 
 ### MQTT restart rehearsal
 
-Use a disposable broker and synthetic event on an isolated installation. Interrupt broker access,
-publish the event, and observe the pending count before restarting KeepPeek. After restart,
-verify that the pending outbox is empty. Restore broker access and confirm that the old pending
-publication is not replayed. Emit a new event and verify delivery and consumer deduplication by
-`(instance_id, event_id, revision)`. Confirm that the original durable event is still available
-in KeepPeek and that recording continued independently. QoS does not make this outbox durable;
-downstream recovery must not assume replay across a KeepPeek restart.
+1. Point an isolated installation at a disposable MQTT broker and emit a synthetic event after interrupting broker reachability.
+2. Confirm the pending outbox count increments, then restart KeepPeek.
+3. After restart, confirm the pending outbox is empty; restore broker access and verify the pre-restart pending publication is **not** replayed (QoS does not make the outbox durable across restarts).
+4. Emit a new event and verify delivery plus consumer deduplication by `(instance_id, event_id, revision)`.
+5. Confirm the original durable event remains in KeepPeek and recording continued uninterrupted.
 
 ## Current limitations
 
-### Camera support is evidence-based
-
-Discovery does not prove authentication, stable media, keyframes, or valid recordings. Validate
-each requested stream through a finalized MP4 and independent decode before relying on it. Prefer
-`reo-proto` over TCP for a Reolink camera only after that path passes; use RTSP over TCP for a
-generic ONVIF camera unless measured evidence supports another transport.
-
-### Browser codec support varies
-
-KeepPeek stores camera media without re-encoding it. A browser may therefore record or index a main
-stream that it cannot decode. Keep a broadly compatible H.264 substream for live view and review,
-and treat a truthful incompatibility message as different from missing footage. Automatic
-transcoding remains separate work.
-
-### Configuration bundles do not archive recording media
-
-KeepPeek provides direct ZIP export and validated application of `config.toml` and plaintext
-`secrets.toml`, with restart activation and automatic startup recovery. `recordings.db`, recording MP4s, and thumbnail
-JPEGs remain a separate archive responsibility. A recovery rehearsal must test both the sensitive
-KeepPeek configuration bundle and the recording archive. See
-[Backup and restore](./backup-and-restore.md) and the
-[recording archive recovery procedure](./recording-archive-recovery.md). There is no public importer
-for an unrelated recording archive, no general catalog downgrade command, and no automatic adoption
-of unknown MP4s. A validated index rebuild applies only to eligible existing catalog recordings.
-
-### Restart resets runtime work
-
-Notification inbox/history, retry work and delivery counters; MQTT pending publications and
-deduplication; and access sessions, audit history and last-use activity are not durable. Restart
-does not replay those queues. Capture required operational evidence before restarting and verify
-the intended behavior afterward. Durable recording events and settings have separate recovery
-contracts; see [What survives a restart](./backup-and-restore.md#what-survives-a-restart).
-
-### Maintenance has filesystem and recovery boundaries
-
-Manual maintenance is destructive and uses confirmed whole-recording selections. Native Windows
-mutation targets NTFS with persistent ACLs; ReFS is rejected. Structural container inspection does
-not certify complete media decodability or immutable content. Unknown files are not adopted or
-deleted automatically. Review [Recording maintenance](./recording-maintenance.md) for cooperative
-deadlines, same-account interference limits, interrupted-work handling, and unqualified scenarios.
-
-### Access roles are intentionally fixed
-
-Remote access supports Administrator and User; custom roles are not available. Administrators can
-restrict a User credential to selected camera groups and individual cameras in **Settings → Access
-& roles → User access**. The server enforces these grants for media, events, coverage, and camera
-controls. Dashboard audiences remain separate and do not grant camera access. Saving a grant
-change closes the affected User's existing sessions; stale saves retain the draft and report a
-conflict. The default grant includes all current and future cameras.
-
-Trusted-local clients remain Administrators. Exclude an address from `access.local_networks` and
-require a User credential when that client needs camera restrictions. Hidden navigation is not
-an authorization boundary. See [Camera and dashboard access](./authentication.md#camera-and-dashboard-access).
-
-An access change during dashboard initialization can leave an expired-session error visible until
-the page is reloaded. The invalid session remains denied by the server. Follow
-[the reconnect steps](./authentication.md#session-expired-after-a-permission-change) and verify
-the new grants after sign-in; this does not establish that the UI race has been resolved.
-
-### Detection remains external
-
-KeepPeek records and presents camera-native or externally published events. It does not own object,
-face, or license-plate detection, model management, zones, masks, or training. Recording and health
-must remain useful when an external analysis service is absent.
+| Area                                                               | Limitation and operational boundary                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Camera compatibility is evidence-based**                         | Discovery never proves authentication, stable frames, keyframes, or valid MP4s. Validate each stream through a finalized MP4 and independent decode; prefer `reo-proto`/TCP for Reolink after validation and RTSP/TCP by default for generic ONVIF.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| **Browser and webview codec support varies**                       | KeepPeek stores media without re-encoding, so a recorder can capture a stream a browser (or macOS `WKWebView`) cannot decode. Retain an H.264 substream for reliable viewing; truthful codec incompatibility is distinct from missing footage. Automatic transcoding remains external.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **Config ZIP excludes recording media**                            | Direct ZIP export/apply covers `config.toml` and plaintext `secrets.toml` with restart activation and startup recovery. `recordings.db`, MP4 files, and thumbnails are a separate backup/recovery responsibility ([Backup and restore](./backup-and-restore.md), [Archive recovery](./recording-archive-recovery.md)). No foreign-archive importer, catalog downgrade, or automatic adoption of unknown MP4s exists; index rebuild applies only to eligible existing catalog recordings.                                                                                                                                                                                                                                                                                                                                      |
+| **Restart resets runtime work**                                    | Notification inbox/history/retries/counters, MQTT pending outbox/deduplication, and access sessions/audit/last-use are in-memory only and do not replay after restart ([What survives a restart](./backup-and-restore.md#what-survives-a-restart)).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| **Maintenance filesystem boundaries**                              | Manual maintenance is destructive and operates on confirmed whole-recording selections. Windows mutation requires NTFS with persistent ACLs (ReFS is rejected). Structural checks do not certify full decodability or immutability; unknown files are never auto-adopted or auto-deleted ([Recording maintenance](./recording-maintenance.md)).                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| **Fixed access roles & UI session race**                           | Only Administrator and User roles exist (no custom roles). Administrators scope User grants in **Settings > Access** (**User access**); default grants cover all current and future cameras, dashboard audiences never grant camera access, and saving grant changes closes affected User sessions (stale saves retain the draft and conflict). Trusted-local clients remain Administrators unless excluded from `access.local_networks` ([Camera and dashboard access](./authentication.md#camera-and-dashboard-access)). **Known UI race:** an access change during dashboard initialization can leave an expired-session banner visible until reload while the server denies the invalid session; follow [reconnect steps](./authentication.md#session-expired-after-a-permission-change) and verify grants after sign-in. |
+| **Desktop app OIDC restriction**                                   | `keeppeek-desktop` connects to an existing server and blocks cross-origin OIDC login redirects and verification popups by design; use a standard browser for OIDC sign-in or administrator OIDC verification ([Desktop application](./desktop-app.md)).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **External AI, optional timelapse encoder & unavailable controls** | Detection, models, zones/masks, and training remain external. Optional silent MP4 timelapse export requires a host-installed `ffmpeg` binary. Live participant groups, notification rule Forwarder action, event-source registry, automatic update checks, and bulk erase remain unavailable ([Feature guide](./feature-guide.md)).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 ## Promotion record
 
-The owner records the exact release commit, platform and browser versions, camera and codec matrix,
-network topology, storage configuration, test commands, soak duration, observed limits, known
-workarounds, and a promote or reject decision. Unverified items stay explicit; a green build never
-silently checks a deployment-specific criterion.
+Record concrete results for the exact candidate build before signing off. Leave unverified items explicit—a green build never satisfies a deployment criterion silently.
 
-Use a record with the following concrete results:
+| Evidence                      | Required record                                                                                                                          |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| **Build and deployment**      | Exact version/commit or image digest, host architecture, filesystem, service identity, browser/desktop versions, and proxy/VPN topology. |
+| **Camera matrix**             | Camera model and firmware, transport, main/sub codecs, finalized recording result, and independent decode verification.                  |
+| **Access**                    | Allowed and denied camera checks, dashboard audiences, expired/revoked sessions, guest links, and local vs. remote classification.       |
+| **Sustained operation**       | Start/end timestamps, workload, every recording gap and its root cause, memory/storage growth, cleanup, and reconnect results.           |
+| **Recovery**                  | Configuration ZIP apply, stopped catalog/media copy, restart, upgrade rehearsal, and recovered vs. missing intervals.                    |
+| **Integrations and evidence** | Provider/broker outage and restart behavior, completed/failed/cancelled exports, and verified downloaded bytes.                          |
+| **Decision**                  | Open issues, workarounds, evidence location, and an explicit promote or reject decision.                                                 |
 
-| Evidence                  | Record                                                                                                                           |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Build and deployment      | Exact version/commit or image digest, host architecture, filesystem, service identity, browser versions, and proxy/VPN topology. |
-| Camera matrix             | Camera model and firmware, transport, main/sub codecs, finalized recording and independent decode results.                       |
-| Access                    | Allowed and denied camera checks, dashboard audiences, expired/revoked sessions, and local versus remote classification.         |
-| Sustained operation       | Start/end times, workload, recording gaps and explanations, memory/storage growth, cleanup and reconnect results.                |
-| Recovery                  | Configuration ZIP apply, stopped catalog/media copy, restart, upgrade rehearsal, and recovered/missing intervals.                |
-| Integrations and evidence | Provider/broker outage and restart behavior, completed/failed/cancelled exports, and verified downloaded bytes.                  |
-| Decision                  | Remaining issues and workarounds, evidence location, and an explicit promote or reject decision.                                 |
-
-Use [Upgrades and migrations](./upgrades-and-migrations.md) to plan a version change, and
-[Reporting bugs](./reporting-bugs.md) for reproducible failures. This guide does not close the Alpha
-gate, its feature-freeze decision, or the installation's long-running qualification work.
+Use [Upgrades and migrations](./upgrades-and-migrations.md) to plan version changes and [Reporting bugs](./reporting-bugs.md) for reproducible defects. This page does not close the Alpha gate, declare a feature freeze, or substitute for long-running deployment qualification.

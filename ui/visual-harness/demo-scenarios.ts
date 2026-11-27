@@ -1,4 +1,8 @@
 import type { DemoScenarioDefinition } from '../src/lib/storybook/demo';
+import { integrationsDemoScenarios } from './demo-scenarios-integrations';
+import { onboardingDemoScenarios } from './demo-scenarios-onboarding';
+import { opsDemoScenarios } from './demo-scenarios-ops';
+import { watchDemoScenarios } from './demo-scenarios-watch';
 
 export const board31HistoryDemo = {
 	metadata: {
@@ -146,5 +150,9 @@ export const cameraCatalogWizardDemo = {
 
 export const demoScenarios: readonly DemoScenarioDefinition[] = [
 	board31HistoryDemo,
-	cameraCatalogWizardDemo
+	cameraCatalogWizardDemo,
+	...onboardingDemoScenarios,
+	...watchDemoScenarios,
+	...opsDemoScenarios,
+	...integrationsDemoScenarios
 ];

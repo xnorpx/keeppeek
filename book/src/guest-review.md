@@ -1,113 +1,82 @@
 # Guest review links
 
-Guest review gives a recipient access to a selected recording interval or one completed export
-without a KeepPeek account.
+This page covers creating, opening, and revoking bounded guest review links on `/share`, deployment prerequisites in **Settings → Access → Guest sharing**, management in **Settings → Access → Guest links**, transport peer classification, and security/rate limits. Guest links grant temporary access to one completed export or one bounded recording range without a KeepPeek account.
+
+## Video walkthrough
+
+Watch enabling the guest sharing HTTPS policy, creating a bounded guest link, opening the isolated `/share` review page, and revoking the grant:
+
+<video controls crossorigin="anonymous" preload="metadata" playsinline style="width: 100%; height: auto">
+  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/share.desktop.guest-review.mp4" type="video/mp4">
+  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/share.desktop.guest-review.vtt" kind="captions" srclang="en" label="English">
+  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/share.desktop.guest-review.mp4">Download the guest review link demo</a>.
+</video>
 
 ## Prepare the deployment
 
-As an Administrator, open **Settings → Access → Guest sharing**. Sharing defaults off. Set
-**External HTTPS origin**, enable sharing and save. Use a canonical origin such as
-`https://review.example` or `https://review.example:8443`, without a path, credentials, query,
-fragment or trailing slash. The policy belongs in the existing `config.toml`:
+Guest sharing defaults **off**. Before creating links, an Administrator must configure the external HTTPS origin and storage prerequisites:
 
-```toml
-[sharing]
-enabled = true
-public_origin = "https://review.example"
-```
+1. Open **Settings → Access → Guest sharing**, set **External HTTPS origin**, enable sharing, and save. Use a canonical HTTPS origin such as `https://review.example` or `https://review.example:8443` (no path, credentials, query, fragment, or trailing slash).
+2. Supply DNS, valid HTTPS termination, reverse proxy, firewall rules, and recipient reachability. KeepPeek provides no tunnel or relay and does not verify external reachability.
+3. Configure `[access].trusted_proxies` explicitly if behind a reverse proxy and preserve the expected external `Host` and `Origin` headers. See [Authentication and access control](./authentication.md) and [Guest review deployment policy](./configuration-reference.md#guest-review-deployment-policy).
 
-Use Settings for live changes. Manual file edits apply on restart; leave the server-owned
-revision alone. See the [configuration reference](./configuration-reference.md#guest-review-deployment-policy).
+Manual edits to `[sharing]` in `config.toml` apply on restart (do not edit the server-owned revision field); use Settings for live changes.
 
-The operator supplies DNS, valid HTTPS, any reverse proxy, firewall rules and recipient network
-access. KeepPeek supplies no tunnel or relay and does not verify reachability. Configure
-[proxy trust](./authentication.md) explicitly and preserve the expected external Host and origin.
+**Operational database boundary:** Grant verifiers, revocations, and usage counters live in a private operational database under the identity-bound metadata owner (separate from `config.toml`, requiring private local filesystem permissions and NTFS on Windows). Never construct or relocate this directory manually. Configuration ZIP exports do not include this database; keep sharing disabled during metadata recovery because an older backup is not current revocation evidence.
 
-The identity-bound metadata owner and export volume must be available. Grant verifiers and
-counters live in a private operational database under that metadata owner, separate from settings.
-Supported private local filesystem permissions are required; Windows requires NTFS. Do not
-construct or relocate this directory manually. A configuration ZIP does not back up the database.
-Keep sharing disabled during metadata recovery: an older backup is not current revocation evidence.
+## Create a guest review link
 
-## Share a completed export
+KeepPeek supports two creation paths, both capped at `2 minutes` and `512 MiB` and requiring H.264 video with supported AAC audio:
 
-1. In **Keep → Export**, create an export as the Administrator who will share it. Wait for
-   **Ready**, then choose **Create guest link**. Older exports without durable creator and camera
-   identity or measured media proof require a new export.
-2. Inspect the camera, file bounds, gaps, size and file expiry. The grant covers the complete
-   previewed MP4, which can start before the originally requested range to include a keyframe.
-   This workflow does not trim an exact interval. Evidence is limited to two minutes and 512 MiB;
-   guest media admission accepts H.264 with supported AAC audio.
-3. Set a display name, optional private note, expiry, playback/download permissions and any positive
-   usage limits. Expiry is at most 24 hours and cannot exceed the export's expiry. Download defaults
-   off. Review these choices, then create the link.
-4. Copy the link while the dialog remains open and send it through your chosen private channel.
-   KeepPeek holds the secret in the dialog's memory. After closing, the list can revoke access
-   but cannot recover the link. Anyone holding the full link can use its permitted access.
+### Option A: Share a completed export
 
-This first workflow requires a retained local export with a file expiry. Archive-only exports
-are outside this workflow.
+1. In **Keep → Export**, create an export as the Administrator who will share it, wait for **Ready**, and select **Create guest link**. (Requires a retained local export with file expiry, creator/camera identity, and measured media proof; archive-only and legacy exports require creating a fresh export.)
+2. Inspect camera, measured file bounds (which may start before the requested range to include a leading keyframe), gaps, byte size, and file expiry. This path shares the entire previewed MP4 without trimming.
+3. Set display name, optional private note, expiry (`<= 24 hours` and `<=` export expiry), playback/download permissions (**Download** defaults **off**), and any positive usage limits, then create the link.
+4. Copy and send the link while the dialog is open. KeepPeek holds the secret only in dialog memory—after closing, **Guest links** can revoke the grant but never recover the secret.
 
-If creation is unconfirmed, retain its displayed reference. Find and revoke that grant in
-**Settings → Access → Guest links** before creating another. A retry cannot recover a lost secret.
+If creation times out or is unconfirmed, retain the displayed reference and check/revoke that grant in **Settings → Access → Guest links** before creating another; retrying cannot recover a lost secret.
 
-## Share a recording range
+### Option B: Share a recording range
 
-As an Administrator, select **Share recording range** in **Keep → Export**, in an event's
-detail, or beside a saved bookmark. Event and bookmark actions use the event's recorded
-start and end, without adding surrounding footage. An open event or missing recording
-cannot supply a bounded interval. Older recorders require an update to show the action.
+1. Select **Share recording range** from **Keep → Export**, an event's detail drawer, or beside a saved bookmark. Event and bookmark actions use the event's exact recorded start and end without padding (open events and missing recordings cannot supply a bounded interval).
+2. KeepPeek reuses a matching ready export you own or prepares a new local export for the camera and stream. Review both the selected interval and measured file bounds, gaps, and expiry.
+   - KeepPeek declines the range if any keyframe, audio sample, or trailing frame extends outside the selected interval, or if the stream has a nonzero recorded-audio correction. Adjust bounds in Keep when needed.
+   - In Keep, your selected stream is preserved. From events or bookmarks, KeepPeek tries the latest-expiring matching ready file first (even if the original recording expired) and falls back to an available alternate stream if the primary stream has incompatible video, crosses a boundary, or uses corrected audio.
+   - Use **Reload preview** to inspect a failed preparation job, or **Prepare a fresh export** to start a new attempt (for example, to replace a legacy file lacking source proof).
+3. Configure permissions, expiry, and usage limits, create the link, and copy it immediately before closing the dialog.
 
-KeepPeek prepares a locally retained export for the selected camera and stream, or
-reuses a matching export you own. Review both the selected interval and the measured file
-bounds. Gaps and file expiry appear before creation. If a keyframe, audio sample or
-trailing frame would extend outside the interval, KeepPeek declines the range. You can
-choose new bounds explicitly in Keep. The two-minute and 512 MiB evidence limits and
-the playback, download and expiry settings apply to range links too.
-For an event or bookmark the recorder checks which streams have footage inside the selected
-interval. Keep preserves the stream you selected. A nonzero recorded-audio correction prevents
-range sharing because a sample's original time can differ from its presentation time in the file.
-**Reload preview** checks the same export job and displays its failure reason when preparation
-failed. **Prepare a fresh export** explicitly starts another attempt using the same stream and
-interval. This can replace a legacy file that lacks source proof or has an older audio snapshot.
-Events and bookmarks first try the latest-expiring matching ready file, including when the
-original recording has expired. When that stream has incompatible video, crosses an interval
-edge or uses corrected audio, an available alternate stream can supply the same interval.
-Keep preserves the stream selected by the operator.
+## What the guest receives (`/share`)
 
-## What the guest receives
+Opening the link loads the isolated `/share` page, which strips the secret URL fragment before the application initializes and exchanges it via `/guest/session` for a scoped `Secure`, `HttpOnly` cookie (`__Host-keeppeek-guest`).
 
-An isolated page removes the secret fragment before the application loads and uses a separate
-Secure, HttpOnly guest cookie. Guests can play and seek the file, and download it when permitted.
-Browser codec support is still required. **End review** ends the session; it does not revoke the link.
+| Guest capability / boundary | Behavior                                                                                                                                                                                                                                       |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Allowed actions**         | Stream and seek the shared MP4 (requires browser H.264/AAC decode), **Download MP4** when permitted, and **End review** (ends session without revoking link).                                                                                  |
+| **Denied access**           | No KeepPeek account, role, control channel, live wall, other recordings, events/search, snapshots, camera controls, Talk, settings, health, or logs.                                                                                           |
+| **Tab isolation**           | A second guest tab cannot switch an existing tab to different evidence via the shared cookie.                                                                                                                                                  |
+| **Usage accounting**        | First delivered media bytes durably commit `1` view (seeks in that session reuse it); downloads count per started transfer. Page loads and failed checks consume `0` uses; crashes count conservatively and committed uses are never refunded. |
+| **HTTP boundary checks**    | `/share` and `/guest/*` require HTTPS, exact configured `Host` and `Origin`, reject `Authorization` headers, and enforce bounded request sizes.                                                                                                |
 
-Guests receive no KeepPeek role or control channel, live wall, other footage, events/search,
-snapshots, camera controls, talk, settings, health or logs. A second guest tab cannot switch an
-existing tab to different evidence through the shared cookie.
+## Revoke, invalidation, and restart behavior
 
-The first successful media-byte delivery commits a view durably; seeks in that session reuse it.
-Downloads count separately per started transfer. Opening the page or failed validation consumes
-no view. A crash can conservatively count delivery before bytes reach the recipient; committed
-use is never refunded. Sessions last at most five minutes; media also stops at grant expiry.
+Inspect usage counters and revoke links with a reason in **Settings → Access → Guest links**.
 
-## Revoke and recover
+- **No retention hold:** Storage retention, manual deletion, missing storage, or a replaced export can end media availability before grant expiry.
+- **Immediate invalidation triggers:** Camera removal, active camera privacy, creator issuer revision or Administrator role loss, or any sharing policy change ends active sessions and blocks delivery. Source bindings track a configured camera incarnation, not historical physical hardware identity.
+- **Uncertain policy write:** Suspends guest access until an Administrator reloads the policy and saves cleanly (reloading camera settings does not clear this suspension).
+- **Server restart:** Terminates active sessions and transfers while preserving grants, revocations, and committed counters. Reopening requires the original link and remaining usage allowance.
 
-Use **Guest links** to inspect counters and revoke access with a reason. Sharing creates no
-retention hold: deletion, retention, missing storage or a replaced export can end availability
-sooner. Camera removal, active privacy and an invalid creator issuer revision or Administrator
-role also prevent delivery. The source binding identifies a configured camera incarnation;
-it does not prove historical physical hardware identity.
+## Limits, peer classification, and rate budgets
 
-Policy changes end active sessions. An uncertain settings write suspends guest access: reload
-the policy and save the desired settings successfully. Camera settings reload does not clear
-that suspension. Restart ends sessions and transfers while preserving grants, revocations and
-committed counts. Starting again requires the original valid link and remaining usage allowance.
+| Scope                                                               | Hard limit                                                                                                                                                             |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Active grants                                                       | `256` globally, `32` per creator                                                                                                                                       |
+| Grant history & cleanup                                             | `4,096` retained records (creation rejected when full); purged `30 days` after earlier of expiry/revocation (`256`/batch while running; all overdue purged on startup) |
+| Evidence size & duration                                            | `<= 512 MiB`, `<= 2 minutes`, H.264 + supported AAC                                                                                                                    |
+| Grant & session lifetimes                                           | Grant `<= 24 hours` (capped by export expiry); session `<= 5 minutes` (stops at expiry)                                                                                |
+| Concurrent sessions                                                 | `8` globally, `2` per grant (`2` concurrent transfers per session)                                                                                                     |
+| Egress bandwidth pacing                                             | `16 MiB/s` per classified peer address, `64 MiB/s` globally                                                                                                            |
+| Request budgets (`60 s` window, up to `128` tracked peer addresses) | Exchange: `20` / address, `120` global · Status: `240` / `1,200` · Media: `120` / `480` · Download: `12` / `48`                                                        |
 
-Limits are 256 active grants, 32 per creator, eight media sessions globally and two per grant.
-When a request comes through a proxy in `[access].trusted_proxies`, the per-address request and
-egress budgets use the client address from `X-Forwarded-For`. For all other requests, the budgets
-use the connection address and ignore forwarding headers.
-KeepPeek retains at most 4,096 grant records and rejects creation when the history is full.
-Expired or revoked grants disappear from lists 30 days after the earlier of expiry and revocation.
-The running server deletes overdue records in batches of 256. When the server restarts after
-downtime, it removes every overdue record before opening the guest store for access.
+**Transport peer classification:** When a guest request arrives through a proxy listed in `[access].trusted_proxies`, per-address request and egress budgets use the classified client IP from `X-Forwarded-For`. For all other requests, KeepPeek uses the direct transport peer address and ignores forwarding headers.
