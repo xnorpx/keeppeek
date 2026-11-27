@@ -298,6 +298,20 @@ RSS, host memory and load, recording-disk bytes, per-camera online/degraded gaug
 fps and bitrate, reconnects, drops, and WebRTC session counts. `ServerCapabilities.cameras`
 carries identity and `ptz.supported`; it is not a metrics feed.
 
+## Embedded MCP endpoint
+
+`POST /mcp` exposes a bounded Streamable HTTP Model Context Protocol (JSON-RPC 2.0, MCP
+`2025-03-26`) interface for AI operators and the `keeppeek mcp` stdio bridge. It is disabled
+by default and returns `404` unless `[mcp].enabled = true` is set in `config.toml`.
+
+The endpoint enforces KeepPeek `[access]` policy with Bearer credentials or trusted local
+network classification only (no query-string credentials and no browser session cookies),
+requires a valid `Host` header, and rejects mismatched cross-origin `Origin` headers to
+prevent DNS rebinding while allowing absent `Origin` headers for native CLI clients. Write
+tools additionally require Administrator role, `[mcp].allow_writes = true`, and the absence
+of `X-KeepPeek-MCP-Read-Only: true`. Every JSON-RPC response and error passes through
+serialization-layer secret redaction while preserving `{secret:KEY}` references.
+
 ## Guest evidence review
 
 Administrator sharing policy, immutable export preview, one-time grant creation and
