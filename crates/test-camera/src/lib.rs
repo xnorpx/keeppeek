@@ -7,9 +7,13 @@ mod media;
 mod onvif;
 mod reo;
 mod reolink_http;
+pub mod replay;
 mod rtsp;
 pub mod seed;
 mod web_ui;
+
+#[doc(inline)]
+pub use replay::*;
 
 use crate::{
     media::VideoSource, onvif::OnvifServer, reo::ReoServer, reolink_http::ReolinkHttpServer,
