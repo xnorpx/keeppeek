@@ -7,12 +7,13 @@
 
 use super::{
     AuthenticatedApiRequest, CameraSettingsUpdate, ControlCommandError,
-    MAX_NOTIFICATION_RULE_JSON_BYTES, ServerState, api_status, authenticated_api_request,
-    camera_access, camera_configuration_revision, configuration, current_config,
-    delete_camera_settings, get_logging_settings, logging, mcp_diagnostics, mcp_schemas,
-    mcp_snapshot, notification_command_error, proto_notification_rule_record, record_access_audit,
-    restore_notification_destinations, runtime_configuration, save_camera_settings, server_health,
-    service_error, state_store, unix_time_ms, validate_client_id,
+    MAX_NOTIFICATION_RULE_JSON_BYTES, ServerState, api_status, authenticate_api_bearer,
+    authenticated_api_request, camera_access, camera_configuration_revision, configuration,
+    current_config, delete_camera_settings, get_logging_settings, logging, mcp_diagnostics,
+    mcp_schemas, mcp_snapshot, notification_command_error, proto_notification_rule_record,
+    record_access_audit, restore_notification_destinations, runtime_configuration,
+    save_camera_settings, server_health, service_error, state_store, unix_time_ms,
+    validate_client_id,
 };
 use crate::{
     access::AccessRole,
@@ -55,12 +56,18 @@ const MAX_LOG_SEARCH_LIMIT: usize = 200;
 const PROFILE_ACTIVE_SCHEMA: &str = "keeppeek.runtime-profiles.active.v1";
 const PROFILE_SELECT_SCHEMA: &str = "keeppeek.runtime-profiles.select.v2";
 
+#[derive(Clone, Default)]
+struct CachedSecrets {
+    stamp: Option<(std::time::SystemTime, u64)>,
+    secrets: Secrets,
+}
+
 /// Server-owned MCP runtime state, concurrency tracker, and redaction snapshot.
 #[derive(Clone)]
 pub(super) struct Runtime {
     config: McpConfig,
     active_requests: Arc<AtomicUsize>,
-    secrets: Arc<RwLock<Secrets>>,
+    secrets: Arc<RwLock<CachedSecrets>>,
     snapshot_limiter: Arc<mcp_snapshot::SnapshotRateLimiter>,
 }
 
@@ -69,7 +76,10 @@ impl Runtime {
         Self {
             config,
             active_requests: Arc::new(AtomicUsize::new(0)),
-            secrets: Arc::new(RwLock::new(secrets)),
+            secrets: Arc::new(RwLock::new(CachedSecrets {
+                stamp: None,
+                secrets,
+            })),
             snapshot_limiter: Arc::new(mcp_snapshot::SnapshotRateLimiter::new()),
         }
     }
@@ -86,18 +96,55 @@ impl Runtime {
         &self.snapshot_limiter
     }
 
-    fn secrets_snapshot(&self) -> Secrets {
+    fn secrets_snapshot(&self, config_path: Option<&std::path::Path>) -> Secrets {
+        let Some(path) = config_path else {
+            return self
+                .secrets
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .secrets
+                .clone();
+        };
+        let secrets_file = config::secrets_path(path);
+        let stamp = std::fs::metadata(&secrets_file)
+            .ok()
+            .and_then(|meta| meta.modified().ok().map(|modified| (modified, meta.len())));
+        {
+            let guard = self
+                .secrets
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if stamp.is_none() || guard.stamp == stamp {
+                return guard.secrets.clone();
+            }
+        }
+        // Reload only when secrets.toml metadata changes so UI or backup edits stay redacted.
+        if let Ok(loaded) = config::load_secrets(path) {
+            let mut guard = self
+                .secrets
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.stamp = stamp;
+            guard.secrets = loaded.clone();
+            return loaded;
+        }
         self.secrets
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .secrets
             .clone()
     }
 
-    fn refresh_secrets(&self, secrets: Secrets) {
-        *self
+    fn refresh_secrets(&self, config_path: &std::path::Path, secrets: Secrets) {
+        let stamp = std::fs::metadata(config::secrets_path(config_path))
+            .ok()
+            .and_then(|meta| meta.modified().ok().map(|modified| (modified, meta.len())));
+        let mut guard = self
             .secrets
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = secrets;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.stamp = stamp;
+        guard.secrets = secrets;
     }
 
     pub(super) fn try_acquire(&self) -> Option<RequestGuard> {
@@ -316,20 +363,40 @@ pub(super) fn handle_unsupported_method(state: &ServerState) -> Response {
         .with_additional_header("Cache-Control", "no-store")
 }
 
+fn resolve_post_identity(
+    request: &Request,
+    state: &ServerState,
+    identity: &AuthenticatedApiRequest,
+) -> Result<AuthenticatedApiRequest, Response> {
+    // Require Bearer auth whenever a browser Origin header is present, even on local networks.
+    let effective = if request.header("Origin").is_some()
+        && identity.principal.credential_binding().is_none()
+    {
+        let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
+        authenticate_api_bearer(request, state, identity.classification, now_ms)
+            .map_err(|response| response.with_additional_header("Cache-Control", "no-store"))?
+    } else {
+        identity.clone()
+    };
+    if effective.principal.is_local() {
+        validate_local_host_header(request)?;
+    } else if effective.principal.credential_binding().is_none() {
+        return Err(api_status(401, "MCP requires Bearer authentication")
+            .with_additional_header("Cache-Control", "no-store"));
+    }
+    Ok(effective)
+}
+
 fn handle_authenticated_post(
     request: &Request,
     router_tx: &FacadeSender<RouterMessage>,
     state: &ServerState,
     identity: &AuthenticatedApiRequest,
 ) -> Response {
-    if identity.principal.is_local() {
-        if let Err(response) = validate_local_host_header(request) {
-            return response;
-        }
-    } else if identity.principal.credential_binding().is_none() {
-        return api_status(401, "MCP requires Bearer authentication")
-            .with_additional_header("Cache-Control", "no-store");
-    }
+    let identity = match resolve_post_identity(request, state, identity) {
+        Ok(resolved) => resolved,
+        Err(response) => return response,
+    };
     if !is_json_content_type(request) {
         return api_status(415, "MCP requests require Content-Type: application/json")
             .with_additional_header("Cache-Control", "no-store");
@@ -361,7 +428,7 @@ fn handle_authenticated_post(
     let ctx = McpContext {
         state,
         router_tx,
-        identity,
+        identity: &identity,
         read_only_header: read_only_header_enabled(request),
         deadline: Instant::now() + Duration::from_secs(state.mcp.config().request_timeout_seconds),
     };
@@ -501,8 +568,10 @@ fn read_bounded_body(request: &Request, max_bytes: usize) -> Result<Vec<u8>, Res
 }
 
 fn build_redactor(state: &ServerState) -> SecretRedactor {
-    // Use the in-memory secrets snapshot so hot responses never touch disk or chmod secrets.toml.
-    let secrets = state.mcp.secrets_snapshot();
+    // Use the metadata-validated in-memory secrets snapshot without reading disk on unchanged requests.
+    let secrets = state
+        .mcp
+        .secrets_snapshot(state.camera_config_path.as_deref());
     let mut extra = Vec::new();
     let access_key = *state
         .access_key
@@ -967,7 +1036,7 @@ fn tool_list_secret_keys(ctx: &McpContext<'_>) -> Result<ToolCallResult, ToolErr
             ToolError::internal(format!("unable to read secrets keys: {error}"))
         })?;
         let keys = secrets.keys();
-        ctx.state.mcp.refresh_secrets(secrets);
+        ctx.state.mcp.refresh_secrets(path, secrets);
         keys
     } else {
         Vec::new()
@@ -1621,6 +1690,12 @@ struct ManageCameraArgs {
     event_recording_stream: Option<String>,
 }
 
+/// Translates a current `get_configuration` revision to the camera settings revision.
+///
+/// KeepPeek computes separate revision hashes for full configuration snapshots
+/// (`get_configuration`) and camera/runtime settings (`get_runtime_configuration`).
+/// Translating only an exact match of the current full revision lets callers pass
+/// either revision while still rejecting stale revisions with compare-and-set.
 fn resolve_camera_mutation_revision(
     ctx: &McpContext<'_>,
     expected: &str,
@@ -1687,7 +1762,7 @@ fn upsert_camera_via_mcp(
             if let Some(path) = ctx.state.camera_config_path.as_deref()
                 && let Ok(secrets) = config::load_secrets(path)
             {
-                ctx.state.mcp.refresh_secrets(secrets);
+                ctx.state.mcp.refresh_secrets(path, secrets);
             }
             ctx.audit("mcp_manage_camera", Some(camera_id), "success");
             let payload = serde_json::to_value(response).map_err(|error| {
@@ -1730,30 +1805,55 @@ fn validate_secret_ref_field(value: Option<&str>, field: &str) -> Result<(), Too
     }
 }
 
+const RTSP_SENSITIVE_QUERY_KEYS: &[&str] = &[
+    "user", "username", "pass", "password", "passwd", "pwd", "token", "auth", "secret", "key",
+    "apikey", "api_key",
+];
+
 fn validate_rtsp_url_secret_policy(url: &str, field: &str) -> Result<(), ToolError> {
-    let Some(scheme_pos) = url.find("://") else {
-        return Ok(());
-    };
-    let authority_start = scheme_pos + 3;
-    let authority_end = url[authority_start..]
-        .find(['/', '?', '#'])
-        .map_or(url.len(), |offset| authority_start + offset);
-    let authority = &url[authority_start..authority_end];
-    let Some(at_pos) = authority.rfind('@') else {
-        return Ok(());
-    };
-    let userinfo = &authority[..at_pos];
-    let uses_ref = config::is_secret_reference(userinfo)
-        || userinfo
-            .split_once(':')
-            .is_some_and(|(user, pass)| !user.is_empty() && config::is_secret_reference(pass));
-    if uses_ref {
-        Ok(())
-    } else {
-        Err(ToolError::invalid_params(format!(
-            "{field} must not contain plaintext credentials; use {{secret:KEY|url}}"
-        )))
+    if let Some(scheme_pos) = url.find("://") {
+        let authority_start = scheme_pos + 3;
+        let authority_end = url[authority_start..]
+            .find(['/', '?', '#'])
+            .map_or(url.len(), |offset| authority_start + offset);
+        let authority = &url[authority_start..authority_end];
+        if let Some(at_pos) = authority.rfind('@') {
+            let userinfo = &authority[..at_pos];
+            let uses_ref = config::is_secret_reference(userinfo)
+                || userinfo.split_once(':').is_some_and(|(user, pass)| {
+                    !user.is_empty() && config::is_secret_reference(pass)
+                });
+            if !uses_ref {
+                return Err(ToolError::invalid_params(format!(
+                    "{field} must not contain plaintext credentials; use {{secret:KEY|url}}"
+                )));
+            }
+        }
     }
+    validate_rtsp_query_secret_policy(url, field)
+}
+
+fn validate_rtsp_query_secret_policy(url: &str, field: &str) -> Result<(), ToolError> {
+    let Some((_, rest)) = url.split_once('?') else {
+        return Ok(());
+    };
+    let query = rest.split('#').next().unwrap_or(rest);
+    for pair in query.split('&') {
+        let Some((raw_key, raw_value)) = pair.split_once('=') else {
+            continue;
+        };
+        let key = raw_key.trim().to_ascii_lowercase();
+        let value = raw_value.trim();
+        if !value.is_empty()
+            && RTSP_SENSITIVE_QUERY_KEYS.contains(&key.as_str())
+            && !config::is_secret_reference(value)
+        {
+            return Err(ToolError::invalid_params(format!(
+                "{field} query parameter '{raw_key}' must not contain plaintext credentials; use {{secret:KEY|url}}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn build_camera_settings_update(args: ManageCameraArgs) -> Result<CameraSettingsUpdate, ToolError> {
@@ -2019,7 +2119,7 @@ fn validate_and_resolve_notification_actions(
                 ))
             })?;
         if let Ok(secrets) = config::load_secrets(config_path) {
-            state.mcp.refresh_secrets(secrets);
+            state.mcp.refresh_secrets(config_path, secrets);
         }
         object.insert("destination".to_owned(), Value::String(resolved));
     }
@@ -2224,8 +2324,14 @@ fn build_camera_patch(
             .transpose()?,
         onvif_port: input.onvif_port.map(to_u32_update).transpose()?,
         http_port: input.http_port.map(to_u32_update).transpose()?,
-        main_rtsp_url: input.main_rtsp_url.map(to_string_update).transpose()?,
-        sub_rtsp_url: input.sub_rtsp_url.map(to_string_update).transpose()?,
+        main_rtsp_url: input
+            .main_rtsp_url
+            .map(|value| to_rtsp_url_update(value, "main_rtsp_url"))
+            .transpose()?,
+        sub_rtsp_url: input
+            .sub_rtsp_url
+            .map(|value| to_rtsp_url_update(value, "sub_rtsp_url"))
+            .transpose()?,
         uid_secret_reference: input
             .uid_secret_reference
             .map(to_string_update)
@@ -2320,6 +2426,23 @@ fn build_template_values(
             .map(parse_event_stream)
             .transpose()?,
     })
+}
+
+fn to_rtsp_url_update(
+    input: OptionalUpdateInput<String>,
+    field: &str,
+) -> Result<proto::OptionalStringUpdate, ToolError> {
+    map_optional_update(
+        input,
+        field,
+        |url| {
+            validate_rtsp_url_secret_policy(&url, field)?;
+            Ok(url)
+        },
+        proto::optional_string_update::Value::Set,
+        proto::optional_string_update::Value::Clear,
+        |value| proto::OptionalStringUpdate { value: Some(value) },
+    )
 }
 
 fn to_string_update(
@@ -2954,13 +3077,41 @@ display_name = "Front Door"
         let mut allowlisted_state = state.clone();
         allowlisted_state.allowed_origins =
             Arc::new(HashSet::from(["http://127.0.0.1:8081".to_owned()]));
-        let allowlisted_origin = mcp_post_request(
+        let issued = allowlisted_state
+            .access_manager
+            .create_credential(
+                "browser-admin",
+                None,
+                AccessRole::Administrator,
+                None,
+                1_000,
+            )
+            .unwrap();
+        // Allowlisted Origin without Bearer token must be rejected even from loopback.
+        let allowlisted_unauth = mcp_post_request(
             &json!({"jsonrpc":"2.0","id":1,"method":"ping"}),
             vec![("Origin".into(), "http://127.0.0.1:8081".into())],
             "127.0.0.1:50000",
         );
         assert_eq!(
-            super::super::handle_request(&allowlisted_origin, &router_tx, &allowlisted_state)
+            super::super::handle_request(&allowlisted_unauth, &router_tx, &allowlisted_state)
+                .status_code,
+            401
+        );
+
+        let allowlisted_with_bearer = mcp_post_request(
+            &json!({"jsonrpc":"2.0","id":1,"method":"ping"}),
+            vec![
+                ("Origin".into(), "http://127.0.0.1:8081".into()),
+                (
+                    "Authorization".into(),
+                    format!("Bearer {}", issued.access_key.canonical()),
+                ),
+            ],
+            "127.0.0.1:50000",
+        );
+        assert_eq!(
+            super::super::handle_request(&allowlisted_with_bearer, &router_tx, &allowlisted_state)
                 .status_code,
             200
         );
@@ -3681,6 +3832,12 @@ display_name = "Front Door"
                 "expected_configuration_revision": revision,
                 "main_rtsp_url": "rtsp://admin:hunter2@192.0.2.50/main"
             }),
+            json!({
+                "action": "upsert",
+                "ip": "192.0.2.50",
+                "expected_configuration_revision": revision,
+                "sub_rtsp_url": "rtsp://192.0.2.50:554/sub?user=admin&password=hunter2"
+            }),
         ] {
             let rejected = super::super::handle_request(
                 &mcp_post_request(
@@ -3693,6 +3850,38 @@ display_name = "Front Door"
             );
             assert_eq!(
                 read_response_json(rejected)["error"]["code"],
+                ERROR_INVALID_PARAMS
+            );
+        }
+
+        // plan_configuration_change must also reject plaintext RTSP userinfo and query secrets.
+        for bad_url in [
+            "rtsp://admin:hunter2@192.0.2.10/main",
+            "rtsp://192.0.2.10/main?user=admin&password=hunter2",
+        ] {
+            let rejected_plan = super::super::handle_request(
+                &mcp_post_request(
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": 20,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "plan_configuration_change",
+                            "arguments": {
+                                "expected_configuration_revision": revision,
+                                "targets": { "camera_ids": ["192.0.2.10"] },
+                                "change": { "patch": { "main_rtsp_url": bad_url } }
+                            }
+                        }
+                    }),
+                    Vec::new(),
+                    "127.0.0.1:50000",
+                ),
+                &router_tx,
+                &state,
+            );
+            assert_eq!(
+                read_response_json(rejected_plan)["error"]["code"],
                 ERROR_INVALID_PARAMS
             );
         }
@@ -3885,6 +4074,29 @@ display_name = "Front Door"
             saved_json["result"]["structuredContent"]["draft_definition"]["actions"][0]["destination_configured"],
             true
         );
+
+        // Omitting expected_draft_revision (defaults to 0) on an existing rule must conflict.
+        let cas_conflict = super::super::handle_request(
+            &mcp_post_request(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 21,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "manage_notification_rule",
+                        "arguments": {
+                            "action": "save_draft",
+                            "definition": base_rule("front-webhook", "webhook", "{secret:WEBHOOK_URL}")
+                        }
+                    }
+                }),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        assert!(read_response_json(cas_conflict)["error"].is_object());
 
         let activated = super::super::handle_request(
             &mcp_post_request(
@@ -4190,22 +4402,24 @@ display_name = "Front Door"
     #[test]
     fn mcp_ac8_test_camera_ingest_isolation_and_latency() {
         use crate::storage::{
-            MediaFrame, RecordingFrame, StorageConfig, StorageEngine, VideoCodec, VideoFrame,
-            nal::annexb_to_avcc,
+            MediaFrame, RecordingCatalog, RecordingFrame, StorageConfig, StorageEngine, VideoCodec,
+            VideoFrame, nal::annexb_to_avcc,
         };
         use std::sync::atomic::AtomicBool;
         use test_frame::{EncodedFrame, TestFrameConfig, TestFrameSource};
 
-        const WARMUP_TRIALS: usize = 3;
-        const MEASURED_TRIALS: usize = 30;
-        const FRAMES_PER_TRIAL: usize = 30;
+        const FPS: u64 = 30;
+        const WINDOW_SECS: u64 = 5;
+        const FRAMES_SENT: usize = (FPS * WINDOW_SECS) as usize;
+        const FRAME_INTERVAL_NS: u64 = 1_000_000_000 / FPS;
+        const MAX_GOP_GAP_MS: i64 = 600;
 
-        let (tx, rx) = std::sync::mpsc::sync_channel::<EncodedFrame>(FRAMES_PER_TRIAL + 8);
+        let (tx, rx) = std::sync::mpsc::sync_channel::<EncodedFrame>(40);
         let source = TestFrameSource::start(
             TestFrameConfig {
                 width: 320,
                 height: 240,
-                fps: 30,
+                fps: FPS as u32,
                 codec: test_frame::Codec::H264,
                 keyframe_interval: 15,
                 bitrate_bps: 500_000,
@@ -4215,9 +4429,9 @@ display_name = "Front Door"
             },
         )
         .expect("start deterministic H.264 test source");
-        let mut frames = Vec::with_capacity(FRAMES_PER_TRIAL);
-        while frames.len() < FRAMES_PER_TRIAL {
-            frames.push(
+        let mut template_frames = Vec::with_capacity(30);
+        while template_frames.len() < 30 {
+            template_frames.push(
                 rx.recv_timeout(Duration::from_secs(5))
                     .expect("H.264 frame"),
             );
@@ -4243,22 +4457,36 @@ display_name = "Front Door"
             }
         });
 
-        let run_phase = |name: &str, with_mcp_load: bool| -> (Vec<f64>, u64, Vec<u64>, usize) {
+        struct PhaseOutcome {
+            frames_recorded: usize,
+            fragments: usize,
+            covered_ms: i64,
+            max_gap_ms: i64,
+            mcp_latencies_us: Vec<u64>,
+            max_response_bytes: usize,
+        }
+
+        let run_phase = |name: &str, with_mcp_load: bool| -> PhaseOutcome {
             let phase_dir = dir.join(name);
             std::fs::create_dir_all(&phase_dir).unwrap();
-            let engine = StorageEngine::start(StorageConfig {
-                medium_term_path: phase_dir.clone(),
-                long_term_path: phase_dir.clone(),
-                recording_catalog_path: phase_dir.join("recordings.db"),
-                event_thumbnail_path: phase_dir.join(".event-thumbnails"),
-                short_term_duration: Duration::from_secs(2),
-                medium_term_duration: Duration::from_secs(5),
-                flush_interval: Duration::from_secs(1),
-                write_buffer_bytes: 8 * 1024,
-                long_term_max_bytes: 0,
-                minimum_free_bytes: 0,
-                ..StorageConfig::default()
-            });
+            let catalog = RecordingCatalog::open(&phase_dir.join("recordings.db")).unwrap();
+            let catalog_handle = catalog.handle();
+            let engine = StorageEngine::start_with_catalog(
+                StorageConfig {
+                    medium_term_path: phase_dir.clone(),
+                    long_term_path: phase_dir.clone(),
+                    recording_catalog_path: phase_dir.join("recordings.db"),
+                    event_thumbnail_path: phase_dir.join(".event-thumbnails"),
+                    short_term_duration: Duration::from_secs(2),
+                    medium_term_duration: Duration::from_secs(5),
+                    flush_interval: Duration::from_secs(1),
+                    write_buffer_bytes: 8 * 1024,
+                    long_term_max_bytes: 0,
+                    minimum_free_bytes: 0,
+                    ..StorageConfig::default()
+                },
+                catalog_handle.clone(),
+            );
             let stop = Arc::new(AtomicBool::new(false));
             let mut mcp_workers = Vec::new();
             if with_mcp_load {
@@ -4275,7 +4503,7 @@ display_name = "Front Door"
                         let mut latencies = Vec::new();
                         let mut max_bytes = 0usize;
                         let mut iter = 0usize;
-                        while !worker_stop.load(Ordering::Acquire) || iter < 12 {
+                        while !worker_stop.load(Ordering::Acquire) {
                             let payload = &requests[(worker + iter) % 3];
                             let req = mcp_post_request(payload, Vec::new(), "127.0.0.1:50000");
                             let started = Instant::now();
@@ -4291,85 +4519,126 @@ display_name = "Front Door"
                             max_bytes = max_bytes.max(raw.len());
                             latencies.push(elapsed_us);
                             iter += 1;
-                            if worker_stop.load(Ordering::Acquire) && iter >= 12 {
-                                break;
-                            }
                         }
                         (latencies, max_bytes)
                     }));
                 }
             }
 
-            let mut trial_us = Vec::with_capacity(MEASURED_TRIALS);
-            let mut gaps = 0u64;
-            for trial in 0..(WARMUP_TRIALS + MEASURED_TRIALS) {
-                let started = Instant::now();
-                let mut previous = started;
-                for frame in &frames {
-                    let now = Instant::now();
-                    if now.duration_since(previous) > Duration::from_millis(250) {
-                        gaps += 1;
-                    }
-                    previous = now;
-                    engine.ingest(
-                        "192.0.2.10",
-                        RecordingFrame {
-                            source_rtp: None,
-                            received_at: now,
-                            timestamp: None,
-                            frame: MediaFrame::Video(VideoFrame {
-                                codec: VideoCodec::H264,
-                                is_keyframe: frame.is_keyframe,
-                                width: frame.width,
-                                height: frame.height,
-                                data: annexb_to_avcc(&frame.data).into(),
-                            }),
-                        },
-                    );
+            let phase_start = Instant::now();
+            for frame_idx in 0..FRAMES_SENT {
+                let target_offset = Duration::from_nanos(frame_idx as u64 * FRAME_INTERVAL_NS);
+                let target_time = phase_start + target_offset;
+                let now = Instant::now();
+                if now < target_time {
+                    std::thread::sleep(target_time - now);
                 }
-                let us_per_frame =
-                    started.elapsed().as_secs_f64() * 1_000_000.0 / frames.len() as f64;
-                if trial >= WARMUP_TRIALS {
-                    trial_us.push(us_per_frame);
-                }
+                let template = &template_frames[frame_idx % template_frames.len()];
+                engine.ingest(
+                    "192.0.2.10",
+                    RecordingFrame {
+                        source_rtp: None,
+                        received_at: Instant::now(),
+                        timestamp: Some(target_offset),
+                        frame: MediaFrame::Video(VideoFrame {
+                            codec: VideoCodec::H264,
+                            is_keyframe: template.is_keyframe,
+                            width: template.width,
+                            height: template.height,
+                            data: annexb_to_avcc(&template.data).into(),
+                        }),
+                    },
+                );
             }
 
             stop.store(true, Ordering::Release);
-            let mut latencies = Vec::new();
-            let mut max_bytes = 0usize;
+            let mut mcp_latencies_us = Vec::new();
+            let mut max_response_bytes = 0usize;
             for worker in mcp_workers {
                 let (worker_latencies, worker_max) = worker.join().unwrap();
-                latencies.extend(worker_latencies);
-                max_bytes = max_bytes.max(worker_max);
+                mcp_latencies_us.extend(worker_latencies);
+                max_response_bytes = max_response_bytes.max(worker_max);
             }
+
+            engine.flush_all();
             engine.shutdown();
-            (trial_us, gaps, latencies, max_bytes)
+
+            let mut fragments = catalog_handle
+                .media_fragments_in_range("192.0.2.10", i64::MIN + 1, i64::MAX)
+                .unwrap();
+            fragments.sort_by_key(|fragment| (fragment.start_ms, fragment.sequence));
+            let unique_paths: std::collections::BTreeSet<String> = fragments
+                .iter()
+                .map(|fragment| fragment.path.clone())
+                .collect();
+            let mut frames_recorded = 0usize;
+            for path in &unique_paths {
+                let file = std::fs::File::open(path).unwrap();
+                let reader = mp4::read_mp4(file).unwrap();
+                let video_samples: usize = reader
+                    .tracks()
+                    .values()
+                    .filter(|track| track.track_type().ok() == Some(mp4::TrackType::Video))
+                    .map(|track| track.sample_count() as usize)
+                    .sum();
+                frames_recorded += video_samples;
+            }
+            let covered_ms = match (fragments.first(), fragments.last()) {
+                (Some(first), Some(last)) => {
+                    last.start_ms + i64::try_from(last.duration_ms).unwrap_or(0) - first.start_ms
+                }
+                _ => 0,
+            };
+            let mut max_gap_ms = 0i64;
+            for pair in fragments.windows(2) {
+                let prev_end = pair[0].start_ms + i64::try_from(pair[0].duration_ms).unwrap_or(0);
+                let gap = pair[1].start_ms - prev_end;
+                if gap > max_gap_ms {
+                    max_gap_ms = gap;
+                }
+            }
+            drop(catalog_handle);
+            catalog.shutdown();
+
+            PhaseOutcome {
+                frames_recorded,
+                fragments: fragments.len(),
+                covered_ms,
+                max_gap_ms,
+                mcp_latencies_us,
+                max_response_bytes,
+            }
         };
 
-        let (mut base_us, base_gaps, _, _) = run_phase("baseline", false);
-        let (mut active_us, active_gaps, mut mcp_latencies_us, max_response_bytes) =
-            run_phase("active", true);
-        base_us.sort_by(f64::total_cmp);
-        active_us.sort_by(f64::total_cmp);
-        mcp_latencies_us.sort_unstable();
+        let baseline = run_phase("baseline", false);
+        let mut active = run_phase("active", true);
+        active.mcp_latencies_us.sort_unstable();
+        let mcp_count = active.mcp_latencies_us.len();
+        let mcp_p50_ms = active.mcp_latencies_us[mcp_count / 2] as f64 / 1000.0;
+        let mcp_p95_ms = active.mcp_latencies_us[(mcp_count * 95) / 100] as f64 / 1000.0;
+        let mcp_max_ms = *active.mcp_latencies_us.last().unwrap() as f64 / 1000.0;
 
-        let base_p50 = base_us[base_us.len() / 2];
-        let base_p95 = base_us[(base_us.len() * 95) / 100];
-        let active_p50 = active_us[active_us.len() / 2];
-        let active_p95 = active_us[(active_us.len() * 95) / 100];
-        let mcp_count = mcp_latencies_us.len();
-        let mcp_p50_ms = mcp_latencies_us[mcp_count / 2] as f64 / 1000.0;
-        let mcp_p95_ms = mcp_latencies_us[(mcp_count * 95) / 100] as f64 / 1000.0;
-        let mcp_max_ms = *mcp_latencies_us.last().unwrap() as f64 / 1000.0;
         eprintln!(
-            "AC-8 STORAGE ENGINE INGEST METRICS: trials={MEASURED_TRIALS} frames_per_trial={FRAMES_PER_TRIAL} base_p50_us={base_p50:.2} active_p50_us={active_p50:.2} base_p95_us={base_p95:.2} active_p95_us={active_p95:.2} base_gaps={base_gaps} active_gaps={active_gaps} mcp_calls={mcp_count} mcp_p50_ms={mcp_p50_ms:.3} mcp_p95_ms={mcp_p95_ms:.3} mcp_max_ms={mcp_max_ms:.3} max_response_bytes={max_response_bytes}"
+            "AC-8 REALTIME RECORDING CONTINUITY METRICS: window_s={WINDOW_SECS} fps={FPS} frames_sent={FRAMES_SENT} base_recorded={} base_fragments={} base_covered_ms={} base_max_gap_ms={} active_recorded={} active_fragments={} active_covered_ms={} active_max_gap_ms={} mcp_calls={mcp_count} mcp_p50_ms={mcp_p50_ms:.3} mcp_p95_ms={mcp_p95_ms:.3} mcp_max_ms={mcp_max_ms:.3} max_response_bytes={}",
+            baseline.frames_recorded,
+            baseline.fragments,
+            baseline.covered_ms,
+            baseline.max_gap_ms,
+            active.frames_recorded,
+            active.fragments,
+            active.covered_ms,
+            active.max_gap_ms,
+            active.max_response_bytes,
         );
-        assert_eq!(
-            active_gaps, 0,
-            "MCP load must not induce recording ingest gaps"
-        );
-        assert!(mcp_count >= 36);
-        assert!(max_response_bytes <= state.mcp.config().max_response_bytes);
+
+        assert_eq!(baseline.frames_recorded, FRAMES_SENT);
+        assert_eq!(active.frames_recorded, FRAMES_SENT);
+        assert!(baseline.covered_ms >= 4_500);
+        assert!(active.covered_ms >= 4_500);
+        assert!(baseline.max_gap_ms <= MAX_GOP_GAP_MS);
+        assert!(active.max_gap_ms <= MAX_GOP_GAP_MS);
+        assert!(mcp_count >= 50);
+        assert!(active.max_response_bytes <= state.mcp.config().max_response_bytes);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

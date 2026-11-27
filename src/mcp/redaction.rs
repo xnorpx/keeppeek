@@ -68,6 +68,15 @@ pub struct SecretRedactor {
     log_hub: Option<LogHub>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RedactionPath {
+    Root,
+    ResultObject,
+    ResultContentArray,
+    ResultContentItem,
+    Other,
+}
+
 impl SecretRedactor {
     /// Builds a redactor from `secrets`, optional extra raw values, and an optional `LogHub`.
     #[must_use]
@@ -92,7 +101,7 @@ impl SecretRedactor {
 
     /// Recursively redacts `value` in place up to the bounded nesting depth.
     pub fn redact_value(&self, value: &mut Value) {
-        self.redact_value_at_depth(value, 0, false);
+        self.redact_value_at_depth(value, 0, false, RedactionPath::Root);
     }
 
     /// Redacts raw secrets, URL credentials, and inline secret pairs in `text`.
@@ -115,7 +124,27 @@ impl SecretRedactor {
         redacted
     }
 
-    fn redact_value_at_depth(&self, value: &mut Value, depth: usize, under_sensitive_key: bool) {
+    fn redact_opaque_id_value(&self, value: &mut Value) {
+        if let Value::String(text) = value {
+            if text.is_empty() || is_secret_reference(text) {
+                return;
+            }
+            // Skip raw-secret substring matching so opaque IDs stay intact, but still scrub URL/inline secrets.
+            let mut redacted = redact_url_userinfo(text);
+            redacted = redact_inline_assignments(&redacted);
+            *text = redacted;
+        } else {
+            self.redact_value_at_depth(value, 1, false, RedactionPath::Other);
+        }
+    }
+
+    fn redact_value_at_depth(
+        &self,
+        value: &mut Value,
+        depth: usize,
+        under_sensitive_key: bool,
+        path: RedactionPath,
+    ) {
         if depth > MAX_REDACTION_DEPTH {
             *value = Value::String(DEPTH_LIMIT_PLACEHOLDER.to_owned());
             return;
@@ -137,21 +166,35 @@ impl SecretRedactor {
                 }
             }
             Value::Array(items) => {
+                let item_path = if path == RedactionPath::ResultContentArray {
+                    RedactionPath::ResultContentItem
+                } else {
+                    RedactionPath::Other
+                };
                 for item in items {
-                    self.redact_value_at_depth(item, depth + 1, under_sensitive_key);
+                    self.redact_value_at_depth(item, depth + 1, under_sensitive_key, item_path);
                 }
             }
             Value::Object(entries) => {
-                let is_image_content = entries.get("type").and_then(Value::as_str) == Some("image");
+                let is_top_level_image_content = path == RedactionPath::ResultContentItem
+                    && entries.get("type").and_then(Value::as_str) == Some("image");
                 for (key, entry_value) in entries {
-                    if is_image_content && key == "data" {
+                    if is_top_level_image_content && key == "data" {
                         continue;
                     }
                     if is_opaque_id_key(key) {
+                        self.redact_opaque_id_value(entry_value);
                         continue;
                     }
+                    let next_path = match (path, key.as_str()) {
+                        (RedactionPath::Root, "result") => RedactionPath::ResultObject,
+                        (RedactionPath::ResultObject, "content") => {
+                            RedactionPath::ResultContentArray
+                        }
+                        _ => RedactionPath::Other,
+                    };
                     let key_sensitive = is_sensitive_key(key);
-                    self.redact_value_at_depth(entry_value, depth + 1, key_sensitive);
+                    self.redact_value_at_depth(entry_value, depth + 1, key_sensitive, next_path);
                 }
             }
         }
@@ -427,7 +470,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_image_base64_opaque_ids_and_short_secret_safety() {
+    fn preserves_top_level_image_base64_and_redacts_nested_and_opaque_urls() {
         let secrets = Secrets::from_map(BTreeMap::from([
             ("TINY".to_owned(), "ab".to_owned()),
             ("LONG_PASS".to_owned(), "SuperSecret123!".to_owned()),
@@ -435,25 +478,50 @@ mod tests {
         let redactor = SecretRedactor::new(&secrets, Vec::new(), None);
         let image_data = "abSuperSecret123!Base64Payload==";
         let mut payload = json!({
-            "content": [
-                {
-                    "type": "image",
-                    "mimeType": "image/jpeg",
-                    "data": image_data
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "content": [
+                    {
+                        "type": "image",
+                        "mimeType": "image/jpeg",
+                        "data": image_data
+                    }
+                ],
+                "structuredContent": {
+                    "plan_id": "plan-ab-SuperSecret123!",
+                    "configuration_revision": "rev-ab-999",
+                    "template_id": "rtsp://admin:hunter2@192.0.2.10/main",
+                    "rule_id": "password=raw-inline-secret",
+                    "nested_log_fields": {
+                        "type": "image",
+                        "data": "leaked SuperSecret123! in log field"
+                    },
+                    "password": "ab",
+                    "detail": "cable leaked SuperSecret123! near label ab"
                 }
-            ],
-            "plan_id": "plan-ab-SuperSecret123!",
-            "configuration_revision": "rev-ab-999",
-            "password": "ab",
-            "detail": "cable leaked SuperSecret123! near label ab"
+            }
         });
 
         redactor.redact_value(&mut payload);
 
-        assert_eq!(payload["content"][0]["data"], image_data);
-        assert_eq!(payload["plan_id"], "plan-ab-SuperSecret123!");
-        assert_eq!(payload["configuration_revision"], "rev-ab-999");
-        assert_eq!(payload["password"], REDACTED_PLACEHOLDER);
-        assert_eq!(payload["detail"], "cable leaked [REDACTED] near label ab");
+        assert_eq!(payload["result"]["content"][0]["data"], image_data);
+        let structured = &payload["result"]["structuredContent"];
+        assert_eq!(structured["plan_id"], "plan-ab-SuperSecret123!");
+        assert_eq!(structured["configuration_revision"], "rev-ab-999");
+        assert_eq!(
+            structured["template_id"],
+            "rtsp://[REDACTED]@192.0.2.10/main"
+        );
+        assert_eq!(structured["rule_id"], "password=[REDACTED]");
+        assert_eq!(
+            structured["nested_log_fields"]["data"],
+            "leaked [REDACTED] in log field"
+        );
+        assert_eq!(structured["password"], REDACTED_PLACEHOLDER);
+        assert_eq!(
+            structured["detail"],
+            "cable leaked [REDACTED] near label ab"
+        );
     }
 }

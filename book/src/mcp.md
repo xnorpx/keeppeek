@@ -288,7 +288,8 @@ through serialization-layer secret redaction before leaving KeepPeek:
   to be `localhost` or an IP literal (`127.0.0.1`, `[::1]`) so DNS-rebound domain names are
   rejected with `403`.
 - Requests carrying a browser `Origin` header are rejected with `403` unless the exact origin is
-  listed in `[direct_card].allowed_origins`.
+  listed in `[direct_card].allowed_origins`, and require `Authorization: Bearer <key>` even on local
+  networks (returning `401` if unauthenticated).
 - Unsupported HTTP methods on `/mcp` return `405 Method Not Allowed`, and a disabled MCP server
   returns `404 Not Found`.
 

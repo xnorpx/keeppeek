@@ -78,7 +78,7 @@ snapshot_min_interval_seconds = 5
 - Keep `allow_writes = false` and `allow_snapshots = false` until the operator explicitly requests write operations or snapshots.
 - For remote access, keep `[access].require_secure_remote = true` and place KeepPeek behind a trusted HTTPS reverse proxy (`[access].trusted_proxies`) or a private VPN.
 - Authenticate HTTP requests with `Authorization: Bearer <key>`. Never place access keys in query parameters.
-- Browser `Origin` headers are rejected unless explicitly listed in `[direct_card].allowed_origins`. Non-browser clients omit `Origin`, and unauthenticated local requests must use `localhost` or an IP literal `Host` header to block DNS rebinding.
+- Browser `Origin` headers are rejected unless explicitly listed in `[direct_card].allowed_origins`, and any request carrying an `Origin` header requires `Authorization: Bearer <key>` even on local networks. Non-browser clients omit `Origin`, and unauthenticated local requests must use `localhost` or an IP literal `Host` header to block DNS rebinding.
 
 ## 3. Handle Credentials and Secrets Safely
 

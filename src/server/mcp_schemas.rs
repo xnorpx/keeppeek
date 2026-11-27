@@ -555,8 +555,16 @@ fn manage_notification_rule_schema() -> Value {
         "properties": {
             "action": { "type": "string", "enum": ["list", "save_draft", "activate", "delete"] },
             "rule_id": { "type": "string", "minLength": 1, "maxLength": 128 },
-            "expected_active_revision": { "type": "integer", "minimum": 0 },
-            "expected_draft_revision": { "type": "integer", "minimum": 0 },
+            "expected_active_revision": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Optimistic concurrency revision of the active rule (0 matches only an unactivated rule; never skips conflict checks)."
+            },
+            "expected_draft_revision": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Optimistic concurrency revision of the draft rule (0 matches only a brand-new rule; never skips conflict checks)."
+            },
             "definition": definition
         },
         "additionalProperties": false

@@ -1028,8 +1028,8 @@ fields remain at their default values, the canonical writer omits the section.
 
 Out-of-range values fail configuration validation during startup and configuration planning.
 `POST /mcp` enforces the existing `[access]` policy, Bearer header authentication, `localhost`/IP
-`Host` checks for unauthenticated local requests, `[direct_card].allowed_origins` allowlisting for
-browser `Origin` headers, serialization-layer secret redaction, and fail-closed camera privacy
+`Host` checks for unauthenticated local requests, `[direct_card].allowed_origins` allowlisting plus
+mandatory Bearer auth for browser `Origin` headers, serialization-layer secret redaction, and fail-closed camera privacy
 schedules for snapshots. Restart KeepPeek after manually editing `[mcp]`. See
 [MCP server and LLM configuration](./mcp.md).
 

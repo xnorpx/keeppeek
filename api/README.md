@@ -307,9 +307,10 @@ by default and returns `404` unless `[mcp].enabled = true` is set in `config.tom
 The endpoint enforces KeepPeek `[access]` policy with Bearer credentials or trusted local
 network classification only (no query-string credentials and no browser session cookies),
 requires a valid `Host` header, requires `Host` to be `localhost` or an IP literal for
-unauthenticated local requests, and rejects any browser `Origin` header not explicitly listed
-in `[direct_card].allowed_origins` to prevent DNS rebinding while allowing absent `Origin`
-headers for native CLI clients. Write tools additionally require Administrator role,
+unauthenticated local requests, rejects any browser `Origin` header not explicitly listed
+in `[direct_card].allowed_origins`, and requires `Authorization: Bearer <key>` whenever an
+`Origin` header is present (preventing DNS rebinding and token-free browser access while
+allowing absent `Origin` headers for native CLI clients). Write tools additionally require Administrator role,
 `[mcp].allow_writes = true`, and the absence of `X-KeepPeek-MCP-Read-Only: true`. Every
 JSON-RPC response and error passes through serialization-layer secret redaction while
 preserving `{secret:KEY}` references.

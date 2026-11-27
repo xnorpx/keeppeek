@@ -348,7 +348,7 @@ fn capture_isapi_frame(
     camera: &CameraEntry,
     deadline: Instant,
 ) -> Result<CapturedFrame, ControlCommandError> {
-    let _budget = remaining_budget(deadline)?;
+    let timeout = remaining_budget(deadline)?.min(SNAPSHOT_HTTP_TIMEOUT);
     let route = crate::isapi::Route::for_control(
         &camera.configuration,
         camera.info.ports.http,
@@ -361,13 +361,16 @@ fn capture_isapi_frame(
             "ISAPI snapshot is not available for this camera",
         )
     })?;
-    let mut client = ::isapi::blocking::Client::new(
+    let mut client = ::isapi::blocking::Client::builder(
         &route.origin,
         ::isapi::Credentials::new(
             camera.configuration.username.clone(),
             camera.configuration.password.clone(),
         ),
     )
+    .idle_timeout(timeout)
+    .cancelled(move || Instant::now() >= deadline)
+    .build()
     .map_err(|_| {
         ControlCommandError::new(
             proto::ErrorCode::Unavailable,
@@ -377,16 +380,16 @@ fn capture_isapi_frame(
     })?;
     let main_stream = route.channel.saturating_mul(100).saturating_add(1);
     let sub_stream = route.channel.saturating_mul(100).saturating_add(2);
-    let bytes = client
-        .snapshot(main_stream)
-        .or_else(|_| client.snapshot(sub_stream))
-        .map_err(|_| {
+    let bytes = client.snapshot(main_stream).or_else(|_| {
+        let _ = remaining_budget(deadline)?;
+        client.snapshot(sub_stream).map_err(|_| {
             ControlCommandError::new(
                 proto::ErrorCode::Unavailable,
                 503,
                 "ISAPI snapshot capture failed",
             )
-        })?;
+        })
+    })?;
     Ok(CapturedFrame {
         jpeg_bytes: bytes,
         source: "isapi",
@@ -397,7 +400,7 @@ fn capture_reolink_frame(
     camera: &CameraEntry,
     deadline: Instant,
 ) -> Result<CapturedFrame, ControlCommandError> {
-    let _budget = remaining_budget(deadline)?;
+    let timeout = remaining_budget(deadline)?.min(SNAPSHOT_HTTP_TIMEOUT);
     if !camera.info.is_reolink {
         return Err(ControlCommandError::new(
             proto::ErrorCode::Unavailable,
@@ -423,7 +426,7 @@ fn capture_reolink_frame(
             )
         },
     );
-    let mut client = ReolinkClient::new_with_http_port(ip, http_port);
+    let mut client = ReolinkClient::new_with_http_port_and_timeout(ip, http_port, timeout);
     client.login(username, password).map_err(|_| {
         ControlCommandError::new(
             proto::ErrorCode::Unavailable,
@@ -431,6 +434,7 @@ fn capture_reolink_frame(
             "Reolink snapshot login failed",
         )
     })?;
+    remaining_budget(deadline)?;
     let bytes = client.snap(0).map_err(|_| {
         ControlCommandError::new(
             proto::ErrorCode::Unavailable,
