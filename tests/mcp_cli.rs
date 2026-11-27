@@ -143,7 +143,9 @@ display_name = "Front Door"
         .collect();
     assert_eq!(frames.len(), 3);
     assert_eq!(frames[0]["result"]["protocolVersion"], "2025-03-26");
-    assert_eq!(frames[1]["result"]["tools"].as_array().unwrap().len(), 27);
+    let tools = frames[1]["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 28);
+    assert!(tools.iter().any(|tool| tool["name"] == "camera_debugging"));
     assert_eq!(
         frames[2]["result"]["structuredContent"]["keys"],
         serde_json::json!(["CAMERA_PASSWORD", "KEEPPEEK_ACCESS_KEY"])

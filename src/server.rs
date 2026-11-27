@@ -116,6 +116,7 @@ mod guest_review;
 mod health_snapshot;
 mod logging;
 mod mcp;
+mod mcp_camera_debug;
 mod mcp_catalog_probe;
 mod mcp_device_settings;
 mod mcp_diagnostics;
@@ -9276,6 +9277,15 @@ impl ServerState {
         self
     }
 
+    #[cfg(test)]
+    fn with_camera_debug_service(
+        mut self,
+        service: Arc<dyn mcp_camera_debug::CameraDebugService>,
+    ) -> Self {
+        self.mcp = self.mcp.with_camera_debug_service(service);
+        self
+    }
+
     pub(crate) fn privacy_registry(&self) -> Arc<PrivacyRegistry> {
         self.privacy.clone()
     }
@@ -10688,6 +10698,7 @@ fn serve_with_state_on_listener_inner(
         .start_deadline_watchdog(shutdown.clone())?;
     let addr = server.server_addr();
     tracing::info!(%addr, port = addr.port(), "KeepPeek is up and listening on http://{addr}");
+    session_reaper_state.mcp.emit_startup_warning();
     if let Some(ready) = ready {
         let _ = ready.send(addr);
     }
@@ -12488,6 +12499,9 @@ fn collect_server_health(
     let storage = collect_storage_health(state, history_mode, recording.storage, &mut issues);
     let webrtc = state.webrtc.health_snapshot();
     append_server_health_issues(&system, &storage, &webrtc, &mut issues);
+    if let Some(issue) = crate::health::mcp_camera_debugging_health_issue(state.mcp.config()) {
+        issues.push(issue);
+    }
     let status = server_health_status(&issues);
 
     (
@@ -15407,6 +15421,42 @@ mod tests {
         assert_eq!(camera.state, CameraHealthState::Healthy);
         assert_eq!(camera.reason, CameraHealthReason::Healthy);
         assert_eq!(server_health_status(&external_findings), "degraded");
+    }
+
+    #[test]
+    fn server_health_emits_mcp_warning_issue_only_when_camera_debugging_enabled() {
+        let base_state = media_test_state();
+        let (router, tx) = crate::runtime::Router::new().unwrap();
+        let worker = spawn_router_query_worker(router);
+        let default_health = server_health(&tx, &base_state);
+        assert_eq!(worker.join().unwrap(), 1);
+        assert!(
+            !default_health
+                .issues
+                .iter()
+                .any(|issue| issue.scope == "mcp")
+        );
+
+        let debug_state = media_test_state().with_mcp_config(crate::config::mcp::McpConfig {
+            enabled: true,
+            allow_camera_debugging: true,
+            debug_camera_ids: vec!["192.0.2.10".to_owned()],
+            ..crate::config::mcp::McpConfig::default()
+        });
+        let (router, tx) = crate::runtime::Router::new().unwrap();
+        let worker = spawn_router_query_worker(router);
+        let debug_health = server_health(&tx, &debug_state);
+        assert_eq!(worker.join().unwrap(), 1);
+        assert_eq!(debug_health.status, "degraded");
+        let mcp_issue = debug_health
+            .issues
+            .iter()
+            .find(|issue| issue.scope == "mcp")
+            .expect("mcp warning issue should be present");
+        assert_eq!(mcp_issue.severity, "warning");
+        assert!(mcp_issue.message.contains("PCAPNG"));
+        assert!(mcp_issue.message.contains("camera credentials"));
+        assert!(mcp_issue.message.contains("192.0.2.10"));
     }
 
     #[test]
