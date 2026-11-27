@@ -5,6 +5,7 @@ pub(crate) mod metadata;
 #[cfg(test)]
 mod recorded_audio_tests;
 pub(crate) mod reporting;
+pub mod secrets_store;
 pub(crate) mod sharing;
 mod storage_volumes;
 pub mod usage_reporting;
