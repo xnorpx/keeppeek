@@ -35,6 +35,7 @@
 - [External analysis](./external-analysis.md)
 - [Notifications and integrations](./notifications-and-integrations.md)
 - [Home Assistant card](./home-assistant.md)
+- [MCP server and LLM configuration](./mcp.md)
 - [Groups and two-way audio: current status](./groups.md)
 
 # Understanding and contributing

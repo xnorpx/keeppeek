@@ -285,12 +285,13 @@ jobs:
           if [[ "$PLATFORM" == macos-aarch64 ]]; then
             staging_directory="$(mktemp -d)"
             app="$staging_directory/KeepPeek.app"
-            mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/KeepPeek.iconset"
+            mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/KeepPeek.iconset" "$app/Contents/Resources/skills/keeppeek-mcp"
             cp installer/macos/Info.plist "$app/Contents/Info.plist"
             plutil -replace CFBundleShortVersionString -string "$VERSION" "$app/Contents/Info.plist"
             plutil -replace CFBundleVersion -string "$VERSION" "$app/Contents/Info.plist"
             swiftc installer/macos/KeepPeekLauncher.swift -o "$app/Contents/MacOS/KeepPeek"
             cp target/release/keeppeek "$app/Contents/Resources/keeppeek"
+            cp skills/keeppeek-mcp/SKILL.md "$app/Contents/Resources/skills/keeppeek-mcp/SKILL.md"
             chmod 755 "$app/Contents/MacOS/KeepPeek" "$app/Contents/Resources/keeppeek"
             for size in 16 32 128 256 512; do
               sips --resampleHeightWidth "$size" "$size" --setProperty format png assets/readme_logo.jpeg --out "$app/Contents/Resources/KeepPeek.iconset/icon_${size}x${size}.png"
@@ -367,8 +368,9 @@ jobs:
             python -c 'import hashlib, pathlib; path = pathlib.Path("'"$desktop_asset"'"); print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")' > "$desktop_asset.sha256"
             assets=("$desktop_asset" "$desktop_asset.sha256")
           else
-            mkdir "$archive"
+            mkdir -p "$archive/skills/keeppeek-mcp"
             cp "target/release/keeppeek${BINARY_EXTENSION}" "$archive/"
+            cp skills/keeppeek-mcp/SKILL.md "$archive/skills/keeppeek-mcp/SKILL.md"
             if [[ "$BINARY_EXTENSION" == ".exe" ]]; then
               cp target/release/keeppeek-service.exe "$archive/"
               standalone="keeppeek-${VERSION}-${PLATFORM}.exe"
@@ -602,8 +604,9 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
         run: |
           archive="keeppeek-${VERSION}-${PLATFORM}"
-          mkdir "$archive"
+          mkdir -p "$archive/skills/keeppeek-mcp"
           cp target/release/keeppeek.exe target/release/keeppeek-service.exe "$archive/"
+          cp skills/keeppeek-mcp/SKILL.md "$archive/skills/keeppeek-mcp/SKILL.md"
 
           standalone="keeppeek-${VERSION}-${PLATFORM}.exe"
           cp target/release/keeppeek.exe "$standalone"
