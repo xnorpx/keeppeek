@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-f90754fd.js";
+            window.path_to_searchindex_js = "searchindex-6e881900.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-515efa10.js"></script>
@@ -2013,7 +2013,7 @@ through the redacted Administrator <strong>Report a bug</strong> review flow.</p
 <tr><td><code>[access]</code></td><td><code>AccessConfig</code></td><td>Network trust, rate limits, session bounds</td><td>Operator</td><td>Restart</td><td><a href="#access-policy">Access policy</a></td></tr>
 <tr><td><code>[direct_card]</code></td><td><code>DirectCardConfig</code></td><td>Exact browser-origin allowlist</td><td>Operator</td><td>Restart</td><td><a href="#direct-card-origins">Direct card origins</a></td></tr>
 <tr><td><code>[desktop]</code></td><td><code>DesktopConfig</code></td><td>Default server URL for KeepPeek Desktop</td><td>Operator</td><td>Desktop launch</td><td><a href="#desktop-client-settings">Desktop client settings</a></td></tr>
-<tr><td><code>[mcp]</code></td><td><code>McpConfig</code></td><td>Opt-in MCP server, write, and snapshot policy</td><td>Operator</td><td>Restart</td><td><a href="#mcp-server">MCP server</a></td></tr>
+<tr><td><code>[mcp]</code></td><td><code>McpConfig</code></td><td>Opt-in MCP server, write, snapshot, and governance</td><td>Operator (server <code>enabled_at_unix_secs</code>)</td><td>Live (UI/WebRTC or MCP disable) / Restart (file)</td><td><a href="#mcp-server">MCP server</a></td></tr>
 <tr><td><code>[sharing]</code></td><td><code>sharing::SharingConfig</code></td><td>Isolated guest review deployment policy</td><td>Operator (server revision)</td><td>Live (UI/API) / Restart (file)</td><td><a href="#guest-review-deployment-policy">Guest review deployment policy</a></td></tr>
 <tr><td><code>[external_auth]</code></td><td><code>access::external::Config</code></td><td>OIDC and identity-proxy login policy</td><td>Operator</td><td>Live (plan/apply) / Restart (file)</td><td><a href="#external-authentication-configuration">External authentication configuration</a></td></tr>
 <tr><td><code>[external_identities]</code></td><td><code>access::identities::Directory</code></td><td>Provisioned external user records</td><td>Server-managed</td><td>Live (runtime)</td><td><a href="#durable-external-identities">Durable external identities</a></td></tr>
@@ -2787,7 +2787,7 @@ maximum_attempts = 3
 </div>
 <p>Outbox and deduplication state live in memory and reset on restart; the retired <code>mqtt-forwarder.db</code> is deleted at startup without replay. See <a href="#notifications-and-integrations">Notifications and integrations</a>.</p>
 <h2 id="mcp-server"><a class="header" href="#mcp-server">MCP server</a></h2>
-<p><strong>Type:</strong> <code>McpConfig</code> | <strong>Section:</strong> <code>[mcp]</code> | <strong>Ownership:</strong> Operator | <strong>Apply:</strong> Restart | <strong>Sources:</strong> <a href="https://github.com/xnorpx/keeppeek/blob/main/src/config/mcp.rs">src/config/mcp.rs</a>, <a href="https://github.com/xnorpx/keeppeek/blob/main/src/server/mcp.rs">src/server/mcp.rs</a></p>
+<p><strong>Type:</strong> <code>McpConfig</code> | <strong>Section:</strong> <code>[mcp]</code> | <strong>Ownership:</strong> Operator (server-stamped <code>enabled_at_unix_secs</code>) | <strong>Apply:</strong> Live (<code>enabled</code> &amp; <code>long_enabled_warning_silenced</code> via Web UI / WebRTC <code>keeppeek.mcp-access.v1</code> or MCP <code>disable_mcp_access</code>) / Restart (file edits and policy limits) | <strong>Sources:</strong> <a href="https://github.com/xnorpx/keeppeek/blob/main/src/config/mcp.rs">src/config/mcp.rs</a>, <a href="https://github.com/xnorpx/keeppeek/blob/main/src/server/mcp.rs">src/server/mcp.rs</a>, <a href="https://github.com/xnorpx/keeppeek/blob/main/src/server/mcp_access.rs">src/server/mcp_access.rs</a></p>
 <p>The embedded Streamable HTTP endpoint (<code>POST /mcp</code>), configuration writes, on-camera hardware writes, and single-frame camera snapshots default to disabled. The canonical writer omits <code>[mcp]</code> when all fields stay at defaults.</p>
 <div class="table-wrapper">
 <table>
@@ -2795,7 +2795,9 @@ maximum_attempts = 3
 <tr><th>Field</th><th>Type</th><th>Default</th><th>Limits and notes</th></tr>
 </thead>
 <tbody>
-<tr><td><code>enabled</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable <code>POST /mcp</code> (and loopback <code>/mcp/secret-entry</code>); returns <code>404</code> when <code>false</code>.</td></tr>
+<tr><td><code>enabled</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable <code>POST /mcp</code> (and loopback <code>/mcp/secret-entry</code>); returns <code>404</code> when <code>false</code>. Toggling via Web UI or MCP <code>disable_mcp_access</code> takes effect live.</td></tr>
+<tr><td><code>enabled_at_unix_secs</code></td><td>Optional <code>u64</code></td><td>Absent</td><td>Server-stamped Unix epoch seconds when <code>enabled</code> became <code>true</code>. Backfilled at startup if <code>enabled = true</code> lacks a value; cleared when <code>enabled = false</code>.</td></tr>
+<tr><td><code>long_enabled_warning_silenced</code></td><td><code>bool</code></td><td><code>false</code></td><td>Human Administrator acknowledgement silencing the 7-day (<code>604,800</code> s) MCP enabled warning for the current enabled stretch. Cleared when <code>enabled = false</code>.</td></tr>
 <tr><td><code>allow_writes</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable opt-in Administrator configuration mutation tools unless overridden by a read-only client.</td></tr>
 <tr><td><code>allow_snapshots</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable opt-in privacy-gated single-frame snapshots via <code>get_camera_snapshot</code> (camera hardware masks only).</td></tr>
 <tr><td><code>allow_camera_device_writes</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable opt-in live on-camera hardware writes via <code>update_camera_device_settings</code> (<code>dry_run: false</code>) when writable.</td></tr>
@@ -2808,7 +2810,7 @@ maximum_attempts = 3
 </tbody>
 </table>
 </div>
-<p>Out-of-range values fail startup and configuration-planning validation. <code>POST /mcp</code> enforces <code>[access]</code> policy, Bearer header authentication, <code>localhost</code>/IP <code>Host</code> checks for unauthenticated local requests, <code>[direct_card].allowed_origins</code> plus mandatory Bearer auth for browser <code>Origin</code> headers, serialization-layer secret redaction, and fail-closed camera privacy schedules for snapshots. See <a href="#mcp-server-and-llm-configuration">MCP server and LLM configuration</a>.</p>
+<p>Out-of-range values fail startup and configuration-planning validation. Enabling <code>[mcp]</code> or silencing the 7-day warning over the API requires a human Administrator (trusted local network or interactive OIDC/identity-proxy browser session; remote browsers signed in with a Bearer access key count as Bearer credentials). Bearer credentials are rejected (<code>403</code>) on WebRTC <code>McpAccessCommand</code> and on <code>POST /config/apply</code> restores attempting to enable <code>[mcp]</code>, silence the warning, reset <code>enabled_at_unix_secs</code>, escalate <code>[mcp]</code> write/snapshot flags, or modify <code>[access]</code>, <code>[external_auth]</code>, or <code>[external_identities]</code> trust policy. An authenticated Administrator agent can turn off MCP itself via <code>disable_mcp_access</code> (<code>confirm: true</code>), which persists <code>enabled = false</code> and immediately rejects new <code>/mcp</code> and <code>/mcp/secret-entry</code> requests with <code>404</code> even when <code>allow_writes = false</code> (already in-flight <code>/mcp</code> calls finish within <code>request_timeout_seconds</code>). <code>POST /mcp</code> enforces <code>[access]</code> policy, Bearer header authentication, <code>localhost</code>/IP <code>Host</code> checks for unauthenticated local requests, <code>[direct_card].allowed_origins</code> plus mandatory Bearer auth for browser <code>Origin</code> headers, serialization-layer secret redaction, and fail-closed camera privacy schedules for snapshots. See <a href="#mcp-server-and-llm-configuration">MCP server and LLM configuration</a>.</p>
 <h2 id="credential-records"><a class="header" href="#credential-records">Credential records</a></h2>
 <p><strong>Type:</strong> <code>PersistedAccessCatalog</code> | <strong>Section:</strong> <code>[access_credentials]</code> | <strong>Ownership:</strong> Server-managed (use Admin credential controls) | <strong>Apply:</strong> Live (UI/API) | <strong>Source:</strong> <a href="https://github.com/xnorpx/keeppeek/blob/main/src/access.rs">src/access.rs</a></p>
 <p>Top-level fields: <code>version: u32</code> (must be <code>1</code>) and <code>credentials: Vec&lt;StoredCredential&gt;</code> (<code>[[access_credentials.credentials]]</code>, max <code>128</code> records with unique IDs).</p>
@@ -4151,7 +4153,12 @@ KeepPeek.</p>
 <p>All MCP server settings live in the existing <code>config.toml</code> under <code>[mcp]</code>. Every capability that
 opens network access, mutates configuration, writes on-camera hardware settings, or captures camera
 frames defaults to <code>false</code>.</p>
-<p>Stop KeepPeek before editing <code>config.toml</code> manually, add <code>[mcp]</code>, and restart the server:</p>
+<p>A <strong>human Administrator</strong> can enable or disable MCP access live without restarting KeepPeek from
+<strong>Settings &gt; Integrations &gt; MCP server</strong> (trusted local network access or an interactive
+OIDC/identity-proxy browser session; explicit confirmation is required to enable — remote browser
+sessions authenticated with a Bearer access key cannot enable MCP or silence warnings). To change
+policy limits (<code>allow_writes</code>, <code>allow_snapshots</code>, <code>allow_camera_device_writes</code>, or payload/rate
+caps), stop KeepPeek before editing <code>config.toml</code> manually, add <code>[mcp]</code>, and restart the server:</p>
 <pre><code class="language-toml">[mcp]
 enabled = true
 allow_writes = false
@@ -4170,7 +4177,9 @@ snapshot_min_interval_seconds = 5
 <tr><th>Field</th><th>Type</th><th>Default</th><th>Allowed range</th><th>Meaning</th></tr>
 </thead>
 <tbody>
-<tr><td><code>enabled</code></td><td><code>bool</code></td><td><code>false</code></td><td><code>true</code>/<code>false</code></td><td>Enable the embedded Streamable HTTP endpoint at <code>POST /mcp</code> (and loopback <code>/mcp/secret-entry</code>).</td></tr>
+<tr><td><code>enabled</code></td><td><code>bool</code></td><td><code>false</code></td><td><code>true</code>/<code>false</code></td><td>Enable the embedded Streamable HTTP endpoint at <code>POST /mcp</code> (and loopback <code>/mcp/secret-entry</code>). Live via Web UI or <code>disable_mcp_access</code>.</td></tr>
+<tr><td><code>enabled_at_unix_secs</code></td><td>Optional <code>u64</code></td><td>Absent</td><td>Unix epoch secs</td><td>Server-managed timestamp recorded when <code>enabled</code> becomes <code>true</code>; used for the 7-day enabled warning and cleared when disabled.</td></tr>
+<tr><td><code>long_enabled_warning_silenced</code></td><td><code>bool</code></td><td><code>false</code></td><td><code>true</code>/<code>false</code></td><td>Human Administrator acknowledgement silencing the 7-day enabled warning for the current enabled stretch; cleared when disabled.</td></tr>
 <tr><td><code>allow_writes</code></td><td><code>bool</code></td><td><code>false</code></td><td><code>true</code>/<code>false</code></td><td>Permit Administrator KeepPeek configuration write tools after explicit approval.</td></tr>
 <tr><td><code>allow_snapshots</code></td><td><code>bool</code></td><td><code>false</code></td><td><code>true</code>/<code>false</code></td><td>Permit privacy-gated single-frame snapshots via <code>get_camera_snapshot</code>.</td></tr>
 <tr><td><code>allow_camera_device_writes</code></td><td><code>bool</code></td><td><code>false</code></td><td><code>true</code>/<code>false</code></td><td>Permit live on-camera hardware writes via <code>update_camera_device_settings</code> (<code>dry_run: false</code>).</td></tr>
@@ -4183,6 +4192,34 @@ snapshot_min_interval_seconds = 5
 </tbody>
 </table>
 </div>
+<h3 id="human-only-enable-agent-self-disable-and-7-day-warning"><a class="header" href="#human-only-enable-agent-self-disable-and-7-day-warning">Human-only enable, agent self-disable, and 7-day warning</a></h3>
+<p>MCP access is designed as a temporary maintenance surface rather than an unmonitored permanent open
+door:</p>
+<ul>
+<li><strong>Agent self-disable (<code>disable_mcp_access</code>):</strong> An authenticated Administrator agent can turn off
+MCP access itself when finished by calling <code>disable_mcp_access</code> with <code>{ "confirm": true }</code> (and an
+optional <code>reason</code>). This works even when <code>[mcp].allow_writes = false</code> (though it is blocked under
+<code>--read-only</code> / <code>X-KeepPeek-MCP-Read-Only: true</code>), persists <code>[mcp].enabled = false</code> in
+<code>config.toml</code> (and fails safe by still turning MCP off live if <code>config.toml</code> persistence fails),
+drops any pending <code>/mcp/secret-entry</code> handoffs, and immediately switches new <code>/mcp</code> and
+<code>/mcp/secret-entry</code> requests to <code>404</code> without a restart (already in-flight <code>/mcp</code> calls finish
+within <code>request_timeout_seconds</code>).</li>
+<li><strong>Human-only enable and warning silence:</strong> No MCP tool can enable MCP or silence the 7-day
+warning. Enabling MCP or silencing the warning over the WebRTC control plane
+(<code>keeppeek.mcp-access.v1</code>) requires a <strong>human Administrator</strong> (trusted local network or
+interactive OIDC/identity-proxy browser session) and rejects Bearer access-key credentials with
+<code>403</code> (including remote browser sessions signed in with an access key). Bearer-authenticated
+configuration restores (<code>POST /config/apply</code>) are also rejected with <code>403</code> if they attempt to
+enable <code>[mcp]</code>, silence the warning, advance or omit <code>enabled_at_unix_secs</code>, escalate <code>[mcp]</code>
+write/snapshot flags, or alter <code>[access]</code>, <code>[external_auth]</code>, or <code>[external_identities]</code> trust
+policy.</li>
+<li><strong>7-day enabled warning:</strong> When <code>[mcp].enabled</code> stays <code>true</code> for 7 days or longer (<code>&gt;= 604,800</code>
+seconds) without being silenced, KeepPeek logs a startup warning, adds an Administrator-only
+warning to server health (<code>scope: "mcp"</code>), and displays an Administrator warning banner in the Web
+UI with direct <strong>Disable MCP</strong> and <strong>Silence warning</strong> actions. Silencing persists
+<code>long_enabled_warning_silenced = true</code> for the current enabled stretch; disabling MCP and later
+re-enabling it resets the timer and clears the silence flag.</li>
+</ul>
 <p>See <a href="#mcp-server">Configuration reference</a> for validation rules and
 file ownership details.</p>
 <h2 id="connect-an-mcp-client"><a class="header" href="#connect-an-mcp-client">Connect an MCP client</a></h2>
@@ -4311,7 +4348,7 @@ When <code>[mcp].enabled = false</code>, <code>/mcp/secret-entry</code> returns 
 <li>Form responses enforce <code>Cache-Control: no-store</code>, <code>Referrer-Policy: same-origin</code>,
 <code>X-Frame-Options: DENY</code>, and a strict Content Security Policy.</li>
 </ul>
-<h2 id="available-mcp-tools-27-total"><a class="header" href="#available-mcp-tools-27-total">Available MCP tools (27 total)</a></h2>
+<h2 id="available-mcp-tools-28-total"><a class="header" href="#available-mcp-tools-28-total">Available MCP tools (28 total)</a></h2>
 <h3 id="read-only-dry-run-onboarding-and-secret-handoff-tools-18"><a class="header" href="#read-only-dry-run-onboarding-and-secret-handoff-tools-18">Read-only, dry-run, onboarding, and secret-handoff tools (18)</a></h3>
 <p>These tools do not modify persisted KeepPeek configuration or on-camera hardware settings.
 <code>plan_configuration_change</code> always runs as a dry-run preview and remains available even when
@@ -4393,6 +4430,20 @@ application (<code>dry_run: false</code>) requires all three conditions:</p>
 </thead>
 <tbody>
 <tr><td><code>get_camera_snapshot</code></td><td>User</td><td>Capture one privacy-gated, downscaled JPEG frame for a permitted camera when <code>[mcp].allow_snapshots = true</code>.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="self-disable-governance-tool-1"><a class="header" href="#self-disable-governance-tool-1">Self-disable governance tool (1)</a></h3>
+<p><code>disable_mcp_access</code> is available to authenticated <strong>Administrator</strong> callers even when
+<code>[mcp].allow_writes = false</code>, unless <code>--read-only</code> or <code>X-KeepPeek-MCP-Read-Only: true</code> is active.
+Re-enabling MCP always requires a human Administrator.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Tool</th><th>Minimum role</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>disable_mcp_access</code></td><td>Administrator</td><td>Requires <code>confirm: true</code> (optional <code>reason</code>). Persists <code>[mcp].enabled = false</code>, clears pending handoffs, and disables <code>/mcp</code> live.</td></tr>
 </tbody>
 </table>
 </div>
@@ -4525,7 +4576,7 @@ automated assistant cannot starve camera ingest, recording, or live playback.</p
 <tr><th>Symptom</th><th>Check</th></tr>
 </thead>
 <tbody>
-<tr><td><code>POST /mcp</code> or <code>/mcp/secret-entry</code> returns <code>404</code></td><td>Confirm <code>[mcp].enabled = true</code> in <code>config.toml</code> and restart KeepPeek.</td></tr>
+<tr><td><code>POST /mcp</code> or <code>/mcp/secret-entry</code> returns <code>404</code></td><td>Confirm MCP is enabled by a human Administrator in <strong>Settings &gt; Integrations</strong> (or <code>[mcp].enabled = true</code> in <code>config.toml</code> + restart).</td></tr>
 <tr><td><code>POST /mcp</code> returns <code>403</code></td><td>Check whether <code>Origin</code> is missing from <code>[direct_card].allowed_origins</code>, <code>Host</code> is non-local for local trust, or role is User.</td></tr>
 <tr><td><code>/mcp/secret-entry</code> returns <code>403</code> or <code>410</code></td><td>Open the link directly from loopback without a reverse proxy, and verify the single-use token has not expired or been consumed.</td></tr>
 <tr><td><code>POST /mcp</code> returns <code>426</code></td><td>Remote plain HTTP is blocked by <code>[access].require_secure_remote = true</code>. Use HTTPS via a trusted proxy or a private VPN.</td></tr>
