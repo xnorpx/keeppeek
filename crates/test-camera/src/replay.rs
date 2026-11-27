@@ -10,6 +10,7 @@ use reo_proto::{
 use retina::{client::core::RtspFramer, rtsp::msg};
 use serde_json::{Map, Value};
 use std::{
+    collections::VecDeque,
     fs::File,
     io::{self, Read, Write},
     net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket},
@@ -429,7 +430,17 @@ pub struct ReplayCameraServer {
 
 struct EndpointHandle {
     addr: SocketAddr,
+    shared: Arc<ReplayShared>,
     worker: Option<JoinHandle<()>>,
+}
+
+impl Drop for EndpointHandle {
+    fn drop(&mut self) {
+        self.shared.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
 }
 
 struct ReplayShared {
@@ -595,13 +606,9 @@ impl ReplayCameraServer {
 impl Drop for ReplayCameraServer {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Release);
-        for endpoint in [&mut self.http, &mut self.rtsp, &mut self.reo] {
-            if let Some(mut handle) = endpoint.take()
-                && let Some(worker) = handle.worker.take()
-            {
-                let _ = worker.join();
-            }
-        }
+        drop(self.http.take());
+        drop(self.rtsp.take());
+        drop(self.reo.take());
     }
 }
 
@@ -693,7 +700,7 @@ fn parse_rtsp_response(value: &Value) -> anyhow::Result<RtspResponseFixture> {
     Ok(RtspResponseFixture {
         method: opt_str(obj, "method")?,
         uri_contains: opt_str(obj, "uri_contains")?,
-        status: req_u16(obj, "status")?,
+        status: req_uint(obj, "status")?,
         reason: req_str(obj, "reason")?,
         headers: parse_headers(obj.get("headers"))?,
         body: req_str(obj, "body")?,
@@ -705,14 +712,14 @@ fn parse_rtp_packet(value: &Value) -> anyhow::Result<RtpPacketFixture> {
         .as_object()
         .context("RTP packet must be a JSON object")?;
     Ok(RtpPacketFixture {
-        channel: opt_u8(obj, "channel")?,
+        channel: opt_uint(obj, "channel")?,
         track: req_str(obj, "track")?,
         marker: req_bool(obj, "marker")?,
-        payload_type: req_u8(obj, "payload_type")?,
-        sequence: req_u16(obj, "sequence")?,
-        timestamp: req_u32(obj, "timestamp")?,
-        ssrc: req_u32(obj, "ssrc")?,
-        delay_ms: opt_u64(obj, "delay_ms")?,
+        payload_type: req_uint(obj, "payload_type")?,
+        sequence: req_uint(obj, "sequence")?,
+        timestamp: req_uint(obj, "timestamp")?,
+        ssrc: req_uint(obj, "ssrc")?,
+        delay_ms: opt_uint(obj, "delay_ms")?,
         payload_base64: req_str(obj, "payload_base64")?,
     })
 }
@@ -740,12 +747,12 @@ fn parse_http_exchange(value: &Value) -> anyhow::Result<HttpExchangeFixture> {
         match_path_contains: opt_str(obj, "match_path_contains")?,
         match_soap_action: opt_str(obj, "match_soap_action")?,
         match_body_contains: opt_str(obj, "match_body_contains")?,
-        status: req_u16(obj, "status")?,
+        status: req_uint(obj, "status")?,
         status_reason: opt_str(obj, "status_reason")?,
         headers: parse_headers(obj.get("headers"))?,
         body_text: opt_str(obj, "body_text")?,
         body_base64: opt_str(obj, "body_base64")?,
-        delay_ms: opt_u64(obj, "delay_ms")?,
+        delay_ms: opt_uint(obj, "delay_ms")?,
     })
 }
 
@@ -770,13 +777,13 @@ fn parse_reo_frame(value: &Value) -> anyhow::Result<ReoFrameFixture> {
         .as_object()
         .context("reo_proto frame must be a JSON object")?;
     Ok(ReoFrameFixture {
-        expected_msg_id: opt_u32(obj, "expected_msg_id")?,
-        response_msg_id: req_u32(obj, "response_msg_id")?,
+        expected_msg_id: opt_uint(obj, "expected_msg_id")?,
+        response_msg_id: req_uint(obj, "response_msg_id")?,
         payload_base64: opt_str(obj, "payload_base64")?,
         payload_xml: opt_str(obj, "payload_xml")?,
-        channel_id: opt_u8(obj, "channel_id")?,
-        stream_type: opt_u8(obj, "stream_type")?,
-        delay_ms: opt_u64(obj, "delay_ms")?,
+        channel_id: opt_uint(obj, "channel_id")?,
+        stream_type: opt_uint(obj, "stream_type")?,
+        delay_ms: opt_uint(obj, "delay_ms")?,
     })
 }
 
@@ -830,67 +837,24 @@ fn req_bool(obj: &Map<String, Value>, key: &str) -> anyhow::Result<bool> {
         .with_context(|| format!("missing or non-boolean field '{key}'"))
 }
 
-fn req_u8(obj: &Map<String, Value>, key: &str) -> anyhow::Result<u8> {
+fn req_uint<T: TryFrom<u64>>(obj: &Map<String, Value>, key: &str) -> anyhow::Result<T> {
     let raw = obj
         .get(key)
         .and_then(Value::as_u64)
         .with_context(|| format!("missing or non-integer field '{key}'"))?;
-    u8::try_from(raw).with_context(|| format!("field '{key}' out of u8 range"))
+    T::try_from(raw).map_err(|_| anyhow::anyhow!("field '{key}' out of range"))
 }
 
-fn opt_u8(obj: &Map<String, Value>, key: &str) -> anyhow::Result<Option<u8>> {
+fn opt_uint<T: TryFrom<u64>>(obj: &Map<String, Value>, key: &str) -> anyhow::Result<Option<T>> {
     match obj.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::Number(n)) => {
             let raw = n
                 .as_u64()
                 .with_context(|| format!("field '{key}' must be an unsigned integer"))?;
-            Ok(Some(u8::try_from(raw).with_context(|| {
-                format!("field '{key}' out of u8 range")
-            })?))
-        }
-        Some(_) => bail!("field '{key}' must be an integer"),
-    }
-}
-
-fn req_u16(obj: &Map<String, Value>, key: &str) -> anyhow::Result<u16> {
-    let raw = obj
-        .get(key)
-        .and_then(Value::as_u64)
-        .with_context(|| format!("missing or non-integer field '{key}'"))?;
-    u16::try_from(raw).with_context(|| format!("field '{key}' out of u16 range"))
-}
-
-fn req_u32(obj: &Map<String, Value>, key: &str) -> anyhow::Result<u32> {
-    let raw = obj
-        .get(key)
-        .and_then(Value::as_u64)
-        .with_context(|| format!("missing or non-integer field '{key}'"))?;
-    u32::try_from(raw).with_context(|| format!("field '{key}' out of u32 range"))
-}
-
-fn opt_u32(obj: &Map<String, Value>, key: &str) -> anyhow::Result<Option<u32>> {
-    match obj.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Number(n)) => {
-            let raw = n
-                .as_u64()
-                .with_context(|| format!("field '{key}' must be an unsigned integer"))?;
-            Ok(Some(u32::try_from(raw).with_context(|| {
-                format!("field '{key}' out of u32 range")
-            })?))
-        }
-        Some(_) => bail!("field '{key}' must be an integer"),
-    }
-}
-
-fn opt_u64(obj: &Map<String, Value>, key: &str) -> anyhow::Result<Option<u64>> {
-    match obj.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Number(n)) => {
-            Ok(Some(n.as_u64().with_context(|| {
-                format!("field '{key}' must be an unsigned integer")
-            })?))
+            T::try_from(raw)
+                .map(Some)
+                .map_err(|_| anyhow::anyhow!("field '{key}' out of range"))
         }
         Some(_) => bail!("field '{key}' must be an integer"),
     }
@@ -1072,6 +1036,12 @@ fn validate_rtsp(rtsp: &RtspReproFixture) -> anyhow::Result<()> {
         "too many RTSP sessions"
     );
     for session in &rtsp.sessions {
+        if let Some(order) = &session.setup_order {
+            ensure!(
+                order.len() <= HEADERS_PER_MESSAGE_MAX,
+                "setup_order exceeds limit"
+            );
+        }
         ensure!(
             session.responses.len() <= RESPONSES_PER_SESSION_MAX,
             "too many RTSP responses in session"
@@ -1085,6 +1055,10 @@ fn validate_rtsp(rtsp: &RtspReproFixture) -> anyhow::Result<()> {
                 (100..=599).contains(&response.status),
                 "invalid RTSP status code {}",
                 response.status
+            );
+            ensure!(
+                !response.reason.contains(['\r', '\n']),
+                "RTSP reason phrase contains newline characters"
             );
             validate_headers(&response.headers)?;
         }
@@ -1120,10 +1094,22 @@ fn validate_http(http: &HttpReproFixture) -> anyhow::Result<()> {
             "invalid HTTP status code {}",
             exchange.status
         );
+        if let Some(reason) = &exchange.status_reason {
+            ensure!(
+                !reason.contains(['\r', '\n']),
+                "HTTP status_reason contains newline characters"
+            );
+        }
         ensure!(
             !(exchange.body_text.is_some() && exchange.body_base64.is_some()),
             "HTTP exchange cannot specify both body_text and body_base64"
         );
+        if let Some(text) = &exchange.body_text {
+            ensure!(
+                text.len() <= HTTP_BODY_BYTES_MAX,
+                "HTTP body_text exceeds limit"
+            );
+        }
         validate_headers(&exchange.headers)?;
         validate_delay(exchange.delay_ms)?;
         if let Some(encoded) = &exchange.body_base64 {
@@ -1147,6 +1133,12 @@ fn validate_reo(reo: &ReoProtoReproFixture) -> anyhow::Result<()> {
             !(frame.payload_base64.is_some() && frame.payload_xml.is_some()),
             "reo_proto frame cannot specify both payload_base64 and payload_xml"
         );
+        if let Some(xml) = &frame.payload_xml {
+            ensure!(
+                xml.len() <= REO_BODY_BYTES_MAX,
+                "reo_proto payload_xml exceeds limit"
+            );
+        }
         validate_delay(frame.delay_ms)?;
         if let Some(encoded) = &frame.payload_base64 {
             let decoded = decode_base64(encoded)?;
@@ -1184,44 +1176,53 @@ fn validate_delay(delay_ms: Option<u64>) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn start_http_listener(
+fn start_tcp_listener<F>(
     bind: SocketAddr,
-    http: HttpReproFixture,
+    listener_name: &str,
+    conn_name: &'static str,
     shared: Arc<ReplayShared>,
-) -> anyhow::Result<EndpointHandle> {
-    let listener =
-        TcpListener::bind(bind).with_context(|| format!("unable to bind HTTP replay on {bind}"))?;
+    handle: F,
+) -> anyhow::Result<EndpointHandle>
+where
+    F: Fn(TcpStream, &ReplayShared) + Send + Sync + 'static,
+{
+    let listener = TcpListener::bind(bind)
+        .with_context(|| format!("unable to bind {listener_name} on {bind}"))?;
     listener.set_nonblocking(true)?;
     let addr = listener.local_addr()?;
+    let worker_shared = Arc::clone(&shared);
     let worker = thread::Builder::new()
-        .name("replay-http".to_owned())
-        .spawn(move || serve_http(listener, http, shared))?;
+        .name(listener_name.to_owned())
+        .spawn(move || run_accept_loop(listener, conn_name, &worker_shared, Arc::new(handle)))?;
     Ok(EndpointHandle {
         addr,
+        shared,
         worker: Some(worker),
     })
 }
 
-fn serve_http(listener: TcpListener, http: HttpReproFixture, shared: Arc<ReplayShared>) {
-    let exchanges = Arc::new(http.exchanges);
-    let consumed = Arc::new(Mutex::new(vec![false; exchanges.len()]));
+fn run_accept_loop<F>(
+    listener: TcpListener,
+    conn_name: &'static str,
+    shared: &Arc<ReplayShared>,
+    handle: Arc<F>,
+) where
+    F: Fn(TcpStream, &ReplayShared) + Send + Sync + 'static,
+{
     let mut children: Vec<JoinHandle<()>> = Vec::new();
     while !shared.stop.load(Ordering::Acquire) {
         children.retain(|h| !h.is_finished());
         match listener.accept() {
-            Ok((mut stream, _)) => {
+            Ok((stream, _)) => {
                 if children.len() >= CONCURRENT_CONNECTIONS_MAX {
                     let _ = stream.shutdown(Shutdown::Both);
                     continue;
                 }
-                let exchanges = Arc::clone(&exchanges);
-                let consumed = Arc::clone(&consumed);
-                let shared = Arc::clone(&shared);
+                let handle = Arc::clone(&handle);
+                let conn_shared = Arc::clone(shared);
                 if let Ok(child) = thread::Builder::new()
-                    .name("replay-http-conn".to_owned())
-                    .spawn(move || {
-                        handle_http_connection(&mut stream, &exchanges, &consumed, &shared);
-                    })
+                    .name(conn_name.to_owned())
+                    .spawn(move || handle(stream, &conn_shared))
                 {
                     children.push(child);
                 }
@@ -1230,7 +1231,7 @@ fn serve_http(listener: TcpListener, http: HttpReproFixture, shared: Arc<ReplayS
                 thread::sleep(POLL_INTERVAL);
             }
             Err(error) => {
-                tracing::warn!(%error, "HTTP replay listener stopped");
+                tracing::warn!(%error, "{conn_name} listener stopped");
                 break;
             }
         }
@@ -1238,6 +1239,24 @@ fn serve_http(listener: TcpListener, http: HttpReproFixture, shared: Arc<ReplayS
     for child in children {
         let _ = child.join();
     }
+}
+
+fn start_http_listener(
+    bind: SocketAddr,
+    http: HttpReproFixture,
+    shared: Arc<ReplayShared>,
+) -> anyhow::Result<EndpointHandle> {
+    let exchanges = Arc::new(http.exchanges);
+    let consumed = Arc::new(Mutex::new(vec![false; exchanges.len()]));
+    start_tcp_listener(
+        bind,
+        "replay-http",
+        "replay-http-conn",
+        shared,
+        move |mut stream, shared| {
+            handle_http_connection(&mut stream, &exchanges, &consumed, shared);
+        },
+    )
 }
 
 fn handle_http_connection(
@@ -1498,55 +1517,17 @@ fn start_rtsp_listener(
     rtsp: RtspReproFixture,
     shared: Arc<ReplayShared>,
 ) -> anyhow::Result<EndpointHandle> {
-    let listener =
-        TcpListener::bind(bind).with_context(|| format!("unable to bind RTSP replay on {bind}"))?;
-    listener.set_nonblocking(true)?;
-    let addr = listener.local_addr()?;
-    let worker = thread::Builder::new()
-        .name("replay-rtsp".to_owned())
-        .spawn(move || serve_rtsp(listener, rtsp, shared))?;
-    Ok(EndpointHandle {
-        addr,
-        worker: Some(worker),
-    })
-}
-
-fn serve_rtsp(listener: TcpListener, rtsp: RtspReproFixture, shared: Arc<ReplayShared>) {
     let sessions = Arc::new(rtsp.sessions);
     let consumed = Arc::new(Mutex::new(vec![false; sessions.len()]));
-    let mut children: Vec<JoinHandle<()>> = Vec::new();
-    while !shared.stop.load(Ordering::Acquire) {
-        children.retain(|h| !h.is_finished());
-        match listener.accept() {
-            Ok((stream, _)) => {
-                if children.len() >= CONCURRENT_CONNECTIONS_MAX {
-                    let _ = stream.shutdown(Shutdown::Both);
-                    continue;
-                }
-                let sessions = Arc::clone(&sessions);
-                let consumed = Arc::clone(&consumed);
-                let shared = Arc::clone(&shared);
-                if let Ok(child) = thread::Builder::new()
-                    .name("replay-rtsp-conn".to_owned())
-                    .spawn(move || {
-                        let _ = serve_rtsp_connection(stream, &sessions, &consumed, &shared);
-                    })
-                {
-                    children.push(child);
-                }
-            }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                thread::sleep(POLL_INTERVAL);
-            }
-            Err(error) => {
-                tracing::warn!(%error, "RTSP replay listener stopped");
-                break;
-            }
-        }
-    }
-    for child in children {
-        let _ = child.join();
-    }
+    start_tcp_listener(
+        bind,
+        "replay-rtsp",
+        "replay-rtsp-conn",
+        shared,
+        move |stream, shared| {
+            let _ = serve_rtsp_connection(stream, &sessions, &consumed, shared);
+        },
+    )
 }
 
 enum TrackTransport {
@@ -1566,6 +1547,7 @@ struct RtspConnState {
     tracks: Vec<(String, TrackTransport)>,
     session_id: Option<String>,
     setup_index: usize,
+    pending: VecDeque<(msg::Request, Vec<u8>)>,
 }
 
 impl RtspConnState {
@@ -1576,6 +1558,7 @@ impl RtspConnState {
             tracks: Vec::new(),
             session_id: None,
             setup_index: 0,
+            pending: VecDeque::new(),
         }
     }
 
@@ -1610,10 +1593,12 @@ fn serve_rtsp_connection(
     let mut state = RtspConnState::new();
 
     while !shared.stop.load(Ordering::Acquire) {
-        let Some(req) = read_rtsp_request(&mut stream, &mut framer, &shared.stop)? else {
+        let Some((req, body)) =
+            read_rtsp_request(&mut stream, &mut framer, &mut state.pending, &shared.stop)?
+        else {
             return Ok(());
         };
-        let uri = record_rtsp_request(&req, shared);
+        let uri = record_rtsp_request(&req, body, shared);
         if !handle_rtsp_request(
             &mut stream,
             &req,
@@ -1629,7 +1614,7 @@ fn serve_rtsp_connection(
     Ok(())
 }
 
-fn record_rtsp_request(req: &msg::Request, shared: &ReplayShared) -> String {
+fn record_rtsp_request(req: &msg::Request, body: Vec<u8>, shared: &ReplayShared) -> String {
     let uri = req
         .request_uri
         .as_ref()
@@ -1644,9 +1629,50 @@ fn record_rtsp_request(req: &msg::Request, shared: &ReplayShared) -> String {
         method: req.method.to_string(),
         target: uri.clone(),
         headers,
-        body: Vec::new(),
+        body,
     });
     uri
+}
+
+fn handle_rtsp_options(
+    stream: &mut TcpStream,
+    req: &msg::Request,
+    uri: &str,
+    sessions: &[RtspSessionFixture],
+    consumed_sessions: &Mutex<Vec<bool>>,
+    state: &mut RtspConnState,
+    shared: &ReplayShared,
+) -> anyhow::Result<()> {
+    if state.selected.is_none() && sessions_have_options_response(sessions, consumed_sessions, uri)
+    {
+        let _ = state.ensure_session(sessions, consumed_sessions, uri, shared.loop_replay)?;
+    }
+    let matched = state.selected.and_then(|idx| {
+        take_rtsp_response(
+            &sessions[idx].responses,
+            &mut state.resp_consumed,
+            "OPTIONS",
+            uri,
+        )
+    });
+    write_rtsp_reply(stream, req, matched, &[], state.session_id.as_deref())
+}
+
+fn sessions_have_options_response(
+    sessions: &[RtspSessionFixture],
+    consumed_sessions: &Mutex<Vec<bool>>,
+    uri: &str,
+) -> bool {
+    let guard = consumed_sessions.lock().unwrap_or_else(|p| p.into_inner());
+    sessions.iter().enumerate().any(|(idx, s)| {
+        !guard[idx]
+            && s.responses.iter().any(|r| {
+                r.method
+                    .as_deref()
+                    .is_some_and(|m| m.eq_ignore_ascii_case("OPTIONS"))
+                    && r.uri_contains.as_deref().is_none_or(|u| uri.contains(u))
+            })
+    })
 }
 
 fn handle_rtsp_request(
@@ -1659,15 +1685,7 @@ fn handle_rtsp_request(
     shared: &ReplayShared,
 ) -> anyhow::Result<bool> {
     if req.method == msg::Method::OPTIONS {
-        let matched = state.selected.and_then(|idx| {
-            take_rtsp_response(
-                &sessions[idx].responses,
-                &mut state.resp_consumed,
-                "OPTIONS",
-                uri,
-            )
-        });
-        write_rtsp_reply(stream, req, matched, &[], state.session_id.as_deref())?;
+        handle_rtsp_options(stream, req, uri, sessions, consumed_sessions, state, shared)?;
         return Ok(true);
     }
     let idx = state.ensure_session(sessions, consumed_sessions, uri, shared.loop_replay)?;
@@ -1681,6 +1699,7 @@ fn handle_rtsp_request(
     );
     if req.method == msg::Method::TEARDOWN {
         write_rtsp_reply(stream, req, matched, &[], state.session_id.as_deref())?;
+        mark_rtsp_done_if_complete(consumed_sessions, shared);
         return Ok(false);
     }
     if req.method == msg::Method::SETUP {
@@ -1701,7 +1720,7 @@ fn handle_rtsp_request(
         )?;
         return Ok(true);
     }
-    let status = matched.map_or(200, |r| r.status);
+    let status = matched.map_or(404, |r| r.status);
     write_rtsp_reply(stream, req, matched, &[], state.session_id.as_deref())?;
     if req.method == msg::Method::PLAY && (200..300).contains(&status) {
         emit_rtsp_packets(stream, &state.tracks, &session.rtp_packets, shared)?;
@@ -1714,6 +1733,8 @@ fn handle_rtsp_request(
             let _ = stream.shutdown(Shutdown::Write);
             return Ok(false);
         }
+    } else if state.resp_consumed.iter().all(|done| *done) {
+        mark_rtsp_done_if_complete(consumed_sessions, shared);
     }
     Ok(true)
 }
@@ -1732,8 +1753,12 @@ fn mark_rtsp_done_if_complete(consumed_sessions: &Mutex<Vec<bool>>, shared: &Rep
 fn read_rtsp_request(
     stream: &mut TcpStream,
     framer: &mut RtspFramer,
+    pending: &mut VecDeque<(msg::Request, Vec<u8>)>,
     stop: &AtomicBool,
-) -> anyhow::Result<Option<msg::Request>> {
+) -> anyhow::Result<Option<(msg::Request, Vec<u8>)>> {
+    if let Some(next) = pending.pop_front() {
+        return Ok(Some(next));
+    }
     let mut buf = [0_u8; 16 * 1024];
     let mut total = 0_usize;
     while !stop.load(Ordering::Acquire) {
@@ -1744,8 +1769,11 @@ fn read_rtsp_request(
                 ensure!(total <= RTSP_MESSAGE_BYTES_MAX, "RTSP request too large");
                 for framed in framer.push(&buf[..n])? {
                     if let msg::Message::Request(req) = framed.message {
-                        return Ok(Some(req));
+                        pending.push_back((req, framed.body.to_vec()));
                     }
+                }
+                if let Some(next) = pending.pop_front() {
+                    return Ok(Some(next));
                 }
             }
             Err(error) if is_timeout(&error) => continue,
@@ -1973,25 +2001,19 @@ fn emit_rtsp_packets(
                 return Ok(());
             }
             let rtp = build_rtp_packet(pkt)?;
-            let transport = tracks
-                .iter()
-                .find(|(name, _)| name == &pkt.track)
-                .or_else(|| (tracks.len() == 1).then(|| &tracks[0]))
-                .map(|(_, t)| t);
+            let Some((_, transport)) = tracks.iter().find(|(name, _)| name == &pkt.track) else {
+                continue;
+            };
             match transport {
-                Some(TrackTransport::Tcp { channel }) => {
+                TrackTransport::Tcp { channel } => {
                     send_interleaved_rtp(stream, *channel, &rtp)?;
                 }
-                Some(TrackTransport::Udp {
+                TrackTransport::Udp {
                     rtp: sock,
                     client_rtp,
                     ..
-                }) => {
+                } => {
                     sock.send_to(&rtp, client_rtp)?;
-                }
-                None => {
-                    let ch = pkt.channel.unwrap_or(0);
-                    send_interleaved_rtp(stream, ch, &rtp)?;
                 }
             }
         }
@@ -2032,53 +2054,16 @@ fn start_reo_listener(
     reo: ReoProtoReproFixture,
     shared: Arc<ReplayShared>,
 ) -> anyhow::Result<EndpointHandle> {
-    let listener = TcpListener::bind(bind)
-        .with_context(|| format!("unable to bind reo_proto replay on {bind}"))?;
-    listener.set_nonblocking(true)?;
-    let addr = listener.local_addr()?;
-    let worker = thread::Builder::new()
-        .name("replay-reo".to_owned())
-        .spawn(move || serve_reo(listener, reo, shared))?;
-    Ok(EndpointHandle {
-        addr,
-        worker: Some(worker),
-    })
-}
-
-fn serve_reo(listener: TcpListener, reo: ReoProtoReproFixture, shared: Arc<ReplayShared>) {
     let frames = Arc::new(reo.frames);
-    let mut children: Vec<JoinHandle<()>> = Vec::new();
-    while !shared.stop.load(Ordering::Acquire) {
-        children.retain(|h| !h.is_finished());
-        match listener.accept() {
-            Ok((stream, _)) => {
-                if children.len() >= CONCURRENT_CONNECTIONS_MAX {
-                    let _ = stream.shutdown(Shutdown::Both);
-                    continue;
-                }
-                let frames = Arc::clone(&frames);
-                let shared = Arc::clone(&shared);
-                if let Ok(child) = thread::Builder::new()
-                    .name("replay-reo-conn".to_owned())
-                    .spawn(move || {
-                        let _ = serve_reo_connection(stream, &frames, &shared);
-                    })
-                {
-                    children.push(child);
-                }
-            }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                thread::sleep(POLL_INTERVAL);
-            }
-            Err(error) => {
-                tracing::warn!(%error, "reo_proto replay listener stopped");
-                break;
-            }
-        }
-    }
-    for child in children {
-        let _ = child.join();
-    }
+    start_tcp_listener(
+        bind,
+        "replay-reo",
+        "replay-reo-conn",
+        shared,
+        move |stream, shared| {
+            let _ = serve_reo_connection(stream, &frames, shared);
+        },
+    )
 }
 
 fn serve_reo_connection(
@@ -2090,10 +2075,15 @@ fn serve_reo_connection(
     stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(IO_TIMEOUT))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    if frames.is_empty() {
+        shared.reo_done.store(true, Ordering::Release);
+        wait_for_tcp_eof(&mut stream, &shared.stop);
+        return Ok(());
+    }
     let mut read_buf = ReadBuffer::new();
     let mut negotiated = EncryptionMode::None;
 
-    loop {
+    while !shared.stop.load(Ordering::Acquire) {
         for frame in frames {
             if shared.stop.load(Ordering::Acquire) {
                 return Ok(());
@@ -2122,6 +2112,7 @@ fn serve_reo_connection(
             return Ok(());
         }
     }
+    Ok(())
 }
 
 fn wait_for_reo_msg(
@@ -2201,7 +2192,13 @@ fn send_reo_frame(
         if frame.response_msg_id == COMMAND_LOGIN {
             encryption::bc_xor(&mut body, 0);
             if xml.contains("<Encryption") {
-                let code = if xml.contains(">bc<") { 0xDD01 } else { 0xDD00 };
+                let code = if xml.contains(">bc<") {
+                    0xDD01
+                } else if xml.contains(">aes<") {
+                    0xDD02
+                } else {
+                    0xDD00
+                };
                 (body, make_status(BC_CLASS_LEGACY, code), None)
             } else {
                 (body, make_status(BC_CLASS_MODERN_EXT, 0), Some(0))

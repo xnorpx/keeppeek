@@ -7,6 +7,10 @@ use std::{
     time::Duration,
 };
 
+#[expect(
+    dead_code,
+    reason = "replay module is also compiled as public test-camera::replay API"
+)]
 #[path = "../../../crates/test-camera/src/replay.rs"]
 mod engine;
 
@@ -138,12 +142,26 @@ mod tests {
         );
     }
 
+    struct TempFixtureFile(PathBuf);
+
+    impl TempFixtureFile {
+        fn new(tag: &str) -> Self {
+            Self(std::env::temp_dir().join(format!(
+                "keeppeek-camera-cli-{tag}-{}.json",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl Drop for TempFixtureFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
     #[test]
     fn prints_bound_urls_and_serves_http_smoke() {
-        let fixture_path = std::env::temp_dir().join(format!(
-            "keeppeek-camera-cli-replay-{}.json",
-            std::process::id()
-        ));
+        let fixture_file = TempFixtureFile::new("replay");
         let fixture = serde_json::json!({
             "schema_version": "keeppeek.camera-repro.v1",
             "camera": {
@@ -163,8 +181,8 @@ mod tests {
                 }]
             }
         });
-        std::fs::write(&fixture_path, fixture.to_string()).unwrap();
-        let server = ReplayCameraServer::from_file(&fixture_path).unwrap();
+        std::fs::write(&fixture_file.0, fixture.to_string()).unwrap();
+        let server = ReplayCameraServer::from_file(&fixture_file.0).unwrap();
         let http_url = server.http_url().unwrap();
         let mut out = Vec::new();
         print_bound_urls(&server, &mut out).unwrap();
@@ -178,15 +196,11 @@ mod tests {
         let mut resp = String::new();
         conn.read_to_string(&mut resp).unwrap();
         assert!(resp.contains("<DeviceStatus><status>ok</status></DeviceStatus>"));
-        let _ = std::fs::remove_file(&fixture_path);
     }
 
     #[test]
     fn run_once_exits_cleanly_on_empty_fixture() {
-        let empty_path = std::env::temp_dir().join(format!(
-            "keeppeek-camera-cli-empty-{}.json",
-            std::process::id()
-        ));
+        let empty_file = TempFixtureFile::new("empty");
         let empty_fixture = serde_json::json!({
             "schema_version": "keeppeek.camera-repro.v1",
             "camera": {
@@ -196,12 +210,12 @@ mod tests {
                 "base_host": "192.0.2.5"
             }
         });
-        std::fs::write(&empty_path, empty_fixture.to_string()).unwrap();
+        std::fs::write(&empty_file.0, empty_fixture.to_string()).unwrap();
         let shutdown = Shutdown::new();
         let mut empty_out = Vec::new();
         run_with_shutdown(
             Cli {
-                fixture: empty_path.clone(),
+                fixture: empty_file.0.clone(),
                 bind: default_bind_addr(),
                 once: true,
                 loop_replay: false,
@@ -210,7 +224,6 @@ mod tests {
             &mut empty_out,
         )
         .unwrap();
-        let _ = std::fs::remove_file(&empty_path);
     }
 
     #[test]

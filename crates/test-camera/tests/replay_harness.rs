@@ -244,12 +244,26 @@ fn replays_rtsp_h264_over_tcp_and_udp_to_real_retina_client() {
         let url = Url::parse(&format!("{}/stream", server.rtsp_url().unwrap())).unwrap();
         let frames = drive_retina_client(url, use_udp);
         assert_eq!(frames.len(), 2, "expected 2 H.264 frames (udp={use_udp})");
-        assert!(server.is_completed());
+        wait_until_completed(&server);
         let recorded = server.recorded_requests();
         assert!(recorded.iter().any(|r| r.method == "DESCRIBE"));
         assert!(recorded.iter().any(|r| r.method == "SETUP"));
         assert!(recorded.iter().any(|r| r.method == "PLAY"));
     }
+}
+
+fn wait_until_completed(server: &ReplayCameraServer) {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < deadline {
+        if server.is_completed() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        server.is_completed(),
+        "replay server did not mark completed before timeout"
+    );
 }
 
 fn malformed_rtp_fixture(malformed_fua_start: &[u8], truncated_fua: &[u8]) -> CameraReproFixture {
@@ -446,13 +460,49 @@ fn replays_reo_proto_login_and_video_frame_to_real_bc_session() {
         }
     }
     assert!(saw_frame, "BcSession did not receive replayed video frame");
-    assert!(server.is_completed());
+    wait_until_completed(&server);
     assert!(
         server
             .recorded_requests()
             .iter()
             .any(|r| r.protocol == RecordedProtocol::ReoProto && r.method == "msg_id:3")
     );
+}
+
+#[test]
+fn replays_reo_proto_bc_encrypt_session() {
+    let nal = [0_u8, 0, 0, 1, 0x65, 0x88, 0x84, 0x21];
+    let media_payload = reo_h264_iframe_payload(&nal);
+    let mut fixture = reo_replay_fixture(&media_payload);
+    fixture.reo_proto.as_mut().unwrap().frames[0].payload_xml = Some(
+        r#"<body><Encryption version="1"><type>bc</type><nonce>REPRO_NONCE</nonce></Encryption></body>"#.to_owned(),
+    );
+    let server = ReplayCameraServer::start(fixture).unwrap();
+    let mut stream = TcpStream::connect(server.reo_addr().unwrap()).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
+
+    let mut client = BcSession::default_client(Instant::now());
+    client
+        .handle_input(Input::Command(Command::Login(LoginParams::new(
+            "test",
+            "test",
+            EncryptionMode::BcEncrypt,
+        ))))
+        .unwrap();
+    let mut out = vec![0_u8; reo_proto::DEFAULT_MEDIA_OUTPUT_BUFFER_SIZE];
+    let mut buf = [0_u8; 64 * 1024];
+    let mut saw_frame = false;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline && !saw_frame {
+        saw_frame |= drain_bc_outputs(&mut client, &mut stream, &mut out, &nal);
+        if !saw_frame && !pump_bc_tcp(&mut client, &mut stream, &mut buf) {
+            break;
+        }
+    }
+    assert!(saw_frame, "BcSession did not receive BcEncrypt video frame");
+    wait_until_completed(&server);
 }
 
 fn drain_bc_outputs(
@@ -537,6 +587,163 @@ fn drop_releases_ports_cleanly_for_reuse() {
     )
     .unwrap();
     assert_eq!(rebound.http_addr(), Some(addr));
+}
+
+#[test]
+fn partial_startup_failure_cleans_up_earlier_listener() {
+    let occupied = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let busy_addr = occupied.local_addr().unwrap();
+    let fixture = CameraReproFixture {
+        schema_version: REPRO_SCHEMA_VERSION.to_owned(),
+        camera: ReproCameraInfo {
+            name: None,
+            protocol: ReproProtocol::Rtsp,
+            anonymized: true,
+            credentials_stripped: true,
+            base_host: "192.0.2.41".to_owned(),
+        },
+        rtsp: Some(RtspReproFixture { sessions: vec![] }),
+        http: Some(HttpReproFixture { exchanges: vec![] }),
+        reo_proto: None,
+    };
+    let result = ReplayCameraServer::start_with_options(
+        fixture,
+        ReplayServerOptions {
+            bind_addr: busy_addr,
+            loop_replay: false,
+        },
+    );
+    assert!(result.is_err());
+    drop(occupied);
+}
+
+#[test]
+fn empty_reo_frames_with_loop_replay_drops_without_deadlock() {
+    let fixture = CameraReproFixture {
+        schema_version: REPRO_SCHEMA_VERSION.to_owned(),
+        camera: ReproCameraInfo {
+            name: None,
+            protocol: ReproProtocol::ReoProto,
+            anonymized: true,
+            credentials_stripped: true,
+            base_host: "192.0.2.42".to_owned(),
+        },
+        rtsp: None,
+        http: None,
+        reo_proto: Some(ReoProtoReproFixture { frames: vec![] }),
+    };
+    let server = ReplayCameraServer::start_with_options(
+        fixture,
+        ReplayServerOptions {
+            bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            loop_replay: true,
+        },
+    )
+    .unwrap();
+    let _stream = TcpStream::connect(server.reo_addr().unwrap()).unwrap();
+    let started = Instant::now();
+    drop(server);
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+#[test]
+fn unscripted_rtsp_play_returns_404_and_streams_no_rtp() {
+    let mut fixture = rtsp_h264_fixture(vec![RtpPacketFixture {
+        channel: Some(0),
+        track: "video".to_owned(),
+        marker: true,
+        payload_type: 96,
+        sequence: 1,
+        timestamp: 90_000,
+        ssrc: 1,
+        delay_ms: None,
+        payload_base64: encode_base64(&[0x65, 0x88]),
+    }]);
+    fixture.rtsp.as_mut().unwrap().sessions[0].responses.pop();
+    let server = ReplayCameraServer::start(fixture).unwrap();
+    let addr = server.rtsp_addr().unwrap();
+    let mut tcp = TcpStream::connect(addr).unwrap();
+    tcp.set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+    let url = format!("rtsp://{addr}/stream");
+    let mut buf = Vec::new();
+    for raw in [
+        format!("DESCRIBE {url} RTSP/1.0\r\nCSeq: 1\r\nAccept: application/sdp\r\n\r\n"),
+        format!(
+            "SETUP {url}/trackID=0 RTSP/1.0\r\nCSeq: 2\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n"
+        ),
+    ] {
+        write_rtsp(&mut tcp, &raw);
+        assert!(read_rtsp_head(&mut tcp, &mut buf).contains("200 OK"));
+    }
+    write_rtsp(&mut tcp, &format!("PLAY {url} RTSP/1.0\r\nCSeq: 3\r\n\r\n"));
+    let reply = read_rtsp_head(&mut tcp, &mut buf);
+    assert!(reply.contains("404 Not Found"));
+    assert!(!buf.starts_with(b"$"));
+}
+
+#[test]
+fn unsetup_rtsp_track_packets_do_not_leak_onto_other_tracks() {
+    let mut fixture = rtsp_h264_fixture(vec![
+        RtpPacketFixture {
+            channel: Some(2),
+            track: "audio".to_owned(),
+            marker: true,
+            payload_type: 97,
+            sequence: 50,
+            timestamp: 1000,
+            ssrc: 2,
+            delay_ms: None,
+            payload_base64: encode_base64(&[0xaa, 0xbb]),
+        },
+        RtpPacketFixture {
+            channel: Some(0),
+            track: "video".to_owned(),
+            marker: true,
+            payload_type: 96,
+            sequence: 77,
+            timestamp: 90_000,
+            ssrc: 1,
+            delay_ms: None,
+            payload_base64: encode_base64(&[0x65, 0x88]),
+        },
+    ]);
+    fixture.rtsp.as_mut().unwrap().sessions[0].setup_order = Some(vec!["video".to_owned()]);
+    let server = ReplayCameraServer::start(fixture).unwrap();
+    let addr = server.rtsp_addr().unwrap();
+    let mut tcp = TcpStream::connect(addr).unwrap();
+    tcp.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+    let url = format!("rtsp://{addr}/stream");
+    let mut buf = Vec::new();
+    for raw in [
+        format!("DESCRIBE {url} RTSP/1.0\r\nCSeq: 1\r\nAccept: application/sdp\r\n\r\n"),
+        format!(
+            "SETUP {url}/trackID=0 RTSP/1.0\r\nCSeq: 2\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n"
+        ),
+        format!("PLAY {url} RTSP/1.0\r\nCSeq: 3\r\nSession: repro-42\r\n\r\n"),
+    ] {
+        write_rtsp(&mut tcp, &raw);
+        assert!(read_rtsp_head(&mut tcp, &mut buf).contains("200 OK"));
+    }
+    let rtp = read_interleaved_rtp(&mut tcp, &mut buf);
+    assert_eq!(u16::from_be_bytes([rtp[2], rtp[3]]), 77);
+    let mut eof = [0_u8; 64];
+    assert_eq!(tcp.read(&mut eof).unwrap(), 0);
+}
+
+#[test]
+fn rejects_crlf_status_reasons_and_oversized_text_bodies() {
+    let mut crlf_http = onvif_and_reolink_fixture();
+    crlf_http.http.as_mut().unwrap().exchanges[0].status_reason = Some("OK\r\nEvil: 1".to_owned());
+    assert!(crlf_http.validate().is_err());
+
+    let mut crlf_rtsp = rtsp_h264_fixture(vec![]);
+    crlf_rtsp.rtsp.as_mut().unwrap().sessions[0].responses[0].reason = "OK\nBad".to_owned();
+    assert!(crlf_rtsp.validate().is_err());
+
+    let mut big_http = onvif_and_reolink_fixture();
+    big_http.http.as_mut().unwrap().exchanges[0].body_text = Some("x".repeat(4 * 1024 * 1024 + 1));
+    assert!(big_http.validate().is_err());
 }
 
 fn now_time() -> Time {

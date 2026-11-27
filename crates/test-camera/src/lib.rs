@@ -7,13 +7,18 @@ mod media;
 mod onvif;
 mod reo;
 mod reolink_http;
-pub mod replay;
+mod replay;
 mod rtsp;
 pub mod seed;
 mod web_ui;
 
 #[doc(inline)]
-pub use replay::*;
+pub use replay::{
+    CameraReproFixture, HttpExchangeFixture, HttpReproFixture, REPRO_FIXTURE_BYTES_MAX,
+    REPRO_SCHEMA_VERSION, RecordedProtocol, RecordedRequest, ReoFrameFixture, ReoProtoReproFixture,
+    ReplayCameraServer, ReplayServerOptions, ReproCameraInfo, ReproProtocol, RtpPacketFixture,
+    RtspReproFixture, RtspResponseFixture, RtspSessionFixture, decode_base64, encode_base64,
+};
 
 use crate::{
     media::VideoSource, onvif::OnvifServer, reo::ReoServer, reolink_http::ReolinkHttpServer,
