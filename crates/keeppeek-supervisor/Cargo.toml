@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-only"
 authors = ["xnorpx <xnorpx@outlook.com>"]
-description = "Offline multi-executable A/B supervisor for KeepPeek and KeepPeek Vision"
+description = "Multi-executable A/B supervisor and update channels for KeepPeek and KeepPeek Vision"
 repository = "https://github.com/xnorpx/keeppeek"
 homepage = "https://xnorpx.github.io/keeppeek/"
 documentation = "https://xnorpx.github.io/keeppeek/"
@@ -28,6 +28,8 @@ serde_json = { workspace = true }
 sha2 = "0.11"
 tracing = { version = "0.1.44" }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+ureq = { workspace = true, features = ["native-tls"] }
+url = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "=1.1.6", features = ["process"] }
@@ -36,7 +38,10 @@ rustix = { version = "=1.1.6", features = ["process"] }
 windows = { version = "0.62.2", features = [
   "Win32_Foundation",
   "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
   "Win32_System_JobObjects",
+  "Win32_System_SystemServices",
   "Win32_System_Threading",
 ] }
 

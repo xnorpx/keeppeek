@@ -190,6 +190,33 @@ When exposing `POST /mcp` beyond loopback, keep `[access].require_secure_remote 
 terminate HTTPS at a trusted reverse proxy listed in `[access].trusted_proxies`, or reach KeepPeek
 over a private VPN. Direct plain HTTP from a remote-classified address is rejected with HTTP `426`.
 
+### Fast local development and agentic MCP loop
+
+Because `POST /mcp` is stateless, AI agents testing local KeepPeek changes can stay connected
+across live supervised binary swaps without restarting the agent or editing MCP client config:
+
+1. Start the supervisor once with local channel opt-in and a short probation window:
+
+   ```sh
+   keeppeek-supervisor run --root <dev-supervisor-root> --config <path/to/config.toml> --allow-local --probation-ms 500
+   ```
+
+2. Point the MCP client directly at Streamable HTTP (`http://127.0.0.1:8081/mcp`). On Windows,
+   prefer Streamable HTTP (or a copied `keeppeek.exe` outside `target/`) over running
+   `target/debug/keeppeek.exe mcp` directly so Cargo can relink `target/debug/keeppeek.exe`
+   without a file lock.
+3. After editing Rust code, rebuild and hot-swap the running child in one command:
+
+   ```sh
+   cargo build --bin keeppeek
+   keeppeek-supervisor update --root <dev-supervisor-root> --channel local --binary target/debug/keeppeek --apply --wait --json
+   ```
+
+4. Confirm the new child PID/executable via `get_server_health` (`system.process.pid` and
+   `system.process.executable`) or `keeppeek-supervisor status --root <dev-supervisor-root> --json`.
+   If the new binary crashes or fails probation, the supervisor automatically rolls back to the
+   previous working slot and reports `rolled_back: true`.
+
 ## Manage secrets without plaintext chat (`keeppeek secret` and loopback UI handoff)
 
 KeepPeek never accepts raw camera passwords or webhook secrets through MCP tool arguments, and

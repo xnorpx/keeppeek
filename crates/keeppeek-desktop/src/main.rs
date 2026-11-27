@@ -34,6 +34,9 @@ struct Cli {
     /// Override the fallback `keeppeek` executable path used in managed local server mode.
     #[arg(long, value_name = "PATH")]
     server_bin: Option<PathBuf>,
+    /// Explicitly opt in to launching unsigned `local-*` developer slots in managed server mode.
+    #[arg(long)]
+    allow_local: bool,
     /// Open the connection launcher instead of connecting automatically on startup.
     #[arg(long)]
     no_autoconnect: bool,
@@ -70,6 +73,7 @@ fn main() -> ExitCode {
             target,
             auto_connect: !cli.no_autoconnect,
             server_bin: cli.server_bin,
+            allow_local: cli.allow_local,
             diagnostics_file: cli.diagnostics_file,
             smoke_exit_ms: cli.smoke_exit_ms,
         };
@@ -85,6 +89,7 @@ fn main() -> ExitCode {
         let _ = (
             cli.no_autoconnect,
             cli.server_bin,
+            cli.allow_local,
             cli.diagnostics_file,
             cli.smoke_exit_ms,
         );

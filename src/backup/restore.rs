@@ -771,6 +771,15 @@ fn restored_native_configuration<R: Read + Seek>(
         storage.extend(target_storage_paths);
     }
     source.remove("storage_migration");
+    // Host-operator supervisor update policy is never overwritten by a child-restored archive.
+    match target.get("updates") {
+        Some(existing) => {
+            source.insert("updates".to_owned(), existing.clone());
+        }
+        None => {
+            source.remove("updates");
+        }
+    }
     let config = toml::to_string_pretty(&source)?.into_bytes();
     let validated = super::validated_native_configuration(&config, &secrets)?;
     owned_storage::verify(target_config_path, &validated)?;
@@ -814,6 +823,7 @@ fn restored_configuration<R: Read + Seek>(
         let mut source: toml::Table = toml::from_str(std::str::from_utf8(&source)?)?;
         let target_storage_paths = take_storage_paths(&mut target);
         take_storage_paths(&mut source);
+        source.remove("updates");
         target.retain(|key, value| !runtime_owned(key, value));
         target.extend(source);
         apply_target_storage_paths(&mut target, target_storage_paths, manifest, plan)?;
@@ -894,6 +904,7 @@ fn runtime_owned(key: &str, value: &toml::Value) -> bool {
     key != "camera_defaults"
         && key != "event_forwarder"
         && key != "storage_migration"
+        && key != "updates"
         && !config::is_camera_namespace(key, value)
 }
 
@@ -4042,6 +4053,44 @@ password = "{{secret:MQTT_PASSWORD}}"
             [backup_proto::BackupSection::RuntimeConfig as i32]
         );
         (directory, bundle_path, target_config, plan)
+    }
+
+    #[test]
+    fn native_restore_preserves_target_updates_policy_and_strips_uploaded_updates() {
+        let (dir1, bundle1, target1, _) = activatable_fixture_with_configs(
+            "preserve-updates",
+            "[storage]\nlong_term_max_gb = 10\n\n[updates]\nchannel = \"main\"\nmode = \"auto\"\n",
+            "[storage]\nlong_term_max_gb = 20\n\n[updates]\nchannel = \"release\"\nmode = \"notify\"\n",
+        );
+        let candidate1 = inspect_configuration_candidate(&bundle1, &target1).unwrap();
+        assert_eq!(
+            candidate1.configuration.updates.channel,
+            Some(config::UpdatesChannel::Release)
+        );
+        assert_eq!(
+            candidate1.configuration.updates.mode,
+            config::UpdatesMode::Notify
+        );
+        let _ = std::fs::remove_dir_all(&dir1);
+
+        let (dir2, bundle2, target2, _) = activatable_fixture_with_configs(
+            "strip-uploaded-updates",
+            "[storage]\nlong_term_max_gb = 10\n\n[updates]\nchannel = \"main\"\nmode = \"auto\"\n",
+            "[storage]\nlong_term_max_gb = 20\n",
+        );
+        let candidate2 = inspect_configuration_candidate(&bundle2, &target2).unwrap();
+        assert!(
+            candidate2.configuration.updates.is_empty()
+                && !candidate2.configuration.source.contains_key("updates"),
+            "uploaded archive must not inject [updates] when absent on target"
+        );
+        let _ = std::fs::remove_dir_all(&dir2);
+
+        // Legacy section-based restore must also treat [updates] as non-runtime-owned.
+        assert!(!runtime_owned(
+            "updates",
+            &toml::Value::Table(toml::Table::new())
+        ));
     }
 
     fn test_directory(name: &str) -> std::path::PathBuf {

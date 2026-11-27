@@ -1,13 +1,18 @@
-//! Offline multi-executable A/B supervisor for KeepPeek and KeepPeek Vision.
+//! Multi-executable A/B supervisor and update channels for KeepPeek and KeepPeek Vision.
 //!
-//! This crate manages versioned standalone child executables under an immutable
-//! slot layout, verifies offline Ed25519 release manifests and SHA-256 digests,
-//! supervises child lifecycles with OS process-group or Job Object isolation,
-//! and rolls back failing upgrades automatically.
+//! This crate manages content-addressed standalone child executables under an
+//! immutable slot layout, verifies Ed25519 Manifest v2 signatures and streaming
+//! SHA-256 digests, enforces same-major in-place compatibility (requiring a fresh
+//! install across major increments), supervises child lifecycles with OS process
+//! isolation and live `<root>/runtime/` IPC, and rolls back failing upgrades
+//! automatically.
 //!
 //! All three slim host shells (`keeppeek-service`, `keeppeek-supervisor`, and
 //! opt-in managed local server mode in `keeppeek-desktop`) embed this crate.
 
+pub mod acl;
+pub mod control;
+pub mod fetch;
 pub mod manifest;
 pub mod process;
 pub mod slots;
@@ -35,8 +40,11 @@ pub const ENV_READY_FILE: &str = "KEEPPEEK_SUPERVISOR_READY_FILE";
 /// Environment variable naming the stop sentinel file created by the supervisor.
 pub const ENV_STOP_FILE: &str = "KEEPPEEK_SUPERVISOR_STOP_FILE";
 
-/// Environment variable passing the active slot version string to a child process.
+/// Environment variable passing the active slot semantic version string to a child process.
 pub const ENV_ACTIVE_VERSION: &str = "KEEPPEEK_SUPERVISOR_VERSION";
+
+/// Environment variable passing the active content-addressed `SlotId` to a child process.
+pub const ENV_ACTIVE_SLOT: &str = "KEEPPEEK_SUPERVISOR_SLOT";
 
 /// Environment variable passing the supervised component name to a child process.
 pub const ENV_COMPONENT: &str = "KEEPPEEK_SUPERVISOR_COMPONENT";

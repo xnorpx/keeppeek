@@ -158,6 +158,9 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "DesktopConfig::is_empty")]
     pub desktop: DesktopConfig,
 
+    #[serde(default, skip_serializing_if = "UpdatesConfig::is_empty")]
+    pub updates: UpdatesConfig,
+
     #[serde(default, skip_serializing_if = "mcp::McpConfig::is_default")]
     pub mcp: mcp::McpConfig,
 
@@ -601,6 +604,62 @@ impl DesktopConfig {
             }
         }
         Ok(())
+    }
+}
+
+/// Host-operator supervisor update channel under `[updates]`.
+///
+/// The `local` development channel is intentionally excluded from `config.toml`
+/// and requires an explicit supervisor CLI flag (`--allow-local`).
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdatesChannel {
+    /// Stable SemVer release builds on the current major line.
+    Release,
+    /// Rolling `main` branch builds published under the `master` prerelease tag.
+    Main,
+}
+
+/// Host-operator supervisor update mode under `[updates]`.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdatesMode {
+    /// Check and notify operators without applying updates automatically.
+    #[default]
+    Notify,
+    /// Automatically stage and apply compatible updates when scheduled polling is enabled.
+    Auto,
+}
+
+impl UpdatesMode {
+    const fn is_default(self) -> bool {
+        matches!(self, Self::Notify)
+    }
+}
+
+/// Reserved host-operator supervisor update policy under `[updates]`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct UpdatesConfig {
+    /// Configured remote update channel (`"release"` or `"main"`). Never accepts `"local"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<UpdatesChannel>,
+    /// Update mode (`"notify"` default, or `"auto"`).
+    #[serde(default, skip_serializing_if = "UpdatesMode::is_default_ref")]
+    pub mode: UpdatesMode,
+}
+
+impl UpdatesMode {
+    const fn is_default_ref(&self) -> bool {
+        self.is_default()
+    }
+}
+
+impl UpdatesConfig {
+    /// Returns true when `[updates]` carries only unset/default values.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.channel.is_none() && self.mode.is_default()
     }
 }
 
@@ -1219,6 +1278,7 @@ impl Default for Config {
             external_auth: None,
             direct_card: DirectCardConfig::default(),
             desktop: DesktopConfig::default(),
+            updates: UpdatesConfig::default(),
             mcp: mcp::McpConfig::default(),
             storage: StorageToml::default(),
             battery_wake: BatteryWakeConfig::default(),
@@ -2727,6 +2787,7 @@ pub(crate) fn is_reserved_section(namespace: &str) -> bool {
             | "battery_wake"
             | "direct_card"
             | "desktop"
+            | "updates"
             | "mcp"
             | "homekit"
             | "logging"
@@ -5809,5 +5870,57 @@ mod tests {
             "#,
         );
         assert!(unknown.is_err());
+    }
+
+    #[test]
+    fn updates_section_is_reserved_rejects_local_and_preserves_across_settings_save() {
+        assert!(is_reserved_section("updates"));
+        assert!(UpdatesConfig::default().is_empty());
+
+        let parsed: UpdatesConfig = toml::from_str(
+            r#"
+                channel = "main"
+                mode = "auto"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(parsed.channel, Some(UpdatesChannel::Main));
+        assert_eq!(parsed.mode, UpdatesMode::Auto);
+        assert!(!parsed.is_empty());
+
+        let release: UpdatesConfig = toml::from_str(r#"channel = "release""#).unwrap();
+        assert_eq!(release.channel, Some(UpdatesChannel::Release));
+        assert_eq!(release.mode, UpdatesMode::Notify);
+
+        assert!(toml::from_str::<UpdatesConfig>(r#"channel = "local""#).is_err());
+        assert!(toml::from_str::<UpdatesConfig>(r#"unexpected = true"#).is_err());
+
+        let root =
+            std::env::temp_dir().join(format!("keeppeek-updates-cfg-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let config_path = root.join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"host = "127.0.0.1"
+port = 8081
+
+[updates]
+channel = "main"
+mode = "notify"
+"#,
+        )
+        .unwrap();
+        let (mut loaded, _) = load_from_path(config_path.clone()).unwrap();
+        assert_eq!(loaded.updates.channel, Some(UpdatesChannel::Main));
+        assert_eq!(loaded.updates.mode, UpdatesMode::Notify);
+        assert!(loaded.camera_configurations().unwrap().is_empty());
+
+        loaded.port = 8082;
+        loaded.updates.channel = Some(UpdatesChannel::Release);
+        let saved = update_settings(&config_path, &loaded).unwrap();
+        assert_eq!(saved.port, 8082);
+        assert_eq!(saved.updates.channel, Some(UpdatesChannel::Main));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

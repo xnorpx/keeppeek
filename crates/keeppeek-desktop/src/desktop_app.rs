@@ -35,6 +35,7 @@ pub struct LaunchOptions {
     pub target: ResolvedTarget,
     pub auto_connect: bool,
     pub server_bin: Option<PathBuf>,
+    pub allow_local: bool,
     pub diagnostics_file: Option<PathBuf>,
     pub smoke_exit_ms: Option<u64>,
 }
@@ -88,6 +89,7 @@ struct DesktopRuntimeState {
     manage_local_server: bool,
     supervisor_root: PathBuf,
     server_bin_override: Option<PathBuf>,
+    allow_local: bool,
     managed_supervisor_starting: bool,
     managed_supervisor: Option<ManagedLocalServer>,
     last_error: Option<String>,
@@ -117,6 +119,7 @@ impl DesktopRuntimeState {
             manage_local_server: options.target.manage_local_server,
             supervisor_root: options.target.supervisor_root,
             server_bin_override: options.server_bin,
+            allow_local: options.allow_local,
             managed_supervisor_starting: false,
             managed_supervisor: None,
             last_error: None,
@@ -424,6 +427,7 @@ async fn ensure_managed_local_server_if_opted_in(
             guard.supervisor_root.clone(),
             guard.config_path.clone(),
             guard.server_bin_override.clone(),
+            guard.allow_local,
         )
     };
 
@@ -446,7 +450,7 @@ async fn ensure_managed_local_server_if_opted_in(
         return Ok(());
     }
 
-    let (supervisor_root, config_path, server_bin_override) = startup_params;
+    let (supervisor_root, config_path, server_bin_override, allow_local) = startup_params;
     let spawn_result = tauri::async_runtime::spawn_blocking(move || {
         let desktop_exe = std::env::current_exe().ok();
         let config = managed_server::build_desktop_supervisor_config(
@@ -454,6 +458,7 @@ async fn ensure_managed_local_server_if_opted_in(
             &config_path,
             server_bin_override.as_deref(),
             desktop_exe.as_deref(),
+            allow_local,
         );
         let mut server = ManagedLocalServer::start(config)
             .map_err(|error| format!("Unable to start managed local KeepPeek server: {error}."))?;
