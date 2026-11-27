@@ -9,9 +9,9 @@ use super::{
     AuthenticatedApiRequest, CameraSettingsUpdate, ControlCommandError,
     MAX_NOTIFICATION_RULE_JSON_BYTES, ServerState, api_status, authenticate_api_bearer,
     authenticated_api_request, camera_access, camera_configuration_revision, configuration,
-    current_config, delete_camera_settings, get_logging_settings, logging, mcp_catalog_probe,
-    mcp_device_settings, mcp_diagnostics, mcp_schemas, mcp_secret_handoff, mcp_snapshot,
-    notification_command_error, proto_notification_rule_record, record_access_audit,
+    current_config, delete_camera_settings, get_logging_settings, logging, mcp_camera_debug,
+    mcp_catalog_probe, mcp_device_settings, mcp_diagnostics, mcp_schemas, mcp_secret_handoff,
+    mcp_snapshot, notification_command_error, proto_notification_rule_record, record_access_audit,
     restore_notification_destinations, runtime_configuration, save_camera_settings, server_health,
     service_error, state_store, unix_time_ms, validate_client_id,
 };
@@ -70,11 +70,12 @@ pub(super) struct Runtime {
     secrets: Arc<RwLock<CachedSecrets>>,
     snapshot_limiter: Arc<mcp_snapshot::SnapshotRateLimiter>,
     handoffs: Arc<mcp_secret_handoff::HandoffStore>,
+    camera_debug: Arc<dyn mcp_camera_debug::CameraDebugService>,
 }
 
 impl Runtime {
     pub(super) fn new(config: McpConfig, secrets: Secrets) -> Self {
-        Self {
+        let runtime = Self {
             config,
             active_requests: Arc::new(AtomicUsize::new(0)),
             secrets: Arc::new(RwLock::new(CachedSecrets {
@@ -83,6 +84,15 @@ impl Runtime {
             })),
             snapshot_limiter: Arc::new(mcp_snapshot::SnapshotRateLimiter::new()),
             handoffs: Arc::new(mcp_secret_handoff::HandoffStore::new()),
+            camera_debug: Arc::new(mcp_camera_debug::UnavailableCameraDebugService),
+        };
+        runtime.emit_startup_warning();
+        runtime
+    }
+
+    pub(super) fn emit_startup_warning(&self) {
+        if let Some(warning) = crate::health::mcp_camera_debugging_warning(&self.config) {
+            tracing::warn!(target: "keeppeek::mcp", scope = "mcp", "{warning}");
         }
     }
 
@@ -100,6 +110,19 @@ impl Runtime {
 
     pub(super) fn handoffs(&self) -> &mcp_secret_handoff::HandoffStore {
         &self.handoffs
+    }
+
+    pub(super) fn camera_debug(&self) -> &dyn mcp_camera_debug::CameraDebugService {
+        self.camera_debug.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_camera_debug_service(
+        mut self,
+        service: Arc<dyn mcp_camera_debug::CameraDebugService>,
+    ) -> Self {
+        self.camera_debug = service;
+        self
     }
 
     fn secrets_snapshot(&self, config_path: Option<&std::path::Path>) -> Secrets {
@@ -417,8 +440,14 @@ fn handle_authenticated_post(
             Value::Null,
             JsonRpcError::new(ERROR_BUSY, "MCP concurrency limit reached"),
         );
-        return json_rpc_http_response(state, 429, &busy, state.mcp.config().max_response_bytes)
-            .with_additional_header("Retry-After", "1");
+        return json_rpc_http_response(
+            state,
+            429,
+            &busy,
+            state.mcp.config().max_response_bytes,
+            false,
+        )
+        .with_additional_header("Retry-After", "1");
     };
     let parsed = match parse_bounded_request(&body, MAX_REQUEST_BODY_BYTES) {
         Ok(parsed) => parsed,
@@ -428,6 +457,7 @@ fn handle_authenticated_post(
                 200,
                 error_response.as_ref(),
                 state.mcp.config().max_response_bytes,
+                false,
             );
         }
     };
@@ -449,7 +479,9 @@ fn handle_authenticated_post(
                 .with_status_code(202)
                 .with_additional_header("Cache-Control", "no-store")
         },
-        |rpc_response| json_rpc_http_response(state, 200, &rpc_response, response_limit),
+        |(rpc_response, bypass_redaction)| {
+            json_rpc_http_response(state, 200, &rpc_response, response_limit, bypass_redaction)
+        },
     )
 }
 
@@ -614,6 +646,7 @@ fn json_rpc_http_response(
     status: u16,
     response: &JsonRpcResponse,
     max_bytes: usize,
+    bypass_redaction: bool,
 ) -> Response {
     let redactor = build_redactor(state);
     let mut value = serde_json::to_value(response).unwrap_or_else(|_| {
@@ -623,7 +656,13 @@ fn json_rpc_http_response(
             "error": { "code": ERROR_INTERNAL, "message": "failed to serialize MCP response" }
         })
     });
-    redactor.redact_value(&mut value);
+    let allow_raw = bypass_redaction
+        && state.mcp.config().enabled
+        && state.mcp.config().allow_camera_debugging
+        && response.error.is_none();
+    if !allow_raw {
+        redactor.redact_value(&mut value);
+    }
     let bytes = serde_json::to_vec(&value).unwrap_or_default();
     let final_bytes = if bytes.len() <= max_bytes {
         bytes
@@ -646,22 +685,31 @@ fn json_rpc_http_response(
         .with_additional_header("Cache-Control", "no-store")
 }
 
-fn dispatch_json_rpc(ctx: &McpContext<'_>, request: JsonRpcRequest) -> Option<JsonRpcResponse> {
+fn dispatch_json_rpc(
+    ctx: &McpContext<'_>,
+    request: JsonRpcRequest,
+) -> Option<(JsonRpcResponse, bool)> {
     if request.is_notification() {
         return None;
     }
     let id = request.id.unwrap_or(Value::Null);
     if let Err(error) = ctx.check_deadline() {
-        return Some(JsonRpcResponse::error(id, error.into_json_rpc()));
+        return Some((JsonRpcResponse::error(id, error.into_json_rpc()), false));
     }
-    let outcome = match request.method.as_str() {
-        "initialize" => Ok(serde_json::to_value(InitializeResult::keeppeek(
-            ctx.writes_allowed(),
-            ctx.snapshots_allowed(),
-        ))
-        .unwrap_or(Value::Null)),
-        "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({ "tools": mcp_schemas::tool_definitions(ctx.is_admin()) })),
+    let outcome: Result<(Value, bool), ToolError> = match request.method.as_str() {
+        "initialize" => Ok((
+            serde_json::to_value(InitializeResult::keeppeek(
+                ctx.writes_allowed(),
+                ctx.snapshots_allowed(),
+            ))
+            .unwrap_or(Value::Null),
+            false,
+        )),
+        "ping" => Ok((json!({}), false)),
+        "tools/list" => Ok((
+            json!({ "tools": mcp_schemas::tool_definitions(ctx.is_admin()) }),
+            false,
+        )),
         "tools/call" => handle_tools_call(ctx, request.params),
         method => Err(ToolError {
             code: ERROR_METHOD_NOT_FOUND,
@@ -670,16 +718,23 @@ fn dispatch_json_rpc(ctx: &McpContext<'_>, request: JsonRpcRequest) -> Option<Js
         }),
     };
     let final_outcome = match outcome {
-        Ok(value) => ctx.check_deadline().map(|()| value),
+        Ok(pair) => ctx.check_deadline().map(|()| pair),
         Err(error) => Err(error),
     };
     match final_outcome {
-        Ok(result) => Some(JsonRpcResponse::success(id, result)),
-        Err(error) => Some(JsonRpcResponse::error(id, error.into_json_rpc())),
+        Ok((result, bypass_redaction)) => {
+            let allow_raw =
+                bypass_redaction && ctx.is_admin() && ctx.state.mcp.config().allow_camera_debugging;
+            Some((JsonRpcResponse::success(id, result), allow_raw))
+        }
+        Err(error) => Some((JsonRpcResponse::error(id, error.into_json_rpc()), false)),
     }
 }
 
-fn handle_tools_call(ctx: &McpContext<'_>, params: Option<Value>) -> Result<Value, ToolError> {
+fn handle_tools_call(
+    ctx: &McpContext<'_>,
+    params: Option<Value>,
+) -> Result<(Value, bool), ToolError> {
     let params_value =
         params.ok_or_else(|| ToolError::invalid_params("tools/call requires params"))?;
     let call: ToolCallParams = serde_json::from_value(params_value).map_err(|error| {
@@ -694,66 +749,76 @@ fn handle_tools_call(ctx: &McpContext<'_>, params: Option<Value>) -> Result<Valu
             ));
         }
     };
-    let result = dispatch_tool(ctx, &call.name, arguments)?;
-    serde_json::to_value(result)
-        .map_err(|error| ToolError::internal(format!("failed to encode tool result: {error}")))
+    let (result, bypass_redaction) = dispatch_tool(ctx, &call.name, arguments)?;
+    let encoded = serde_json::to_value(result)
+        .map_err(|error| ToolError::internal(format!("failed to encode tool result: {error}")))?;
+    Ok((encoded, bypass_redaction))
 }
 
 fn dispatch_tool(
     ctx: &McpContext<'_>,
     name: &str,
     args: Value,
-) -> Result<ToolCallResult, ToolError> {
+) -> Result<(ToolCallResult, bool), ToolError> {
     match name {
-        "get_server_health" => tool_get_server_health(ctx),
+        "get_server_health" => tool_get_server_health(ctx).map(|r| (r, false)),
         "search_events" => dispatch_diagnostic(
             ctx,
             "mcp_search_events",
             mcp_diagnostics::search_events,
             &args,
-        ),
+        )
+        .map(|r| (r, false)),
         "get_recording_coverage" => dispatch_diagnostic(
             ctx,
             "mcp_get_recording_coverage",
             mcp_diagnostics::get_recording_coverage,
             &args,
-        ),
-        "get_camera_snapshot" => tool_get_camera_snapshot(ctx, args),
-        "search_logs" => tool_search_logs(ctx, args),
-        "get_logging_settings" => tool_get_logging_settings(ctx),
-        "get_configuration" => tool_get_configuration(ctx, args),
-        "list_secret_keys" => tool_list_secret_keys(ctx),
-        "plan_configuration_change" => tool_plan_configuration_change(ctx, args),
+        )
+        .map(|r| (r, false)),
+        "get_camera_snapshot" => tool_get_camera_snapshot(ctx, args).map(|r| (r, false)),
+        "search_logs" => tool_search_logs(ctx, args).map(|r| (r, false)),
+        "get_logging_settings" => tool_get_logging_settings(ctx).map(|r| (r, false)),
+        "get_configuration" => tool_get_configuration(ctx, args).map(|r| (r, false)),
+        "list_secret_keys" => tool_list_secret_keys(ctx).map(|r| (r, false)),
+        "plan_configuration_change" => {
+            tool_plan_configuration_change(ctx, args).map(|r| (r, false))
+        }
         "get_storage_status" => dispatch_diagnostic(
             ctx,
             "mcp_get_storage_status",
             mcp_diagnostics::get_storage_status,
             &args,
-        ),
+        )
+        .map(|r| (r, false)),
         "get_notification_status" => dispatch_diagnostic(
             ctx,
             "mcp_get_notification_status",
             mcp_diagnostics::get_notification_status,
             &args,
-        ),
+        )
+        .map(|r| (r, false)),
         "discover_cameras" => dispatch_diagnostic(
             ctx,
             "mcp_discover_cameras",
             mcp_diagnostics::discover_cameras,
             &args,
-        ),
+        )
+        .map(|r| (r, false)),
         "get_runtime_configuration" => dispatch_diagnostic(
             ctx,
             "mcp_get_runtime_configuration",
             mcp_diagnostics::get_runtime_configuration,
             &args,
-        ),
+        )
+        .map(|r| (r, false)),
         "list_runtime_profiles" => dispatch_diagnostic(
             ctx,
             "mcp_list_runtime_profiles",
             mcp_diagnostics::list_runtime_profiles,
             &args,
-        ),
+        )
+        .map(|r| (r, false)),
         _ => dispatch_onboarding_or_write_tool(ctx, name, args),
     }
 }
@@ -762,32 +827,59 @@ fn dispatch_onboarding_or_write_tool(
     ctx: &McpContext<'_>,
     name: &str,
     args: Value,
-) -> Result<ToolCallResult, ToolError> {
+) -> Result<(ToolCallResult, bool), ToolError> {
     match name {
         "search_camera_catalog" => dispatch_diagnostic(
             ctx,
             "mcp_search_camera_catalog",
             mcp_catalog_probe::search_camera_catalog,
             &args,
-        ),
-        "probe_camera_streams" => tool_probe_camera_streams(ctx, args),
-        "request_secret_entry" => tool_request_secret_entry(ctx, args),
-        "get_secret_entry_status" => tool_get_secret_entry_status(ctx, args),
-        "get_camera_device_settings" => tool_get_camera_device_settings(ctx, args),
-        "update_camera_device_settings" => tool_update_camera_device_settings(ctx, args),
-        "apply_configuration_plan" => tool_apply_configuration_plan(ctx, args),
-        "update_runtime_configuration" => tool_update_runtime_configuration(ctx, args),
-        "manage_configuration_template" => tool_manage_configuration_template(ctx, args),
-        "manage_camera" => tool_manage_camera(ctx, args),
-        "manage_notification_rule" => tool_manage_notification_rule(ctx, args),
-        "set_runtime_profile" => tool_set_runtime_profile(ctx, args),
-        "set_logging_filter" => tool_set_logging_filter(ctx, args),
+        )
+        .map(|r| (r, false)),
+        "probe_camera_streams" => tool_probe_camera_streams(ctx, args).map(|r| (r, false)),
+        "request_secret_entry" => tool_request_secret_entry(ctx, args).map(|r| (r, false)),
+        "get_secret_entry_status" => tool_get_secret_entry_status(ctx, args).map(|r| (r, false)),
+        "get_camera_device_settings" => {
+            tool_get_camera_device_settings(ctx, args).map(|r| (r, false))
+        }
+        "update_camera_device_settings" => {
+            tool_update_camera_device_settings(ctx, args).map(|r| (r, false))
+        }
+        "camera_debugging" => tool_camera_debugging(ctx, args),
+        "apply_configuration_plan" => tool_apply_configuration_plan(ctx, args).map(|r| (r, false)),
+        "update_runtime_configuration" => {
+            tool_update_runtime_configuration(ctx, args).map(|r| (r, false))
+        }
+        "manage_configuration_template" => {
+            tool_manage_configuration_template(ctx, args).map(|r| (r, false))
+        }
+        "manage_camera" => tool_manage_camera(ctx, args).map(|r| (r, false)),
+        "manage_notification_rule" => tool_manage_notification_rule(ctx, args).map(|r| (r, false)),
+        "set_runtime_profile" => tool_set_runtime_profile(ctx, args).map(|r| (r, false)),
+        "set_logging_filter" => tool_set_logging_filter(ctx, args).map(|r| (r, false)),
         other => Err(ToolError {
             code: ERROR_METHOD_NOT_FOUND,
             message: format!("unknown MCP tool: {other}"),
             data: None,
         }),
     }
+}
+
+fn tool_camera_debugging(
+    ctx: &McpContext<'_>,
+    args: Value,
+) -> Result<(ToolCallResult, bool), ToolError> {
+    let outcome = mcp_camera_debug::execute(
+        ctx.state,
+        ctx.router_tx,
+        &ctx.identity.principal,
+        ctx.identity.classification.reason,
+        ctx.read_only_header,
+        ctx.deadline,
+        args,
+    )
+    .map_err(ToolError::from_control)?;
+    Ok((outcome.result, outcome.bypass_redaction))
 }
 
 fn dispatch_diagnostic(
@@ -3876,7 +3968,7 @@ display_name = "Front Door"
         assert_eq!(lines[0]["result"]["protocolVersion"], "2025-03-26");
 
         let tools = lines[1]["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 27);
+        assert_eq!(tools.len(), 28);
         let tool_names: Vec<&str> = tools
             .iter()
             .map(|tool| tool["name"].as_str().unwrap())
@@ -3902,6 +3994,7 @@ display_name = "Front Door"
             "get_secret_entry_status",
             "get_camera_device_settings",
             "update_camera_device_settings",
+            "camera_debugging",
             "apply_configuration_plan",
             "update_runtime_configuration",
             "manage_configuration_template",
@@ -5535,6 +5628,175 @@ display_name = "Front Door"
         );
         assert_eq!(frames_recorded, FRAMES_SENT);
         assert!(total_mcp_calls >= 50);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    struct HttpDebugBoundaryMock {
+        sentinel: String,
+    }
+
+    impl mcp_camera_debug::CameraDebugService for HttpDebugBoundaryMock {
+        fn capture(
+            &self,
+            request: mcp_camera_debug::CaptureRequest,
+        ) -> Result<Value, ControlCommandError> {
+            let password = request.credentials.as_ref().map(|c| c.password.clone());
+            Ok(json!({
+                "action": "capture",
+                "camera_id": request.target.camera_id,
+                "capture_id": "cap-http-1",
+                "password": password,
+            }))
+        }
+
+        fn compare_transports(
+            &self,
+            request: mcp_camera_debug::CompareTransportsRequest,
+        ) -> Result<Value, ControlCommandError> {
+            Ok(json!({
+                "action": "compare_transports",
+                "camera_id": request.target.camera_id,
+            }))
+        }
+
+        fn export_repro_fixture(
+            &self,
+            request: mcp_camera_debug::ExportReproFixtureRequest,
+        ) -> Result<Value, ControlCommandError> {
+            Ok(json!({
+                "action": "export_repro_fixture",
+                "capture_id": request.capture_id,
+                "strip_credentials": request.strip_credentials,
+                "leaked_if_unredacted": self.sentinel,
+            }))
+        }
+
+        fn list_captures(
+            &self,
+            _request: mcp_camera_debug::ListCapturesRequest,
+        ) -> Result<Value, ControlCommandError> {
+            Ok(json!({ "action": "list_captures", "captures": [] }))
+        }
+
+        fn delete_capture(
+            &self,
+            _request: mcp_camera_debug::DeleteCaptureRequest,
+        ) -> Result<Value, ControlCommandError> {
+            Ok(json!({ "action": "delete_capture", "deleted": 1 }))
+        }
+    }
+
+    #[test]
+    fn camera_debugging_http_gate_read_only_and_redaction_boundary() {
+        let sentinel = "RAW-DEBUG-SENTINEL-998877";
+        let (dir, state, router_tx) = temp_config_fixture(
+            McpConfig {
+                enabled: true,
+                allow_camera_debugging: true,
+                ..McpConfig::default()
+            },
+            sentinel,
+        );
+        let state = state.with_camera_debug_service(Arc::new(HttpDebugBoundaryMock {
+            sentinel: sentinel.to_owned(),
+        }));
+
+        // Normal MCP tools remain strictly redacted even when allow_camera_debugging is true.
+        let cfg_resp = super::super::handle_request(
+            &mcp_post_request(
+                &json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_configuration","arguments":{}}}),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        let cfg_text = serde_json::to_string(&read_response_json(cfg_resp)).unwrap();
+        assert!(!cfg_text.contains(sentinel));
+
+        // Default capture (include_raw_auth: true) passes raw debug credentials when allowed.
+        let raw_cap = super::super::handle_request(
+            &mcp_post_request(
+                &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"camera_debugging","arguments":{"action":"capture","camera_id":"192.0.2.10"}}}),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        let raw_cap_json = read_response_json(raw_cap);
+        assert_eq!(
+            raw_cap_json["result"]["structuredContent"]["password"],
+            sentinel
+        );
+
+        // capture with include_raw_auth: false enforces SecretRedactor.
+        let redacted_cap = super::super::handle_request(
+            &mcp_post_request(
+                &json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"camera_debugging","arguments":{"action":"capture","camera_id":"192.0.2.10","include_raw_auth":false}}}),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        let redacted_cap_text = serde_json::to_string(&read_response_json(redacted_cap)).unwrap();
+        assert!(!redacted_cap_text.contains(sentinel));
+
+        // export_repro_fixture strictly redacts when strip_credentials is true (default).
+        let stripped_export = super::super::handle_request(
+            &mcp_post_request(
+                &json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"camera_debugging","arguments":{"action":"export_repro_fixture","capture_id":"cap-http-1"}}}),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        let stripped_export_text =
+            serde_json::to_string(&read_response_json(stripped_export)).unwrap();
+        assert!(!stripped_export_text.contains(sentinel));
+
+        // export_repro_fixture with strip_credentials: false allows unredacted fixture output.
+        let raw_export = super::super::handle_request(
+            &mcp_post_request(
+                &json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"camera_debugging","arguments":{"action":"export_repro_fixture","capture_id":"cap-http-1","strip_credentials":false}}}),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        let raw_export_json = read_response_json(raw_export);
+        assert_eq!(
+            raw_export_json["result"]["structuredContent"]["leaked_if_unredacted"],
+            sentinel
+        );
+
+        // X-KeepPeek-MCP-Read-Only: true rejects capture but allows export_repro_fixture.
+        let ro_headers = vec![(READ_ONLY_HEADER.to_owned(), "true".to_owned())];
+        let ro_cap = super::super::handle_request(
+            &mcp_post_request(
+                &json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"camera_debugging","arguments":{"action":"capture","camera_id":"192.0.2.10"}}}),
+                ro_headers.clone(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(read_response_json(ro_cap)["error"]["code"], ERROR_FORBIDDEN);
+
+        let ro_export = super::super::handle_request(
+            &mcp_post_request(
+                &json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"camera_debugging","arguments":{"action":"export_repro_fixture","capture_id":"cap-http-1"}}}),
+                ro_headers,
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        assert!(read_response_json(ro_export)["result"].is_object());
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

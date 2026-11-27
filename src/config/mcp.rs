@@ -48,6 +48,34 @@ pub const MIN_SNAPSHOT_MIN_INTERVAL_SECONDS: u64 = 1;
 /// Maximum allowed interval between snapshots per camera in seconds.
 pub const MAX_SNAPSHOT_MIN_INTERVAL_SECONDS: u64 = 300;
 
+/// Default maximum byte budget for one camera debug capture session (64 MiB).
+pub const DEFAULT_MAX_DEBUG_CAPTURE_BYTES: usize = 67_108_864;
+/// Minimum allowed byte budget for one camera debug capture session (1 MiB).
+pub const MIN_MAX_DEBUG_CAPTURE_BYTES: usize = 1_048_576;
+/// Maximum allowed byte budget for one camera debug capture session (256 MiB).
+pub const MAX_MAX_DEBUG_CAPTURE_BYTES: usize = 268_435_456;
+
+/// Default maximum retained disk storage budget for camera debug captures in bytes (512 MiB).
+pub const DEFAULT_MAX_DEBUG_STORAGE_BYTES: u64 = 536_870_912;
+/// Minimum allowed retained disk storage budget for camera debug captures in bytes (16 MiB).
+pub const MIN_MAX_DEBUG_STORAGE_BYTES: u64 = 16_777_216;
+/// Maximum allowed retained disk storage budget for camera debug captures in bytes (4 GiB).
+pub const MAX_MAX_DEBUG_STORAGE_BYTES: u64 = 4_294_967_296;
+
+/// Maximum number of camera IDs permitted in `[mcp].debug_camera_ids`.
+pub const MAX_DEBUG_CAMERA_IDS: usize = 256;
+/// Maximum byte length of one entry in `[mcp].debug_camera_ids`.
+pub const MAX_DEBUG_CAMERA_ID_BYTES: usize = 128;
+
+const _: () = {
+    assert!(MIN_MAX_DEBUG_CAPTURE_BYTES <= DEFAULT_MAX_DEBUG_CAPTURE_BYTES);
+    assert!(DEFAULT_MAX_DEBUG_CAPTURE_BYTES <= MAX_MAX_DEBUG_CAPTURE_BYTES);
+    assert!(MIN_MAX_DEBUG_STORAGE_BYTES <= DEFAULT_MAX_DEBUG_STORAGE_BYTES);
+    assert!(DEFAULT_MAX_DEBUG_STORAGE_BYTES <= MAX_MAX_DEBUG_STORAGE_BYTES);
+    assert!(MAX_DEBUG_CAMERA_IDS > 0);
+    assert!(MAX_DEBUG_CAMERA_ID_BYTES > 0);
+};
+
 /// Embedded MCP server settings stored under `[mcp]` in `config.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -64,6 +92,9 @@ pub struct McpConfig {
     /// Allows camera snapshot tools through MCP when set to `true`.
     #[serde(default)]
     pub allow_snapshots: bool,
+    /// Allows raw Administrator camera debugging captures, transcripts, and credentials when `true`.
+    #[serde(default)]
+    pub allow_camera_debugging: bool,
     /// Maximum number of MCP requests that can execute at the same time.
     #[serde(default = "default_max_concurrent_requests")]
     pub max_concurrent_requests: usize,
@@ -82,6 +113,15 @@ pub struct McpConfig {
     /// Minimum interval in seconds between consecutive snapshots for one camera.
     #[serde(default = "default_snapshot_min_interval_seconds")]
     pub snapshot_min_interval_seconds: u64,
+    /// Maximum byte budget for one camera debug capture session.
+    #[serde(default = "default_max_debug_capture_bytes")]
+    pub max_debug_capture_bytes: usize,
+    /// Maximum retained disk storage budget for camera debug captures in bytes.
+    #[serde(default = "default_max_debug_storage_bytes")]
+    pub max_debug_storage_bytes: u64,
+    /// Optional allowlist of camera IDs permitted for MCP camera debugging (empty allows all).
+    #[serde(default)]
+    pub debug_camera_ids: Vec<String>,
 }
 
 impl Default for McpConfig {
@@ -91,12 +131,16 @@ impl Default for McpConfig {
             allow_writes: false,
             allow_camera_device_writes: false,
             allow_snapshots: false,
+            allow_camera_debugging: false,
             max_concurrent_requests: DEFAULT_MAX_CONCURRENT_REQUESTS,
             max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
             request_timeout_seconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
             max_snapshot_bytes: DEFAULT_MAX_SNAPSHOT_BYTES,
             max_snapshot_dimension: DEFAULT_MAX_SNAPSHOT_DIMENSION,
             snapshot_min_interval_seconds: DEFAULT_SNAPSHOT_MIN_INTERVAL_SECONDS,
+            max_debug_capture_bytes: DEFAULT_MAX_DEBUG_CAPTURE_BYTES,
+            max_debug_storage_bytes: DEFAULT_MAX_DEBUG_STORAGE_BYTES,
+            debug_camera_ids: Vec::new(),
         }
     }
 }
@@ -109,19 +153,33 @@ impl McpConfig {
             && !self.allow_writes
             && !self.allow_camera_device_writes
             && !self.allow_snapshots
+            && !self.allow_camera_debugging
             && self.max_concurrent_requests == DEFAULT_MAX_CONCURRENT_REQUESTS
             && self.max_response_bytes == DEFAULT_MAX_RESPONSE_BYTES
             && self.request_timeout_seconds == DEFAULT_REQUEST_TIMEOUT_SECONDS
             && self.max_snapshot_bytes == DEFAULT_MAX_SNAPSHOT_BYTES
             && self.max_snapshot_dimension == DEFAULT_MAX_SNAPSHOT_DIMENSION
             && self.snapshot_min_interval_seconds == DEFAULT_SNAPSHOT_MIN_INTERVAL_SECONDS
+            && self.max_debug_capture_bytes == DEFAULT_MAX_DEBUG_CAPTURE_BYTES
+            && self.max_debug_storage_bytes == DEFAULT_MAX_DEBUG_STORAGE_BYTES
+            && self.debug_camera_ids.is_empty()
     }
 
-    /// Validates all bounded numeric limits in `[mcp]`.
+    /// Returns `true` when `camera_id` is allowed under `debug_camera_ids`.
+    #[must_use]
+    pub fn allows_debug_camera(&self, camera_id: &str) -> bool {
+        self.debug_camera_ids.is_empty()
+            || self
+                .debug_camera_ids
+                .iter()
+                .any(|allowed| allowed == camera_id)
+    }
+
+    /// Validates all bounded numeric limits and camera allowlist entries in `[mcp]`.
     ///
     /// # Errors
     ///
-    /// Returns an error when any numeric limit falls outside its allowed range.
+    /// Returns an error when any numeric limit or camera allowlist entry is invalid.
     pub fn validate(&self) -> anyhow::Result<()> {
         validate_usize_range(
             "mcp.max_concurrent_requests",
@@ -159,8 +217,41 @@ impl McpConfig {
             MIN_SNAPSHOT_MIN_INTERVAL_SECONDS,
             MAX_SNAPSHOT_MIN_INTERVAL_SECONDS,
         )?;
+        validate_usize_range(
+            "mcp.max_debug_capture_bytes",
+            self.max_debug_capture_bytes,
+            MIN_MAX_DEBUG_CAPTURE_BYTES,
+            MAX_MAX_DEBUG_CAPTURE_BYTES,
+        )?;
+        validate_u64_range(
+            "mcp.max_debug_storage_bytes",
+            self.max_debug_storage_bytes,
+            MIN_MAX_DEBUG_STORAGE_BYTES,
+            MAX_MAX_DEBUG_STORAGE_BYTES,
+        )?;
+        validate_debug_camera_ids(&self.debug_camera_ids)?;
         Ok(())
     }
+}
+
+fn validate_debug_camera_ids(ids: &[String]) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        ids.len() <= MAX_DEBUG_CAMERA_IDS,
+        "mcp.debug_camera_ids must contain at most {MAX_DEBUG_CAMERA_IDS} entries (got {})",
+        ids.len()
+    );
+    for (index, id) in ids.iter().enumerate() {
+        anyhow::ensure!(
+            !id.is_empty()
+                && id.len() <= MAX_DEBUG_CAMERA_ID_BYTES
+                && id.trim() == id
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii() && !byte.is_ascii_control()),
+            "mcp.debug_camera_ids[{index}] must be a non-empty trimmed ASCII ID within {MAX_DEBUG_CAMERA_ID_BYTES} bytes"
+        );
+    }
+    Ok(())
 }
 
 fn validate_usize_range(name: &str, value: usize, min: usize, max: usize) -> anyhow::Result<()> {
@@ -211,6 +302,14 @@ const fn default_snapshot_min_interval_seconds() -> u64 {
     DEFAULT_SNAPSHOT_MIN_INTERVAL_SECONDS
 }
 
+const fn default_max_debug_capture_bytes() -> usize {
+    DEFAULT_MAX_DEBUG_CAPTURE_BYTES
+}
+
+const fn default_max_debug_storage_bytes() -> u64 {
+    DEFAULT_MAX_DEBUG_STORAGE_BYTES
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,6 +321,16 @@ mod tests {
         assert!(!config.allow_writes);
         assert!(!config.allow_camera_device_writes);
         assert!(!config.allow_snapshots);
+        assert!(!config.allow_camera_debugging);
+        assert_eq!(
+            config.max_debug_capture_bytes,
+            DEFAULT_MAX_DEBUG_CAPTURE_BYTES
+        );
+        assert_eq!(
+            config.max_debug_storage_bytes,
+            DEFAULT_MAX_DEBUG_STORAGE_BYTES
+        );
+        assert!(config.debug_camera_ids.is_empty());
         assert!(config.is_default());
         assert!(config.validate().is_ok());
     }
@@ -233,12 +342,16 @@ mod tests {
             allow_writes: true,
             allow_camera_device_writes: true,
             allow_snapshots: true,
+            allow_camera_debugging: true,
             max_concurrent_requests: MIN_MAX_CONCURRENT_REQUESTS,
             max_response_bytes: MIN_MAX_RESPONSE_BYTES,
             request_timeout_seconds: MIN_REQUEST_TIMEOUT_SECONDS,
             max_snapshot_bytes: MIN_MAX_SNAPSHOT_BYTES,
             max_snapshot_dimension: MIN_MAX_SNAPSHOT_DIMENSION,
             snapshot_min_interval_seconds: MIN_SNAPSHOT_MIN_INTERVAL_SECONDS,
+            max_debug_capture_bytes: MIN_MAX_DEBUG_CAPTURE_BYTES,
+            max_debug_storage_bytes: MIN_MAX_DEBUG_STORAGE_BYTES,
+            debug_camera_ids: vec!["192.0.2.10".to_owned()],
         };
         assert!(valid_min.validate().is_ok());
         assert!(!valid_min.is_default());
@@ -248,12 +361,18 @@ mod tests {
             allow_writes: false,
             allow_camera_device_writes: false,
             allow_snapshots: false,
+            allow_camera_debugging: false,
             max_concurrent_requests: MAX_MAX_CONCURRENT_REQUESTS,
             max_response_bytes: MAX_MAX_RESPONSE_BYTES,
             request_timeout_seconds: MAX_REQUEST_TIMEOUT_SECONDS,
             max_snapshot_bytes: MAX_MAX_SNAPSHOT_BYTES,
             max_snapshot_dimension: MAX_MAX_SNAPSHOT_DIMENSION,
             snapshot_min_interval_seconds: MAX_SNAPSHOT_MIN_INTERVAL_SECONDS,
+            max_debug_capture_bytes: MAX_MAX_DEBUG_CAPTURE_BYTES,
+            max_debug_storage_bytes: MAX_MAX_DEBUG_STORAGE_BYTES,
+            debug_camera_ids: (0..MAX_DEBUG_CAMERA_IDS)
+                .map(|index| format!("cam-{index}"))
+                .collect(),
         };
         assert!(valid_max.validate().is_ok());
 
@@ -306,6 +425,48 @@ mod tests {
                 snapshot_min_interval_seconds: MAX_SNAPSHOT_MIN_INTERVAL_SECONDS + 1,
                 ..McpConfig::default()
             },
+            McpConfig {
+                max_debug_capture_bytes: MIN_MAX_DEBUG_CAPTURE_BYTES - 1,
+                ..McpConfig::default()
+            },
+            McpConfig {
+                max_debug_capture_bytes: MAX_MAX_DEBUG_CAPTURE_BYTES + 1,
+                ..McpConfig::default()
+            },
+            McpConfig {
+                max_debug_storage_bytes: MIN_MAX_DEBUG_STORAGE_BYTES - 1,
+                ..McpConfig::default()
+            },
+            McpConfig {
+                max_debug_storage_bytes: MAX_MAX_DEBUG_STORAGE_BYTES + 1,
+                ..McpConfig::default()
+            },
+            McpConfig {
+                debug_camera_ids: vec![String::new()],
+                ..McpConfig::default()
+            },
+            McpConfig {
+                debug_camera_ids: vec![" 192.0.2.10".to_owned()],
+                ..McpConfig::default()
+            },
+            McpConfig {
+                debug_camera_ids: vec!["cam\n1".to_owned()],
+                ..McpConfig::default()
+            },
+            McpConfig {
+                debug_camera_ids: vec!["cám".to_owned()],
+                ..McpConfig::default()
+            },
+            McpConfig {
+                debug_camera_ids: vec!["x".repeat(MAX_DEBUG_CAMERA_ID_BYTES + 1)],
+                ..McpConfig::default()
+            },
+            McpConfig {
+                debug_camera_ids: (0..=MAX_DEBUG_CAMERA_IDS)
+                    .map(|index| format!("cam-{index}"))
+                    .collect(),
+                ..McpConfig::default()
+            },
         ];
 
         for invalid in invalid_cases {
@@ -325,15 +486,39 @@ keep_me = "yes"
 [mcp]
 enabled = true
 max_concurrent_requests = 8
+allow_camera_debugging = true
+debug_camera_ids = ["192.0.2.10"]
 "#;
         let table: toml::Table = toml::from_str(raw).unwrap();
         let config = crate::config::config_from_table_for_test(&table).unwrap();
         assert!(config.mcp.enabled);
+        assert!(config.mcp.allow_camera_debugging);
         assert_eq!(config.mcp.max_concurrent_requests, 8);
+        assert_eq!(
+            config.mcp.max_debug_capture_bytes,
+            DEFAULT_MAX_DEBUG_CAPTURE_BYTES
+        );
+        assert_eq!(
+            config.mcp.max_debug_storage_bytes,
+            DEFAULT_MAX_DEBUG_STORAGE_BYTES
+        );
+        assert_eq!(config.mcp.debug_camera_ids, vec!["192.0.2.10"]);
         assert!(!config.mcp.allow_writes);
 
         let default_serialized = toml::to_string(&crate::config::Config::default()).unwrap();
         assert!(!default_serialized.contains("[mcp]"));
+        let non_default_serialized = toml::to_string(&config).unwrap();
+        assert!(non_default_serialized.contains("allow_camera_debugging = true"));
+        assert!(non_default_serialized.contains("debug_camera_ids = [\"192.0.2.10\"]"));
+    }
+
+    #[test]
+    fn allows_debug_camera_checks_empty_and_scoped_lists() {
+        let mut config = McpConfig::default();
+        assert!(config.allows_debug_camera("192.0.2.10"));
+        config.debug_camera_ids = vec!["192.0.2.10".to_owned()];
+        assert!(config.allows_debug_camera("192.0.2.10"));
+        assert!(!config.allows_debug_camera("192.0.2.11"));
     }
 
     #[test]
