@@ -700,7 +700,7 @@ impl EngineCameraDebugService {
             let capture_id =
                 generate_capture_id(&request.target.camera_id, "evt", protocol.as_str(), idx);
             let mut req = EngineCaptureRequest::new(
-                capture_id.clone(),
+                capture_id,
                 request.target.camera_id.clone(),
                 protocol,
                 url,
