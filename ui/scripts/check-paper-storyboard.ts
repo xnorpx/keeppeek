@@ -609,6 +609,7 @@ const expectedAuthenticationHttpPaths = [
 const expectedBackupHttpPaths = ['/config/export', '/config/apply'];
 const expectedInternalHttpPaths = ['/recording-coverage'];
 const expectedReportingHttpPaths = ['/reporting/status', '/reporting/grants', '/reporting/audit'];
+const expectedMcpHttpPaths = ['/mcp'];
 if (positioningContract.httpPaths.join('|') !== expectedHttpPaths.join('|')) {
 	throw new Error('Board 01 HTTP boundary changed');
 }
@@ -639,7 +640,8 @@ if (
 		...guestReviewHttpPaths,
 		...expectedAuthenticationHttpPaths,
 		...expectedHttpPaths,
-		...expectedReportingHttpPaths
+		...expectedReportingHttpPaths,
+		...expectedMcpHttpPaths
 	].join('|')
 ) {
 	throw new Error('OpenAPI exposes a noncanonical Board 01 HTTP path');
@@ -672,7 +674,8 @@ if (
 		...expectedHttpPaths,
 		...expectedInternalHttpPaths,
 		...expectedBackupHttpPaths,
-		...expectedReportingHttpPaths
+		...expectedReportingHttpPaths,
+		...expectedMcpHttpPaths
 	].join('|')
 ) {
 	throw new Error('Rust router exposes a noncanonical Board 01 HTTP path');

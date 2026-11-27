@@ -61,17 +61,17 @@ max_snapshot_dimension = 1280
 snapshot_min_interval_seconds = 5
 ```
 
-| Field                           | Type    | Default  | Allowed range     | Meaning                                                                        |
-| ------------------------------- | ------- | -------- | ----------------- | ------------------------------------------------------------------------------ |
-| `enabled`                       | `bool`  | `false`  | `true`/`false`    | Enable the embedded Streamable HTTP endpoint at `POST /mcp`.                   |
-| `allow_writes`                  | `bool`  | `false`  | `true`/`false`    | Permit Administrator write tools after explicit plan approval.                 |
-| `allow_snapshots`               | `bool`  | `false`  | `true`/`false`    | Permit privacy-gated, masked single-frame snapshots via `get_camera_snapshot`. |
-| `max_concurrent_requests`       | `usize` | `4`      | `1..=32`          | Maximum simultaneous in-flight MCP requests.                                   |
-| `max_response_bytes`            | `usize` | `65536`  | `4096..=262144`   | Maximum serialized response payload size in bytes.                             |
-| `request_timeout_seconds`       | `u64`   | `15`     | `1..=60`          | Server-side deadline per MCP request, in seconds.                              |
-| `max_snapshot_bytes`            | `usize` | `262144` | `16384..=1048576` | Maximum encoded JPEG size for `get_camera_snapshot`, in bytes.                 |
-| `max_snapshot_dimension`        | `u32`   | `1280`   | `160..=1920`      | Maximum width or height of returned snapshot frames, in pixels.                |
-| `snapshot_min_interval_seconds` | `u64`   | `5`      | `1..=300`         | Minimum interval between snapshot captures per camera, in seconds.             |
+| Field                           | Type    | Default  | Allowed range     | Meaning                                                                                               |
+| ------------------------------- | ------- | -------- | ----------------- | ----------------------------------------------------------------------------------------------------- |
+| `enabled`                       | `bool`  | `false`  | `true`/`false`    | Enable the embedded Streamable HTTP endpoint at `POST /mcp`.                                          |
+| `allow_writes`                  | `bool`  | `false`  | `true`/`false`    | Permit Administrator write tools after explicit plan approval.                                        |
+| `allow_snapshots`               | `bool`  | `false`  | `true`/`false`    | Permit privacy-gated single-frame snapshots via `get_camera_snapshot`.                                |
+| `max_concurrent_requests`       | `usize` | `4`      | `1..=32`          | Maximum simultaneous in-flight MCP requests.                                                          |
+| `max_response_bytes`            | `usize` | `65536`  | `4096..=262144`   | Maximum serialized JSON-RPC response size in bytes (`get_camera_snapshot` uses `max_snapshot_bytes`). |
+| `request_timeout_seconds`       | `u64`   | `15`     | `1..=60`          | Server-side deadline per MCP request, in seconds.                                                     |
+| `max_snapshot_bytes`            | `usize` | `262144` | `16384..=1048576` | Maximum encoded JPEG size for `get_camera_snapshot`, in bytes (base64 + metadata overhead is added).  |
+| `max_snapshot_dimension`        | `u32`   | `1280`   | `160..=1920`      | Maximum width or height of returned snapshot frames, in pixels.                                       |
+| `snapshot_min_interval_seconds` | `u64`   | `5`      | `1..=300`         | Minimum interval between snapshot captures per camera, in seconds.                                    |
 
 See [Configuration reference](./configuration-reference.md#mcp-server) for validation rules and
 file ownership details.
@@ -210,19 +210,21 @@ Write tools require all three conditions:
 2. An **Administrator** credential (or trusted-local Administrator access).
 3. No `--read-only` flag and no `X-KeepPeek-MCP-Read-Only: true` header.
 
-| Tool                            | Minimum role  | Purpose                                                                                                  |
-| ------------------------------- | ------------- | -------------------------------------------------------------------------------------------------------- |
-| `apply_configuration_plan`      | Administrator | Apply a previously reviewed `plan_configuration_change` plan with revision verification.                 |
-| `update_runtime_configuration`  | Administrator | Update runtime storage, retention, or listener settings (requires current revision for storage changes). |
-| `manage_configuration_template` | Administrator | Save, duplicate, or delete reusable camera templates using `{secret:KEY}` references.                    |
-| `set_runtime_profile`           | Administrator | Activate or update runtime profile selection.                                                            |
-| `set_logging_filter`            | Administrator | Update the live diagnostic log filter atomically.                                                        |
+| Tool                            | Minimum role  | Purpose                                                                                                                                          |
+| ------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `apply_configuration_plan`      | Administrator | Apply a previously reviewed `plan_configuration_change` plan with revision verification.                                                         |
+| `manage_camera`                 | Administrator | Add, update, or remove a camera by IP address using `{secret:KEY}` / `{secret:KEY                                                                | url}` references only. |
+| `update_runtime_configuration`  | Administrator | Update runtime storage, retention, or listener settings (always requires `expected_configuration_revision`).                                     |
+| `manage_configuration_template` | Administrator | Save, duplicate, or delete reusable camera templates using `{secret:KEY}` references.                                                            |
+| `manage_notification_rule`      | Administrator | List (read-only), save draft, activate, or delete notification rules (`push`/`webhook`/`forwarder` require `{secret:KEY}` or `destination_ref`). |
+| `set_runtime_profile`           | Administrator | Activate or update runtime profile selection.                                                                                                    |
+| `set_logging_filter`            | Administrator | Update the live diagnostic log filter atomically.                                                                                                |
 
 ### Opt-in snapshot tool
 
-| Tool                  | Minimum role | Purpose                                                                                                       |
-| --------------------- | ------------ | ------------------------------------------------------------------------------------------------------------- |
-| `get_camera_snapshot` | User         | Capture one privacy-masked, downscaled JPEG frame for a permitted camera when `[mcp].allow_snapshots = true`. |
+| Tool                  | Minimum role | Purpose                                                                                                      |
+| --------------------- | ------------ | ------------------------------------------------------------------------------------------------------------ |
+| `get_camera_snapshot` | User         | Capture one privacy-gated, downscaled JPEG frame for a permitted camera when `[mcp].allow_snapshots = true`. |
 
 ## Safe configuration workflow
 
@@ -233,10 +235,12 @@ KeepPeek enforces plan-before-apply so an assistant never modifies cameras or st
 2. Add any new camera or integration passwords directly to `secrets.toml` on the server (or via
    `KEEPPEEK_SECRET_<KEY>` in the server environment) and reference them as `{secret:KEY}` or
    `{secret:KEY|url}`. Never paste raw passwords into an LLM prompt.
-3. Run `discover_cameras` if adding new devices, then call `plan_configuration_change`.
+3. Run `discover_cameras` (read-only LAN probe) if adding new devices, then call
+   `plan_configuration_change` (or preview a `manage_camera` / `manage_notification_rule` payload).
 4. Review the returned redacted diff, validation errors, revision, and live-apply versus restart
    summary.
-5. Approve the plan explicitly, then allow the assistant to call `apply_configuration_plan`.
+5. Approve the plan explicitly, then allow the assistant to call `apply_configuration_plan` (or the
+   approved `manage_camera` / `manage_notification_rule` write action).
 6. Check `get_server_health` and `search_logs` to confirm activation, or restart KeepPeek when the
    plan reports that a restart is required.
 
@@ -277,44 +281,49 @@ through serialization-layer secret redaction before leaving KeepPeek:
 
 ### DNS rebinding and cross-origin protection
 
-`POST /mcp` validates the `Host` header and inspects any browser `Origin` header:
+`POST /mcp` validates the `Host` header and enforces an explicit browser origin allowlist:
 
 - Non-browser MCP clients that omit `Origin` are permitted.
-- Requests with a same-origin `Origin` matching `Host` are permitted.
-- Cross-origin browser requests and invalid `Host` headers are rejected so a malicious web page
-  cannot reach a loopback KeepPeek MCP endpoint via DNS rebinding.
+- Unauthenticated local requests (when `[access].local_networks` grants local trust) require `Host`
+  to be `localhost` or an IP literal (`127.0.0.1`, `[::1]`) so DNS-rebound domain names are
+  rejected with `403`.
+- Requests carrying a browser `Origin` header are rejected with `403` unless the exact origin is
+  listed in `[direct_card].allowed_origins`.
 - Unsupported HTTP methods on `/mcp` return `405 Method Not Allowed`, and a disabled MCP server
   returns `404 Not Found`.
 
-### Fail-closed privacy and snapshot masking
+### Fail-closed privacy and snapshot limits
 
 `get_camera_snapshot` enforces four sequential gates before returning any image bytes:
 
 1. `[mcp].allow_snapshots` must be `true`.
 2. The authenticated principal must have view permission for the requested camera.
 3. The per-camera rate limit (`snapshot_min_interval_seconds`) must not be exceeded.
-4. Camera privacy state must be verified as inactive. If privacy mode is active or cannot be
-   verified, KeepPeek fails closed and refuses the snapshot.
+4. Camera privacy state (`[privacy]` schedules and runtime profile overrides) must be verified as
+   inactive. If privacy mode is active or cannot be verified, KeepPeek fails closed and refuses the
+   snapshot.
 
-Decoded frames use bounded image decoder limits, paint configured camera privacy masks solid black
-before resizing, downscale to at most `max_snapshot_dimension` pixels per side while preserving
-aspect ratio, and encode JPEG within `max_snapshot_bytes`.
+Decoded frames use bounded image decoder limits, downscale to at most `max_snapshot_dimension`
+pixels per side while preserving aspect ratio, and encode JPEG within `max_snapshot_bytes`.
+KeepPeek does not apply server-side pixel masks; only camera-side (hardware) privacy masks already
+rendered into the camera stream appear in the returned frame.
 
 ### Concurrency and payload caps
 
 KeepPeek caps simultaneous MCP executions at `max_concurrent_requests`, enforces
-`request_timeout_seconds`, and rejects or bounds oversized responses above `max_response_bytes` so
-an automated assistant cannot starve camera ingest, recording, or live playback.
+`request_timeout_seconds`, and rejects oversized JSON-RPC responses above `max_response_bytes`
+(`get_camera_snapshot` uses `max_snapshot_bytes` plus base64 and metadata envelope overhead) so an
+automated assistant cannot starve camera ingest, recording, or live playback.
 
 ## Troubleshooting
 
-| Symptom                                     | Check                                                                                                                       |
-| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `POST /mcp` returns `404`                   | Confirm `[mcp].enabled = true` in `config.toml` and restart KeepPeek.                                                       |
-| `POST /mcp` returns `403`                   | Check whether a cross-origin `Origin` header was rejected, or whether a User credential called an Administrator-only tool.  |
-| `POST /mcp` returns `426`                   | Remote plain HTTP is blocked by `[access].require_secure_remote = true`. Use HTTPS via a trusted proxy or a private VPN.    |
-| Write tool is denied                        | Confirm `[mcp].allow_writes = true`, an Administrator credential, and that `--read-only` is not set.                        |
-| `get_camera_snapshot` is denied             | Confirm `[mcp].allow_snapshots = true`, camera view permission, inactive privacy mode, and the per-camera interval limit.   |
-| Request returns `429` or `503` or times out | Too many simultaneous MCP calls (`max_concurrent_requests`) or slow probe exceeding `request_timeout_seconds`.              |
-| `apply_configuration_plan` fails conflict   | Configuration changed after the plan was created. Call `get_configuration` and generate a fresh plan.                       |
-| `keeppeek mcp` fails to connect remotely    | Confirm `KEEPPEEK_ACCESS_KEY` or `--credential-file` is set and readable, and verify `--server` points to the HTTPS origin. |
+| Symptom                                     | Check                                                                                                                         |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `POST /mcp` returns `404`                   | Confirm `[mcp].enabled = true` in `config.toml` and restart KeepPeek.                                                         |
+| `POST /mcp` returns `403`                   | Check whether `Origin` is missing from `[direct_card].allowed_origins`, `Host` is non-local for local trust, or role is User. |
+| `POST /mcp` returns `426`                   | Remote plain HTTP is blocked by `[access].require_secure_remote = true`. Use HTTPS via a trusted proxy or a private VPN.      |
+| Write tool is denied                        | Confirm `[mcp].allow_writes = true`, an Administrator credential, and that `--read-only` is not set.                          |
+| `get_camera_snapshot` is denied             | Confirm `[mcp].allow_snapshots = true`, camera view permission, inactive privacy mode, and the per-camera interval limit.     |
+| Request returns `429` or `503` or times out | Too many simultaneous MCP calls (`max_concurrent_requests`) or slow probe exceeding `request_timeout_seconds`.                |
+| `apply_configuration_plan` fails conflict   | Configuration changed after the plan was created. Call `get_configuration` and generate a fresh plan.                         |
+| `keeppeek mcp` fails to connect remotely    | Confirm `KEEPPEEK_ACCESS_KEY` or `--credential-file` is set and readable, and verify `--server` points to the HTTPS origin.   |

@@ -6,15 +6,19 @@
 //! serialization-layer secret redaction.
 
 use super::{
-    AuthenticatedApiRequest, ControlCommandError, ServerState, api_status,
-    authenticated_api_request, camera_access, configuration, current_config, get_logging_settings,
-    logging, mcp_diagnostics, mcp_snapshot, record_access_audit, request_origin,
-    runtime_configuration, server_health, service_error, state_store, unix_time_ms,
+    AuthenticatedApiRequest, CameraSettingsUpdate, ControlCommandError,
+    MAX_NOTIFICATION_RULE_JSON_BYTES, ServerState, api_status, authenticated_api_request,
+    camera_access, camera_configuration_revision, configuration, current_config,
+    delete_camera_settings, get_logging_settings, logging, mcp_diagnostics, mcp_schemas,
+    mcp_snapshot, notification_command_error, proto_notification_rule_record, record_access_audit,
+    restore_notification_destinations, runtime_configuration, save_camera_settings, server_health,
+    service_error, state_store, unix_time_ms, validate_client_id,
 };
 use crate::{
     access::AccessRole,
     api::proto,
-    config::{self, mcp::McpConfig},
+    cameras::{CameraBackend, CameraRecordingMode, CameraTransport, EventRecordingStream},
+    config::{self, Secrets, mcp::McpConfig},
     health::{CameraHealthState, HealthTotals, ServerHealthResponse},
     logging::LogLevel,
     mcp::{
@@ -22,46 +26,51 @@ use crate::{
             ERROR_BUSY, ERROR_FORBIDDEN, ERROR_INTERNAL, ERROR_INVALID_PARAMS,
             ERROR_METHOD_NOT_FOUND, ERROR_RESPONSE_TOO_LARGE, ERROR_TIMEOUT, InitializeResult,
             JsonRpcError, JsonRpcRequest, JsonRpcResponse, MAX_REQUEST_BODY_BYTES,
-            READ_ONLY_HEADER, ToolAnnotations, ToolCallParams, ToolCallResult, ToolContent,
-            ToolDefinition, parse_bounded_request,
+            READ_ONLY_HEADER, ToolCallParams, ToolCallResult, ToolContent, parse_bounded_request,
         },
         redaction::SecretRedactor,
     },
+    notifications::{Handle as NotificationHandle, model::Rule as NotificationRule},
     runtime::{FacadeSender, RouterMessage},
     webrtc::SessionId,
 };
 use prost_types::{Struct, Value as ProstValue, value::Kind};
 use rouille::{Request, Response};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value, json};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     io::Read,
+    net::IpAddr,
     sync::{
-        Arc,
+        Arc, RwLock,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
-use url::Url;
+use url::{Host, Url};
 
 const DEFAULT_LOG_SEARCH_LIMIT: usize = 50;
 const MAX_LOG_SEARCH_LIMIT: usize = 200;
 const PROFILE_ACTIVE_SCHEMA: &str = "keeppeek.runtime-profiles.active.v1";
 const PROFILE_SELECT_SCHEMA: &str = "keeppeek.runtime-profiles.select.v2";
 
-/// Server-owned MCP runtime state and concurrency tracker.
+/// Server-owned MCP runtime state, concurrency tracker, and redaction snapshot.
 #[derive(Clone)]
 pub(super) struct Runtime {
     config: McpConfig,
     active_requests: Arc<AtomicUsize>,
+    secrets: Arc<RwLock<Secrets>>,
+    snapshot_limiter: Arc<mcp_snapshot::SnapshotRateLimiter>,
 }
 
 impl Runtime {
-    pub(super) fn new(config: McpConfig) -> Self {
+    pub(super) fn new(config: McpConfig, secrets: Secrets) -> Self {
         Self {
             config,
             active_requests: Arc::new(AtomicUsize::new(0)),
+            secrets: Arc::new(RwLock::new(secrets)),
+            snapshot_limiter: Arc::new(mcp_snapshot::SnapshotRateLimiter::new()),
         }
     }
 
@@ -71,6 +80,24 @@ impl Runtime {
 
     pub(super) const fn config(&self) -> &McpConfig {
         &self.config
+    }
+
+    pub(super) fn snapshot_limiter(&self) -> &mcp_snapshot::SnapshotRateLimiter {
+        &self.snapshot_limiter
+    }
+
+    fn secrets_snapshot(&self) -> Secrets {
+        self.secrets
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn refresh_secrets(&self, secrets: Secrets) {
+        *self
+            .secrets
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = secrets;
     }
 
     pub(super) fn try_acquire(&self) -> Option<RequestGuard> {
@@ -221,6 +248,8 @@ impl ToolError {
         let code = match error._http_status {
             400 | 422 => ERROR_INVALID_PARAMS,
             401 | 403 => ERROR_FORBIDDEN,
+            429 => ERROR_BUSY,
+            504 => ERROR_TIMEOUT,
             _ => ERROR_INTERNAL,
         };
         Self {
@@ -248,14 +277,14 @@ pub(super) fn handle_http(
     if !state.mcp_enabled() {
         return service_error(404, "not found");
     }
-    let same_origin = match validate_host_and_origin(request) {
+    let allowed_origin = match validate_host_and_origin(request, state) {
         Ok(origin) => origin,
         Err(response) => return response,
     };
     let response = authenticated_api_request(request, state, false, AccessRole::User, |identity| {
         handle_authenticated_post(request, router_tx, state, &identity)
     });
-    with_same_origin_header(response, same_origin)
+    with_allowed_origin_header(response, allowed_origin)
 }
 
 /// Handles `OPTIONS /mcp` preflight checks when MCP is enabled.
@@ -263,7 +292,7 @@ pub(super) fn handle_options(request: &Request, state: &ServerState) -> Response
     if !state.mcp_enabled() {
         return service_error(404, "not found");
     }
-    let same_origin = match validate_host_and_origin(request) {
+    let allowed_origin = match validate_host_and_origin(request, state) {
         Ok(origin) => origin,
         Err(response) => return response,
     };
@@ -274,7 +303,7 @@ pub(super) fn handle_options(request: &Request, state: &ServerState) -> Response
             "Authorization, Content-Type, Accept, X-KeepPeek-MCP-Read-Only",
         )
         .with_additional_header("Cache-Control", "no-store");
-    with_same_origin_header(response, same_origin)
+    with_allowed_origin_header(response, allowed_origin)
 }
 
 /// Returns `404` when MCP is disabled or `405` for unsupported HTTP methods on `/mcp`.
@@ -293,7 +322,11 @@ fn handle_authenticated_post(
     state: &ServerState,
     identity: &AuthenticatedApiRequest,
 ) -> Response {
-    if !identity.principal.is_local() && identity.principal.credential_binding().is_none() {
+    if identity.principal.is_local() {
+        if let Err(response) = validate_local_host_header(request) {
+            return response;
+        }
+    } else if identity.principal.credential_binding().is_none() {
         return api_status(401, "MCP requires Bearer authentication")
             .with_additional_header("Cache-Control", "no-store");
     }
@@ -351,6 +384,7 @@ fn response_byte_limit(config: &McpConfig, request: &JsonRpcRequest) -> usize {
             .and_then(Value::as_str)
             == Some("get_camera_snapshot");
     if is_snapshot {
+        // Snapshots use max_snapshot_bytes plus base64 expansion and JSON metadata envelope.
         let base64_bytes = config.max_snapshot_bytes.div_ceil(3).saturating_mul(4);
         config
             .max_response_bytes
@@ -360,7 +394,7 @@ fn response_byte_limit(config: &McpConfig, request: &JsonRpcRequest) -> usize {
     }
 }
 
-fn validate_host_and_origin(request: &Request) -> Result<Option<String>, Response> {
+fn parse_host_header(request: &Request) -> Result<Url, Response> {
     let Some(host) = request.header("Host").map(str::trim) else {
         return Err(api_status(403, "Host header is required for MCP requests"));
     };
@@ -383,20 +417,46 @@ fn validate_host_and_origin(request: &Request) -> Result<Option<String>, Respons
     {
         return Err(api_status(403, "Host header is invalid"));
     }
+    Ok(parsed)
+}
+
+fn validate_host_and_origin(
+    request: &Request,
+    state: &ServerState,
+) -> Result<Option<String>, Response> {
+    let _parsed = parse_host_header(request)?;
     let Some(origin) = request.header("Origin") else {
         return Ok(None);
     };
-    if request_origin(request).as_deref() == Some(origin) {
+    // Require explicit allowlist membership so DNS-rebound browser origins cannot match Host.
+    if state.allowed_origins.contains(origin) {
         Ok(Some(origin.to_owned()))
     } else {
         Err(api_status(
             403,
-            "cross-origin browser requests are not allowed on /mcp",
+            "browser Origin is not allowed on /mcp; configure [direct_card].allowed_origins",
         ))
     }
 }
 
-fn with_same_origin_header(response: Response, origin: Option<String>) -> Response {
+fn validate_local_host_header(request: &Request) -> Result<(), Response> {
+    let parsed = parse_host_header(request)?;
+    let is_local_host = match parsed.host() {
+        Some(Host::Ipv4(_) | Host::Ipv6(_)) => true,
+        Some(Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        None => false,
+    };
+    if is_local_host {
+        Ok(())
+    } else {
+        Err(api_status(
+            403,
+            "unauthenticated local MCP requests require localhost or an IP literal Host header",
+        ))
+    }
+}
+
+fn with_allowed_origin_header(response: Response, origin: Option<String>) -> Response {
     match origin {
         Some(origin) => response
             .with_additional_header("Access-Control-Allow-Origin", origin)
@@ -441,11 +501,8 @@ fn read_bounded_body(request: &Request, max_bytes: usize) -> Result<Vec<u8>, Res
 }
 
 fn build_redactor(state: &ServerState) -> SecretRedactor {
-    let secrets = state
-        .camera_config_path
-        .as_deref()
-        .and_then(|path| config::load_secrets(path).ok())
-        .unwrap_or_default();
+    // Use the in-memory secrets snapshot so hot responses never touch disk or chmod secrets.toml.
+    let secrets = state.mcp.secrets_snapshot();
     let mut extra = Vec::new();
     let access_key = *state
         .access_key
@@ -524,7 +581,7 @@ fn dispatch_json_rpc(ctx: &McpContext<'_>, request: JsonRpcRequest) -> Option<Js
         ))
         .unwrap_or(Value::Null)),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({ "tools": tool_definitions(ctx) })),
+        "tools/list" => Ok(json!({ "tools": mcp_schemas::tool_definitions(ctx.is_admin()) })),
         "tools/call" => handle_tools_call(ctx, request.params),
         method => Err(ToolError {
             code: ERROR_METHOD_NOT_FOUND,
@@ -560,297 +617,6 @@ fn handle_tools_call(ctx: &McpContext<'_>, params: Option<Value>) -> Result<Valu
     let result = dispatch_tool(ctx, &call.name, arguments)?;
     serde_json::to_value(result)
         .map_err(|error| ToolError::internal(format!("failed to encode tool result: {error}")))
-}
-
-fn tool_definitions(ctx: &McpContext<'_>) -> Vec<ToolDefinition> {
-    let mut tools = user_tool_definitions();
-    if !ctx.is_admin() {
-        return tools;
-    }
-    tools.extend(admin_read_tool_definitions());
-    tools.extend(admin_diagnostics_tool_definitions());
-    tools.extend(admin_write_tool_definitions());
-    tools
-}
-
-fn user_tool_definitions() -> Vec<ToolDefinition> {
-    vec![
-        tool_def(
-            "get_server_health",
-            "Read canonical KeepPeek server and camera health (filtered to permitted cameras for User role).",
-            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
-            ToolAnnotations::read_only(),
-        ),
-        tool_def(
-            "search_events",
-            "Search stored timeline events across permitted cameras with bounded result limits.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "camera_id": { "type": "string" },
-                    "camera_ids": { "type": "array", "items": { "type": "string" } },
-                    "event_types": { "type": "array", "items": { "type": "string" } },
-                    "query": { "type": "string" },
-                    "stream_id": { "type": "string", "enum": ["main", "sub"] },
-                    "start_ms": { "type": "integer" },
-                    "end_ms": { "type": "integer" },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
-                    "page_token": { "type": "string" }
-                },
-                "additionalProperties": false
-            }),
-            ToolAnnotations::read_only(),
-        ),
-        tool_def(
-            "get_recording_coverage",
-            "Inspect recorded intervals and coverage gaps for permitted cameras over a bounded time window.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "camera_id": { "type": "string" },
-                    "start_ms": { "type": "integer", "minimum": 0 },
-                    "end_ms": { "type": "integer", "minimum": 0 },
-                    "page_size": { "type": "integer", "minimum": 1, "maximum": 50 },
-                    "max_segments": { "type": "integer", "minimum": 1, "maximum": 256 },
-                    "page_token": { "type": "string" }
-                },
-                "additionalProperties": false
-            }),
-            ToolAnnotations::read_only(),
-        ),
-        tool_def(
-            "get_camera_snapshot",
-            "Capture one privacy-masked, downscaled JPEG snapshot for a permitted camera when [mcp].allow_snapshots is true.",
-            json!({
-                "type": "object",
-                "required": ["camera_id"],
-                "properties": {
-                    "camera_id": { "type": "string", "minLength": 1, "maxLength": 256 },
-                    "source_preference": {
-                        "type": "string",
-                        "enum": ["auto", "live", "isapi", "onvif", "reolink", "latest_event"]
-                    }
-                },
-                "additionalProperties": false
-            }),
-            ToolAnnotations::read_only(),
-        ),
-    ]
-}
-
-fn admin_diagnostics_tool_definitions() -> Vec<ToolDefinition> {
-    vec![
-        tool_def(
-            "get_storage_status",
-            "Inspect storage configuration, disk pressure, named volumes, archive status, and recording maintenance state.",
-            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
-            ToolAnnotations::read_only(),
-        ),
-        tool_def(
-            "get_notification_status",
-            "Summarize notification rules, cloud push status, and MQTT delivery health without exposing secrets.",
-            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
-            ToolAnnotations::read_only(),
-        ),
-        tool_def(
-            "discover_cameras",
-            "Run a bounded camera discovery probe across private IPv4 subnets or list discoverable networks.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "list_networks_only": { "type": "boolean" },
-                    "networks": { "type": "array", "items": { "type": "string" } },
-                    "subnets": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 255 } },
-                    "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 10 },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
-                },
-                "additionalProperties": false
-            }),
-            ToolAnnotations::read_only(),
-        ),
-        tool_def(
-            "get_runtime_configuration",
-            "Read runtime storage, retention, and listener settings and revision.",
-            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
-            ToolAnnotations::read_only(),
-        ),
-        tool_def(
-            "list_runtime_profiles",
-            "List saved runtime camera profiles and active profile selection.",
-            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
-            ToolAnnotations::read_only(),
-        ),
-    ]
-}
-
-fn admin_read_tool_definitions() -> Vec<ToolDefinition> {
-    vec![
-        tool_def(
-            "search_logs",
-            "Search the bounded redacted server log buffer by level, target, camera, query, sequence, or timestamp.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "level": { "type": "string", "enum": ["trace", "debug", "info", "warn", "error"] },
-                    "target": { "type": "string" },
-                    "camera": { "type": "string" },
-                    "query": { "type": "string" },
-                    "since_sequence": { "type": "integer", "minimum": 0 },
-                    "since_timestamp_ms": { "type": "integer", "minimum": 0 },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
-                },
-                "additionalProperties": false
-            }),
-            ToolAnnotations::read_only(),
-        ),
-        tool_def(
-            "get_logging_settings",
-            "Read the active log filter directive, default filter, version, and log buffer statistics.",
-            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
-            ToolAnnotations::read_only(),
-        ),
-        tool_def(
-            "get_configuration",
-            "Read a paginated KeepPeek configuration snapshot with effective values, templates, and secret references preserved.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "page_size": { "type": "integer", "minimum": 1, "maximum": 64 },
-                    "page_token": { "type": "string" }
-                },
-                "additionalProperties": false
-            }),
-            ToolAnnotations::read_only(),
-        ),
-        tool_def(
-            "list_secret_keys",
-            "List sorted secret key names stored in secrets.toml without exposing any secret values.",
-            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
-            ToolAnnotations::read_only(),
-        ),
-        tool_def(
-            "plan_configuration_change",
-            "Dry-run a camera, default, or template configuration change without writing files; works even in read-only mode.",
-            json!({
-                "type": "object",
-                "required": ["expected_configuration_revision", "change"],
-                "properties": {
-                    "expected_configuration_revision": { "type": "string" },
-                    "targets": { "type": "object" },
-                    "change": { "type": "object" }
-                },
-                "additionalProperties": false
-            }),
-            ToolAnnotations::read_only(),
-        ),
-    ]
-}
-
-fn admin_write_tool_definitions() -> Vec<ToolDefinition> {
-    let mut tools = admin_config_write_tool_definitions();
-    tools.extend(admin_runtime_write_tool_definitions());
-    tools
-}
-
-fn admin_config_write_tool_definitions() -> Vec<ToolDefinition> {
-    vec![
-        tool_def(
-            "apply_configuration_plan",
-            "Apply a previously validated configuration plan by plan_id and expected_configuration_revision.",
-            json!({
-                "type": "object",
-                "required": ["plan_id", "expected_configuration_revision"],
-                "properties": {
-                    "plan_id": { "type": "string" },
-                    "expected_configuration_revision": { "type": "string" }
-                },
-                "additionalProperties": false
-            }),
-            ToolAnnotations::write(true, false),
-        ),
-        tool_def(
-            "update_runtime_configuration",
-            "Update runtime host, port, or storage settings; storage updates require expected_configuration_revision.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "expected_configuration_revision": { "type": "string" },
-                    "host": { "type": "string" },
-                    "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-                    "move_existing_recordings": { "type": "boolean" },
-                    "storage": { "type": "object" }
-                },
-                "additionalProperties": false
-            }),
-            ToolAnnotations::write(true, false),
-        ),
-        tool_def(
-            "manage_configuration_template",
-            "Save, duplicate, or delete a camera configuration template.",
-            json!({
-                "type": "object",
-                "required": ["action", "expected_configuration_revision"],
-                "properties": {
-                    "action": { "type": "string", "enum": ["save", "duplicate", "delete"] },
-                    "expected_configuration_revision": { "type": "string" },
-                    "template_id": { "type": "string" },
-                    "name": { "type": "string" },
-                    "expected_template_version": { "type": "integer", "minimum": 0 },
-                    "template": { "type": "object" }
-                },
-                "additionalProperties": false
-            }),
-            ToolAnnotations::write(true, false),
-        ),
-    ]
-}
-
-fn admin_runtime_write_tool_definitions() -> Vec<ToolDefinition> {
-    vec![
-        tool_def(
-            "set_runtime_profile",
-            "Switch the active runtime camera profile or revert to the base profile using expected_revision.",
-            json!({
-                "type": "object",
-                "required": ["expected_revision"],
-                "properties": {
-                    "expected_revision": { "type": "integer", "minimum": 0 },
-                    "profile_id": { "type": ["string", "null"] },
-                    "definition_revision": { "type": "integer", "minimum": 0 },
-                    "definition_digest": { "type": "string" }
-                },
-                "additionalProperties": false
-            }),
-            ToolAnnotations::write(false, true),
-        ),
-        tool_def(
-            "set_logging_filter",
-            "Update and persist the live tracing log filter directive.",
-            json!({
-                "type": "object",
-                "required": ["filter"],
-                "properties": {
-                    "filter": { "type": "string", "minLength": 1 }
-                },
-                "additionalProperties": false
-            }),
-            ToolAnnotations::write(false, true),
-        ),
-    ]
-}
-
-fn tool_def(
-    name: &str,
-    description: &str,
-    input_schema: Value,
-    annotations: ToolAnnotations,
-) -> ToolDefinition {
-    ToolDefinition {
-        name: name.to_owned(),
-        description: description.to_owned(),
-        input_schema,
-        annotations,
-    }
 }
 
 fn dispatch_tool(
@@ -911,6 +677,8 @@ fn dispatch_tool(
         "apply_configuration_plan" => tool_apply_configuration_plan(ctx, args),
         "update_runtime_configuration" => tool_update_runtime_configuration(ctx, args),
         "manage_configuration_template" => tool_manage_configuration_template(ctx, args),
+        "manage_camera" => tool_manage_camera(ctx, args),
+        "manage_notification_rule" => tool_manage_notification_rule(ctx, args),
         "set_runtime_profile" => tool_set_runtime_profile(ctx, args),
         "set_logging_filter" => tool_set_logging_filter(ctx, args),
         other => Err(ToolError {
@@ -969,15 +737,18 @@ fn tool_get_camera_snapshot(
         max_dimension: cfg.max_snapshot_dimension,
         min_interval_secs: cfg.snapshot_min_interval_seconds,
     };
-    let mut payload = mcp_snapshot::capture_camera_snapshot(
-        ctx.state,
-        ctx.router_tx,
-        &ctx.identity.principal,
-        &args.camera_id,
-        args.source_preference.as_deref(),
-        &policy,
-    )
-    .map_err(ToolError::from_control)?;
+    let request = mcp_snapshot::SnapshotRequest {
+        principal: &ctx.identity.principal,
+        classification: ctx.identity.classification.reason,
+        camera_id: &args.camera_id,
+        source_preference: args.source_preference.as_deref(),
+        policy: &policy,
+        limiter: ctx.state.mcp.snapshot_limiter(),
+        now: Instant::now(),
+        deadline: ctx.deadline,
+    };
+    let mut payload = mcp_snapshot::capture_camera_snapshot(ctx.state, &request)
+        .map_err(ToolError::from_control)?;
     let data = payload
         .as_object_mut()
         .and_then(|map| map.remove("data_base64"))
@@ -1019,12 +790,16 @@ fn filter_health_for_user(health: &mut ServerHealthResponse, policy: &crate::acc
     health
         .operational_events
         .retain(|event| policy.allows(&event.key.camera_id));
+    let allowed_event_ids: HashSet<&str> = health
+        .operational_events
+        .iter()
+        .map(|event| event.id.as_str())
+        .collect();
     health.issues.retain(|issue| {
-        issue.scope == "camera"
-            && health
-                .cameras
-                .iter()
-                .any(|camera| issue.message.contains(&camera.id))
+        issue
+            .operational_event_id
+            .as_deref()
+            .is_some_and(|id| allowed_event_ids.contains(id))
     });
     let mut totals = HealthTotals {
         configured_cameras: health.cameras.len(),
@@ -1188,9 +963,12 @@ fn tool_get_configuration(ctx: &McpContext<'_>, args: Value) -> Result<ToolCallR
 fn tool_list_secret_keys(ctx: &McpContext<'_>) -> Result<ToolCallResult, ToolError> {
     ctx.require_admin()?;
     let keys = if let Some(path) = ctx.state.camera_config_path.as_deref() {
-        config::load_secrets(path)
-            .map_err(|error| ToolError::internal(format!("unable to read secrets keys: {error}")))?
-            .keys()
+        let secrets = config::load_secrets(path).map_err(|error| {
+            ToolError::internal(format!("unable to read secrets keys: {error}"))
+        })?;
+        let keys = secrets.keys();
+        ctx.state.mcp.refresh_secrets(secrets);
+        keys
     } else {
         Vec::new()
     };
@@ -1421,9 +1199,9 @@ fn tool_update_runtime_configuration(
             "invalid update_runtime_configuration params: {error}"
         ))
     })?;
-    if args.storage.is_some() && args.expected_configuration_revision.trim().is_empty() {
+    if args.expected_configuration_revision.trim().is_empty() {
         return Err(ToolError::invalid_params(
-            "storage updates require expected_configuration_revision",
+            "update_runtime_configuration requires expected_configuration_revision",
         ));
     }
     let current = current_config(ctx.state);
@@ -1804,6 +1582,537 @@ fn tool_set_logging_filter(ctx: &McpContext<'_>, args: Value) -> Result<ToolCall
     }
 }
 
+fn deserialize_double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    Deserialize::deserialize(deserializer).map(Some)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManageCameraArgs {
+    action: String,
+    ip: String,
+    expected_configuration_revision: String,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    display_name: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    manufacturer: Option<Option<String>>,
+    username: Option<String>,
+    password: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    uid: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    onvif_port: Option<Option<u16>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    http_port: Option<Option<u16>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    main_rtsp_url: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    sub_rtsp_url: Option<Option<String>>,
+    backend: Option<String>,
+    transport: Option<String>,
+    record_generic_motion_events: Option<bool>,
+    recording_mode: Option<String>,
+    event_recording_duration_secs: Option<u64>,
+    event_pre_recording_duration_secs: Option<u64>,
+    event_recording_stream: Option<String>,
+}
+
+fn resolve_camera_mutation_revision(
+    ctx: &McpContext<'_>,
+    expected: &str,
+) -> Result<String, ToolError> {
+    if current_configuration_revision(ctx).as_deref() == Some(expected) {
+        return camera_configuration_revision(ctx.state).map_err(ToolError::from_control);
+    }
+    Ok(expected.to_owned())
+}
+
+fn tool_manage_camera(ctx: &McpContext<'_>, args: Value) -> Result<ToolCallResult, ToolError> {
+    ctx.require_write()?;
+    let mut args: ManageCameraArgs = serde_json::from_value(args).map_err(|error| {
+        ToolError::invalid_params(format!("invalid manage_camera params: {error}"))
+    })?;
+    if args.expected_configuration_revision.trim().is_empty() {
+        return Err(ToolError::invalid_params(
+            "manage_camera requires expected_configuration_revision",
+        ));
+    }
+    args.expected_configuration_revision =
+        resolve_camera_mutation_revision(ctx, args.expected_configuration_revision.trim())?;
+    let camera_id = args
+        .ip
+        .trim()
+        .parse::<IpAddr>()
+        .map_err(|_| ToolError::invalid_params("manage_camera ip must be a valid IP address"))?
+        .to_string();
+    match args.action.as_str() {
+        "remove" => match delete_camera_settings(
+            ctx.state,
+            &camera_id,
+            &args.expected_configuration_revision,
+        ) {
+            Ok(revision) => {
+                ctx.audit("mcp_manage_camera", Some(&camera_id), "success");
+                Ok(ToolCallResult::json(json!({
+                    "action": "remove",
+                    "camera_id": camera_id,
+                    "configuration_revision": revision,
+                })))
+            }
+            Err(error) => {
+                ctx.audit("mcp_manage_camera", Some(&camera_id), "failed");
+                Err(ToolError::from_control(error))
+            }
+        },
+        "upsert" => upsert_camera_via_mcp(ctx, &camera_id, args),
+        other => Err(ToolError::invalid_params(format!(
+            "unsupported manage_camera action: {other}"
+        ))),
+    }
+}
+
+fn upsert_camera_via_mcp(
+    ctx: &McpContext<'_>,
+    camera_id: &str,
+    args: ManageCameraArgs,
+) -> Result<ToolCallResult, ToolError> {
+    validate_manage_camera_secrets(&args)?;
+    let update = build_camera_settings_update(args)?;
+    match save_camera_settings(update, ctx.router_tx, ctx.state, camera_id) {
+        Ok(response) => {
+            if let Some(path) = ctx.state.camera_config_path.as_deref()
+                && let Ok(secrets) = config::load_secrets(path)
+            {
+                ctx.state.mcp.refresh_secrets(secrets);
+            }
+            ctx.audit("mcp_manage_camera", Some(camera_id), "success");
+            let payload = serde_json::to_value(response).map_err(|error| {
+                ToolError::internal(format!("failed to encode camera update response: {error}"))
+            })?;
+            Ok(ToolCallResult::json(payload))
+        }
+        Err(error) => {
+            ctx.audit("mcp_manage_camera", Some(camera_id), "failed");
+            Err(ToolError::from_control(error))
+        }
+    }
+}
+
+fn validate_manage_camera_secrets(args: &ManageCameraArgs) -> Result<(), ToolError> {
+    validate_secret_ref_field(args.username.as_deref(), "username")?;
+    validate_secret_ref_field(args.password.as_deref(), "password")?;
+    if let Some(uid) = args.uid.as_ref().and_then(Option::as_deref) {
+        validate_secret_ref_field(Some(uid), "uid")?;
+    }
+    if let Some(url) = args.main_rtsp_url.as_ref().and_then(Option::as_deref) {
+        validate_rtsp_url_secret_policy(url, "main_rtsp_url")?;
+    }
+    if let Some(url) = args.sub_rtsp_url.as_ref().and_then(Option::as_deref) {
+        validate_rtsp_url_secret_policy(url, "sub_rtsp_url")?;
+    }
+    Ok(())
+}
+
+fn validate_secret_ref_field(value: Option<&str>, field: &str) -> Result<(), ToolError> {
+    let Some(raw) = value.map(str::trim).filter(|text| !text.is_empty()) else {
+        return Ok(());
+    };
+    if config::is_secret_reference(raw) {
+        Ok(())
+    } else {
+        Err(ToolError::invalid_params(format!(
+            "manage_camera {field} must be a {{secret:KEY}} or {{secret:KEY|url}} reference; raw credentials are rejected"
+        )))
+    }
+}
+
+fn validate_rtsp_url_secret_policy(url: &str, field: &str) -> Result<(), ToolError> {
+    let Some(scheme_pos) = url.find("://") else {
+        return Ok(());
+    };
+    let authority_start = scheme_pos + 3;
+    let authority_end = url[authority_start..]
+        .find(['/', '?', '#'])
+        .map_or(url.len(), |offset| authority_start + offset);
+    let authority = &url[authority_start..authority_end];
+    let Some(at_pos) = authority.rfind('@') else {
+        return Ok(());
+    };
+    let userinfo = &authority[..at_pos];
+    let uses_ref = config::is_secret_reference(userinfo)
+        || userinfo
+            .split_once(':')
+            .is_some_and(|(user, pass)| !user.is_empty() && config::is_secret_reference(pass));
+    if uses_ref {
+        Ok(())
+    } else {
+        Err(ToolError::invalid_params(format!(
+            "{field} must not contain plaintext credentials; use {{secret:KEY|url}}"
+        )))
+    }
+}
+
+fn build_camera_settings_update(args: ManageCameraArgs) -> Result<CameraSettingsUpdate, ToolError> {
+    Ok(CameraSettingsUpdate {
+        expected_configuration_revision: args.expected_configuration_revision,
+        display_name: args.display_name,
+        manufacturer: args.manufacturer,
+        username: args.username,
+        password: args.password,
+        onvif_port: args.onvif_port,
+        http_port: args.http_port,
+        main_rtsp_url: args.main_rtsp_url,
+        sub_rtsp_url: args.sub_rtsp_url,
+        uid: args.uid,
+        backend: args
+            .backend
+            .as_deref()
+            .map(parse_camera_backend)
+            .transpose()?,
+        transport: args
+            .transport
+            .as_deref()
+            .map(parse_camera_transport)
+            .transpose()?,
+        record_generic_motion_events: args.record_generic_motion_events,
+        recording_mode: args
+            .recording_mode
+            .as_deref()
+            .map(parse_camera_recording_mode)
+            .transpose()?,
+        event_recording_duration_secs: args.event_recording_duration_secs,
+        event_pre_recording_duration_secs: args.event_pre_recording_duration_secs,
+        event_recording_stream: args
+            .event_recording_stream
+            .as_deref()
+            .map(parse_camera_event_stream)
+            .transpose()?,
+        recorded_audio: None,
+        live_audio: None,
+    })
+}
+
+fn parse_camera_backend(raw: &str) -> Result<CameraBackend, ToolError> {
+    match raw.to_ascii_lowercase().as_str() {
+        "auto" => Ok(CameraBackend::Auto),
+        "retina" => Ok(CameraBackend::Retina),
+        "reo_proto" | "reo-proto" => Ok(CameraBackend::ReoProto),
+        _ => Err(ToolError::invalid_params(format!(
+            "unsupported camera backend: {raw}"
+        ))),
+    }
+}
+
+fn parse_camera_transport(raw: &str) -> Result<CameraTransport, ToolError> {
+    match raw.to_ascii_lowercase().as_str() {
+        "tcp" => Ok(CameraTransport::Tcp),
+        "udp" => Ok(CameraTransport::Udp),
+        _ => Err(ToolError::invalid_params(format!(
+            "unsupported camera transport: {raw}"
+        ))),
+    }
+}
+
+fn parse_camera_recording_mode(raw: &str) -> Result<CameraRecordingMode, ToolError> {
+    match raw.to_ascii_lowercase().as_str() {
+        "sub" => Ok(CameraRecordingMode::Sub),
+        "main" => Ok(CameraRecordingMode::Main),
+        "both" => Ok(CameraRecordingMode::Both),
+        "event_boost" | "event-boost" => Ok(CameraRecordingMode::EventBoost),
+        "off" => Ok(CameraRecordingMode::Off),
+        "event_only" | "event-only" => Ok(CameraRecordingMode::EventOnly),
+        _ => Err(ToolError::invalid_params(format!(
+            "unsupported camera recording_mode: {raw}"
+        ))),
+    }
+}
+
+fn parse_camera_event_stream(raw: &str) -> Result<EventRecordingStream, ToolError> {
+    match raw.to_ascii_lowercase().as_str() {
+        "sub" => Ok(EventRecordingStream::Sub),
+        "main" => Ok(EventRecordingStream::Main),
+        _ => Err(ToolError::invalid_params(format!(
+            "unsupported event_recording_stream: {raw}"
+        ))),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManageNotificationRuleArgs {
+    action: String,
+    rule_id: Option<String>,
+    expected_active_revision: Option<u64>,
+    expected_draft_revision: Option<u64>,
+    definition: Option<Value>,
+}
+
+fn tool_manage_notification_rule(
+    ctx: &McpContext<'_>,
+    args: Value,
+) -> Result<ToolCallResult, ToolError> {
+    let args: ManageNotificationRuleArgs = serde_json::from_value(args).map_err(|error| {
+        ToolError::invalid_params(format!("invalid manage_notification_rule params: {error}"))
+    })?;
+    if args.action == "list" {
+        ctx.require_admin()?;
+    } else {
+        ctx.require_write()?;
+    }
+    let notifications = ctx
+        .state
+        .notifications
+        .as_ref()
+        .ok_or_else(|| ToolError::internal("notification runtime is unavailable"))?;
+    let principal_id = if ctx.identity.principal.is_local() {
+        "local-administrator".to_owned()
+    } else {
+        ctx.identity.principal.id()
+    };
+    let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
+    match args.action.as_str() {
+        "list" => list_notification_rules_via_mcp(ctx, notifications, &principal_id),
+        "save_draft" => {
+            save_notification_draft_via_mcp(ctx, notifications, &principal_id, args, now_ms)
+        }
+        "activate" => {
+            activate_notification_rule_via_mcp(ctx, notifications, &principal_id, args, now_ms)
+        }
+        "delete" => {
+            delete_notification_rule_via_mcp(ctx, notifications, &principal_id, args, now_ms)
+        }
+        other => Err(ToolError::invalid_params(format!(
+            "unsupported manage_notification_rule action: {other}"
+        ))),
+    }
+}
+
+fn list_notification_rules_via_mcp(
+    ctx: &McpContext<'_>,
+    notifications: &NotificationHandle,
+    principal_id: &str,
+) -> Result<ToolCallResult, ToolError> {
+    let records = notifications.rules(principal_id).map_err(|error| {
+        ToolError::from_control(notification_command_error("list rules", error, false))
+    })?;
+    let rules = records
+        .into_iter()
+        .map(notification_rule_record_to_json)
+        .collect::<Result<Vec<_>, _>>()?;
+    ctx.audit("mcp_manage_notification_rule", None, "success");
+    Ok(ToolCallResult::json(json!({
+        "rules": rules,
+        "count": rules.len(),
+    })))
+}
+
+fn save_notification_draft_via_mcp(
+    ctx: &McpContext<'_>,
+    notifications: &NotificationHandle,
+    principal_id: &str,
+    args: ManageNotificationRuleArgs,
+    now_ms: i64,
+) -> Result<ToolCallResult, ToolError> {
+    let mut definition = args
+        .definition
+        .ok_or_else(|| ToolError::invalid_params("save_draft action requires definition object"))?;
+    let serialized_len = serde_json::to_vec(&definition)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX);
+    if serialized_len > MAX_NOTIFICATION_RULE_JSON_BYTES {
+        return Err(ToolError::invalid_params(
+            "notification rule definition exceeds maximum size",
+        ));
+    }
+    let rule_id = definition
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::invalid_params("notification rule definition has no rule ID"))?
+        .to_owned();
+    validate_and_resolve_notification_actions(ctx.state, &mut definition)?;
+    let existing = notifications
+        .rules(principal_id)
+        .map_err(|error| {
+            ToolError::from_control(notification_command_error("load rule draft", error, false))
+        })?
+        .into_iter()
+        .find(|record| record.id == rule_id);
+    restore_notification_destinations(&mut definition, existing.as_ref())
+        .map_err(ToolError::from_control)?;
+    if let Some(object) = definition.as_object_mut() {
+        object.insert(
+            "owner_id".to_owned(),
+            Value::String(principal_id.to_owned()),
+        );
+    }
+    let mut rule: NotificationRule = serde_json::from_value(definition).map_err(|error| {
+        ToolError::invalid_params(format!("notification rule definition is invalid: {error}"))
+    })?;
+    rule.owner_id = principal_id.to_owned();
+    let record = notifications
+        .save_draft(rule, args.expected_draft_revision.unwrap_or(0), now_ms)
+        .map_err(|error| {
+            ctx.audit("mcp_manage_notification_rule", Some(&rule_id), "failed");
+            ToolError::from_control(notification_command_error("save draft", error, true))
+        })?;
+    ctx.audit("mcp_manage_notification_rule", Some(&rule_id), "success");
+    Ok(ToolCallResult::json(notification_rule_record_to_json(
+        record,
+    )?))
+}
+
+fn validate_and_resolve_notification_actions(
+    state: &ServerState,
+    definition: &mut Value,
+) -> Result<(), ToolError> {
+    let Some(actions) = definition.get_mut("actions").and_then(Value::as_array_mut) else {
+        return Err(ToolError::invalid_params(
+            "notification rule definition requires an actions array",
+        ));
+    };
+    for action in actions.iter_mut() {
+        let Some(object) = action.as_object_mut() else {
+            return Err(ToolError::invalid_params(
+                "notification rule action must be a JSON object",
+            ));
+        };
+        let channel = object.get("channel").and_then(Value::as_str);
+        if !matches!(channel, Some("push" | "webhook" | "forwarder")) {
+            continue;
+        }
+        let preserve = object
+            .get("destination_configured")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let destination = object
+            .get("destination")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_owned();
+        if preserve {
+            if !destination.is_empty() && !config::is_secret_reference(&destination) {
+                return Err(ToolError::invalid_params(
+                    "notification destinations must use {secret:KEY} references or omit destination when destination_configured is true",
+                ));
+            }
+            continue;
+        }
+        if !config::is_secret_reference(&destination) {
+            return Err(ToolError::invalid_params(
+                "notification destinations for push, webhook, and forwarder channels must use {secret:KEY} references or preserve destination_ref; raw credentials are rejected",
+            ));
+        }
+        let Some(config_path) = state.camera_config_path.as_deref() else {
+            return Err(ToolError::invalid_params(
+                "secrets.toml is unavailable to resolve notification destination secret reference",
+            ));
+        };
+        let resolved =
+            config::resolve_secret_references(config_path, &destination).map_err(|error| {
+                ToolError::invalid_params(format!(
+                    "invalid notification destination secret reference: {error}"
+                ))
+            })?;
+        if let Ok(secrets) = config::load_secrets(config_path) {
+            state.mcp.refresh_secrets(secrets);
+        }
+        object.insert("destination".to_owned(), Value::String(resolved));
+    }
+    Ok(())
+}
+
+fn activate_notification_rule_via_mcp(
+    ctx: &McpContext<'_>,
+    notifications: &NotificationHandle,
+    principal_id: &str,
+    args: ManageNotificationRuleArgs,
+    now_ms: i64,
+) -> Result<ToolCallResult, ToolError> {
+    let rule_id = args
+        .rule_id
+        .ok_or_else(|| ToolError::invalid_params("activate action requires rule_id"))?;
+    validate_client_id(&rule_id, "notification rule ID").map_err(ToolError::from_control)?;
+    let record = notifications
+        .activate(
+            rule_id.clone(),
+            principal_id,
+            args.expected_active_revision.unwrap_or(0),
+            args.expected_draft_revision.unwrap_or(0),
+            now_ms,
+        )
+        .map_err(|error| {
+            ctx.audit("mcp_manage_notification_rule", Some(&rule_id), "failed");
+            ToolError::from_control(notification_command_error("activate rule", error, true))
+        })?;
+    ctx.audit("mcp_manage_notification_rule", Some(&rule_id), "success");
+    Ok(ToolCallResult::json(notification_rule_record_to_json(
+        record,
+    )?))
+}
+
+fn delete_notification_rule_via_mcp(
+    ctx: &McpContext<'_>,
+    notifications: &NotificationHandle,
+    principal_id: &str,
+    args: ManageNotificationRuleArgs,
+    now_ms: i64,
+) -> Result<ToolCallResult, ToolError> {
+    let rule_id = args
+        .rule_id
+        .ok_or_else(|| ToolError::invalid_params("delete action requires rule_id"))?;
+    validate_client_id(&rule_id, "notification rule ID").map_err(ToolError::from_control)?;
+    notifications
+        .delete(
+            rule_id.clone(),
+            principal_id,
+            args.expected_active_revision.unwrap_or(0),
+            args.expected_draft_revision.unwrap_or(0),
+            now_ms,
+        )
+        .map_err(|error| {
+            ctx.audit("mcp_manage_notification_rule", Some(&rule_id), "failed");
+            ToolError::from_control(notification_command_error("delete rule", error, false))
+        })?;
+    ctx.audit("mcp_manage_notification_rule", Some(&rule_id), "success");
+    Ok(ToolCallResult::json(json!({
+        "action": "delete",
+        "rule_id": rule_id,
+    })))
+}
+
+fn notification_rule_record_to_json(
+    record: crate::notifications::RuleRecord,
+) -> Result<Value, ToolError> {
+    let proto_record = proto_notification_rule_record(record).map_err(|error| {
+        ToolError::internal(format!("failed to redact notification rule: {error}"))
+    })?;
+    let draft_definition: Value = serde_json::from_str(&proto_record.draft_definition_json)
+        .map_err(|error| ToolError::internal(format!("invalid redacted draft JSON: {error}")))?;
+    let active_definition = proto_record
+        .active_definition_json
+        .as_deref()
+        .map(serde_json::from_str::<Value>)
+        .transpose()
+        .map_err(|error| ToolError::internal(format!("invalid redacted active JSON: {error}")))?;
+    Ok(json!({
+        "rule_id": proto_record.rule_id,
+        "owner_id": proto_record.owner_id,
+        "active_revision": proto_record.active_revision,
+        "draft_revision": proto_record.draft_revision,
+        "active_definition": active_definition,
+        "draft_definition": draft_definition,
+        "created_at_ms": proto_record.created_at_ms,
+        "updated_at_ms": proto_record.updated_at_ms,
+        "last_match_at_ms": proto_record.last_match_at_ms,
+        "last_delivery_at_ms": proto_record.last_delivery_at_ms,
+    }))
+}
+
 fn build_target_selector(
     input: TargetSelectorInput,
 ) -> Result<proto::ConfigurationTargetSelector, ToolError> {
@@ -1870,6 +2179,33 @@ fn build_configuration_change(
     Ok(proto::ConfigurationChange {
         change: Some(change),
     })
+}
+
+fn map_optional_update<T, P, V, Wrap>(
+    input: OptionalUpdateInput<T>,
+    label: &str,
+    parse: impl FnOnce(T) -> Result<P, ToolError>,
+    set: impl FnOnce(P) -> V,
+    clear: impl FnOnce(bool) -> V,
+    wrap: impl FnOnce(V) -> Wrap,
+) -> Result<Wrap, ToolError> {
+    let value = match input {
+        OptionalUpdateInput::Direct(raw) => set(parse(raw)?),
+        OptionalUpdateInput::Structured {
+            set: Some(raw),
+            clear: false,
+        } => set(parse(raw)?),
+        OptionalUpdateInput::Structured {
+            set: None,
+            clear: true,
+        } => clear(true),
+        _ => {
+            return Err(ToolError::invalid_params(format!(
+                "{label} must provide either set or clear=true"
+            )));
+        }
+    };
+    Ok(wrap(value))
 }
 
 fn build_camera_patch(
@@ -1989,163 +2325,92 @@ fn build_template_values(
 fn to_string_update(
     input: OptionalUpdateInput<String>,
 ) -> Result<proto::OptionalStringUpdate, ToolError> {
-    let value = match input {
-        OptionalUpdateInput::Direct(set) => proto::optional_string_update::Value::Set(set),
-        OptionalUpdateInput::Structured {
-            set: Some(set),
-            clear: false,
-        } => proto::optional_string_update::Value::Set(set),
-        OptionalUpdateInput::Structured {
-            set: None,
-            clear: true,
-        } => proto::optional_string_update::Value::Clear(true),
-        _ => {
-            return Err(ToolError::invalid_params(
-                "optional update must provide either set or clear=true",
-            ));
-        }
-    };
-    Ok(proto::OptionalStringUpdate { value: Some(value) })
+    map_optional_update(
+        input,
+        "optional string update",
+        Ok,
+        proto::optional_string_update::Value::Set,
+        proto::optional_string_update::Value::Clear,
+        |value| proto::OptionalStringUpdate { value: Some(value) },
+    )
 }
 
 fn to_u32_update(
     input: OptionalUpdateInput<u32>,
 ) -> Result<proto::OptionalUint32Update, ToolError> {
-    let value = match input {
-        OptionalUpdateInput::Direct(set) => proto::optional_uint32_update::Value::Set(set),
-        OptionalUpdateInput::Structured {
-            set: Some(set),
-            clear: false,
-        } => proto::optional_uint32_update::Value::Set(set),
-        OptionalUpdateInput::Structured {
-            set: None,
-            clear: true,
-        } => proto::optional_uint32_update::Value::Clear(true),
-        _ => {
-            return Err(ToolError::invalid_params(
-                "optional integer update must provide either set or clear=true",
-            ));
-        }
-    };
-    Ok(proto::OptionalUint32Update { value: Some(value) })
+    map_optional_update(
+        input,
+        "optional integer update",
+        Ok,
+        proto::optional_uint32_update::Value::Set,
+        proto::optional_uint32_update::Value::Clear,
+        |value| proto::OptionalUint32Update { value: Some(value) },
+    )
 }
 
 fn to_bool_update(
     input: OptionalUpdateInput<bool>,
 ) -> Result<proto::OptionalBoolUpdate, ToolError> {
-    let value = match input {
-        OptionalUpdateInput::Direct(set) => proto::optional_bool_update::Value::Set(set),
-        OptionalUpdateInput::Structured {
-            set: Some(set),
-            clear: false,
-        } => proto::optional_bool_update::Value::Set(set),
-        OptionalUpdateInput::Structured {
-            set: None,
-            clear: true,
-        } => proto::optional_bool_update::Value::Clear(true),
-        _ => {
-            return Err(ToolError::invalid_params(
-                "optional boolean update must provide either set or clear=true",
-            ));
-        }
-    };
-    Ok(proto::OptionalBoolUpdate { value: Some(value) })
+    map_optional_update(
+        input,
+        "optional boolean update",
+        Ok,
+        proto::optional_bool_update::Value::Set,
+        proto::optional_bool_update::Value::Clear,
+        |value| proto::OptionalBoolUpdate { value: Some(value) },
+    )
 }
 
 fn to_backend_update(
     input: OptionalUpdateInput<String>,
 ) -> Result<proto::OptionalCameraBackendUpdate, ToolError> {
-    let value = match input {
-        OptionalUpdateInput::Direct(set) => {
-            proto::optional_camera_backend_update::Value::Set(parse_backend(&set)?)
-        }
-        OptionalUpdateInput::Structured {
-            set: Some(set),
-            clear: false,
-        } => proto::optional_camera_backend_update::Value::Set(parse_backend(&set)?),
-        OptionalUpdateInput::Structured {
-            set: None,
-            clear: true,
-        } => proto::optional_camera_backend_update::Value::Clear(true),
-        _ => {
-            return Err(ToolError::invalid_params(
-                "backend update must provide either set or clear=true",
-            ));
-        }
-    };
-    Ok(proto::OptionalCameraBackendUpdate { value: Some(value) })
+    map_optional_update(
+        input,
+        "backend update",
+        |raw| parse_backend(&raw),
+        proto::optional_camera_backend_update::Value::Set,
+        proto::optional_camera_backend_update::Value::Clear,
+        |value| proto::OptionalCameraBackendUpdate { value: Some(value) },
+    )
 }
 
 fn to_transport_update(
     input: OptionalUpdateInput<String>,
 ) -> Result<proto::OptionalCameraTransportUpdate, ToolError> {
-    let value = match input {
-        OptionalUpdateInput::Direct(set) => {
-            proto::optional_camera_transport_update::Value::Set(parse_transport(&set)?)
-        }
-        OptionalUpdateInput::Structured {
-            set: Some(set),
-            clear: false,
-        } => proto::optional_camera_transport_update::Value::Set(parse_transport(&set)?),
-        OptionalUpdateInput::Structured {
-            set: None,
-            clear: true,
-        } => proto::optional_camera_transport_update::Value::Clear(true),
-        _ => {
-            return Err(ToolError::invalid_params(
-                "transport update must provide either set or clear=true",
-            ));
-        }
-    };
-    Ok(proto::OptionalCameraTransportUpdate { value: Some(value) })
+    map_optional_update(
+        input,
+        "transport update",
+        |raw| parse_transport(&raw),
+        proto::optional_camera_transport_update::Value::Set,
+        proto::optional_camera_transport_update::Value::Clear,
+        |value| proto::OptionalCameraTransportUpdate { value: Some(value) },
+    )
 }
 
 fn to_recording_mode_update(
     input: OptionalUpdateInput<String>,
 ) -> Result<proto::OptionalCameraRecordingModeUpdate, ToolError> {
-    let value = match input {
-        OptionalUpdateInput::Direct(set) => {
-            proto::optional_camera_recording_mode_update::Value::Set(parse_recording_mode(&set)?)
-        }
-        OptionalUpdateInput::Structured {
-            set: Some(set),
-            clear: false,
-        } => proto::optional_camera_recording_mode_update::Value::Set(parse_recording_mode(&set)?),
-        OptionalUpdateInput::Structured {
-            set: None,
-            clear: true,
-        } => proto::optional_camera_recording_mode_update::Value::Clear(true),
-        _ => {
-            return Err(ToolError::invalid_params(
-                "recording_mode update must provide either set or clear=true",
-            ));
-        }
-    };
-    Ok(proto::OptionalCameraRecordingModeUpdate { value: Some(value) })
+    map_optional_update(
+        input,
+        "recording_mode update",
+        |raw| parse_recording_mode(&raw),
+        proto::optional_camera_recording_mode_update::Value::Set,
+        proto::optional_camera_recording_mode_update::Value::Clear,
+        |value| proto::OptionalCameraRecordingModeUpdate { value: Some(value) },
+    )
 }
 
 fn to_event_stream_update(
     input: OptionalUpdateInput<String>,
 ) -> Result<proto::OptionalEventRecordingStreamUpdate, ToolError> {
-    let value = match input {
-        OptionalUpdateInput::Direct(set) => {
-            proto::optional_event_recording_stream_update::Value::Set(parse_event_stream(&set)?)
-        }
-        OptionalUpdateInput::Structured {
-            set: Some(set),
-            clear: false,
-        } => proto::optional_event_recording_stream_update::Value::Set(parse_event_stream(&set)?),
-        OptionalUpdateInput::Structured {
-            set: None,
-            clear: true,
-        } => proto::optional_event_recording_stream_update::Value::Clear(true),
-        _ => {
-            return Err(ToolError::invalid_params(
-                "event_recording_stream update must provide either set or clear=true",
-            ));
-        }
-    };
-    Ok(proto::OptionalEventRecordingStreamUpdate { value: Some(value) })
+    map_optional_update(
+        input,
+        "event_recording_stream update",
+        |raw| parse_event_stream(&raw),
+        proto::optional_event_recording_stream_update::Value::Set,
+        proto::optional_event_recording_stream_update::Value::Clear,
+        |value| proto::OptionalEventRecordingStreamUpdate { value: Some(value) },
+    )
 }
 
 fn parse_backend(raw: &str) -> Result<i32, ToolError> {
@@ -2644,13 +2909,74 @@ display_name = "Front Door"
             403
         );
 
-        let same_origin = mcp_post_request(
+        // DNS-rebinding attack: attacker controls evil.example resolving to 127.0.0.1.
+        let dns_rebind_with_origin = Request::fake_http_from(
+            "127.0.0.1:50000".parse().unwrap(),
+            "POST",
+            "/mcp",
+            vec![
+                ("Host".into(), "evil.example:8081".into()),
+                ("Origin".into(), "http://evil.example:8081".into()),
+                ("Content-Type".into(), "application/json".into()),
+            ],
+            br#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#.to_vec(),
+        );
+        assert_eq!(
+            super::super::handle_request(&dns_rebind_with_origin, &router_tx, &state).status_code,
+            403
+        );
+
+        let dns_rebind_host_only = Request::fake_http_from(
+            "127.0.0.1:50000".parse().unwrap(),
+            "POST",
+            "/mcp",
+            vec![
+                ("Host".into(), "evil.example:8081".into()),
+                ("Content-Type".into(), "application/json".into()),
+            ],
+            br#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#.to_vec(),
+        );
+        assert_eq!(
+            super::super::handle_request(&dns_rebind_host_only, &router_tx, &state).status_code,
+            403
+        );
+
+        let unallowlisted_origin = mcp_post_request(
             &json!({"jsonrpc":"2.0","id":1,"method":"ping"}),
             vec![("Origin".into(), "http://127.0.0.1:8081".into())],
             "127.0.0.1:50000",
         );
         assert_eq!(
-            super::super::handle_request(&same_origin, &router_tx, &state).status_code,
+            super::super::handle_request(&unallowlisted_origin, &router_tx, &state).status_code,
+            403
+        );
+
+        let mut allowlisted_state = state.clone();
+        allowlisted_state.allowed_origins =
+            Arc::new(HashSet::from(["http://127.0.0.1:8081".to_owned()]));
+        let allowlisted_origin = mcp_post_request(
+            &json!({"jsonrpc":"2.0","id":1,"method":"ping"}),
+            vec![("Origin".into(), "http://127.0.0.1:8081".into())],
+            "127.0.0.1:50000",
+        );
+        assert_eq!(
+            super::super::handle_request(&allowlisted_origin, &router_tx, &allowlisted_state)
+                .status_code,
+            200
+        );
+
+        let localhost_no_origin = Request::fake_http_from(
+            "127.0.0.1:50000".parse().unwrap(),
+            "POST",
+            "/mcp",
+            vec![
+                ("Host".into(), "localhost:8081".into()),
+                ("Content-Type".into(), "application/json".into()),
+            ],
+            br#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#.to_vec(),
+        );
+        assert_eq!(
+            super::super::handle_request(&localhost_no_origin, &router_tx, &state).status_code,
             200
         );
 
@@ -3102,7 +3428,7 @@ display_name = "Front Door"
         let save_json = read_response_json(save_tpl);
         assert!(save_json["result"]["structuredContent"]["template_id"].is_string());
 
-        let missing_rev_storage = super::super::handle_request(
+        let missing_rev_host = super::super::handle_request(
             &mcp_post_request(
                 &json!({
                     "jsonrpc": "2.0",
@@ -3110,7 +3436,7 @@ display_name = "Front Door"
                     "method": "tools/call",
                     "params": {
                         "name": "update_runtime_configuration",
-                        "arguments": { "storage": { "short_term_secs": 30 } }
+                        "arguments": { "host": "127.0.0.1" }
                     }
                 }),
                 Vec::new(),
@@ -3120,7 +3446,7 @@ display_name = "Front Door"
             &state,
         );
         assert_eq!(
-            read_response_json(missing_rev_storage)["error"]["code"],
+            read_response_json(missing_rev_host)["error"]["code"],
             ERROR_INVALID_PARAMS
         );
 
@@ -3178,7 +3504,7 @@ display_name = "Front Door"
     }
 
     #[test]
-    fn stdio_bridge_e2e_lists_19_tools_calls_diagnostics_and_handles_errors() {
+    fn stdio_bridge_e2e_lists_21_tools_calls_diagnostics_and_handles_errors() {
         let sentinel = "E2E-STDIO-SENTINEL-778899";
         let (dir, state, router_tx) = temp_config_fixture(
             McpConfig {
@@ -3233,7 +3559,7 @@ display_name = "Front Door"
         assert_eq!(lines[0]["result"]["protocolVersion"], "2025-03-26");
 
         let tools = lines[1]["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 19);
+        assert_eq!(tools.len(), 21);
         let tool_names: Vec<&str> = tools
             .iter()
             .map(|tool| tool["name"].as_str().unwrap())
@@ -3256,6 +3582,8 @@ display_name = "Front Door"
             "apply_configuration_plan",
             "update_runtime_configuration",
             "manage_configuration_template",
+            "manage_camera",
+            "manage_notification_rule",
             "set_runtime_profile",
             "set_logging_filter",
         ] {
@@ -3291,6 +3619,464 @@ display_name = "Front Door"
         assert_eq!(err_json["error"]["code"], ERROR_INTERNAL);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manage_camera_enforces_secret_references_and_upserts_and_removes() {
+        let sentinel = "MANAGE-CAM-SENTINEL-884422";
+        let (dir, state, router_tx) = temp_config_fixture(
+            McpConfig {
+                enabled: true,
+                allow_writes: true,
+                ..McpConfig::default()
+            },
+            sentinel,
+        );
+        let secrets_path = dir.join("secrets.toml");
+        std::fs::write(
+            &secrets_path,
+            format!(
+                "CAMERA_USER = \"camadmin\"\nCAMERA_PASSWORD = \"{sentinel}\"\nKEEPPEEK_ACCESS_KEY = \"550e8400-e29b-41d4-a716-446655440000\"\n"
+            ),
+        )
+        .unwrap();
+        let cfg_resp = super::super::handle_request(
+            &mcp_post_request(
+                &json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_configuration","arguments":{}}}),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        let revision =
+            read_response_json(cfg_resp)["result"]["structuredContent"]["configuration_revision"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+
+        // Plaintext credentials and raw RTSP passwords must be rejected.
+        for bad_args in [
+            json!({
+                "action": "upsert",
+                "ip": "192.0.2.50",
+                "expected_configuration_revision": revision,
+                "password": "plaintext-password"
+            }),
+            json!({
+                "action": "upsert",
+                "ip": "192.0.2.50",
+                "expected_configuration_revision": revision,
+                "username": "plaintext-user"
+            }),
+            json!({
+                "action": "upsert",
+                "ip": "192.0.2.50",
+                "expected_configuration_revision": revision,
+                "uid": "raw-camera-uid"
+            }),
+            json!({
+                "action": "upsert",
+                "ip": "192.0.2.50",
+                "expected_configuration_revision": revision,
+                "main_rtsp_url": "rtsp://admin:hunter2@192.0.2.50/main"
+            }),
+        ] {
+            let rejected = super::super::handle_request(
+                &mcp_post_request(
+                    &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"manage_camera","arguments": bad_args}}),
+                    Vec::new(),
+                    "127.0.0.1:50000",
+                ),
+                &router_tx,
+                &state,
+            );
+            assert_eq!(
+                read_response_json(rejected)["error"]["code"],
+                ERROR_INVALID_PARAMS
+            );
+        }
+
+        // Valid {secret:KEY} upsert succeeds without exposing resolved secret values.
+        let added = super::super::handle_request(
+            &mcp_post_request(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "manage_camera",
+                        "arguments": {
+                            "action": "upsert",
+                            "ip": "192.0.2.50",
+                            "expected_configuration_revision": revision,
+                            "display_name": "Side Gate",
+                            "username": "{secret:CAMERA_USER}",
+                            "password": "{secret:CAMERA_PASSWORD}",
+                            "main_rtsp_url": "rtsp://192.0.2.50:554/main"
+                        }
+                    }
+                }),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        let added_json = read_response_json(added);
+        assert!(
+            !serde_json::to_string(&added_json)
+                .unwrap()
+                .contains(sentinel)
+        );
+        assert_eq!(
+            added_json["result"]["structuredContent"]["camera"]["ip"],
+            "192.0.2.50"
+        );
+        let next_revision = added_json["result"]["structuredContent"]["configuration_revision"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let removed = super::super::handle_request(
+            &mcp_post_request(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 4,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "manage_camera",
+                        "arguments": {
+                            "action": "remove",
+                            "ip": "192.0.2.50",
+                            "expected_configuration_revision": next_revision
+                        }
+                    }
+                }),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        let removed_json = read_response_json(removed);
+        assert_eq!(
+            removed_json["result"]["structuredContent"]["camera_id"],
+            "192.0.2.50"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manage_notification_rule_enforces_secret_policy_and_lifecycle() {
+        let webhook_secret = "https://hooks.example.com/secret-token-776655";
+        let (dir, state, router_tx) = temp_config_fixture(
+            McpConfig {
+                enabled: true,
+                allow_writes: true,
+                ..McpConfig::default()
+            },
+            "NOTIF-CAM-SECRET-1122",
+        );
+        std::fs::write(
+            dir.join("secrets.toml"),
+            format!(
+                "CAMERA_PASSWORD = \"NOTIF-CAM-SECRET-1122\"\nKEEPPEEK_ACCESS_KEY = \"550e8400-e29b-41d4-a716-446655440000\"\nWEBHOOK_URL = \"{webhook_secret}\"\n"
+            ),
+        )
+        .unwrap();
+        let notif_runtime = crate::notifications::Runtime::open(&dir.join("config.toml")).unwrap();
+        let state = state.with_notifications(notif_runtime.handle());
+
+        let base_rule = |id: &str, channel: &str, destination: &str| {
+            json!({
+                "id": id,
+                "name": "Front Door Alert",
+                "enabled": true,
+                "revision": 0,
+                "triggers": ["event_created"],
+                "schedule": { "timezone": "UTC", "active_windows": [], "quiet_hours": null },
+                "enrichment": {
+                    "deadline_ms": 5000,
+                    "maximum_revisions": 2,
+                    "maximum_attempts": 1,
+                    "maximum_attachment_bytes": 1048576,
+                    "wake_after_deadline": false
+                },
+                "actions": [{
+                    "enabled": true,
+                    "channel": channel,
+                    "destination": destination,
+                    "template": { "title": "Alert", "body": "Event {{event.kind}}" },
+                    "attachment": "never",
+                    "allow_second_delivery": false
+                }],
+                "failure": {
+                    "maximum_attempts": 3,
+                    "maximum_retry_interval_ms": 5000,
+                    "expiry_ms": 60000
+                }
+            })
+        };
+
+        // Raw webhook and push destinations must be rejected.
+        for (channel, dest) in [
+            ("webhook", "https://hooks.example.com/raw-secret"),
+            ("push", "{\"app_token\":\"raw\",\"user_key\":\"raw\"}"),
+        ] {
+            let rejected = super::super::handle_request(
+                &mcp_post_request(
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "manage_notification_rule",
+                            "arguments": {
+                                "action": "save_draft",
+                                "definition": base_rule("raw-rejected", channel, dest)
+                            }
+                        }
+                    }),
+                    Vec::new(),
+                    "127.0.0.1:50000",
+                ),
+                &router_tx,
+                &state,
+            );
+            assert_eq!(
+                read_response_json(rejected)["error"]["code"],
+                ERROR_INVALID_PARAMS
+            );
+        }
+
+        // {secret:WEBHOOK_URL} resolves server-side and returns redacted destination_ref.
+        let saved = super::super::handle_request(
+            &mcp_post_request(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "manage_notification_rule",
+                        "arguments": {
+                            "action": "save_draft",
+                            "definition": base_rule("front-webhook", "webhook", "{secret:WEBHOOK_URL}")
+                        }
+                    }
+                }),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        let saved_json = read_response_json(saved);
+        assert!(
+            !serde_json::to_string(&saved_json)
+                .unwrap()
+                .contains(webhook_secret)
+        );
+        let draft_rev = saved_json["result"]["structuredContent"]["draft_revision"]
+            .as_u64()
+            .unwrap();
+        assert_eq!(
+            saved_json["result"]["structuredContent"]["draft_definition"]["actions"][0]["destination_configured"],
+            true
+        );
+
+        let activated = super::super::handle_request(
+            &mcp_post_request(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "manage_notification_rule",
+                        "arguments": {
+                            "action": "activate",
+                            "rule_id": "front-webhook",
+                            "expected_draft_revision": draft_rev
+                        }
+                    }
+                }),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        let active_rev =
+            read_response_json(activated)["result"]["structuredContent"]["active_revision"]
+                .as_u64()
+                .unwrap();
+
+        let listed = super::super::handle_request(
+            &mcp_post_request(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 4,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "manage_notification_rule",
+                        "arguments": { "action": "list" }
+                    }
+                }),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        let listed_json = read_response_json(listed);
+        assert_eq!(listed_json["result"]["structuredContent"]["count"], 1);
+        assert!(
+            !serde_json::to_string(&listed_json)
+                .unwrap()
+                .contains(webhook_secret)
+        );
+
+        let deleted = super::super::handle_request(
+            &mcp_post_request(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 5,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "manage_notification_rule",
+                        "arguments": {
+                            "action": "delete",
+                            "rule_id": "front-webhook",
+                            "expected_active_revision": active_rev,
+                            "expected_draft_revision": draft_rev
+                        }
+                    }
+                }),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(
+            read_response_json(deleted)["result"]["structuredContent"]["action"],
+            "delete"
+        );
+
+        drop(notif_runtime);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn filter_health_for_user_prevents_prefix_issue_leaks() {
+        use crate::operational_events::{
+            OperationalEvent, OperationalEventKey, OperationalEventKind, OperationalEvidence,
+            OperationalSeverity,
+        };
+
+        let mut cfg = config::Config::default();
+        cfg.mcp.enabled = true;
+        let mut cameras = HashMap::new();
+        cameras.insert(
+            "site".to_owned(),
+            vec![
+                toml::from_str::<CameraConfig>("ip = \"192.0.2.1\"\nname = \"Cam1\"\n").unwrap(),
+                toml::from_str::<CameraConfig>("ip = \"192.0.2.10\"\nname = \"Cam10\"\n").unwrap(),
+            ],
+        );
+        let state = ServerState::new(
+            &cfg,
+            &cameras,
+            &HashMap::new(),
+            &crate::storage::StorageConfig::default(),
+            crate::storage::RecordingDemand::new(Duration::from_secs(5)),
+            crate::webrtc::WebRtc::new(),
+        );
+        let (_router, router_tx) = Router::new().unwrap();
+        let mut health = server_health(&router_tx, &state);
+        health.operational_events = vec![
+            OperationalEvent {
+                id: "evt-cam-1".to_owned(),
+                key: OperationalEventKey {
+                    camera_id: "192.0.2.1".to_owned(),
+                    stream_id: Some("main".to_owned()),
+                    kind: OperationalEventKind::CameraOffline,
+                },
+                evidence: OperationalEvidence {
+                    cause: "offline".to_owned(),
+                    explanation: "cam 1 offline".to_owned(),
+                    affected_streams: vec!["main".to_owned()],
+                    recording_interrupted: true,
+                    source: "test".to_owned(),
+                },
+                severity: OperationalSeverity::Warning,
+                revision: 1,
+                start_time_ms: 1_000,
+                end_time_ms: None,
+                duration_ms: None,
+            },
+            OperationalEvent {
+                id: "evt-cam-10".to_owned(),
+                key: OperationalEventKey {
+                    camera_id: "192.0.2.10".to_owned(),
+                    stream_id: Some("main".to_owned()),
+                    kind: OperationalEventKind::CameraOffline,
+                },
+                evidence: OperationalEvidence {
+                    cause: "offline".to_owned(),
+                    explanation: "cam 10 offline".to_owned(),
+                    affected_streams: vec!["main".to_owned()],
+                    recording_interrupted: true,
+                    source: "test".to_owned(),
+                },
+                severity: OperationalSeverity::Warning,
+                revision: 1,
+                start_time_ms: 1_000,
+                end_time_ms: None,
+                duration_ms: None,
+            },
+        ];
+        health.issues = vec![
+            crate::health::HealthIssue {
+                severity: "warning".to_owned(),
+                scope: "camera".to_owned(),
+                message: "camera 192.0.2.1 stream offline".to_owned(),
+                operational_event_id: Some("evt-cam-1".to_owned()),
+                timeline_start_ms: Some(1_000),
+                timeline_end_ms: None,
+            },
+            crate::health::HealthIssue {
+                severity: "warning".to_owned(),
+                scope: "camera".to_owned(),
+                message: "camera 192.0.2.10 stream offline".to_owned(),
+                operational_event_id: Some("evt-cam-10".to_owned()),
+                timeline_start_ms: Some(1_000),
+                timeline_end_ms: None,
+            },
+            crate::health::HealthIssue {
+                severity: "warning".to_owned(),
+                scope: "storage".to_owned(),
+                message: "global disk pressure on host".to_owned(),
+                operational_event_id: None,
+                timeline_start_ms: None,
+                timeline_end_ms: None,
+            },
+        ];
+
+        let policy = CameraAccess {
+            all_cameras: false,
+            group_ids: Vec::new(),
+            camera_ids: vec!["192.0.2.1".to_owned()],
+        };
+        filter_health_for_user(&mut health, &policy);
+        assert_eq!(health.cameras.len(), 1);
+        assert_eq!(health.cameras[0].id, "192.0.2.1");
+        assert_eq!(health.issues.len(), 1);
+        assert_eq!(
+            health.issues[0].operational_event_id.as_deref(),
+            Some("evt-cam-1")
+        );
     }
 
     #[test]
@@ -3339,10 +4125,7 @@ display_name = "Front Door"
     }
 
     #[test]
-    fn mcp_ac8_ingest_isolation_and_latency_benchmark() {
-        use std::sync::atomic::AtomicBool;
-        use std::thread;
-
+    fn mcp_concurrent_latency_and_response_budget_benchmark() {
         let (dir, state, router_tx) = temp_config_fixture(
             McpConfig {
                 enabled: true,
@@ -3362,47 +4145,11 @@ display_name = "Front Door"
             }
         });
 
-        let stop_ingest = Arc::new(AtomicBool::new(false));
-        let baseline_frames = Arc::new(AtomicUsize::new(0));
-        let load_frames = Arc::new(AtomicUsize::new(0));
-        let dropped_frames = Arc::new(AtomicUsize::new(0));
-        let under_load = Arc::new(AtomicBool::new(false));
-
-        let ingest_stop = stop_ingest.clone();
-        let ingest_base = baseline_frames.clone();
-        let ingest_load = load_frames.clone();
-        let ingest_drop = dropped_frames.clone();
-        let ingest_flag = under_load.clone();
-        let ingest_thread = thread::spawn(move || {
-            let interval = Duration::from_millis(20);
-            let mut next_tick = Instant::now() + interval;
-            while !ingest_stop.load(Ordering::Acquire) {
-                let now = Instant::now();
-                if now < next_tick {
-                    thread::sleep(next_tick - now);
-                } else if now.saturating_duration_since(next_tick) > Duration::from_millis(500) {
-                    ingest_drop.fetch_add(1, Ordering::Relaxed);
-                    next_tick = now;
-                }
-                if ingest_flag.load(Ordering::Acquire) {
-                    ingest_load.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    ingest_base.fetch_add(1, Ordering::Relaxed);
-                }
-                next_tick += interval;
-            }
-        });
-
-        // Phase 1: baseline ingest without MCP calls.
-        thread::sleep(Duration::from_millis(300));
-        under_load.store(true, Ordering::Release);
-
-        // Phase 2: 36 concurrent MCP calls (health, logs, configuration) across 3 worker threads.
         let mut handles = Vec::new();
         for worker in 0..3_u64 {
             let worker_state = state.clone();
             let worker_router = router_tx.clone();
-            handles.push(thread::spawn(move || {
+            handles.push(std::thread::spawn(move || {
                 let mut latencies_us = Vec::new();
                 let mut max_bytes = 0usize;
                 let requests = [
@@ -3435,27 +4182,194 @@ display_name = "Front Door"
             all_latencies_us.extend(latencies);
             max_response_bytes = max_response_bytes.max(max_bytes);
         }
-        stop_ingest.store(true, Ordering::Release);
-        ingest_thread.join().unwrap();
-
-        all_latencies_us.sort_unstable();
-        let count = all_latencies_us.len();
-        let p50_us = all_latencies_us[count / 2];
-        let p95_us = all_latencies_us[(count * 95) / 100];
-        let max_us = *all_latencies_us.last().unwrap();
-        let drops = dropped_frames.load(Ordering::Relaxed);
-        eprintln!(
-            "AC-8 METRICS: calls={count} p50_ms={:.3} p95_ms={:.3} max_ms={:.3} max_response_bytes={max_response_bytes} baseline_frames={} load_frames={} dropped_frames={drops}",
-            p50_us as f64 / 1000.0,
-            p95_us as f64 / 1000.0,
-            max_us as f64 / 1000.0,
-            baseline_frames.load(Ordering::Relaxed),
-            load_frames.load(Ordering::Relaxed),
-        );
-        assert_eq!(count, 36);
-        assert_eq!(drops, 0);
+        assert_eq!(all_latencies_us.len(), 36);
         assert!(max_response_bytes <= state.mcp.config().max_response_bytes);
-        assert!(load_frames.load(Ordering::Relaxed) > 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mcp_ac8_test_camera_ingest_isolation_and_latency() {
+        use crate::storage::{
+            MediaFrame, RecordingFrame, StorageConfig, StorageEngine, VideoCodec, VideoFrame,
+            nal::annexb_to_avcc,
+        };
+        use std::sync::atomic::AtomicBool;
+        use test_frame::{EncodedFrame, TestFrameConfig, TestFrameSource};
+
+        const WARMUP_TRIALS: usize = 3;
+        const MEASURED_TRIALS: usize = 30;
+        const FRAMES_PER_TRIAL: usize = 30;
+
+        let (tx, rx) = std::sync::mpsc::sync_channel::<EncodedFrame>(FRAMES_PER_TRIAL + 8);
+        let source = TestFrameSource::start(
+            TestFrameConfig {
+                width: 320,
+                height: 240,
+                fps: 30,
+                codec: test_frame::Codec::H264,
+                keyframe_interval: 15,
+                bitrate_bps: 500_000,
+            },
+            move |frame| {
+                let _ = tx.send(frame);
+            },
+        )
+        .expect("start deterministic H.264 test source");
+        let mut frames = Vec::with_capacity(FRAMES_PER_TRIAL);
+        while frames.len() < FRAMES_PER_TRIAL {
+            frames.push(
+                rx.recv_timeout(Duration::from_secs(5))
+                    .expect("H.264 frame"),
+            );
+        }
+        source.stop();
+
+        let (dir, state, router_tx) = temp_config_fixture(
+            McpConfig {
+                enabled: true,
+                allow_writes: false,
+                max_concurrent_requests: 4,
+                max_response_bytes: 65_536,
+                ..McpConfig::default()
+            },
+            "AC8-BENCH-SECRET-424242",
+        );
+        let (logging_service, dispatch) =
+            LoggingService::for_test(LogFilterFile::new(dir.join("log-filter")), "info");
+        let state = state.with_logging(logging_service);
+        tracing::dispatcher::with_default(&dispatch, || {
+            for index in 0..100 {
+                tracing::info!(target: "keeppeek::ingest", camera = "192.0.2.10", "frame ok {index}");
+            }
+        });
+
+        let run_phase = |name: &str, with_mcp_load: bool| -> (Vec<f64>, u64, Vec<u64>, usize) {
+            let phase_dir = dir.join(name);
+            std::fs::create_dir_all(&phase_dir).unwrap();
+            let engine = StorageEngine::start(StorageConfig {
+                medium_term_path: phase_dir.clone(),
+                long_term_path: phase_dir.clone(),
+                recording_catalog_path: phase_dir.join("recordings.db"),
+                event_thumbnail_path: phase_dir.join(".event-thumbnails"),
+                short_term_duration: Duration::from_secs(2),
+                medium_term_duration: Duration::from_secs(5),
+                flush_interval: Duration::from_secs(1),
+                write_buffer_bytes: 8 * 1024,
+                long_term_max_bytes: 0,
+                minimum_free_bytes: 0,
+                ..StorageConfig::default()
+            });
+            let stop = Arc::new(AtomicBool::new(false));
+            let mut mcp_workers = Vec::new();
+            if with_mcp_load {
+                for worker in 0..3_usize {
+                    let worker_state = state.clone();
+                    let worker_router = router_tx.clone();
+                    let worker_stop = stop.clone();
+                    mcp_workers.push(std::thread::spawn(move || {
+                        let requests = [
+                            json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_server_health","arguments":{}}}),
+                            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_logs","arguments":{"limit":20}}}),
+                            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_configuration","arguments":{"page_size":10}}}),
+                        ];
+                        let mut latencies = Vec::new();
+                        let mut max_bytes = 0usize;
+                        let mut iter = 0usize;
+                        while !worker_stop.load(Ordering::Acquire) || iter < 12 {
+                            let payload = &requests[(worker + iter) % 3];
+                            let req = mcp_post_request(payload, Vec::new(), "127.0.0.1:50000");
+                            let started = Instant::now();
+                            let resp =
+                                super::super::handle_request(&req, &worker_router, &worker_state);
+                            let elapsed_us =
+                                u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+                            assert_eq!(resp.status_code, 200);
+                            let (mut reader, _) = resp.data.into_reader_and_size();
+                            let mut raw = Vec::new();
+                            reader.read_to_end(&mut raw).unwrap();
+                            assert!(raw.len() <= worker_state.mcp.config().max_response_bytes);
+                            max_bytes = max_bytes.max(raw.len());
+                            latencies.push(elapsed_us);
+                            iter += 1;
+                            if worker_stop.load(Ordering::Acquire) && iter >= 12 {
+                                break;
+                            }
+                        }
+                        (latencies, max_bytes)
+                    }));
+                }
+            }
+
+            let mut trial_us = Vec::with_capacity(MEASURED_TRIALS);
+            let mut gaps = 0u64;
+            for trial in 0..(WARMUP_TRIALS + MEASURED_TRIALS) {
+                let started = Instant::now();
+                let mut previous = started;
+                for frame in &frames {
+                    let now = Instant::now();
+                    if now.duration_since(previous) > Duration::from_millis(250) {
+                        gaps += 1;
+                    }
+                    previous = now;
+                    engine.ingest(
+                        "192.0.2.10",
+                        RecordingFrame {
+                            source_rtp: None,
+                            received_at: now,
+                            timestamp: None,
+                            frame: MediaFrame::Video(VideoFrame {
+                                codec: VideoCodec::H264,
+                                is_keyframe: frame.is_keyframe,
+                                width: frame.width,
+                                height: frame.height,
+                                data: annexb_to_avcc(&frame.data).into(),
+                            }),
+                        },
+                    );
+                }
+                let us_per_frame =
+                    started.elapsed().as_secs_f64() * 1_000_000.0 / frames.len() as f64;
+                if trial >= WARMUP_TRIALS {
+                    trial_us.push(us_per_frame);
+                }
+            }
+
+            stop.store(true, Ordering::Release);
+            let mut latencies = Vec::new();
+            let mut max_bytes = 0usize;
+            for worker in mcp_workers {
+                let (worker_latencies, worker_max) = worker.join().unwrap();
+                latencies.extend(worker_latencies);
+                max_bytes = max_bytes.max(worker_max);
+            }
+            engine.shutdown();
+            (trial_us, gaps, latencies, max_bytes)
+        };
+
+        let (mut base_us, base_gaps, _, _) = run_phase("baseline", false);
+        let (mut active_us, active_gaps, mut mcp_latencies_us, max_response_bytes) =
+            run_phase("active", true);
+        base_us.sort_by(f64::total_cmp);
+        active_us.sort_by(f64::total_cmp);
+        mcp_latencies_us.sort_unstable();
+
+        let base_p50 = base_us[base_us.len() / 2];
+        let base_p95 = base_us[(base_us.len() * 95) / 100];
+        let active_p50 = active_us[active_us.len() / 2];
+        let active_p95 = active_us[(active_us.len() * 95) / 100];
+        let mcp_count = mcp_latencies_us.len();
+        let mcp_p50_ms = mcp_latencies_us[mcp_count / 2] as f64 / 1000.0;
+        let mcp_p95_ms = mcp_latencies_us[(mcp_count * 95) / 100] as f64 / 1000.0;
+        let mcp_max_ms = *mcp_latencies_us.last().unwrap() as f64 / 1000.0;
+        eprintln!(
+            "AC-8 STORAGE ENGINE INGEST METRICS: trials={MEASURED_TRIALS} frames_per_trial={FRAMES_PER_TRIAL} base_p50_us={base_p50:.2} active_p50_us={active_p50:.2} base_p95_us={base_p95:.2} active_p95_us={active_p95:.2} base_gaps={base_gaps} active_gaps={active_gaps} mcp_calls={mcp_count} mcp_p50_ms={mcp_p50_ms:.3} mcp_p95_ms={mcp_p95_ms:.3} mcp_max_ms={mcp_max_ms:.3} max_response_bytes={max_response_bytes}"
+        );
+        assert_eq!(
+            active_gaps, 0,
+            "MCP load must not induce recording ingest gaps"
+        );
+        assert!(mcp_count >= 36);
+        assert!(max_response_bytes <= state.mcp.config().max_response_bytes);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -746,10 +746,12 @@ paths:
       description: >-
         Disabled by default; returns 404 unless [mcp].enabled is true in
         config.toml. Accepts Streamable HTTP JSON-RPC 2.0 requests (MCP
-        2025-03-26) up to 256 KiB. Requires a valid Host header and rejects
-        mismatched cross-origin Origin headers to stop DNS rebinding; absent
-        Origin headers are allowed for CLI clients. Uses Bearer authentication
-        and local network policy only (no query-string credentials or browser
+        2025-03-26) up to 256 KiB. Requires a valid Host header, requires Host
+        to be localhost or an IP literal for unauthenticated local requests,
+        and rejects any browser Origin header not explicitly listed in
+        [direct_card].allowed_origins to stop DNS rebinding; absent Origin
+        headers are allowed for CLI clients. Uses Bearer authentication and
+        local network policy only (no query-string credentials or browser
         session cookies). Enforces configured concurrency, timeout, and
         response byte limits and redacts raw secrets before serialization.
       parameters:

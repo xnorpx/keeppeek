@@ -1,29 +1,23 @@
 //! Privacy-gated and permission-gated single-frame snapshot engine for MCP.
 //!
-//! Enforces fail-closed policy checks, per-camera rate limits, bounded JPEG
-//! decoding, software privacy masking before downscaling, size ceilings, and
+//! Enforces fail-closed privacy schedule checks, per-camera rate limits,
+//! bounded JPEG decoding, downscaling, size ceilings, request deadlines, and
 //! non-sensitive audit logging.
 
 use super::{
     ApiPrincipal, CameraEntry, ControlCommandError, ReolinkClient, ServerState, camera_access,
     record_access_audit, unix_time_ms,
 };
-use crate::{
-    access::ClientClassificationReason,
-    api::proto,
-    privacy::MediaPermit,
-    runtime::{FacadeSender, RouterMessage},
-};
+use crate::{access::ClientClassificationReason, api::proto, privacy::MediaPermit};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use image::{
-    ImageFormat, ImageReader, Limits, Rgb, RgbImage, codecs::jpeg::JpegEncoder,
-    imageops::FilterType,
+    ImageFormat, ImageReader, Limits, RgbImage, codecs::jpeg::JpegEncoder, imageops::FilterType,
 };
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     io::Cursor,
-    sync::{Mutex, OnceLock},
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
@@ -31,7 +25,6 @@ const RATE_LIMITER_ENTRIES_MAX: usize = 256;
 const RAW_SNAPSHOT_BYTES_MAX: usize = 8 * 1_024 * 1_024;
 const DECODE_DIMENSION_MAX: u32 = 8_192;
 const DECODE_ALLOC_BYTES_MAX: u64 = 64 * 1_024 * 1_024;
-const PRIVACY_MASKS_MAX: usize = 32;
 const SNAPSHOT_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 const LATEST_EVENT_LOOKBACK_MS: i64 = 7 * 86_400_000;
 const LATEST_EVENT_SCAN_MAX: usize = 64;
@@ -53,32 +46,16 @@ pub(super) struct McpSnapshotPolicy {
     pub(super) min_interval_secs: u64,
 }
 
-/// Normalized `[0.0, 1.0]` rectangle filled with solid black before downscaling.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct PrivacyMaskRect {
-    pub(super) x: f32,
-    pub(super) y: f32,
-    pub(super) width: f32,
-    pub(super) height: f32,
-}
-
-impl PrivacyMaskRect {
-    fn validate(self) -> Result<(), ControlCommandError> {
-        let coords = [self.x, self.y, self.width, self.height];
-        if coords
-            .iter()
-            .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
-            || self.width <= 0.0
-            || self.height <= 0.0
-        {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::Rejected,
-                403,
-                "camera privacy mask configuration is invalid",
-            ));
-        }
-        Ok(())
-    }
+/// Request inputs for one bounded MCP snapshot capture.
+pub(super) struct SnapshotRequest<'a> {
+    pub(super) principal: &'a ApiPrincipal,
+    pub(super) classification: ClientClassificationReason,
+    pub(super) camera_id: &'a str,
+    pub(super) source_preference: Option<&'a str>,
+    pub(super) policy: &'a McpSnapshotPolicy,
+    pub(super) limiter: &'a SnapshotRateLimiter,
+    pub(super) now: Instant,
+    pub(super) deadline: Instant,
 }
 
 /// Bounded per-camera snapshot rate limiter capped at 256 camera entries.
@@ -160,7 +137,6 @@ impl SourcePreference {
 pub(super) struct ProcessedSnapshot {
     pub(super) width: u32,
     pub(super) height: u32,
-    pub(super) masks_applied: usize,
     pub(super) jpeg_bytes: Vec<u8>,
 }
 
@@ -169,112 +145,70 @@ struct CapturedFrame {
     source: &'static str,
 }
 
-// ponytail: module-scoped limiter avoids ServerState edits; move into ServerState during merge if needed.
-fn default_rate_limiter() -> &'static SnapshotRateLimiter {
-    static LIMITER: OnceLock<SnapshotRateLimiter> = OnceLock::new();
-    LIMITER.get_or_init(SnapshotRateLimiter::new)
-}
-
-/// Captures one privacy-gated, masked, resized JPEG snapshot for an authorized camera.
+/// Captures one privacy-gated, resized JPEG snapshot for an authorized camera.
 pub(super) fn capture_camera_snapshot(
     state: &ServerState,
-    router_tx: &FacadeSender<RouterMessage>,
-    principal: &ApiPrincipal,
-    camera_id: &str,
-    source_preference: Option<&str>,
-    policy: &McpSnapshotPolicy,
+    request: &SnapshotRequest<'_>,
 ) -> Result<Value, ControlCommandError> {
-    capture_with_options(
-        state,
-        router_tx,
-        principal,
-        camera_id,
-        source_preference,
-        policy,
-        default_rate_limiter(),
-        Instant::now(),
-        None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn capture_with_options(
-    state: &ServerState,
-    _router_tx: &FacadeSender<RouterMessage>,
-    principal: &ApiPrincipal,
-    camera_id: &str,
-    source_preference: Option<&str>,
-    policy: &McpSnapshotPolicy,
-    limiter: &SnapshotRateLimiter,
-    now: Instant,
-    explicit_masks: Option<&[PrivacyMaskRect]>,
-) -> Result<Value, ControlCommandError> {
-    let camera_id = validate_camera_id(camera_id)?;
-    validate_policy(policy)?;
-    let preference = SourcePreference::parse(source_preference)?;
-    if !policy.allow_snapshots {
-        audit_snapshot(state, principal, camera_id, "denied_disabled");
+    let camera_id = validate_camera_id(request.camera_id)?;
+    validate_policy(request.policy)?;
+    let preference = SourcePreference::parse(request.source_preference)?;
+    if !request.policy.allow_snapshots {
+        audit_snapshot(state, request, camera_id, "denied_disabled");
         return Err(ControlCommandError::new(
             proto::ErrorCode::Rejected,
             403,
             "MCP snapshots are disabled in [mcp].allow_snapshots",
         ));
     }
-    authorize_camera_view(state, principal, camera_id)?;
+    authorize_camera_view(state, request, camera_id)?;
     let Some(camera) = state.camera(camera_id) else {
-        audit_snapshot(state, principal, camera_id, "not_found");
+        audit_snapshot(state, request, camera_id, "not_found");
         return Err(ControlCommandError::new(
             proto::ErrorCode::NotFound,
             404,
             "camera was not found",
         ));
     };
-    if let Err(error) = limiter.check_and_record(&camera.info.id, policy.min_interval_secs, now) {
-        audit_snapshot(state, principal, &camera.info.id, "denied_rate_limit");
+    if let Err(error) = request.limiter.check_and_record(
+        &camera.info.id,
+        request.policy.min_interval_secs,
+        request.now,
+    ) {
+        audit_snapshot(state, request, &camera.info.id, "denied_rate_limit");
         return Err(error);
     }
-    let permit = verify_privacy_fail_closed(state, principal, &camera)?;
-    let masks = resolve_snapshot_masks(state, principal, &camera, explicit_masks)?;
-    let captured = acquire_frame(state, &camera, preference).inspect_err(|_| {
-        audit_snapshot(state, principal, &camera.info.id, "unavailable");
-    })?;
+    let permit = verify_privacy_fail_closed(state, request, &camera)?;
+    let captured =
+        acquire_frame(state, &camera, preference, request.deadline).inspect_err(|error| {
+            let outcome = if error._http_status == 504 {
+                "timed_out"
+            } else {
+                "unavailable"
+            };
+            audit_snapshot(state, request, &camera.info.id, outcome);
+        })?;
     // Recheck privacy after capture so a transition during fetch discards the frame.
     if permit.deliver(|| ()).is_none() {
-        audit_snapshot(state, principal, &camera.info.id, "denied_privacy");
+        audit_snapshot(state, request, &camera.info.id, "denied_privacy");
         return Err(privacy_denied_error());
     }
     let processed =
-        process_snapshot_jpeg(&captured.jpeg_bytes, &masks, policy).inspect_err(|error| {
+        process_snapshot_jpeg(&captured.jpeg_bytes, request.policy).inspect_err(|error| {
             let outcome = if error._http_status == 413 {
                 "rejected_oversize"
             } else {
                 "failed_decode"
             };
-            audit_snapshot(state, principal, &camera.info.id, outcome);
+            audit_snapshot(state, request, &camera.info.id, outcome);
         })?;
     Ok(finalize_snapshot_response(
         state,
-        principal,
+        request,
         &camera.info.id,
         captured.source,
         processed,
     ))
-}
-
-fn resolve_snapshot_masks(
-    state: &ServerState,
-    principal: &ApiPrincipal,
-    camera: &CameraEntry,
-    explicit_masks: Option<&[PrivacyMaskRect]>,
-) -> Result<Vec<PrivacyMaskRect>, ControlCommandError> {
-    explicit_masks
-        .map_or_else(
-            || load_configured_privacy_masks(state, camera),
-            validate_mask_slice,
-        )
-        .inspect_err(|_| {
-            audit_snapshot(state, principal, &camera.info.id, "denied_privacy");
-        })
 }
 
 fn validate_camera_id(camera_id: &str) -> Result<&str, ControlCommandError> {
@@ -302,18 +236,18 @@ fn validate_policy(policy: &McpSnapshotPolicy) -> Result<(), ControlCommandError
 
 fn authorize_camera_view(
     state: &ServerState,
-    principal: &ApiPrincipal,
+    request: &SnapshotRequest<'_>,
     camera_id: &str,
 ) -> Result<(), ControlCommandError> {
-    let access = match camera_access::for_principal(state, principal) {
+    let access = match camera_access::for_principal(state, request.principal) {
         Ok(access) => access,
         Err(error) => {
-            audit_snapshot(state, principal, camera_id, "denied_permission");
+            audit_snapshot(state, request, camera_id, "denied_permission");
             return Err(error);
         }
     };
     if let Err(error) = camera_access::require_camera(&access, camera_id) {
-        audit_snapshot(state, principal, camera_id, "denied_permission");
+        audit_snapshot(state, request, camera_id, "denied_permission");
         return Err(error);
     }
     Ok(())
@@ -321,7 +255,7 @@ fn authorize_camera_view(
 
 fn verify_privacy_fail_closed(
     state: &ServerState,
-    principal: &ApiPrincipal,
+    request: &SnapshotRequest<'_>,
     camera: &CameraEntry,
 ) -> Result<MediaPermit, ControlCommandError> {
     let now = chrono::Utc::now();
@@ -330,11 +264,11 @@ fn verify_privacy_fail_closed(
     let active_or_unverifiable =
         !matches!(by_id, Ok((false, _))) || !matches!(by_ip, Ok((false, _)));
     if active_or_unverifiable {
-        audit_snapshot(state, principal, &camera.info.id, "denied_privacy");
+        audit_snapshot(state, request, &camera.info.id, "denied_privacy");
         return Err(privacy_denied_error());
     }
     let Some(permit) = state.privacy.media_permit(camera.info.id.as_str().into()) else {
-        audit_snapshot(state, principal, &camera.info.id, "denied_privacy");
+        audit_snapshot(state, request, &camera.info.id, "denied_privacy");
         return Err(privacy_denied_error());
     };
     Ok(permit)
@@ -348,142 +282,60 @@ fn privacy_denied_error() -> ControlCommandError {
     )
 }
 
-fn validate_mask_slice(
-    masks: &[PrivacyMaskRect],
-) -> Result<Vec<PrivacyMaskRect>, ControlCommandError> {
-    if masks.len() > PRIVACY_MASKS_MAX {
+fn remaining_budget(deadline: Instant) -> Result<Duration, ControlCommandError> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
         return Err(ControlCommandError::new(
-            proto::ErrorCode::Rejected,
-            403,
-            "camera privacy mask count exceeds limit",
+            proto::ErrorCode::Unavailable,
+            504,
+            "snapshot capture exceeded MCP request timeout",
         ));
     }
-    for mask in masks {
-        mask.validate()?;
-    }
-    Ok(masks.to_vec())
-}
-
-fn load_configured_privacy_masks(
-    state: &ServerState,
-    camera: &CameraEntry,
-) -> Result<Vec<PrivacyMaskRect>, ControlCommandError> {
-    let Some(path) = state.camera_config_path.as_deref() else {
-        return Ok(Vec::new());
-    };
-    if !path.is_file() {
-        return Ok(Vec::new());
-    }
-    let root = crate::config::load_configuration_table(path).map_err(|_| {
-        ControlCommandError::new(
-            proto::ErrorCode::Rejected,
-            403,
-            "camera privacy mask configuration could not be verified",
-        )
-    })?;
-    let Some(mask_array) = find_camera_mask_array(&root, &camera.info.id, &camera.info.ip) else {
-        return Ok(Vec::new());
-    };
-    let entries = mask_array.as_array().ok_or_else(|| {
-        ControlCommandError::new(
-            proto::ErrorCode::Rejected,
-            403,
-            "camera privacy mask configuration is invalid",
-        )
-    })?;
-    if entries.len() > PRIVACY_MASKS_MAX {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Rejected,
-            403,
-            "camera privacy mask count exceeds limit",
-        ));
-    }
-    entries.iter().map(parse_toml_mask_rect).collect()
-}
-
-fn find_camera_mask_array<'a>(
-    root: &'a toml::Table,
-    camera_id: &str,
-    camera_ip: &str,
-) -> Option<&'a toml::Value> {
-    let privacy = root.get("privacy")?.as_table()?;
-    if let Some(masks) = privacy.get("masks").and_then(toml::Value::as_table)
-        && let Some(found) = masks.get(camera_id).or_else(|| masks.get(camera_ip))
-    {
-        return Some(found);
-    }
-    privacy
-        .get("cameras")
-        .and_then(toml::Value::as_table)
-        .and_then(|cameras| cameras.get(camera_id).or_else(|| cameras.get(camera_ip)))
-        .and_then(toml::Value::as_table)
-        .and_then(|camera| camera.get("masks"))
-}
-
-fn parse_toml_mask_rect(value: &toml::Value) -> Result<PrivacyMaskRect, ControlCommandError> {
-    let table = value.as_table().ok_or_else(|| {
-        ControlCommandError::new(
-            proto::ErrorCode::Rejected,
-            403,
-            "camera privacy mask entry must be a table",
-        )
-    })?;
-    let rect = PrivacyMaskRect {
-        x: toml_f32(table, "x")?,
-        y: toml_f32(table, "y")?,
-        width: toml_f32(table, "width")?,
-        height: toml_f32(table, "height")?,
-    };
-    rect.validate()?;
-    Ok(rect)
-}
-
-fn toml_f32(table: &toml::Table, key: &str) -> Result<f32, ControlCommandError> {
-    let value = table.get(key).ok_or_else(|| {
-        ControlCommandError::new(
-            proto::ErrorCode::Rejected,
-            403,
-            "camera privacy mask coordinate is missing",
-        )
-    })?;
-    let number = value
-        .as_float()
-        .or_else(|| value.as_integer().map(|v| v as f64))
-        .ok_or_else(|| {
-            ControlCommandError::new(
-                proto::ErrorCode::Rejected,
-                403,
-                "camera privacy mask coordinate must be numeric",
-            )
-        })?;
-    Ok(number as f32)
+    Ok(remaining)
 }
 
 fn acquire_frame(
     state: &ServerState,
     camera: &CameraEntry,
     preference: SourcePreference,
+    deadline: Instant,
 ) -> Result<CapturedFrame, ControlCommandError> {
+    remaining_budget(deadline)?;
     match preference {
-        SourcePreference::Isapi => capture_isapi_frame(camera),
-        SourcePreference::Reolink => capture_reolink_frame(camera),
-        SourcePreference::Onvif => capture_onvif_frame(camera),
+        SourcePreference::Isapi => capture_isapi_frame(camera, deadline),
+        SourcePreference::Reolink => capture_reolink_frame(camera, deadline),
+        SourcePreference::Onvif => capture_onvif_frame(camera, deadline),
         SourcePreference::LatestEvent => capture_latest_event_frame(state, &camera.info.id),
-        SourcePreference::Live => capture_live_frame(camera),
-        SourcePreference::Auto => capture_live_frame(camera)
-            .or_else(|_| capture_latest_event_frame(state, &camera.info.id)),
+        SourcePreference::Live => capture_live_frame(camera, deadline),
+        SourcePreference::Auto => match capture_live_frame(camera, deadline) {
+            Ok(frame) => Ok(frame),
+            Err(error) if error._http_status == 504 => Err(error),
+            Err(_) => {
+                remaining_budget(deadline)?;
+                capture_latest_event_frame(state, &camera.info.id)
+            }
+        },
     }
 }
 
-fn capture_live_frame(camera: &CameraEntry) -> Result<CapturedFrame, ControlCommandError> {
-    if let Ok(frame) = capture_isapi_frame(camera) {
-        return Ok(frame);
+fn capture_live_frame(
+    camera: &CameraEntry,
+    deadline: Instant,
+) -> Result<CapturedFrame, ControlCommandError> {
+    match capture_isapi_frame(camera, deadline) {
+        Ok(frame) => return Ok(frame),
+        Err(error) if error._http_status == 504 => return Err(error),
+        Err(_) => {}
     }
-    if let Ok(frame) = capture_reolink_frame(camera) {
-        return Ok(frame);
+    match capture_reolink_frame(camera, deadline) {
+        Ok(frame) => return Ok(frame),
+        Err(error) if error._http_status == 504 => return Err(error),
+        Err(_) => {}
     }
-    if let Ok(frame) = capture_onvif_frame(camera) {
-        return Ok(frame);
+    match capture_onvif_frame(camera, deadline) {
+        Ok(frame) => return Ok(frame),
+        Err(error) if error._http_status == 504 => return Err(error),
+        Err(_) => {}
     }
     Err(ControlCommandError::new(
         proto::ErrorCode::Unavailable,
@@ -492,7 +344,11 @@ fn capture_live_frame(camera: &CameraEntry) -> Result<CapturedFrame, ControlComm
     ))
 }
 
-fn capture_isapi_frame(camera: &CameraEntry) -> Result<CapturedFrame, ControlCommandError> {
+fn capture_isapi_frame(
+    camera: &CameraEntry,
+    deadline: Instant,
+) -> Result<CapturedFrame, ControlCommandError> {
+    let _budget = remaining_budget(deadline)?;
     let route = crate::isapi::Route::for_control(
         &camera.configuration,
         camera.info.ports.http,
@@ -537,7 +393,11 @@ fn capture_isapi_frame(camera: &CameraEntry) -> Result<CapturedFrame, ControlCom
     })
 }
 
-fn capture_reolink_frame(camera: &CameraEntry) -> Result<CapturedFrame, ControlCommandError> {
+fn capture_reolink_frame(
+    camera: &CameraEntry,
+    deadline: Instant,
+) -> Result<CapturedFrame, ControlCommandError> {
+    let _budget = remaining_budget(deadline)?;
     if !camera.info.is_reolink {
         return Err(ControlCommandError::new(
             proto::ErrorCode::Unavailable,
@@ -584,7 +444,11 @@ fn capture_reolink_frame(camera: &CameraEntry) -> Result<CapturedFrame, ControlC
     })
 }
 
-fn capture_onvif_frame(camera: &CameraEntry) -> Result<CapturedFrame, ControlCommandError> {
+fn capture_onvif_frame(
+    camera: &CameraEntry,
+    deadline: Instant,
+) -> Result<CapturedFrame, ControlCommandError> {
+    let timeout = remaining_budget(deadline)?.min(SNAPSHOT_HTTP_TIMEOUT);
     let snapshot_uri = camera
         .runtime_camera
         .as_ref()
@@ -635,15 +499,13 @@ fn capture_onvif_frame(camera: &CameraEntry) -> Result<CapturedFrame, ControlCom
             "ONVIF snapshot client could not be initialized",
         )
     })?;
-    let bytes = client
-        .snapshot(&endpoint, SNAPSHOT_HTTP_TIMEOUT)
-        .map_err(|_| {
-            ControlCommandError::new(
-                proto::ErrorCode::Unavailable,
-                503,
-                "ONVIF snapshot capture failed",
-            )
-        })?;
+    let bytes = client.snapshot(&endpoint, timeout).map_err(|_| {
+        ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            503,
+            "ONVIF snapshot capture failed",
+        )
+    })?;
     Ok(CapturedFrame {
         jpeg_bytes: bytes,
         source: "onvif",
@@ -705,17 +567,13 @@ fn is_jpeg_framed(bytes: &[u8]) -> bool {
     bytes.len() >= 4 && bytes.starts_with(&[0xff, 0xd8]) && bytes.ends_with(&[0xff, 0xd9])
 }
 
-/// Decodes a JPEG with strict limits, applies privacy masks, downscales, and re-encodes.
+/// Decodes a JPEG with strict limits, downscales, and re-encodes within the byte ceiling.
 pub(super) fn process_snapshot_jpeg(
     raw_jpeg: &[u8],
-    masks: &[PrivacyMaskRect],
     policy: &McpSnapshotPolicy,
 ) -> Result<ProcessedSnapshot, ControlCommandError> {
     validate_policy(policy)?;
-    let validated_masks = validate_mask_slice(masks)?;
-    let mut image = decode_bounded_jpeg(raw_jpeg)?;
-    // Apply privacy masks before downscaling so masked pixels cannot bleed into neighbors.
-    let masks_applied = apply_privacy_masks(&mut image, &validated_masks);
+    let image = decode_bounded_jpeg(raw_jpeg)?;
     let image = downscale_if_needed(image, policy.max_dimension);
     let jpeg_bytes = encode_within_budget(&image, policy.max_bytes)?;
     assert!(
@@ -729,7 +587,6 @@ pub(super) fn process_snapshot_jpeg(
     Ok(ProcessedSnapshot {
         width: image.width(),
         height: image.height(),
-        masks_applied,
         jpeg_bytes,
     })
 }
@@ -759,29 +616,6 @@ fn decode_bounded_jpeg(raw_jpeg: &[u8]) -> Result<RgbImage, ControlCommandError>
         )
     })?;
     Ok(decoded.to_rgb8())
-}
-
-fn apply_privacy_masks(image: &mut RgbImage, masks: &[PrivacyMaskRect]) -> usize {
-    let width = image.width();
-    let height = image.height();
-    let mut applied = 0usize;
-    for mask in masks {
-        let x0 = (f64::from(mask.x) * f64::from(width)).floor() as u32;
-        let y0 = (f64::from(mask.y) * f64::from(height)).floor() as u32;
-        let x1 =
-            ((f64::from(mask.x) + f64::from(mask.width)).min(1.0) * f64::from(width)).ceil() as u32;
-        let y1 = ((f64::from(mask.y) + f64::from(mask.height)).min(1.0) * f64::from(height)).ceil()
-            as u32;
-        let x1 = x1.min(width);
-        let y1 = y1.min(height);
-        for py in y0..y1 {
-            for px in x0..x1 {
-                image.put_pixel(px, py, Rgb([0, 0, 0]));
-            }
-        }
-        applied += 1;
-    }
-    applied
 }
 
 fn downscale_if_needed(image: RgbImage, max_dimension: u32) -> RgbImage {
@@ -846,7 +680,7 @@ fn encode_within_budget(
 
 fn finalize_snapshot_response(
     state: &ServerState,
-    principal: &ApiPrincipal,
+    request: &SnapshotRequest<'_>,
     camera_id: &str,
     source: &'static str,
     processed: ProcessedSnapshot,
@@ -854,17 +688,16 @@ fn finalize_snapshot_response(
     let captured_at_ms = unix_time_ms();
     let bytes = processed.jpeg_bytes.len();
     let data_base64 = BASE64_STANDARD.encode(&processed.jpeg_bytes);
-    audit_snapshot(state, principal, camera_id, "allowed");
+    audit_snapshot(state, request, camera_id, "allowed");
     // Log metadata only and never log raw JPEG or base64 image payloads.
     tracing::info!(
         event = "mcp_camera_snapshot",
         camera_id,
-        principal_id = %principal.id(),
+        principal_id = %request.principal.id(),
         source,
         width = processed.width,
         height = processed.height,
         bytes,
-        masks_applied = processed.masks_applied,
         outcome = "allowed",
         "MCP camera snapshot captured"
     );
@@ -874,7 +707,6 @@ fn finalize_snapshot_response(
         "width": processed.width,
         "height": processed.height,
         "bytes": bytes,
-        "masks_applied": processed.masks_applied,
         "source": source,
         "captured_at_ms": captured_at_ms,
         "data_base64": data_base64,
@@ -883,19 +715,19 @@ fn finalize_snapshot_response(
 
 fn audit_snapshot(
     state: &ServerState,
-    principal: &ApiPrincipal,
+    request: &SnapshotRequest<'_>,
     camera_id: &str,
     outcome: &'static str,
 ) {
     record_access_audit(
         state,
         i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
-        Some(&principal.id()),
-        Some(principal.role),
+        Some(&request.principal.id()),
+        Some(request.principal.role),
         "mcp_camera_snapshot",
         Some(camera_id),
         outcome,
-        ClientClassificationReason::UnknownSession,
+        request.classification,
     );
 }
 
@@ -912,6 +744,7 @@ mod tests {
         },
         webrtc::WebRtc,
     };
+    use image::Rgb;
     use std::{
         collections::BTreeMap,
         net::{IpAddr, Ipv4Addr},
@@ -929,6 +762,26 @@ mod tests {
 
     fn admin_principal() -> ApiPrincipal {
         ApiPrincipal::local(IpAddr::V4(Ipv4Addr::LOCALHOST))
+    }
+
+    fn test_request<'a>(
+        principal: &'a ApiPrincipal,
+        camera_id: &'a str,
+        source_preference: Option<&'a str>,
+        policy: &'a McpSnapshotPolicy,
+        limiter: &'a SnapshotRateLimiter,
+    ) -> SnapshotRequest<'a> {
+        let now = Instant::now();
+        SnapshotRequest {
+            principal,
+            classification: ClientClassificationReason::DirectLocal,
+            camera_id,
+            source_preference,
+            policy,
+            limiter,
+            now,
+            deadline: now + Duration::from_secs(15),
+        }
     }
 
     fn scoped_user(state: &ServerState, cameras: Vec<String>) -> ApiPrincipal {
@@ -1044,13 +897,7 @@ mod tests {
 
     fn fixture_state(
         with_event_jpeg: Option<Vec<u8>>,
-    ) -> (
-        PathBuf,
-        ServerState,
-        FacadeSender<RouterMessage>,
-        RecordingCatalog,
-        String,
-    ) {
+    ) -> (PathBuf, ServerState, RecordingCatalog, String) {
         let dir = std::env::temp_dir().join(format!("mcp-snap-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let config_path = dir.join("config.toml");
@@ -1090,30 +937,26 @@ mod tests {
         if let Some(jpeg) = with_event_jpeg {
             seed_event_thumbnail(&event_store, &camera_id, &jpeg);
         }
-        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
-        (dir, state, router_tx, catalog, camera_id)
+        (dir, state, catalog, camera_id)
     }
 
     #[test]
     fn mcp_snapshot_rejects_when_disabled_in_policy() {
-        let (dir, state, router_tx, catalog, camera_id) = fixture_state(None);
+        let (dir, state, catalog, camera_id) = fixture_state(None);
         let policy = McpSnapshotPolicy {
             allow_snapshots: false,
             ..default_policy()
         };
         let limiter = SnapshotRateLimiter::new();
-        let error = capture_with_options(
-            &state,
-            &router_tx,
-            &admin_principal(),
+        let principal = admin_principal();
+        let request = test_request(
+            &principal,
             &camera_id,
             Some("latest_event"),
             &policy,
             &limiter,
-            Instant::now(),
-            None,
-        )
-        .unwrap_err();
+        );
+        let error = capture_camera_snapshot(&state, &request).unwrap_err();
         assert_eq!(error._http_status, 403);
         assert!(error.message.contains("allow_snapshots"));
 
@@ -1123,22 +966,13 @@ mod tests {
 
     #[test]
     fn mcp_snapshot_rejects_unauthorized_principal() {
-        let (dir, state, router_tx, catalog, camera_id) =
+        let (dir, state, catalog, camera_id) =
             fixture_state(Some(sample_jpeg(160, 120, [255, 255, 255])));
         let viewer = scoped_user(&state, Vec::new());
         let limiter = SnapshotRateLimiter::new();
-        let error = capture_with_options(
-            &state,
-            &router_tx,
-            &viewer,
-            &camera_id,
-            Some("latest_event"),
-            &default_policy(),
-            &limiter,
-            Instant::now(),
-            None,
-        )
-        .unwrap_err();
+        let policy = default_policy();
+        let request = test_request(&viewer, &camera_id, Some("latest_event"), &policy, &limiter);
+        let error = capture_camera_snapshot(&state, &request).unwrap_err();
         assert_eq!(error._http_status, 403);
         assert_eq!(error.code, proto::ErrorCode::Rejected);
 
@@ -1172,25 +1006,23 @@ mod tests {
 
     #[test]
     fn mcp_snapshot_refuses_fail_closed_when_privacy_is_active() {
-        let (dir, state, router_tx, catalog, camera_id) =
+        let (dir, state, catalog, camera_id) =
             fixture_state(Some(sample_jpeg(160, 120, [255, 255, 255])));
         let mut overrides = BTreeMap::new();
         overrides.insert(camera_id.clone(), true);
         state.privacy.replace_profile_overrides(overrides).unwrap();
 
         let limiter = SnapshotRateLimiter::new();
-        let error = capture_with_options(
-            &state,
-            &router_tx,
-            &admin_principal(),
+        let principal = admin_principal();
+        let policy = default_policy();
+        let request = test_request(
+            &principal,
             &camera_id,
             Some("latest_event"),
-            &default_policy(),
+            &policy,
             &limiter,
-            Instant::now(),
-            None,
-        )
-        .unwrap_err();
+        );
+        let error = capture_camera_snapshot(&state, &request).unwrap_err();
         assert_eq!(error._http_status, 403);
         assert_eq!(
             error.message,
@@ -1202,38 +1034,28 @@ mod tests {
     }
 
     #[test]
-    fn mcp_snapshot_applies_privacy_masks_as_solid_black_before_downscale() {
-        let raw = sample_jpeg(400, 200, [255, 255, 255]);
-        let masks = [PrivacyMaskRect {
-            x: 0.0,
-            y: 0.0,
-            width: 0.5,
-            height: 0.5,
-        }];
-        let policy = McpSnapshotPolicy {
-            allow_snapshots: true,
-            max_bytes: 262_144,
-            max_dimension: 200,
-            min_interval_secs: 5,
+    fn mcp_snapshot_stops_when_deadline_expired() {
+        let (dir, state, catalog, camera_id) =
+            fixture_state(Some(sample_jpeg(160, 120, [255, 255, 255])));
+        let limiter = SnapshotRateLimiter::new();
+        let principal = admin_principal();
+        let policy = default_policy();
+        let now = Instant::now();
+        let request = SnapshotRequest {
+            principal: &principal,
+            classification: ClientClassificationReason::DirectLocal,
+            camera_id: &camera_id,
+            source_preference: Some("live"),
+            policy: &policy,
+            limiter: &limiter,
+            now,
+            deadline: now,
         };
-        let processed = process_snapshot_jpeg(&raw, &masks, &policy).unwrap();
-        assert_eq!(processed.width, 200);
-        assert_eq!(processed.height, 100);
-        assert_eq!(processed.masks_applied, 1);
+        let error = capture_camera_snapshot(&state, &request).unwrap_err();
+        assert_eq!(error._http_status, 504);
 
-        let decoded = image::load_from_memory_with_format(&processed.jpeg_bytes, ImageFormat::Jpeg)
-            .unwrap()
-            .to_rgb8();
-        let masked_pixel = decoded.get_pixel(25, 25);
-        assert!(
-            masked_pixel[0] <= 8 && masked_pixel[1] <= 8 && masked_pixel[2] <= 8,
-            "masked region pixel must be near solid black, got {masked_pixel:?}"
-        );
-        let unmasked_pixel = decoded.get_pixel(175, 75);
-        assert!(
-            unmasked_pixel[0] >= 245 && unmasked_pixel[1] >= 245 && unmasked_pixel[2] >= 245,
-            "unmasked region pixel must stay white, got {unmasked_pixel:?}"
-        );
+        catalog.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1245,7 +1067,7 @@ mod tests {
             max_dimension: 640,
             min_interval_secs: 5,
         };
-        let processed = process_snapshot_jpeg(&raw, &[], &policy).unwrap();
+        let processed = process_snapshot_jpeg(&raw, &policy).unwrap();
         assert_eq!(processed.width, 640);
         assert_eq!(processed.height, 320);
         assert!(processed.jpeg_bytes.len() <= policy.max_bytes);
@@ -1254,37 +1076,29 @@ mod tests {
             max_bytes: 16,
             ..policy
         };
-        let error = process_snapshot_jpeg(&raw, &[], &impossible).unwrap_err();
+        let error = process_snapshot_jpeg(&raw, &impossible).unwrap_err();
         assert_eq!(error._http_status, 413);
     }
 
     #[test]
     fn mcp_snapshot_captures_latest_event_and_emits_audit_without_image_bytes() {
-        let (dir, state, router_tx, catalog, camera_id) =
+        let (dir, state, catalog, camera_id) =
             fixture_state(Some(sample_jpeg(320, 180, [220, 220, 220])));
         let limiter = SnapshotRateLimiter::new();
-        let masks = [PrivacyMaskRect {
-            x: 0.0,
-            y: 0.0,
-            width: 0.5,
-            height: 1.0,
-        }];
-        let result = capture_with_options(
-            &state,
-            &router_tx,
-            &admin_principal(),
+        let principal = admin_principal();
+        let policy = default_policy();
+        let request = test_request(
+            &principal,
             &camera_id,
             Some("latest_event"),
-            &default_policy(),
+            &policy,
             &limiter,
-            Instant::now(),
-            Some(&masks),
-        )
-        .unwrap();
+        );
+        let result = capture_camera_snapshot(&state, &request).unwrap();
         assert_eq!(result["camera_id"], camera_id);
         assert_eq!(result["mime_type"], "image/jpeg");
         assert_eq!(result["source"], "latest_event");
-        assert_eq!(result["masks_applied"], 1);
+        assert!(result.get("masks_applied").is_none());
         let b64 = result["data_base64"].as_str().unwrap();
         let decoded_bytes = BASE64_STANDARD.decode(b64).unwrap();
         assert_eq!(
@@ -1298,6 +1112,10 @@ mod tests {
             .find(|event| event.action == "mcp_camera_snapshot")
             .expect("snapshot audit event must be emitted");
         assert_eq!(snapshot_event.result, "allowed");
+        assert_eq!(
+            snapshot_event.client_classification,
+            ClientClassificationReason::DirectLocal.as_str()
+        );
         assert_eq!(
             snapshot_event.target_id.as_deref(),
             Some(camera_id.as_str())

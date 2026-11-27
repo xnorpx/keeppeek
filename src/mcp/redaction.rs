@@ -16,6 +16,17 @@ use serde_json::Value;
 pub const REDACTED_PLACEHOLDER: &str = "[REDACTED]";
 const DEPTH_LIMIT_PLACEHOLDER: &str = "[REDACTED:DEPTH_LIMIT]";
 const MAX_REDACTION_DEPTH: usize = 64;
+const MIN_RAW_SUBSTRING_SECRET_BYTES: usize = 4;
+
+const OPAQUE_ID_KEYS: &[&str] = &[
+    "plan_id",
+    "configuration_revision",
+    "expected_configuration_revision",
+    "discovery_id",
+    "template_id",
+    "rule_id",
+    "event_id",
+];
 
 const SENSITIVE_KEY_FRAGMENTS: &[&str] = &[
     "password",
@@ -131,7 +142,14 @@ impl SecretRedactor {
                 }
             }
             Value::Object(entries) => {
+                let is_image_content = entries.get("type").and_then(Value::as_str) == Some("image");
                 for (key, entry_value) in entries {
+                    if is_image_content && key == "data" {
+                        continue;
+                    }
+                    if is_opaque_id_key(key) {
+                        continue;
+                    }
                     let key_sensitive = is_sensitive_key(key);
                     self.redact_value_at_depth(entry_value, depth + 1, key_sensitive);
                 }
@@ -141,18 +159,24 @@ impl SecretRedactor {
 }
 
 fn push_sensitive_variants(target: &mut Vec<String>, value: String) {
-    if value.is_empty() {
+    if value.len() < MIN_RAW_SUBSTRING_SECRET_BYTES {
         return;
     }
     let form_encoded: String = url::form_urlencoded::byte_serialize(value.as_bytes()).collect();
     let rfc3986_encoded = percent_encode_rfc3986(&value);
     target.push(value);
-    if !form_encoded.is_empty() {
+    if form_encoded.len() >= MIN_RAW_SUBSTRING_SECRET_BYTES {
         target.push(form_encoded);
     }
-    if !rfc3986_encoded.is_empty() {
+    if rfc3986_encoded.len() >= MIN_RAW_SUBSTRING_SECRET_BYTES {
         target.push(rfc3986_encoded);
     }
+}
+
+fn is_opaque_id_key(key: &str) -> bool {
+    OPAQUE_ID_KEYS
+        .iter()
+        .any(|opaque| key.eq_ignore_ascii_case(opaque))
 }
 
 fn percent_encode_rfc3986(value: &str) -> String {
@@ -400,5 +424,36 @@ mod tests {
         redactor.redact_value(&mut value);
         let serialized = serde_json::to_string(&value).unwrap();
         assert!(serialized.contains(DEPTH_LIMIT_PLACEHOLDER));
+    }
+
+    #[test]
+    fn preserves_image_base64_opaque_ids_and_short_secret_safety() {
+        let secrets = Secrets::from_map(BTreeMap::from([
+            ("TINY".to_owned(), "ab".to_owned()),
+            ("LONG_PASS".to_owned(), "SuperSecret123!".to_owned()),
+        ]));
+        let redactor = SecretRedactor::new(&secrets, Vec::new(), None);
+        let image_data = "abSuperSecret123!Base64Payload==";
+        let mut payload = json!({
+            "content": [
+                {
+                    "type": "image",
+                    "mimeType": "image/jpeg",
+                    "data": image_data
+                }
+            ],
+            "plan_id": "plan-ab-SuperSecret123!",
+            "configuration_revision": "rev-ab-999",
+            "password": "ab",
+            "detail": "cable leaked SuperSecret123! near label ab"
+        });
+
+        redactor.redact_value(&mut payload);
+
+        assert_eq!(payload["content"][0]["data"], image_data);
+        assert_eq!(payload["plan_id"], "plan-ab-SuperSecret123!");
+        assert_eq!(payload["configuration_revision"], "rev-ab-999");
+        assert_eq!(payload["password"], REDACTED_PLACEHOLDER);
+        assert_eq!(payload["detail"], "cable leaked [REDACTED] near label ab");
     }
 }
