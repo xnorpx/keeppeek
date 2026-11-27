@@ -1,166 +1,90 @@
 # Recording archive recovery
 
-A configuration ZIP restores settings and file-backed secrets. Recording recovery also needs the
-recording catalog and the files that it indexes. KeepPeek does not provide a public recording-archive
-importer, a button to merge another recorder's database, or automatic adoption of unknown MP4 files.
-
-Use this chapter to plan and rehearse an operator-managed filesystem recovery. It describes the
-current boundaries; it does not qualify every filesystem, backup product, or crash scenario.
+This chapter is the host-operator and **Administrator** runbook for backing up, rehearsing, restoring, and diagnosing KeepPeek's complete recording archive (catalog, state databases, media roots, and configuration). KeepPeek provides **no recording-archive importer, no database merge tool, and no automatic adoption of unknown MP4 files**—a configuration ZIP restores settings and file-backed secrets only, and arbitrary live filesystem copies are not guaranteed recoverable.
 
 ## Inventory the recovery set
 
-Open Named storage volumes as an Administrator and record every configured root and its stable ID.
-Fresh defaults live beside the selected `config.toml`; each role can have a separate destination.
-Record the operating-system account that owns and runs the recorder.
+Sign in as an Administrator, open **Settings → Storage & retention → Named storage volumes** (and **Local archive** if enabled), and record every configured root, its stable ID, and the OS account that runs KeepPeek. Do not rely on default paths if Settings defines overrides, and never treat exported evidence clips as a recording archive backup.
 
-| Item                                                                                            | Why it matters                                                                                                                                                |
-| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `config.toml` and sibling `secrets.toml`                                                        | Cameras, stable identities, policies, credentials, grants, dashboards, and integration settings. A configuration ZIP can preserve this pair.                  |
-| The metadata-bound recording catalog and any accompanying database sidecars                     | Recording identities, owned locations, indexes, event data, coverage/deletion evidence, and maintenance intent. Copy the database family consistently.        |
-| The runtime state-store database file and any accompanying sidecars                             | Desired-state documents, leases, namespace and entry revisions. A separate consistent set; excluded from the configuration ZIP. Copy the family consistently. |
-| Settings-backed state entries                                                                   | Stored in the `state_store` section of `config.toml`; already covered by the configuration ZIP. Generic runtime entries are not.                              |
-| Every active and archive volume root                                                            | The MP4 bytes referenced by the catalog. Preserve relative structure, file names, and interrupted work.                                                       |
-| The optional fourth-tier local archive root                                                     | Verified replica bytes and private staging entries. Manifests and the target binding remain in the recording catalog; preserve both together.                 |
-| Every thumbnail volume root                                                                     | Event-image bytes and their catalog ownership.                                                                                                                |
-| Every export volume root and the metadata-bound export history file                             | Export artifacts and durable history. Artifacts still have independent expiry rules.                                                                          |
-| Service definitions, environment-only secrets, certificates, and external service configuration | Deployment dependencies outside the two TOML files. Preserve them through your existing protected operations system.                                          |
-| The existing sibling `log-filter` and retained service logs                                     | Diagnostic configuration and investigation evidence outside the configuration ZIP.                                                                            |
+| Asset                                                | Default / configured location                                                | Covered by config ZIP?                 | Recovery requirement                                                                                                                            |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config.toml` + sibling `secrets.toml`               | Config directory (`--config`)                                                | Yes (**plaintext secrets**)            | Cameras, policies, grants, dashboards, templates, `[runtime_profiles]`, `[storage.archive]`, settings-backed `state_store`.                     |
+| Recording catalog + SQLite sidecars (`-wal`, `-shm`) | Metadata volume (`catalog-<uuid>.db`) or legacy `recordings.db`              | No                                     | Recording identities, owned paths, playback indexes, events, coverage/deletion ledger, maintenance intent. Copy as one stopped family.          |
+| Runtime state store + sidecars                       | Long-term storage (`state-store.db`)                                         | No (only `state_store` config entries) | Desired-state docs, leases, namespace/entry revisions, byte counters. Copy and restore as one unit.                                             |
+| Guest review grant store + sidecars                  | Metadata volume (`guest-review/grants.db`)                                   | No                                     | Guest link verifiers, revocations, view/download counters. Follow [Recover guest links](#recover-guest-links) when restoring historical images. |
+| Cloud mobile push state + sidecars                   | Long-term storage (`cloud-notifications.db`)                                 | No                                     | Event aliases, pending/claimed intents, rolling rate windows, monotonic clock floor. Copy as one stopped family.                                |
+| Active & archive media volume roots                  | `storage/media` or configured named volumes                                  | No                                     | Copy the **entire** root (including hidden/staging and `.active` files), not just `*.mp4`.                                                      |
+| Fourth-tier local archive root (optional)            | `[storage.archive] root`                                                     | No (`[storage.archive]` config only)   | Verified replica files and private staging; preserve paired with catalog manifests and target bindings.                                         |
+| Thumbnail volume roots                               | `storage/images` or configured roots                                         | No                                     | Event-image bytes referenced by catalog.                                                                                                        |
+| Export volume roots + export history                 | `storage/exports` + metadata volume (`exports-<uuid>.json`)                  | No                                     | Export artifacts (independent expiry) and durable export history.                                                                               |
+| Host & operational dependencies                      | Service unit/SCM, `KEEPPEEK_SECRET_*`, TLS certs, sibling `log-filter`, logs | No                                     | Preserve separately in your protected operations store.                                                                                         |
 
-Copy the entire selected recording roots, including hidden and interrupted-work entries, rather than
-selecting only files ending in `.mp4`. Maintenance checkpoints can depend on private staging entries.
-Copying them is preservation, not permission to retry destructive work after a move: filesystem
-identities can change when data is copied.
+Copying maintenance private staging preserves forensic evidence, **not** permission to retry destructive work on another disk: filesystem device/inode identities can change across copies.
 
-Do not include only the default paths if Settings shows overrides. Do not treat an exported evidence
-clip as a full recording backup. Clips cover selected ranges and do not contain the recorder catalog.
+## Create a consistent offline copy
 
-## Make a consistent offline copy
+1. Finish pending configuration applies or storage moves, export a private [configuration ZIP](./configuration-export-import.md), and finish or cancel active exports/maintenance jobs (retaining reports for unresolved work; if preserving a failure state instead, keep unfinished journals and mark the copy as forensic, not a clean recovery point).
+2. Stop KeepPeek through its service manager and confirm process exit so no writer touches the files. Recording pauses during this window.
+3. Copy the config directory and every inventoried volume root while stopped, including all SQLite sidecar files (`-wal`, `-shm`) for the catalog, `state-store.db`, `guest-review/grants.db`, and `cloud-notifications.db`. Never delete sidecars to simplify copying.
+4. Preserve ownership and owner-only permissions, record the exact KeepPeek build and source paths, verify copy integrity off the source disk, then restart the source recorder and confirm new recordings finalize normally.
 
-1. Finish any pending configuration apply or storage move, then export the current configuration
-   ZIP and save it privately. Finish or cancel active exports and maintenance jobs where possible;
-   retain reports for unresolved work. If this is failure preservation instead, keep the unfinished
-   journals with the copy and do not treat it as an ordinary clean recovery point.
-2. Stop KeepPeek through its normal service manager. Confirm the process has exited and no second
-   recorder is using the same paths. Recording stops for this maintenance window.
-3. Copy the configuration directory and complete archive set while they remain stopped. Include any
-   database sidecars that exist, for both the recording catalog and the runtime state store;
-   do not manually delete them to make the copy simpler.
-4. Preserve ownership and access restrictions, record the source version and paths, and verify the
-   copied files using your backup tool's integrity checks. Keep the copy separately from the source
-   disk.
-5. Start the source recorder again and verify that new recordings finalize normally.
-
-A live copy of just the catalog database can disagree with its journal or recording files. KeepPeek's
-configuration export lock does not create an atomic snapshot of the catalog, media, and export tree.
-If you use storage snapshots instead of a stopped copy, establish and test a consistent capture
-procedure for every involved volume and writer. This book does not claim that an arbitrary live
-filesystem copy is recoverable.
+A live copy of a SQLite file alone can disagree with its WAL or MP4 files, and KeepPeek's configuration export lock does **not** snapshot databases or media. If you rely on filesystem/storage snapshots instead of stopping the service, design and test a multi-volume consistent snapshot procedure across every writer.
 
 ## Recover guest links
 
-Guest link verifiers, revocations and consumed view or download limits live in the metadata
-volume’s `guest-review/grants.db` database. The configuration ZIP contains the sharing policy.
-A restart ends existing guest sessions and active transfers.
+Guest link verifiers, revocations, and consumed view/download counters live in `guest-review/grants.db` on the metadata volume (`[sharing]` in `config.toml` holds sharing policy). Restart terminates active guest sessions and transfers.
 
-Before starting a recorder from a historical volume image, set `enabled = false` in the
-restored `[sharing]` configuration and keep its public guest origin offline. An older image
-can contain grants that an Administrator has since revoked or counters that recipients have
-since consumed.
+Restoring a historical metadata volume image can resurrect revoked grants or reset consumed counters. Always neutralize old guest grants before exposing a restored recorder:
 
-Preserve the complete backup offline. In the working copy of the recovered metadata volume,
-leave the entire `guest-review` directory out of the active volume, including database
-sidecars. KeepPeek initializes a fresh guest store at startup. Once the recorder is isolated
-and its evidence has been checked, enable sharing and confirm that the Administrator's
-all-creators guest-link list is empty before restoring public access. Issue new links only
-for the recordings and completed exports that an Administrator still authorizes.
+1. Keep the original backup unchanged offline.
+2. Before starting the restored working copy, set `enabled = false` in `[sharing]` in `config.toml` and keep the public guest origin offline.
+3. Delete the entire `guest-review/` directory (including `grants.db` and all SQLite sidecars) from the **working copy** of the metadata volume. Startup initializes a fresh, empty guest store.
+4. Start KeepPeek in isolation, verify recovered recordings and exports, then re-enable `[sharing]` and confirm the Administrator's all-creators guest-link list is empty before restoring public access.
+5. Issue fresh guest links only for recordings and completed exports an Administrator still authorizes.
 
 ## Restore the runtime state store before accepting watches
 
-Restore the state-store database family together with its counters: namespace
-revisions, entry revisions, and byte counts must return as one unit before the
-server accepts new watches. Restoring entries without their counters would let
-a fresh write reuse a revision that a previous writer already consumed, which
-breaks compare-and-set ordering. After the restore, clients establish fresh
-watches and reconcile the new snapshots against current capabilities; there is
-no resume across a restore. A configuration ZIP alone does not restore generic
-runtime state: it carries only the settings-backed entries stored in
-`config.toml`.
+Restore `state-store.db` and its SQLite sidecars together so namespace revisions, entry revisions, and byte counters return as one consistent unit **before** KeepPeek accepts watches. Restoring entries without their counters lets new writes reuse previously consumed revisions, breaking compare-and-set ordering. After restore, clients open fresh watches and reconcile snapshots against current `ServerCapabilities` (no resume token crosses a restore). Restore `cloud-notifications.db` and its sidecars as a matching stopped family when mobile push signaling is enabled.
 
-## Rehearse on an isolated host
+## Rehearse recovery on an isolated host
 
-1. Keep the original backup unchanged. Restore a working copy into an isolated environment with
-   enough space and compatible file permissions. Start with the same KeepPeek build that created it.
-2. Prevent the rehearsal from reaching real notification providers, MQTT consumers, and cameras
-   until you deliberately test those connections. Imported credentials and rules are real settings;
-   a duplicate recorder can otherwise act on the same devices or send duplicate notifications.
-3. Restore the catalog family and recording tree together at the original configured paths where
-   practical. Restore the configuration pair and any required environment separately. Do not start
-   with missing archive mounts and expect later attachment to be harmless.
-4. Confirm the service account can access every path, then start KeepPeek. Preserve startup errors
-   and stop if a catalog, path, or migration failure occurs.
-5. Verify the expected cameras and access grants. Review a known older interval in Keep, inspect its
-   coverage and event images, and play a finalized recording. Create a small evidence export and
-   verify that its downloaded media decodes independently.
-6. Inspect recording integrity and reconciliation, including missing, unknown, interrupted, and
-   protected recordings. Check old maintenance jobs before any retry. Record discrepancies rather
-   than treating successful server startup as proof that every recording was recovered.
+1. Leave the original backup read-only; restore a working copy onto an isolated host with matching KeepPeek version, compatible local filesystem (NTFS on Windows), sufficient capacity, and service-account permissions.
+2. Block outbound access to real cameras, notification providers, and MQTT brokers until intentionally tested—imported credentials and rules are live and a duplicate recorder can otherwise trigger duplicate alerts or device contention.
+3. Restore the catalog family, state databases, and all media/archive/thumbnail/export roots together at their **original configured paths** (do not start with missing archive mounts, and do not edit catalog SQL—use [Move storage deliberately](./upgrades-and-migrations.md#move-storage-deliberately) for intentional relocation). Restore `config.toml`, `secrets.toml`, and `KEEPPEEK_SECRET_*` env vars separately.
+4. Start KeepPeek and inspect startup logs immediately; stop and preserve logs on any catalog, path, or migration error.
+5. Verify cameras and access grants, open a known older interval in Keep, check coverage and event thumbnails, play a finalized recording, and create a small evidence export whose downloaded MP4 decodes independently (for example with FFmpeg).
+6. Run **Recording integrity** (`/recordings`) and **Recording maintenance → Reconciliation** (`Inspect catalog`) to verify missing, unknown, interrupted, and protected items before touching old maintenance jobs.
 
-Catalog paths are meaningful. A same-path recovery avoids inventing a path rewrite. For a deliberate
-move on a working installation, use the
-[validated storage migration](./upgrades-and-migrations.md#move-storage-deliberately). Do not manually
-rewrite catalog SQL or assume a configuration ZIP maps old recording paths: configuration apply
-keeps the target's current recording, catalog, and thumbnail paths.
-
-Once the isolated copy is verified, plan the production cutover and repeat the checks. Keep the old
-copy until the new recorder has completed the installation's recovery acceptance test.
+Repeat these checks on production cutover and retain the old copy until acceptance passes.
 
 ## Understand startup recovery
 
-Startup can reconcile specific interrupted states for recordings, automatic cleanup, export jobs,
-and maintenance. It is not an exhaustive media scan or a replacement for a consistent backup.
+Startup reconciles narrow interrupted states automatically; it is **not** a full media scan or substitute for a consistent backup.
 
-- An interrupted recording finalization can reconnect a catalog row to its finalized sibling.
-  Existing `.active` files are preserved rather than truncated or deleted merely because of their
-  extension.
-- Missing or unavailable named roots retain their catalog ownership. A replacement directory does
-  not have the bound root identity. Restore the original root or use an explicit recovery procedure;
-  creating an empty directory at its path does not make it the original volume.
-- Export work that was running becomes failed and retryable. Missing ready artifacts also become
-  failed. Partial export artifacts are cleaned within the owned export area.
-- Event images retain their catalog references when the files are missing. Startup preserves
-  unindexed images and temporary files; thumbnail quota cleanup only removes catalog-referenced
-  images in the configured directory.
-- Maintenance recovery only settles outcomes supported by its retained identity and checkpoint
-  evidence. Other interrupted objects remain failed and reserved for Administrator inspection or
-  retry. Copying files can change their identity, so a restored checkpoint may properly refuse work.
-
-See [Recording maintenance](./recording-maintenance.md) for exact mutation and retry boundaries, and
-[Recording and evidence](./recording-and-evidence.md) for coverage and export behavior.
+| Area                                   | Automatic startup behavior                                                                                                                                                      | Operator boundary                                                                                                                                       |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Interrupted recording finalization** | Reconnects eligible catalog rows to finalized siblings; preserves all existing `.active` files untouched.                                                                       | Inspect preserved `.active` files rather than deleting by extension.                                                                                    |
+| **Missing bound named/archive root**   | Retains catalog ownership and marks the bound volume/target offline; **never** recreates a missing directory.                                                                   | Restore the original root identity; an empty replacement directory is rejected.                                                                         |
+| **Interrupted or missing exports**     | Marks running exports and missing ready artifacts as `failed` (retryable); cleans partial artifacts only inside owned export storage.                                           | Retry requires source recordings to still exist.                                                                                                        |
+| **Missing event thumbnails**           | Preserves catalog references and unindexed/temp images; quota cleanup removes only catalog-referenced images in the configured root.                                            | Restore thumbnail volume root to recover missing JPEGs.                                                                                                 |
+| **Interrupted maintenance jobs**       | Runs a 2-second recovery pass that settles completion only when staging-directory identity and absence checks prove unlink finished; leaves other claims `Failed` and reserved. | Copied files may change filesystem IDs, causing restored checkpoints to refuse retry properly. See [Recording maintenance](./recording-maintenance.md). |
 
 ## Diagnose incomplete recovery
 
-| Symptom                                                       | Next action                                                                                                                                  |
-| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Settings returned, recordings did not                         | Confirm that a catalog and media archive were restored. The configuration ZIP excludes both.                                                 |
-| Settings returned, runtime state did not                      | Confirm that the state-store database family was restored with its counters. Re-establish watches with a fresh snapshot afterwards.          |
-| Recordings appear missing after a path change                 | Check mount availability, service identity, effective paths, and the catalog's original locations before changing files.                     |
-| MP4 files exist but do not appear in Keep                     | Inspect reconciliation. Unknown files are not automatically adopted; **Rebuild index** only applies to eligible existing catalog recordings. |
-| A cataloged recording has a valid container but a wrong index | Use the previewed **Rebuild index** remedy if offered. It changes indexes, not media bytes.                                                  |
-| Reconciliation reports corruption                             | Preserve the original file and report. Structural validation is not a full decode or an end-to-end content checksum guarantee.               |
-| A copied maintenance job refuses retry                        | Preserve the job report and original checkpoint evidence. Do not delete private staging or manually clear reservations.                      |
-| An old ready export is unavailable                            | Check expiry and artifact presence. Export metadata can outlive its bytes; retry requires source recordings still to exist.                  |
-| Both configuration activation and rollback fail               | Preserve the complete configuration directory, its restore journal and staged files, and service logs before manual recovery.                |
+| Symptom                                                       | Next action                                                                                                                                           |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Settings returned, recordings did not                         | Restore the catalog and media roots together; a configuration ZIP excludes both.                                                                      |
+| Settings returned, generic runtime state did not              | Restore `state-store.db` with its sidecars/counters, then have clients open fresh watches.                                                            |
+| Recordings appear missing after a path change                 | Verify mount availability, service-account permissions, effective paths, and original catalog paths before modifying files.                           |
+| MP4 files exist on disk but are absent in Keep                | Run **Inspect catalog** in Reconciliation. Unknown files are never auto-adopted, and **Rebuild index** applies only to existing cataloged recordings. |
+| Cataloged recording has a valid MP4 but broken playback index | Use the previewed **Rebuild index** remedy if offered (rebuilds indexes without altering media bytes).                                                |
+| Reconciliation reports container corruption                   | Preserve the original file and downloaded report; structural fMP4 checks are not a full decode or content checksum.                                   |
+| Copied maintenance job refuses retry                          | Preserve the job report and checkpoint evidence; never delete private staging or clear catalog reservations manually.                                 |
+| Old ready export is unavailable                               | Check export expiry and artifact presence; export metadata can outlive bytes, and retry needs surviving source recordings.                            |
+| Both configuration activation and rollback fail               | Preserve the complete configuration directory (`.backups/restore-journal.json`, `.staged`, `.rollback`) and service logs before manual recovery.      |
 
-Never delete unknown media, database sidecars, restore journals, or maintenance staging merely to
-clear an error. A missing file cannot be recovered by retaining a tombstone; that remedy records
-catalog cleanup, not restoration. Quarantine, arbitrary archive import, and automatic adoption of
-unknown files remain unsupported.
+**Hard prohibitions:** Never delete unknown media, SQLite sidecars, restore journals, or private maintenance staging to clear an error. **Retain tombstone** records catalog cleanup of missing media—it does **not** recover bytes. Quarantine, arbitrary archive import, and automatic adoption of unknown files are unsupported.
 
 ## Record the recovery result
 
-Keep the exact build, platform, filesystem, source and destination layout, backup time, interruption,
-commands, checksums, recovered interval, missing data, and observed errors with the recovery report.
-Include a known recording before and after the backup boundary and any interrupted work you tested.
-The [Alpha qualification matrix](./release-readiness.md) still requires representative recovery and
-sustained-operation evidence. One successful rehearsal does not establish every deployment's
-recovery behavior.
+Archive a recovery report capturing: exact KeepPeek build, OS/filesystem, source and destination layouts, backup timestamp, downtime window, commands run, verification checksums, tested pre- and post-backup recording intervals, interrupted-work tests, and any discrepancies. Representative recovery and sustained-operation evidence remains part of the [Alpha qualification matrix](./release-readiness.md).

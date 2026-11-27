@@ -1,120 +1,92 @@
 # Export and import configuration
 
-Use a configuration ZIP to back up your settings, return to an earlier configuration, or transfer
-settings to another KeepPeek recorder. KeepPeek calls the import operation **Apply configuration**.
-You download one ZIP, upload that same ZIP to the target recorder, and restart to activate it.
+This chapter covers exporting and applying KeepPeek's two-file configuration ZIP through **Settings**, the `keeppeek config` CLI, and HTTP endpoints. Both operations require **Administrator** access; the ZIP contains **unencrypted plaintext secrets** and covers configuration only—never recordings or databases.
 
-This is a configuration backup, not a backup of your recordings or database.
+## Video walkthrough
 
-## Before you start
+Watch a two-file configuration ZIP export, staged apply, restart-required handoff, and validation rejection states in **Settings → Backup and restore**.
 
-- Connect to the source or target recorder as an **Administrator**. See
-  [Authentication and access control](./authentication.md) for access setup.
-- Export the target recorder's current configuration before importing a different one. This gives
-  you a ZIP you can apply later if you want to return to those settings.
-- Plan for a recorder restart when importing. Export does not require a restart or stop recording.
-- If you use remote access, make sure you can authenticate with the imported access configuration
-  after restart. Its access credentials and camera/integration secrets replace the target's values.
+<video controls crossorigin="anonymous" preload="metadata" playsinline style="width: 100%; height: auto">
+  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/settings.desktop.config-zip.mp4" type="video/mp4">
+  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/settings.desktop.config-zip.vtt" kind="captions" srclang="en" label="English">
+  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/settings.desktop.config-zip.mp4">Download the configuration ZIP export and apply demo</a>.
+</video>
 
-## What the ZIP contains
+## Prerequisites
 
-Every export contains exactly two files at the root of the archive:
+- Connect as an **Administrator** (see [Authentication and access control](./authentication.md)).
+- Export the target recorder's current configuration ZIP first so you have an exact rollback bundle.
+- Schedule a recorder restart for apply—export does not restart KeepPeek or interrupt recording, whereas apply activates only on restart.
+- Verify you can authenticate with the imported access configuration after restart, because imported credentials and secrets replace the target's values.
 
-| File           | Contents                                                                                                                                    |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `config.toml`  | Durable settings, including cameras, storage policy, access credential metadata, layouts, templates, notification rules, and MQTT settings. |
-| `secrets.toml` | The file-backed secret values used by the configuration.                                                                                    |
+## What the format-3 ZIP contains and preserves
 
-**The ZIP contains plaintext secrets and is not encrypted.** Restrict access to it as you would to
-camera passwords or access keys. Do not attach it to a public issue or share it in logs, and delete
-copies you no longer need. Values supplied only through environment variables are not exported;
-configure those separately on the target recorder.
+Every export produces an unmodified format-3 ZIP with **exactly two root files** and a versioned manifest + checksums stored in the **ZIP comment** (no third manifest file):
 
-The ZIP excludes `recordings.db`, recording media, thumbnails, sessions, caches, and notification or
-MQTT runtime work. Import keeps the target's recording, catalog, and thumbnail paths. It neither
-restores nor moves the source recorder's database or media. Other storage settings, such as retention
-policy, are part of the imported configuration and should be reviewed afterward.
+| Component                                                                                                                                                                   | Included in ZIP?    | Transfer and preservation rules                                                                                                                                                                                                                                                                                                                     |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config.toml`                                                                                                                                                               | Yes                 | All durable settings: cameras (with `profile_identity`), access credential verifiers/grants, dashboards, templates, `[runtime_profiles]`, notification rules, `[cloud_notifications]`, MQTT, `[sharing]`, `[storage.archive]` (preserving raw `{secret:...}` references), and settings-backed `state_store` entries.                                |
+| `secrets.toml`                                                                                                                                                              | Yes (**plaintext**) | File-backed secret values referenced by `config.toml`. **Unencrypted**—restrict access like live credentials, never share in issues/logs, and delete unneeded copies.                                                                                                                                                                               |
+| Environment secrets (`KEEPPEEK_SECRET_*`)                                                                                                                                   | No                  | Never exported; configure separately on the target host.                                                                                                                                                                                                                                                                                            |
+| Target storage ownership & paths                                                                                                                                            | Preserved on target | Apply keeps the target recorder's legacy recording/catalog/thumbnail paths and its `[storage.named_volumes]` and `[storage.metadata]` tables. Uploaded `secrets.toml` must resolve any secret references in those preserved roots to the same target owners, or apply rejects before mutation. Finish or cancel any pending metadata handoff first. |
+| Recording catalog, MP4s, thumbnails, fourth-tier archive replicas, `state-store.db`, `guest-review/grants.db`, `cloud-notifications.db`, `log-filter`, runtime queues/audit | No                  | Excluded from the ZIP. `[storage.archive]` settings round-trip cleanly with raw `{secret:...}` references, while replica files and catalog bindings stay outside the ZIP. See [Recording archive recovery](./recording-archive-recovery.md).                                                                                                        |
 
-Keep the ZIP as exported. The current format stores its versioned manifest and checksums in the ZIP
-comment, so there is no third file. Do not edit the TOMLs inside it, remove the comment, or repack the
-archive before importing. Apply accepts current format-3 exports, not arbitrary two-file ZIPs or older
-backup formats.
+Keep the exported ZIP intact. Do not edit either TOML inside it, strip the ZIP comment, or repack the archive—apply accepts unmodified current format-3 exports only.
 
 ## Export in Settings
 
-1. Open **Settings**, then **Backup and restore** on the source recorder.
-2. Choose **Export ZIP**.
-3. Keep the downloaded ZIP in a location with restricted access.
+1. Open **Settings → Backup and restore** (`/settings#backups`) on the source recorder.
+2. Select **Export ZIP**.
+3. Store the downloaded archive in a restricted, private location.
 
-The download is the backup artifact. Export does not delete or replace either live TOML file, and
-KeepPeek does not retain a server-side copy or add it to a backup list.
+Export leaves live TOML files untouched and retains no server-side backup copy.
 
-## Import in Settings
+## Apply in Settings
 
-1. Open **Settings**, then **Backup and restore** on the target recorder.
-2. Under **Configuration ZIP**, select the original exported ZIP. Do not extract it first.
-3. Select **Replace config.toml and secrets.toml on restart.**
-4. Choose **Apply configuration** and wait for the staged confirmation.
-5. Choose **Restart to apply** when you are ready for the recorder to restart.
+1. Open **Settings → Backup and restore** on the target recorder.
+2. Under **Configuration ZIP**, choose the unmodified exported ZIP (do not extract it).
+3. Confirm the upload using the flow that matches your Administrator session:
+   - **Local Administrator session:** Select **Replace `config.toml` and `secrets.toml` on restart.** and choose **Apply configuration**. (Local restore retains the server's lockout guard.)
+   - **Remote Administrator session:** Choose **Inspect restore archive** to stream the ZIP over your live control session without mutating configuration. Review the candidate authentication plan; if the archive replaces remote sign-in methods, complete fresh replacement Administrator verification, then confirm to stage the exact inspected ZIP. Changing the control session or file invalidates inspection.
+4. Wait for **Configuration staged. Restart required.**
+5. Choose **Restart to apply** when ready for the restart window.
 
-Apply validates the archive, both TOML documents, target permissions, and available space before
-staging. A successful upload leaves the running configuration and live TOML files unchanged. The
-replacement takes effect during startup, before the configuration and database owners open.
-
-Only one apply can be pending. Finish its restart and health verification before uploading another
-configuration. To return to earlier settings, use the same import steps with the ZIP you exported
-before the change.
+Apply validates the archive, manifest checksums, both TOMLs, target permissions, preserved storage owners, and free space before staging. Live TOML files stay unchanged until startup activation runs before configuration and database owners open. Only one apply may be pending at a time; to revert later, apply a ZIP exported before the change.
 
 ## Verify after restart
 
-1. Reconnect to the target recorder, using the imported access configuration if it changed.
-2. Confirm the expected camera definitions, notification rules, integrations, and storage policy.
-3. Check camera and stream health and confirm that the target's existing recordings are available.
-4. Check the logs if startup or an integration fails. Environment-only secrets and external services
-   must still be available on the target.
+1. Reconnect to the target recorder (using the imported credentials if access settings changed).
+2. Confirm expected cameras, storage/retention policy, `[storage.archive]` settings, notification rules, and integrations.
+3. Verify camera/stream health and confirm existing recordings remain playable.
+4. Check `/settings/logs` if any camera or integration fails (especially for missing `KEEPPEEK_SECRET_*` overrides or external services).
 
-KeepPeek uses before-images and a crash-recovery journal to restore the prior configuration pair if
-configuration loading or startup health fails. Do not manually modify its journal or staging files.
-See [Backup and restore](./backup-and-restore.md#safe-activation) for recovery details.
+If configuration loading or startup health fails, KeepPeek automatically restores the prior `config.toml` and `secrets.toml` pair using its crash-recovery journal. See [Safe activation](./backup-and-restore.md#safe-activation).
 
 ## Use the CLI
 
-The CLI performs the same export and apply operations as Settings. These examples connect to a
-recorder on the local machine:
+`keeppeek config` calls the same Administrator-only HTTP endpoints, writes machine-readable JSON to stdout, and prints diagnostics to stderr:
 
 ```sh
 keeppeek config --server http://localhost:8081 export --output keeppeek-config.zip
 keeppeek config --server http://localhost:8081 apply keeppeek-config.zip --confirm
 ```
 
-Export requires an output path and creates a new, owner-only file; choose a different filename if it
-already exists. Apply requires `--confirm`. Commands write machine-readable JSON to standard output
-and diagnostics to standard error.
+| Requirement                     | Rule                                                                                                                                                                                                                                                               |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--server`                      | Always pass explicitly. New recorders listen on `8081` by default, while `keeppeek config` currently defaults to `http://localhost:3000`.                                                                                                                          |
+| Remote authentication           | Use HTTPS for non-loopback hosts and supply the Administrator key only through `KEEPPEEK_ACCESS_KEY`. Never place keys in URLs or CLI arguments.                                                                                                                   |
+| Export destination (`--output`) | Must be a new file (no overwrite). Created with private permissions before any ZIP bytes are written: `0600` on Unix; verified protected DACL (current user, `SYSTEM`, `Administrators`) on Windows, rejecting alternate data streams and unverified destinations. |
+| Apply confirmation              | Requires `--confirm`. Returns `RESTORE_STATE_AWAITING_RESTART` on success and **does not restart** the recorder—restart through your service manager or **Restart to apply** in Settings.                                                                          |
+| Exit codes                      | `0` success, `1` output failure, `2` invalid CLI usage, `3` server 4xx rejection, `4` transport, protocol, or 5xx error.                                                                                                                                           |
 
-Keep `--server` explicit: a new recorder defaults to `8081`, while this CLI subcommand currently
-defaults to `http://localhost:3000` when the option is omitted. Use the recorder's actual address.
-On Windows, export protects
-the new file for the current user, SYSTEM, and Administrators and verifies those permissions before
-writing any ZIP bytes. On Unix, it creates the file with mode `0600`. A destination whose required
-protection cannot be verified is rejected; choose a private filesystem destination. Browser
-downloads and direct HTTP clients use their own destination permissions.
+## Use HTTP directly
 
-Check the command's exit status and returned state. A successful apply reports
-`RESTORE_STATE_AWAITING_RESTART`; restart the service through your normal service manager, or use
-**Restart to apply** in Settings. The CLI does not restart the recorder automatically.
+| Method & path        | Request / response contract                                                                                                                                                                  |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /config/export` | Returns `200` with fresh `application/zip` body and `Cache-Control: no-store`.                                                                                                               |
+| `POST /config/apply` | Accepts raw `application/zip` body (not multipart) with required `Content-Length`; returns `202` ProtoJSON `RestoreRecord` (`RESTORE_STATE_AWAITING_RESTART`) and `Cache-Control: no-store`. |
 
-For a remote recorder, use HTTPS and provide its Administrator credential through
-`KEEPPEEK_ACCESS_KEY` using your normal secure environment setup. Do not put the key in a URL or CLI
-argument.
-
-## Use HTTP
-
-| Request              | Result                                                                                |
-| -------------------- | ------------------------------------------------------------------------------------- |
-| `GET /config/export` | A fresh `application/zip` download.                                                   |
-| `POST /config/apply` | Validate and stage a raw ZIP body; return `202` and `RESTORE_STATE_AWAITING_RESTART`. |
-
-For a local recorder, a POSIX shell example is:
+Loopback POSIX shell example:
 
 ```sh
 umask 077
@@ -123,35 +95,19 @@ curl --fail -H 'Content-Type: application/zip' \
   --data-binary @keeppeek-config.zip http://localhost:8081/config/apply
 ```
 
-Send the ZIP as the request body, not as a multipart form. Apply requires `Content-Length`; the curl
-command above supplies it for the file upload. Both endpoints require Administrator access and use
-`Cache-Control: no-store`.
+HTTP `202` means **staged**, not active; inspect the response before restarting. Browser downloads and `curl` use client-side destination permissions—restrict those copies separately. There is no HTTP dry-run, section-selection, or path-mapping endpoint, and retired `/api/backups` routes return `404`.
 
-HTTP `202` means **staged**, not active. Restart the service only after checking the successful apply
-response. There is no separate public dry-run, section selection, or path-mapping step, and the old
-`/api/backups` endpoints are not supported.
+## Validation limits and failure handling
 
-## If an import fails
+**Hard bounds:** `config.toml` and `secrets.toml` are each limited to **16 MiB**; compressed and expanded ZIP totals are each limited to **1 GiB**; one archive operation runs at a time. Validation rejects traversal/absolute/backslash/drive paths, symlinks, directories, encrypted or duplicate/case-colliding members, extra files, malformed manifests, bad checksums, invalid merged TOML, and conflicting storage-owner secret references. Error responses are redacted JSON without configuration values, secrets, or internal host paths.
 
-| Result                                              | What to do                                                                                                                                                            |
-| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Invalid or unsupported ZIP (`400`)                  | Use an unmodified current KeepPeek export. A hand-made ZIP, missing comment, changed checksum, or invalid TOML is rejected.                                           |
-| Authentication or permission denied (`401` / `403`) | Connect with Administrator access to the target recorder.                                                                                                             |
-| Apply already pending (`409`)                       | Complete the staged apply and restart before submitting another. Do not delete its journal to bypass this check.                                                      |
-| Missing length or wrong media type (`411` / `415`)  | Send a raw ZIP with `Content-Length` and `Content-Type: application/zip`.                                                                                             |
-| Upload too large (`413`)                            | Verify that you selected the configuration export, not a media archive. Each TOML is limited to 16 MiB; compressed and expanded ZIP totals are each limited to 1 GiB. |
-| Archive operation busy (`503`)                      | Let the active export or apply finish, then retry.                                                                                                                    |
+| HTTP status   | Meaning                                                             | Next action                                                                                                                               |
+| ------------- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `400`         | Malformed, modified, unsupported, or invalid ZIP/TOML               | Use an unmodified current format-3 KeepPeek export; verify target named-volume secret references and finish any pending metadata handoff. |
+| `401` / `403` | Missing auth, non-Administrator, or unverified remote lockout guard | Authenticate as an Administrator; for remote sign-in changes, complete the remote restore inspection and verification flow first.         |
+| `409`         | Another configuration apply is already pending                      | Restart and verify the pending apply before submitting a new ZIP. Never delete the restore journal to bypass this guard.                  |
+| `411` / `415` | Missing `Content-Length` or wrong `Content-Type`                    | Send a raw `application/zip` body with an explicit `Content-Length`.                                                                      |
+| `413`         | Upload exceeds size limit                                           | Confirm you chose a configuration ZIP (≤1 GiB total, ≤16 MiB per TOML), not a media archive.                                              |
+| `503`         | Another export/apply is active or backup service unavailable        | Wait for the active operation to complete, then retry.                                                                                    |
 
-A rejected upload does not replace the live configuration. In Settings, the selected filename remains
-available after a validation error so you can correct the selection and retry. Do not restart in
-response to a failed upload as though it had been accepted.
-
-If startup fails after a successful apply, preserve its logs and allow the documented automatic
-two-file recovery to run. If both activation and rollback fail, preserve the full configuration
-directory, including its journal and staged files, before manual recovery. Do not clear a pending
-apply by deleting the journal. See [Safe activation](./backup-and-restore.md#safe-activation).
-
-For a recorder upgrade or disk failure, also use
-[Upgrades and migrations](./upgrades-and-migrations.md) and
-[Recording archive recovery](./recording-archive-recovery.md). Applying settings cannot restore
-missing recording bytes.
+A rejected upload leaves live files untouched; never restart after a failed apply as though it succeeded. If both startup activation and automatic rollback fail, preserve the entire configuration directory (including `.backups/restore-journal.json` and staged/rollback files) and service logs before manual recovery. See [Safe activation](./backup-and-restore.md#safe-activation), [Upgrades and migrations](./upgrades-and-migrations.md), and [Recording archive recovery](./recording-archive-recovery.md).

@@ -1,167 +1,114 @@
 # Upgrades and migrations
 
-Upgrade the application separately from moving storage or importing configuration. Each operation
-has a different recovery boundary. KeepPeek is in Alpha qualification; keep a tested recovery copy
-and rehearse upgrades on an isolated installation before changing a recorder you depend on.
+This chapter covers manual KeepPeek application upgrades, platform-specific service replacement, automatic startup migrations, deliberate storage relocation, and upgrade rollback. Host-operator privileges and **Administrator** access are required; KeepPeek has **no automatic update checker or self-updater**—always perform application upgrades separately from storage moves or configuration imports, and rehearse on an isolated host during Alpha qualification.
 
-## Prepare an upgrade
+## Pre-upgrade checklist
 
-1. Record the running version, installation method, service account, listener address, and effective
-   configuration, catalog, recording, and thumbnail locations. A service account can use a different
-   configuration directory from your interactive login.
-2. Read the target release notes and [known limitations](./release-readiness.md). Retain the exact
-   previous package or container image so you can identify what was running.
-3. Export a [configuration ZIP](./configuration-export-import.md). Keep it private: it contains
-   plaintext file-backed secrets. Record any environment-only secrets and external dependencies in
-   your existing secure operations system; the ZIP does not include them.
-4. Arrange a consistent [recording archive recovery copy](./recording-archive-recovery.md), including
-   the catalog and media. A ZIP alone cannot restore these after a failed disk or catalog migration.
-5. Complete any already-staged configuration apply or storage move before starting a separate
-   upgrade. Finish or cancel active exports and maintenance jobs where possible. Preserve reports for any
-   unresolved maintenance work. Record the expected recording interruption and notify the people
-   who rely on the installation through your normal process.
-6. Stop the recorder through its service manager before replacing application files or taking an
-   offline archive copy. Confirm it is stopped; do not run two versions against the same directories.
+**Settings → System & updates** shows the current version, host, and uptime, and provides **Restart**; **Update channel** and **Update check** are intentionally unavailable. Before replacing the binary or container:
 
-Do not upgrade by replacing `config.toml` with a sample. Server-managed credentials, camera grants,
-layouts, templates, and notification rules live in that file alongside ordinary settings.
+1. Record the running version, install method, OS service account, listener address, and effective config, catalog, recording, and thumbnail paths (service accounts often use a different config directory than interactive logins).
+2. Review target release notes and [Release readiness and known limitations](./release-readiness.md); retain the exact previous package, installer, or container image digest for rollback.
+3. Export a private [configuration ZIP](./configuration-export-import.md) and record any `KEEPPEEK_SECRET_*` environment overrides and external dependencies outside the ZIP.
+4. Capture a consistent offline [recording archive recovery copy](./recording-archive-recovery.md) (catalog + state stores + media). A configuration ZIP cannot recover a failed disk or catalog migration.
+5. Finish any staged configuration apply, pending storage move, active exports, or maintenance jobs; save reports for unresolved work and notify users of the recording interruption.
+6. Stop KeepPeek via its service manager and confirm exit—**never run two versions against the same directories**, and **never overwrite `config.toml` with a sample file** (credentials, grants, dashboards, templates, profiles, and notification rules live there).
 
 ## Replace the application
 
+| Platform              | Package / artifact                         | Service unit                        | Upgrade behavior & watchouts                                                                                |
+| --------------------- | ------------------------------------------ | ----------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| **Linux (Docker)**    | Release image (pin digest)                 | Container runtime                   | Keep `/config` and media mounts; UID `65532` must keep write access; writable container layer is discarded. |
+| **macOS**             | Apple Silicon (`arm64`) `.dmg` + `.sha256` | Per-user `launchd` (`com.keeppeek`) | Opening new `KeepPeek.app` rewrites the LaunchAgent plist; recheck local service edits.                     |
+| **Windows**           | Architecture installer                     | SCM (`KeepPeekService`)             | Installer stops, deletes, and recreates the service; recheck custom SCM account/recovery/env settings.      |
+| **Standalone binary** | Platform binary                            | Custom / manual                     | Pass identical `--config <path>` and environment; sibling `secrets.toml` follows `--config`.                |
+
 ### Docker on Linux
 
-Keep the existing `/config` mount and any additional recording mounts. Pull the selected release
-image, stop the old container, and create its replacement with the same mounts, ports, user access,
-and environment. Record the image digest if you need to reproduce the installation; `latest` can
-refer to a different build later.
-
-Container replacement does not preserve data that was left only in the container's writable layer.
-Do not delete a named volume or host recording directory during an application upgrade. The image
-runs as user `65532`; the replacement must still be able to write its mounted directories.
-See [Get started](./get-started.md#linux-with-docker) for the basic mount contract.
+Pull the target image (record its digest; `latest` is mutable), stop the existing container, and start the replacement with identical `/config` and media mounts, ports, user mapping, and environment variables. Do not remove named volumes or host recording directories during an upgrade; ensure UID `65532` retains write permissions on mounted directories. See [Get started](./get-started.md#linux-with-docker) for the mount contract.
 
 ### macOS
 
-Download the Apple Silicon DMG and its matching checksum file. Verify the checksum, replace
-`/Applications/KeepPeek.app`, then open the new application once. The launcher reinstalls and starts
-the per-user `com.keeppeek` launch agent. It starts after that user logs in; it is not a system-wide
-boot daemon.
+Download `keeppeek-<version>-macos-aarch64.dmg` (Apple Silicon `arm64` only) and its `.sha256` file, verify with `shasum -a 256 -c`, drag the new `KeepPeek.app` into `/Applications`, and open it once. The launcher reinstalls and starts the per-user `com.keeppeek` launch agent (starts at user login, not a system-wide boot daemon) while keeping `~/Library/Application Support/keeppeek`.
 
-Check the loaded service and logs:
+Verify service state and logs, and reapply any deliberate local LaunchAgent customizations:
 
 ```sh
 launchctl print gui/"$(id -u)"/com.keeppeek
 tail -n 100 ~/Library/Logs/KeepPeek/keeppeek.log ~/Library/Logs/KeepPeek/keeppeek-error.log
 ```
 
-Keep the existing configuration directory. The launcher writes its launch-agent definition again,
-so preserve and recheck any deliberate local service customizations. Package-signing and
-notarization details are in the
-[macOS installation guide](https://github.com/xnorpx/keeppeek/blob/main/docs/macos-installation.md).
+See the [macOS installation guide](https://github.com/xnorpx/keeppeek/blob/main/docs/macos-installation.md) for signing and notarization details.
 
 ### Windows
 
-Run the installer for the host architecture. An existing `KeepPeekService` selects the service
-component by default. The installer stops and removes that registration before replacing binaries,
-then recreates and starts it when the service component is selected.
+Run the installer for your host architecture. When `KeepPeekService` exists, the service component is selected by default: the installer stops and removes the existing registration, replaces `keeppeek.exe` and `keeppeek-service.exe`, and recreates and starts `KeepPeekService`. Record custom SCM identity, startup, recovery, and environment settings before running the installer and verify them afterward, because service recreation does not preserve SCM customizations.
 
-Record custom service identity, startup, recovery, and environment settings before upgrading;
-recreating the service is not a promise to preserve SCM customizations. Recheck them before relying
-on unattended operation. Configuration paths resolve in the process account's environment.
-
-Use an elevated prompt for service operations:
+From an elevated PowerShell prompt, inspect or manually control the service (poll `sc.exe query` between `stop` and `start`, because `sc.exe stop` returns before exit completes):
 
 ```powershell
 sc.exe query KeepPeekService
 sc.exe qc KeepPeekService
+sc.exe stop KeepPeekService
+sc.exe start KeepPeekService
 ```
 
-For a planned manual stop and start, use `sc.exe stop KeepPeekService` and
-`sc.exe start KeepPeekService`, checking `sc.exe query KeepPeekService` between operations. A stop
-request can return before the service has finished stopping. The installer manages these steps
-when performing its own service upgrade.
-
-If the installer cannot stop the old service, resolve that failure before retrying the installer.
-If startup fails, inspect the service account's configuration and logs. The default destination is
-`keeppeek-service.log` beside its configuration; `[logging] service = "event_log"` uses the Windows
-Application log after the source has been registered. See the
-[Windows service guide](https://github.com/xnorpx/keeppeek/blob/main/docs/windows-service.md).
+Resolve any failure to stop the old service before retrying the installer. Service logs default to `keeppeek-service.log` beside the service account's `config.toml`; `[logging] service = "event_log"` writes to the Windows Application event log once the source is registered. See the [Windows service guide](https://github.com/xnorpx/keeppeek/blob/main/docs/windows-service.md).
 
 ### Standalone binary
 
-Stop the current process, replace the executable with the intended build, and start it with the same
-configuration selection and environment. The `--config <path>` option selects the TOML file and its
-sibling `secrets.toml`. A fresh configuration initializes named storage beside that file;
-an existing metadata binding keeps its recorded owner.
+Stop the running process, replace the executable, and start it with the same `--config <path>` flag and environment. `--config` selects both the TOML file and sibling `secrets.toml`. A fresh config initializes named storage beside itself; an existing metadata binding keeps its recorded owner.
 
 ## What startup migrates
 
-Current KeepPeek loads durable settings from `config.toml`. Older installations may still have
-separate subsystem files. Startup imports their supported settings when the corresponding current
-section is absent, writes the current configuration, and removes the retired file after successful
-migration. Preserve an offline pre-upgrade copy if you need the original inputs.
+Startup automatically imports supported legacy sidecar files into `config.toml` when the corresponding current section is absent, writes `config.toml` atomically, and removes the retired input on success. Keep an offline pre-upgrade copy if you need original inputs.
 
-| Legacy input                                  | Current location or behavior                                                                                                              |
-| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `access.toml`                                 | Credential identities, verifiers, roles, revisions, and grants move to `[access_credentials]`.                                            |
-| `peek-layouts.json`                           | Layouts and per-user selection move to `[peek_layouts]`. Legacy private layouts become server-owned dashboards with restricted audiences. |
-| `configuration-templates.json`                | Camera templates move to `[configuration_templates]`.                                                                                     |
-| `notifications.db` and its database sidecars  | Rule drafts and active rules move to `[notifications]`; delivery history and pending runtime work are not a replay queue.                 |
-| `mqtt-forwarder.db` and its database sidecars | Retired and removed. Current MQTT pending work and deduplication are in memory and are not replayed from this file.                       |
+| Legacy / pre-upgrade input               | Current location or startup behavior                                                                                                                                                                         |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `access.toml`                            | Moves identities, verifiers, roles, revisions, and grants into `[access_credentials]`; removes `access.toml`.                                                                                                |
+| `peek-layouts.json`                      | Moves layouts and per-user selections into `[peek_layouts]` (legacy private layouts become server-owned restricted dashboards); removes `peek-layouts.json`.                                                 |
+| `configuration-templates.json`           | Moves templates into `[configuration_templates]`; removes `configuration-templates.json`.                                                                                                                    |
+| `notifications.db` + sidecars            | Moves rule drafts and active rules into `[notifications]` (delivery history and pending runtime work are **not** replayed); removes retired DB files.                                                        |
+| `mqtt-forwarder.db` + sidecars           | Retired and removed; current MQTT queues and deduplication live in memory and do not replay from this file.                                                                                                  |
+| Legacy camera runtime-profile IP targets | Atomically assigns missing camera `profile_identity` UUIDs, converts targets (`missing-ip:<address>` if absent), preserves raw `{secret:...}` IPs, and writes `identity_schema = 1` in `[runtime_profiles]`. |
+| Recording catalog SQLite schema          | Applies schema, index, and playable-summary migrations in place on open.                                                                                                                                     |
 
-When a current configuration section already exists, it is authoritative; do not expect an old file
-to merge additional settings into it. Do not recreate retired files to change settings.
-
-The recording catalog also performs schema and index migrations as it opens. There is no supported
-general-purpose downgrade command or guarantee that an older binary can read a catalog after a newer
-binary has used it. Keep the pre-upgrade catalog and media together if a downgrade might be needed.
-
-See the [configuration reference](./configuration-reference.md) for current fields and
-[Backup and restore](./backup-and-restore.md#what-survives-a-restart) for durable versus runtime state.
+**Migration boundaries:** When a `config.toml` section already exists, it is authoritative—legacy files never merge into it, and recreating retired files has no effect. There is **no general-purpose downgrade command**: older binaries reject `identity_schema = 1` fail-closed and may be unable to open a migrated recording catalog. Keep pre-upgrade config, catalog, and media together if rollback might be required. See [Configuration reference](./configuration-reference.md) and [What survives a restart](./backup-and-restore.md#what-survives-a-restart).
 
 ## Move storage deliberately
 
-Use **Settings → Named storage volumes**. Create a private destination directory on a supported
-local filesystem, add its stable ID, roles, limits, and placement rules, and save the draft. Restart
-to apply configuration changes. New placement rules affect future objects; existing objects retain
-their catalog owner.
+Use **Settings → Storage & retention → Named storage volumes** to relocate media or metadata safely without manual SQL edits.
 
-With separate legacy capture and archive roots, KeepPeek finishes journaled recording transfers
-before it can migrate the roots. If startup reports a pending transfer, use the saved pre-migration
-configuration with both original roots mounted so the recorder can finish it. Schedule the storage
-migration again after the transfer completes.
+### 1. Add a destination volume
 
-To drain media, choose **Stop new writes** for the source. Existing fragments finish there. Load its
-stored objects, select a compatible destination, and preview an individual move or a batch of up to
-16 objects. Review the file count and bytes before confirming. Move jobs show durable progress and
-offer cancellation before authoritative publication. Stopping a batch stops new confirmations;
-already admitted jobs remain visible. An expired or changed preview requires another review.
+1. Create a private destination directory owned by the recorder account on a supported local filesystem (on Windows, local **NTFS** only; ReFS, FAT, and network shares are rejected for owned storage).
+2. Open **Settings → Storage & retention → Named storage volumes → Edit volume draft**, add the volume's stable ID, path, roles, byte limits, and placement rules, and save.
+3. Restart KeepPeek to activate the draft. Placement rules govern **future** objects only; existing objects keep their catalog owner.
 
-Moves copy into a confined temporary file, verify length and SHA-256, publish the verified catalog
-location, then retire the old copy after readers finish. A lost confirmation reply is checked using
-the original job ID. Interrupted work resumes from its durable journal. Removal requires no owned
-objects, active allocations, unfinished jobs, or cleanup receipts; removing a definition does not
-delete unrelated files or its directory.
+If migrating from separate legacy capture and archive roots and startup reports a pending journaled transfer, boot with the saved pre-migration configuration and both original roots mounted so KeepPeek completes the transfer, then reschedule the move.
 
-Metadata uses **Catalog and export history** controls. Preview a disabled metadata-only destination,
-review downtime and capacity, then confirm the restart handoff. The old catalog and history remain
-available for recovery, and the new authority is verified before media workers start. A missing
-bound root is offline and is never recreated. Preserve both copies and the pending configuration
-if activation fails; do not edit journals, overwrite a conflicting destination, or clear fencing
-records to force a retry. See the [configuration reference](./configuration-reference.md#named-storage-volumes).
+### 2. Drain and move stored media
 
-## Verify and recover
+1. Select **Stop new writes** on the source volume (operator drain survives restart; active fragments finish writing normally).
+2. Under **Move stored objects**, select the source volume and choose **Load stored objects**, then select a compatible destination volume and role.
+3. Choose **Preview move** (one object) or **Preview next 16 objects** (batch up to 16), verify file count and total bytes, then select **Confirm this move** or **Confirm batch of N moves**.
+4. Track progress or cancel before authoritative publication under **Move jobs**. **Stop after current request** halts further batch confirmations while leaving already-admitted jobs running.
 
-After startup, check the version, expected camera count, credentials and grants, dashboards, storage
-locations, and provider settings. Test live playback, a finalized new recording, and an older known
-recording. Check recording integrity and any pending maintenance or export history. Reconnect remote
-clients; sessions and their browser keys are not restored across a reload or restart.
+Each move copies into a confined temporary file, verifies byte length and SHA-256, publishes the new catalog owner, and retires the source copy only after active readers finish. Interrupted jobs resume from their durable journal, and lost confirmation replies reconcile against the original job ID. An expired or stale preview requires a fresh review. Removing a volume definition requires stopped writes, zero owned/reserved bytes, no unfinished jobs or cleanup receipts, and no active archive-policy references; removing a definition leaves its directory and unrelated files untouched.
 
-An accepted configuration ZIP has its own automatic two-file startup rollback. That mechanism does
-not roll back an application binary, catalog schema, or storage move. If an application upgrade
-fails, stop the recorder and preserve its failed state before recovery. Restore an isolated copy of
-the previous complete installation and verify it before replacing the failed deployment. Do not
-run the older binary against the only copy of a possibly migrated catalog.
+### 3. Relocate metadata (catalog and export history)
 
-Record the result, interruption, recovered data, and any remaining gap in the installation's
-[qualification record](./release-readiness.md#promotion-record).
+1. Create and save a `disabled` named volume assigned **only** the `metadata` role.
+2. Under **Catalog and export history**, select that destination and choose **Preview metadata move** to review downtime and required bytes.
+3. Choose **Confirm metadata move** (locks storage settings until restart or **Cancel pending metadata move**), then trigger **Restart and move storage** or restart the service.
+
+Startup copies and verifies both the catalog snapshot and export history before media workers resume, retaining the previous files for recovery. A missing bound root stays offline and is **never** recreated. If activation fails, preserve both copies and the pending configuration—never edit journals, overwrite a conflicting destination, or clear fencing records. See [Named storage volumes](./configuration-reference.md#named-storage-volumes).
+
+## Verify and roll back
+
+After startup:
+
+1. Check server version, camera count, credentials/grants, dashboards, storage roots, and integration status.
+2. Test live playback, one newly finalized recording, and one known older recording; check `/recordings` integrity and any retained export/maintenance history.
+3. Reconnect remote clients (sessions and browser keys do not survive restart).
+
+**Rollback boundary:** Configuration ZIP automatic rollback covers only `config.toml` and `secrets.toml`—never application binaries, catalog schema upgrades, or storage moves. If an upgrade fails, stop KeepPeek, preserve the failed directory state, restore an isolated complete pre-upgrade copy (binary + config + catalog + media), and verify it before replacing the failed deployment. **Never run an older binary against the sole copy of a potentially migrated catalog.** Record results and gaps in the [qualification record](./release-readiness.md#promotion-record).

@@ -1,111 +1,101 @@
 # Feature guide and navigation
 
-Use this chapter to find the part of KeepPeek that owns a task. It describes the current
-application, including controls that are visible but unavailable. A design reference or generated
-API type does not, by itself, mean that a feature works in the running server.
+Use this chapter to locate the KeepPeek screen, Settings section, or integration path that owns a task, and to separate active features from unavailable controls. KeepPeek is in [Alpha qualification](./release-readiness.md); a visible panel, design reference, or generated API type does not prove runtime support, and availability also depends on your role, camera grants, device capabilities, recording coverage, and browser codec support.
 
-KeepPeek remains in [Alpha qualification](./release-readiness.md). Availability also depends on
-your role, camera grants, device capabilities, recording coverage, and browser codec support.
+## Screen and route directory
 
-## Find the right screen
+Desktop navigation uses the left rail (**Dashboard**, **Viewer**, **Keep**, **Events**, plus Administrator-only **Cameras**, **Health**, and **Settings**) with live status indicators and a theme toggle at the bottom. Mobile navigation uses the bottom bar (**Dashboard**, **Viewer**, **Keep**, **Events**, plus Administrator-only **Health** and **More** for `/settings`). Non-Administrator sessions cannot open Administrator routes; **Shared review** (`/share`) runs in an isolated guest context outside the authenticated shell.
 
-The desktop shell and mobile navigation lead to the same workflows. On a phone, **More** opens
-Settings; Administrator-only navigation is hidden for Users.
+| Screen                    | Route                              | Role                              | Use it for                                                                                                                                                                        | Read next                                                                                               |
+| ------------------------- | ---------------------------------- | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| **Dashboard** (Peek)      | `/`                                | User, Admin                       | Watch live camera walls, switch saved dashboards, edit layouts, and open kiosk display.                                                                                           | [Live wall](./live-wall.md)                                                                             |
+| **Viewer**                | `/viewer`                          | User, Admin                       | Focus on one camera, switch streams, digitally zoom, listen to audio, use **Talk** (Admin + confirmed speaker), and open **History**.                                             | [Live wall](./live-wall.md), [Digital zoom](./digital-zoom.md), [Camera controls](./camera-controls.md) |
+| **Keep**                  | `/keep`                            | User, Admin                       | Inspect a camera's UTC recorded day, gaps, stories, swimlanes, synchronized multi-camera review, bounded timelapse review/export, clip export, and guest sharing.                 | [Recording and evidence](./recording-and-evidence.md)                                                   |
+| **Events**                | `/events`                          | User, Admin                       | Search stored events with filters, boolean expressions, hybrid semantic ranking, and saved searches; review, dismiss, bookmark, export, or jump to Keep.                          | [Recording and evidence](./recording-and-evidence.md)                                                   |
+| **Activity summary**      | `/activity`                        | User, Admin                       | View bounded event totals, temporal rollups (`24h`, `7d`, `30d`), heatmaps, and comparisons; Administrators can rebuild rollups. Opened from **Events > Activity summary**.       | [Recording and evidence](./recording-and-evidence.md)                                                   |
+| **Shared review**         | `/share`                           | Guest link                        | Open a time-bounded, account-free clip review. Streams or downloads MP4 only when permitted by the link; cannot access live cameras or other footage.                             | [Guest review links](./guest-review.md)                                                                 |
+| **Cameras**               | `/cameras`                         | Admin                             | Inspect camera inventory, open per-camera configuration, or start guided setup.                                                                                                   | [Camera controls](./camera-controls.md)                                                                 |
+| **Add camera**            | `/cameras/new`                     | Admin                             | Discover cameras, match the embedded CCTV Camera Database catalog, verify credentials and keyframes, or add explicit RTSP URLs.                                                   | [Camera controls](./camera-controls.md)                                                                 |
+| **Camera details**        | `/camera`                          | Admin (edit), User (granted view) | Inspect camera status, edit device settings, calibrate live/recorded audio timing, and use advertised PTZ or **Talk** controls.                                                   | [Camera controls](./camera-controls.md)                                                                 |
+| **System health**         | `/system-health`                   | Admin                             | Diagnose server, storage, camera, stream, WebRTC, and integration health across the fleet.                                                                                        | [Camera and stream health](./camera-health.md)                                                          |
+| **Camera health**         | `/system-health/camera/[cameraId]` | Admin                             | Inspect lifecycle state, stream progress, native event status, and recording evidence for one camera.                                                                             | [Camera and stream health](./camera-health.md)                                                          |
+| **Recording integrity**   | `/recordings`                      | User, Admin                       | Inspect recording coverage, gaps, and catalog/file integrity before planning maintenance.                                                                                         | [Recording maintenance](./recording-maintenance.md)                                                     |
+| **Recording maintenance** | `/recordings/maintenance`          | Admin                             | Explicitly plan and confirm destructive maintenance, eligible index rebuilds, or archive retention actions.                                                                       | [Recording maintenance](./recording-maintenance.md)                                                     |
+| **Settings**              | `/settings`                        | Admin                             | Manage dashboards, runtime profiles, storage, volumes, archive, backups, access, guest links, notifications, MQTT, appearance, system status, usage reporting, and bind settings. | [Visual configuration management](./configuration-management.md)                                        |
+| **Logs**                  | `/settings/logs`                   | Admin                             | Stream live server and browser logs, update the active server capture filter, download scrubbed diagnostics, or open **Report bug**.                                              | [Reporting bugs](./reporting-bugs.md)                                                                   |
+| **First run**             | `/setup`                           | Admin (local)                     | Verify local storage writability, claim the initial Administrator access key, and launch camera setup.                                                                            | [Get started](./get-started.md)                                                                         |
 
-| Screen                      | Route                              | Use it for                                                                                                                                                     | Read next                                                        |
-| --------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| Dashboard, also called Peek | `/`                                | Watch the fleet, select a saved dashboard, arrange cameras, and adjust wall display settings.                                                                  | [Live wall](./live-wall.md)                                      |
-| Viewer                      | `/viewer`                          | Focus on a camera, switch feeds, listen to supported audio, and enter History.                                                                                 | [Live wall](./live-wall.md), [digital zoom](./digital-zoom.md)   |
-| Keep                        | `/keep`                            | Investigate a recorded day, seek to an exact moment, inspect gaps and events, and create evidence exports.                                                     | [Recording and evidence](./recording-and-evidence.md)            |
-| Events                      | `/events`                          | Search stored events by time, camera, type, source, zone, confidence, image availability, and text. Review or dismiss events and open their recording context. | [Recording and evidence](./recording-and-evidence.md)            |
-| Cameras                     | `/cameras`                         | Inspect the inventory and open camera configuration. Start discovery or manual setup at `/cameras/new`.                                                        | [Camera controls](./camera-controls.md)                          |
-| Camera details              | `/camera`                          | Inspect and edit the selected camera and use the device controls it advertises.                                                                                | [Camera controls](./camera-controls.md)                          |
-| System health               | `/system-health`                   | Diagnose recorder, storage, camera, stream, and integration health. Open an individual camera for detailed evidence.                                           | [Camera and stream health](./camera-health.md)                   |
-| Camera health               | `/system-health/camera/[cameraId]` | Inspect lifecycle, stream progress, and recording evidence for one camera.                                                                                     | [Camera and stream health](./camera-health.md)                   |
-| Settings                    | `/settings`                        | Manage server configuration, dashboards, storage, backups, access, events, and integrations.                                                                   | [Visual configuration management](./configuration-management.md) |
-| Logs                        | `/settings/logs`                   | Inspect live server and browser logs and collect diagnostics.                                                                                                  | [Reporting bugs](./reporting-bugs.md)                            |
-| Recording integrity         | `/recordings`                      | Inspect recording coverage, gaps, and integrity before opening maintenance.                                                                                    | [Recording maintenance](./recording-maintenance.md)              |
-| Recording maintenance       | `/recordings/maintenance`          | Inspect recording integrity and explicitly plan and confirm maintenance.                                                                                       | [Recording maintenance](./recording-maintenance.md)              |
-| Initial setup               | `/setup`                           | Complete the first-run setup workflow.                                                                                                                         | [Get started](./get-started.md)                                  |
+Two additional operator interfaces connect to the same server: **KeepPeek Desktop** (`keeppeek-desktop`, a Tauri window for Windows and macOS; see [Desktop application](./desktop-app.md)) and the foreground terminal health dashboard (TUI; see [Get started](./get-started.md) and [Camera and stream health](./camera-health.md)).
 
-Camera and event links carry the selected identity and, when appropriate, a timestamp. Keep those query parameters when sharing a
-deep link. A link does not grant its recipient permission to view the camera.
+Camera, Keep, and Event links carry identity and timestamp query parameters. Keep those query parameters when sharing an internal deep link, and note that a deep link never grants the recipient camera permissions; use `/share` for external clip review.
 
 ## From live view to evidence
 
-1. Select a camera in Dashboard or Viewer and inspect whether its live stream is advancing.
-2. Use **History** to enter Keep, or open an event's recording context from Events.
-3. Check the selected camera, date, and UTC time. A gap means recorded coverage is absent for that
-   interval; a loaded player or thumbnail is not proof of continuous recording.
-4. Seek, play, and zoom to investigate. Digital zoom changes the browser view; PTZ moves a physical
-   camera and has separate capability and permission requirements.
-5. Review the event, add the supported bookmark or evidence selection, and export the needed
-   interval. Check the export result and retained coverage before relying on the file.
+1. Open **Dashboard** (`/`) or **Viewer** (`/viewer`) and confirm the camera's live stream is advancing.
+2. Select **History** to open **Keep** (`/keep`), or locate a detection in **Events** (`/events`) or **Activity summary** (`/activity`) and open its recording context.
+3. Verify the selected camera, UTC date, and UTC timestamp. A gap means recorded coverage is absent for that interval; a loaded player or thumbnail does not prove continuous recording.
+4. Scrub, play, use synchronized multi-camera or timelapse review, and digitally zoom as needed. Digital zoom changes only the browser viewport; PTZ moves physical hardware under separate capability and permission checks.
+5. Review or bookmark the event, export a bounded MP4 clip (or silent timelapse MP4 when an external encoder is available), or issue a bounded guest link. Verify retained coverage and the completed export before relying on the file.
 
-For controls, limits, time handling, and failure states, use
-[Recording and evidence](./recording-and-evidence.md). For missing footage, start with
-[camera health](./camera-health.md), then use [maintenance](./recording-maintenance.md) or
-[archive recovery](./recording-archive-recovery.md) when the evidence points to stored data.
+For controls, limits, UTC rules, and failure states, read [Recording and evidence](./recording-and-evidence.md). For missing footage, start at [Camera and stream health](./camera-health.md), then use [Recording maintenance](./recording-maintenance.md) or [Recording archive recovery](./recording-archive-recovery.md) if persisted data is affected.
 
-## Find a setting
+### Video walkthrough
 
-Settings presents sections on desktop and a focused section index on mobile. Saving a draft,
-applying a change to a running camera, and restarting the server are distinct actions; inspect the
-reported result rather than assuming that a successful file write proves activation.
+Focus a live camera in Peek and follow **History** directly into its Keep timeline.
 
-| Settings area       | What it controls                                                                                                                                         | Documentation                                                                                                |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Dashboards          | Saved layouts, camera placement, audience, and wall presentation/resource choices.                                                                       | [Live wall](./live-wall.md)                                                                                  |
-| Storage & retention | Recording paths, retention, pressure thresholds, policies, and maintenance.                                                                              | [Configuration reference](./configuration-reference.md), [recording maintenance](./recording-maintenance.md) |
-| Backup & restore    | Backup lifecycle, uploads, restore planning, activation, and rollback evidence.                                                                          | [Backup and restore](./backup-and-restore.md)                                                                |
-| Event sources       | Read-only catalog and origin context. The live source registry is unavailable; configure native adapters through the camera/configuration workflows.     | [Native events](./native-camera-events.md), [external analysis](./external-analysis.md)                      |
-| Groups              | The declared group model and its current unavailable runtime controls.                                                                                   | [Groups: current status](./groups.md)                                                                        |
-| Notifications       | Rules, delivery destinations, history, and errors.                                                                                                       | [Notifications and integrations](./notifications-and-integrations.md)                                        |
-| Access              | Named credentials, Administrator/User roles, camera grants, and session revocation.                                                                      | [Authentication](./authentication.md)                                                                        |
-| Integrations        | MQTT configuration and connection evidence, alongside reference cards whose configuration is unavailable. Home Assistant setup is documented separately. | [Notifications and integrations](./notifications-and-integrations.md), [Home Assistant](./home-assistant.md) |
-| Appearance & time   | Dark, Light, or Match system appearance and the browser's time and reduced-motion context.                                                               | [Visual configuration management](./configuration-management.md)                                             |
-| System & updates    | Server version and health context and the explicit restart action. Follow the documented upgrade procedure to replace the server.                        | [Upgrades](./upgrades-and-migrations.md)                                                                     |
-| Logs & diagnostics  | Live logs and downloadable diagnostic evidence.                                                                                                          | [Reporting bugs](./reporting-bugs.md)                                                                        |
+<video controls crossorigin="anonymous" preload="metadata" playsinline style="width: 100%; height: auto">
+  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.history-keep.mp4" type="video/mp4">
+  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.history-keep.vtt" kind="captions" srclang="en" label="English">
+  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.history-keep.mp4">Download the Peek history demo</a>.
+</video>
 
-## Set appearance and inspect system context
+## Settings sections (`/settings`)
 
-For appearance, open **Settings > Appearance & time** and select **Dark**, **Light**, or
-**Match system**. The choice applies immediately and is saved in this browser when local storage
-is available; it does not change another browser or the server configuration. Video surfaces stay
-dark. Without a saved preference, the interface starts in Dark mode.
+Desktop renders all sections on `/settings`; mobile shows a searchable section index under **More**. Saving a draft, applying a live camera change, and restarting the server are distinct steps—check the reported result rather than assuming a saved file is already active.
 
-The browser's reported time zone and reduced-motion preference are context, not server settings.
-Server time zone, clock format, week-start preferences, and an alternate interface language are
-not configurable through this panel. Keep's UTC selection and export timestamps retain their
-documented meaning. **System & updates** shows server evidence and supports restart; an automatic
-update check or update-channel selector is not available. Use the [upgrade procedure](./upgrades-and-migrations.md).
+| Settings section        | Anchor / route      | What it controls                                                                                                                                                                         | Read next                                                                                                    |
+| ----------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| **Dashboards**          | `#dashboards`       | Saved live-wall layouts, camera placement, dashboard audiences, and wall resource preferences.                                                                                           | [Live wall](./live-wall.md)                                                                                  |
+| **Runtime profiles**    | `#runtime-profiles` | Named camera policy overrides (availability, recording mode, privacy, notification suppression) inheriting from Base, plus per-camera convergence status.                                | [Visual configuration management](./configuration-management.md)                                             |
+| **Diagnostics**         | `/settings/logs`    | Desktop shortcut to live server and browser logs.                                                                                                                                        | [Reporting bugs](./reporting-bugs.md)                                                                        |
+| **Storage & retention** | `#storage`          | Recording paths, retention, pre-roll, pressure thresholds, named storage volumes, and fourth-tier local archive settings.                                                                | [Configuration reference](./configuration-reference.md), [Recording maintenance](./recording-maintenance.md) |
+| **Event sources**       | `#event-sources`    | Read-only catalog totals and `camera` / `keeppeek` origin descriptions; publisher registry controls are unavailable.                                                                     | [Native camera events](./native-camera-events.md), [External analysis](./external-analysis.md)               |
+| **Backup & restore**    | `#backups`          | Backup creation, upload, restore planning, safe activation, and rollback evidence.                                                                                                       | [Backup and restore](./backup-and-restore.md)                                                                |
+| **Groups**              | `#groups`           | Declared group contract and status of unavailable live participant group controls.                                                                                                       | [Groups and two-way audio: current status](./groups.md)                                                      |
+| **Access**              | `#access`           | Named credentials, Administrator/User roles, **User access** camera/group grants, external authentication (OIDC), active sessions, security audit, and **Guest sharing** policy/grants.  | [Authentication](./authentication.md), [Guest review links](./guest-review.md)                               |
+| **Integrations**        | `#integrations`     | Live **MQTT** event forwarder configuration and broker health, plus read-only architecture cards for Home Assistant, Webhooks, and Prometheus (`GET /metrics`).                          | [Notifications and integrations](./notifications-and-integrations.md), [Home Assistant](./home-assistant.md) |
+| **Notifications**       | `#notifications`    | Server-owned rules, inbox, delivery history, browser alerts, Pushover, webhooks, and opt-in **Keeppeek Service** bounded mobile push signaling.                                          | [Notifications and integrations](./notifications-and-integrations.md)                                        |
+| **Appearance & time**   | `#appearance`       | Browser-local **Dark**, **Light**, or **Match system** theme (defaults to Dark; video surfaces stay dark); shows browser time zone, language (`en` only), and reduced motion as context. | [Visual configuration management](./configuration-management.md)                                             |
+| **System & updates**    | `#system`           | Server version, host, OS, uptime, embedded CCTV Camera Database metadata, and explicit **Restart** command.                                                                              | [Upgrades and migrations](./upgrades-and-migrations.md)                                                      |
+| **Logs & diagnostics**  | `/settings/logs`    | Live log viewer, **Download diagnostics** scrubbed package, and **Report bug** workflow.                                                                                                 | [Reporting bugs](./reporting-bugs.md)                                                                        |
+| **Usage reporting**     | `#usage-reporting`  | Administrator opt-in telemetry (off by default) with local exact JSON payload preview, installation ID reset, and receiver deletion retry.                                               | [Reporting bugs](./reporting-bugs.md), [Configuration reference](./configuration-reference.md)               |
+| **Server**              | `#server-settings`  | Bind `host`, `port`, and running camera count; saving stages a restart via **Apply changes**.                                                                                            | [Visual configuration management](./configuration-management.md)                                             |
+
+Theme changes in **Appearance & time** (or the left-rail toggle) apply immediately in the current browser only when local storage is available and never modify `config.toml` or Keep's UTC timelines.
 
 ## Choose an event or integration path
 
-- **Record without analytics:** No detector or notification service is required for recording and
-  playback.
-- **Use camera analytics:** Enable a supported native adapter and verify real events and its
-  connection health. Camera support differs by model and firmware.
-- **Use external analysis:** Run a separate service that subscribes to media and publishes events
-  through the API. KeepPeek does not install or manage detector models in its core.
-- **Send alerts or automate:** Match committed events with notification rules, use Pushover where
-  configured, or forward normalized events through MQTT. A rule match and successful delivery are
-  different states. The notification rule's Forwarder action is currently unavailable; the MQTT
-  integration is configured separately.
-- **Embed a camera in Home Assistant:** Use the direct browser card with an appropriate named
-  credential and browser-to-recorder connectivity.
+| Goal                            | Path                                                 | Key boundary                                                                                                                                                                                                                                                                                            |
+| ------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Record without analytics**    | Configure cameras only                               | No detector, cloud account, or notification service is required for recording or playback.                                                                                                                                                                                                              |
+| **Use camera-native analytics** | Enable a supported native adapter (`auto` default)   | Supports Reolink, Hikvision/Annke ISAPI, ONVIF PullPoint, and RTSP metadata; capabilities vary by model and firmware ([Native camera events](./native-camera-events.md)).                                                                                                                               |
+| **Run custom AI / detection**   | Connect an external WebRTC analysis service          | Subscribes to encoded streams and publishes events over the API; KeepPeek does not host models ([External analysis](./external-analysis.md)).                                                                                                                                                           |
+| **Send human alerts**           | Create rules in **Settings > Notifications**         | Supports Browser, Pushover, Webhook, and opt-in bounded Keeppeek Service mobile push signaling (109-byte signed signal, off by default). Rule matching does not confirm delivery; the **Forwarder** rule action is unavailable ([Notifications and integrations](./notifications-and-integrations.md)). |
+| **Automate or monitor**         | Configure MQTT 5, Home Assistant card, or Prometheus | MQTT 5 runs from **Settings > Integrations**; the Home Assistant card connects browser-to-recorder directly; Prometheus scrapes `GET /metrics` ([Notifications and integrations](./notifications-and-integrations.md), [Home Assistant](./home-assistant.md)).                                          |
+| **Share a clip externally**     | Create a guest review link from Keep or Events       | Recipient opens `/share` without an account for a bounded clip window and expiry ([Guest review links](./guest-review.md)).                                                                                                                                                                             |
 
-The integration chapters explain their requirements and failure behavior. Protocol scenarios that
-describe future client possibilities are not an installation checklist for a shipped service.
+## Implemented vs. unavailable controls
 
-## Understand unavailable controls
+Read the reason displayed on any disabled or unavailable control. Do not treat an unavailable count as zero, a saved configuration as a healthy connection, or an advertised camera capability as a verified operation.
 
-Read the reason shown by an unavailable control. Do not interpret an unavailable count as zero,
-a saved configuration as a healthy connection, or advertised camera support as a successful
-operation. Live participant groups remain unavailable. Browser Talk works only for an
-Administrator on a camera with a confirmed speaker; see [Camera controls](./camera-controls.md).
+| Feature or control                                                                                       | Current status            | Boundary                                                                                                                                                                                              |
+| -------------------------------------------------------------------------------------------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Browser Talk**                                                                                         | Shipped (conditional)     | Available only for an Administrator on a camera with a confirmed speaker ([Camera controls](./camera-controls.md)).                                                                                   |
+| **Live participant groups** (`ListGroups`, `JoinGroup`, `LeaveGroup`, **Settings > Groups**)             | Unavailable               | Protobuf types exist without a runtime handler. Camera access labels, dashboard audiences, and planned live participant groups are separate concepts ([Groups](./groups.md)).                         |
+| **Notification rule Forwarder action**                                                                   | Unavailable               | Rejects delivery as `channel_unavailable`; configure MQTT separately in **Settings > Integrations** ([Notifications and integrations](./notifications-and-integrations.md)).                          |
+| **Event source registry** (**Register a source**, **Manage source**, **Rotate token**)                   | Unavailable               | **Settings > Event sources** shows read-only catalog counts and origin definitions only; configure native events per camera ([Native camera events](./native-camera-events.md)).                      |
+| **Automatic update check & bulk erase** (**Update check**, **Update channel**, **Erase all recordings**) | Unavailable               | Replace server binaries manually ([Upgrades and migrations](./upgrades-and-migrations.md)) and remove recordings through confirmed maintenance ([Recording maintenance](./recording-maintenance.md)). |
+| **Server time zone / clock / week-start / language selectors**                                           | Unavailable               | **Appearance & time** reports browser context only; it does not alter server time handling or Keep's UTC timestamps.                                                                                  |
+| **Integrations UI cards for Home Assistant, Webhooks, Prometheus**                                       | Read-only reference cards | Configure Home Assistant externally ([Home Assistant](./home-assistant.md)), webhooks inside notification rules, and Prometheus scraping against `GET /metrics`.                                      |
 
-Camera access labels, dashboard audiences, and planned live participant groups are different
-concepts. [Groups](./groups.md) explains that distinction. The
-[release-readiness chapter](./release-readiness.md) records remaining qualification boundaries;
-[reporting bugs](./reporting-bugs.md) explains how to capture a reproducible failure safely.
+See [Release readiness and known limitations](./release-readiness.md) for qualification limits and [Reporting bugs](./reporting-bugs.md) for capturing reproducible failures.

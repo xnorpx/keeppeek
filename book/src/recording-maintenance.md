@@ -1,327 +1,128 @@
 # Recording maintenance
 
-Recording maintenance provides Administrator previews, confirmed deletion jobs,
-and bounded catalog reconciliation over the WebRTC control connection.
-[Implementation issue #133](https://github.com/xnorpx/keeppeek/issues/133) closed on
-2026-09-08. The synthetic-media workflow and native Windows, macOS, and Linux checks
-have passed. Deployment-specific recovery and the wider release decision remain
-part of the [Alpha gate #145](https://github.com/xnorpx/keeppeek/issues/145).
+This chapter covers fleet recording-integrity checks (`/recordings`), explicit plan-then-confirm recording deletion and bounded catalog reconciliation (`/recordings/maintenance`), and Administrator-confirmed fourth-tier archive retention (**Settings → Storage & retention → Local archive**). Reading `/recordings` requires **User** access; all deletion, reconciliation, and archive-retention mutations require **Administrator** access and the relevant server capability. Never delete recording files directly on disk or manually clear catalog rows or private staging directories to force progress.
 
-Automatic storage retention remains separate from manual deletion. Manual claims
-exclude their recordings from retention and new playback/export resolution until
-the claim reaches a terminal outcome. Never delete recording files directly as a
-substitute for maintenance: that can leave stale catalog entries and unavailable
-evidence links.
+## Video walkthrough
 
-Named-volume deletion follows each recording's current catalog owner, including
-recordings moved to another named volume. It requires the original bound root to
-be available and writable. Active readers and unfinished moves block removal.
-Failed or interrupted jobs retain capacity ownership until the durable deletion
-checkpoint completes. Restore the same root or finish the conflicting work before
-retrying; do not clear ownership rows or private staging to force progress.
+Watch Administrator recording deletion preview, typed `DELETE N` confirmation, durable ledger execution, and bounded catalog reconciliation on `/recordings/maintenance`.
 
-Startup preserves `.active` files and their catalog rows. A temporary-looking
-filename does not establish ownership or authorize deletion, in either the
-medium-term or long-term root. Interrupted media remains available for inspection.
-Writers create new `.active` files exclusively. If the output path already exists,
-creation fails without truncating or replacing the existing file.
+<video controls crossorigin="anonymous" preload="metadata" playsinline style="width: 100%; height: auto">
+  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/recordings.desktop.maintenance.mp4" type="video/mp4">
+  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/recordings.desktop.maintenance.vtt" kind="captions" srclang="en" label="English">
+  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/recordings.desktop.maintenance.mp4">Download the recording maintenance demo</a>.
+</video>
 
-## Review and delete recordings
+## Recording integrity and coverage (`/recordings`)
 
-1. Sign in as an Administrator and open **Recording integrity**, then **Maintenance**.
-   **Review deletion** in Keep's export-range view carries its camera, stream, and
-   interval into maintenance. Closing Keep also releases its playback cursor.
-2. Select the camera, stream, UTC start and end, and operator or privacy reason.
-   Choose **Preview deletion**. A day or hour is an ordinary UTC time range.
-3. Review every whole-recording boundary, byte count, gap, bookmark, related
-   export, and stated consequence. An active, protected, retention-pending, or
-   identity-unavailable selection cannot be confirmed.
-4. Type the exact confirmation text, such as `DELETE 1`, and choose
-   **Delete permanently**. **Keep recordings** closes the confirmation without
-   starting deletion; **Cancel job** cancels the prepared intent.
-5. Follow the per-object results. Use **Refresh job** after a connection failure
-   and **Download report** to retain the result. Reports contain no confirmation
-   nonce or host filesystem path.
+**Recording integrity** (`/recordings`, backed by `GET /recording-coverage`) joins effective camera policy, live writer telemetry, keyframe-indexed finalized fragments, and the deletion ledger to prove whether requested streams are actually recording. It auto-refreshes every 30 seconds while visible and links Administrators directly to **Maintenance** (`/recordings/maintenance`) and **Open Keep** (`/keep`).
 
-Before deleting irreplaceable footage, retain the required evidence export or
-[archive recovery copy](./recording-archive-recovery.md) and verify it separately. A configuration
-ZIP contains neither the media nor its catalog. A bookmark does not protect media from deletion;
-check the preview's explicit protection and relationship evidence.
+| Element                        | Current contract & bounds                                                                                                                                                                                                                                                            |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Fleet states**               | `healthy`, `degraded`, `paused_by_policy`, `not_configured` (shown only when nonzero), `unknown`. Policy-disabled streams do not generate unexpected gaps.                                                                                                                           |
+| **Playable coverage**          | Counts only finalized, random-access fragments with indexed keyframes (merges gaps ≤1 ms). Ongoing trailing gaps keep `end_ms: null` (`observed_end_ms` marks snapshot time).                                                                                                        |
+| **Filters & intervals**        | `24h`, `7d`, `30d` (API max 31 days), camera search (≤128 chars), state, stream (`main`/`sub`), group, and minimum camera gap (`≥1m` to `≥1h`).                                                                                                                                      |
+| **Pagination & detail bounds** | 25 cameras/page (API 1–50), bound to `catalog_revision` with 15-minute `page_token` expiry (HTTP `409` resets pagination). Up to 256 exact recent ranges and 256 deletion intervals per stream (10,000-entry ledger); aggregated strips use 15m / 1h / 6h buckets with exact totals. |
 
-One deletion worker runs at a time. Close stored playback and wait for active
-exports before confirming. The server rechecks authorization during execution;
-revoking the session can leave a recoverable staged object rather than granting
-an old request unlimited permission to continue. A failed confirmation consumes
-its private nonce. Choose **Refresh preview**, review the new result, and type
-the confirmation again. The textbox is disabled while the refresh is pending.
-Losing the Administrator role or maintenance capability discards the review,
-including late preview responses. Already-removed bytes cannot be restored by
-cancellation.
+See [Recording and evidence](./recording-and-evidence.md) for coverage interpretation and [recording integrity guide](https://github.com/xnorpx/keeppeek/blob/main/docs/recording-integrity.md) for Prometheus `/metrics`.
 
-## Select a complete scope
+## Storage safety invariants
 
-Maintenance uses stable source, stream, and recording identifiers, never a
-display name or a caller-supplied filesystem path. Catalog inspection accepts
-one recording or a nonempty half-open time range on one source and logical stream.
-The start is included and the end is excluded.
+- **Manual vs. automatic retention:** Automatic retention runs separately from manual deletion. Active manual claims exclude their recordings from automatic retention and new playback/export resolution until they reach a terminal state.
+- **Named storage volumes:** Deletion follows each recording's current catalog owner (including relocated recordings), requires the bound root to be online and writable, and blocks while readers or unfinished moves hold the object. Interrupted jobs retain capacity ownership until durable checkpoints finish.
+- **Active files (`.active`):** Startup preserves `.active` files and catalog rows in every root without assuming temporary names authorize deletion. Writers create `.active` files exclusively and fail rather than truncating or replacing an existing path.
+- **No side-effect removals:** Bookmarks do **not** protect footage from deletion, ready exports are **not** deleted when source recordings are removed, and unknown files are **never** automatically adopted or deleted.
 
-A range selects whole recording objects that overlap it. It does not trim media
-at the requested timestamps. The snapshot retains each object's full start and
-end bounds so an eventual destructive preview can show any expansion explicitly.
-The confirmation uses those whole-object bounds; it does not rewrite partial
-boundary fragments. Inspect the listed boundaries even when the requested
-interval is much shorter than the selected recording.
+## Plan-then-confirm recording deletion (`/recordings/maintenance`)
 
-Selections contain at most 128 recording objects. Time ranges span at most
-31 days, and indexed history inspection is bounded to 4,096 rows. If a complete
-selection cannot be established within those limits, the request fails instead
-of returning a partial result that could be mistaken for the full scope.
+Requires **Administrator** access and `keeppeek.recording-maintenance.v1` over WebRTC. Before deleting irreplaceable footage, retain and independently verify an evidence export or [archive recovery copy](./recording-archive-recovery.md).
 
-Counts and bytes in a catalog snapshot are recorded metadata. They do not prove
-that a file is intact, that its media is playable, or that the selected interval
-has no gaps. Active, protected, and cleanup-pending objects remain visible rather
-than disappearing from the selection.
+### Deletion runbook
 
-## Understand durable intent
+1. Open **Recording integrity → Maintenance** (`/recordings/maintenance`, **Recordings** tab), or choose **Review deletion** from Keep's export-range view to carry the camera, stream, and UTC interval over (closing Keep also releases its playback cursor).
+2. Select **Camera**, **Stream** (`Sub` or `Main`), **Reason** (**Operator cleanup** or **Privacy request**), and half-open UTC **Start (UTC)** / **End (UTC)** bounds (`[start, end)`), then choose **Preview deletion**.
+3. Review every listed whole-recording boundary, total bytes, catalog revision, gaps, bookmarks, related exports, and stated consequences. Selections containing active, protected, retention-pending, unknown-end, or identity-unavailable recordings cannot be confirmed.
+4. Close competing playback and wait for active exports, type the exact prompt text (for example `DELETE 1`), and choose **Delete permanently**. Choose **Keep recordings** to dismiss without starting, or **Cancel job** to cancel prepared/queued admission.
+5. Track per-object outcomes; use **Refresh job** after disconnects, **Retry failed objects** for recoverable failures, and **Download report** to save a redacted JSON record (contains no confirmation nonce or host paths).
 
-Preparation reads an authoritative snapshot and checks its catalog revision. It
-rejects empty selections, active or unfinalized recordings, protected recordings,
-pending automatic cleanup, and recordings without a known end time. The stored
-intent records the requester, scope, operator or privacy reason, and timestamps.
+A failed confirmation consumes its server nonce—choose **Refresh preview**, review the fresh snapshot, and re-enter the confirmation text. Losing Administrator access or the capability immediately discards the active review and any late preview responses.
 
-The snapshot also retains an opaque fingerprint of each recording's catalog
-device/file identifier. Confirmation and restart preserve this preparation-time
-binding; a later catalog refresh cannot substitute another file into the plan.
-Missing preparation evidence stays unavailable even if the current catalog later
-gains an identifier. The fingerprint does not verify media contents or prevent
-filesystem identifier reuse.
+### Scope, durability, and crash-recovery contract
 
-Confirmation requires the same requester, a server-generated nonce, and the
-unchanged preview revision. The catalog stores a hash of the nonce rather than
-the nonce itself. Prepared plans expire after ten minutes using both wall-clock
-and monotonic time; restarting the catalog requires a new preparation.
+- **Whole-object scope & hard limits:** Maintenance addresses stable source/stream/recording IDs only (never display names or caller paths) and selects every **whole recording** overlapping `[start, end)` without trimming boundary files. Limits: **≤128 objects/plan**, **≤31-day range**, **≤4,096 catalog rows inspected** (exceeding limits fails explicitly rather than returning partial scope), **10-minute** plan expiry (wall + monotonic; restart invalidates prepared plans), **≤128 prepared plans**, and **≤256 confirmed/cancelled jobs** (expired/terminal records older than 30 days may be pruned; unresolved claims are never evicted).
+- **Identity binding & concurrency:** Preparation locks an opaque device/file fingerprint, catalog revision, requester identity, and hashed nonce. One deletion worker runs at a time, shares the configuration-update lock with restore/access/export retries, and rechecks session authorization before filesystem mutations. Confirmation is idempotent across lost replies and restarts.
+- **Restart recovery:** Startup runs a **2-second bounded recovery pass** before recording pipelines start. It settles catalog completion **only** when staging-directory filesystem identity and absence checks prove unlink already finished—it never moves or deletes present media. Abandoned `Working` items report `Failed` and retain reservations for authenticated **Retry failed objects** (available even on cancelled jobs). Cancelling interrupted work never releases a claim unless the original selected file is positively identified.
+- **Audit evidence:** Access audit links outcomes to the durable job ID; structured `recording_maintenance` logs record requester, scope, expanded bounds, reason, revision, counts, and outcome (`hold_override` is always `false`; paths, nonces, and raw failures are redacted).
 
-| State     | Meaning                                                                                          |
-| --------- | ------------------------------------------------------------------------------------------------ |
-| Prepared  | A short-lived intent is awaiting confirmation; no recording is reserved.                         |
-| Expired   | Preparation must be repeated before confirmation.                                                |
-| Queued    | Confirmation and a per-recording ledger are durable. Execution may reserve the selection.        |
-| Working   | A live execution attempt owns the object.                                                        |
-| Staged    | The selected file has moved into private maintenance storage, with a durable staging checkpoint. |
-| Deleted   | File removal and catalog completion have been recorded.                                          |
-| Failed    | Removal did not finish; retained evidence and a retry or inspection are required.                |
-| Cancelled | Admission of unstarted objects has stopped. Objects already deleted stay deleted.                |
+| Job / object state | Meaning                                                                                                                     |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `Prepared`         | Short-lived preview awaiting confirmation; no recordings reserved.                                                          |
+| `Expired`          | Plan timed out or catalog restarted; repeat **Preview deletion**.                                                           |
+| `Queued`           | Confirmation and per-object ledger committed atomically; ready for execution.                                               |
+| `Working`          | Live deletion worker owns the object.                                                                                       |
+| `Staged`           | File moved into private maintenance staging with durable directory-identity checkpoint.                                     |
+| `Deleted`          | Unlink verified and catalog completion recorded (irreversible).                                                             |
+| `Failed`           | Removal did not finish; claim retained for inspection or **Retry failed objects**.                                          |
+| `Cancelled`        | Unstarted objects will not execute; already-deleted objects stay deleted; failed/staged items remain inspectable/retryable. |
 
-Confirmation creates exactly one ledger entry per selected recording in snapshot
-order, in the same transaction as the queued state. Retrying the same confirmation
-after a lost reply or restart returns that job rather than duplicating work.
-Queued and cancelled intents survive restart. Cancellation is idempotent and
-cannot assign a time before creation or confirmation.
+## Administrator-confirmed local archive retention
 
-The catalog admits at most 128 prepared plans and 256 confirmed or retained
-cancelled jobs. Expired preparation and terminal history older than 30 days
-can be pruned; unresolved execution is not evicted to make room. Cancelling before
-confirmation does not create work entries.
+Fourth-tier local archive copies (**Settings → Storage & retention → Local archive**, requiring `keeppeek.local-archive-retention.v1`) protect the **last verified copy** during retention deletion. Setting **Archive retention days** (`retention_days`; blank = indefinite) makes verified replicas eligible for preview only—**expiry alone never deletes any archive copy**.
 
-Reservations and per-object checkpoints survive restart. An authenticated retry
-can resume an abandoned attempt; it cannot run concurrently with a still-live
-worker. A file that disappeared before any staging evidence is not reported as
-deleted. The staging checkpoint binds recovery to the original token directory's
-filesystem identity. A missing or replacement directory, renamed staged recording,
-or unexpected entry requires inspection instead of a successful result. Once
-unlink has completed, recovery can still finish if the empty original source
-directory has been removed.
+### Archive deletion runbook
 
-Cancelling interrupted work does not release a claim merely because staging is
-absent. The original selected file must be positively identified; otherwise the
-object remains failed and reserved for inspection or recovery. **Retry failed
-objects** is available for those failures even when the job is cancelled. After
-restart, a previous worker's pending objects report failed instead of indefinitely
-working; the checkpoint and reservations remain intact for authenticated retry.
-Before recording pipelines start, a bounded recovery pass settles catalog completion
-only when the original staging-directory checkpoint and absence checks prove that
-unlink has already completed. It does not move or delete present media. Other
-pending objects remain failed and reserved for an Administrator to inspect or retry.
-Each settled outcome is atomic, respects the original request deadline, and leaves
-any live executor untouched. If the pass cannot finish within its two-second budget,
-the server records a warning and retains unresolved claims.
+1. Open **Settings → Storage & retention → Local archive**.
+2. Choose **Preview archive deletion** on one ready job, or **Preview expired archive copies** to preview one page of up to **16** retention-eligible jobs.
+3. Review the target ID, object IDs, bytes, verification timestamp, and per-item eligibility (`Eligible for deletion`, `Within retention period`, `Restore the primary copy first`, `Verified primary unavailable`, `Preservation hold or maintenance`, `An active reader is using this object`, `Awaiting fresh verification`).
+4. Choose **Confirm archive deletion** to queue removal for **only** the eligible items on that page (each additional page requires its own preview and confirmation). Use **Cancel queued archive deletion** before execution starts if needed.
 
-## Audit and coordination
+### Last-verified-copy protection rules
 
-Maintenance admission shares the configuration-update lock used by restore and
-access configuration. An export retry cannot remove its existing job while
-maintenance is admitted. The worker retains storage coordination during execution
-and rechecks the current session before filesystem mutations.
+- **Two-copy verification & durable staging:** Before claiming a job, the worker verifies both complete copies within one `operation_timeout_secs`, then records retirement intent, quarantines the archive, records staging, and re-verifies both the staged archive and protected primary in the same turn before unlinking. Restart resumes from the last durable step.
+- **Evicted primaries & expired exports:** Evicted recordings require a completed **Restore primary** before archive deletion is allowed. Expired exports whose primary was already retired retain their archive copy. Holds, active readers, changed media, or unavailable primary storage block removal (`archive_deletion_blocked`).
+- **Staged restore fence:** Archive deletion claims are refused while a pending configuration restore would replace the database or change/disable the active `[storage.archive]` target ID or root.
+- **Permanent catalog exclusion:** Once acknowledged, KeepPeek records the deletion in the catalog and permanently excludes that recording or export from automatic archiving and the manual copy picker while that catalog is in use.
 
-The access audit links each execution outcome to its durable job ID. Structured
-`recording_maintenance` log events include requester, source and stream, requested
-and expanded interval bounds, operator or privacy reason, preview revision,
-object and byte counts, relationship counts, and the observed result. Hold
-override is always false: this workflow cannot release a hold. Results distinguish
-successful deletion, partial failure, incomplete work, completed cancellation,
-and cancellation with pending work. Paths, confirmation nonces, and raw failure
-details are excluded.
+| Server platform             | Surviving-primary protection requirement before archive removal                                                                                                                                                                                                                                                                                                                                                                  |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Windows (NTFS)**          | KeepPeek holds a writer-excluding read handle on the primary throughout archive removal.                                                                                                                                                                                                                                                                                                                                         |
+| **Linux**                   | Primary **must** have both `fs-verity` and the immutable inode flag (`chattr +i`); ordinary mutable Linux primaries retain both copies (`archive_primary_write_protection_required`). After the job reaches `acknowledged`, a host admin may verify catalog identity/digest and clear the immutable flag with `chattr -i -- <path>` if moves or retention must resume (never while queued, claimed, or pending acknowledgement). |
+| **macOS & other platforms** | Both copies are retained; archive removal does not proceed.                                                                                                                                                                                                                                                                                                                                                                      |
 
-## Reconcile the catalog
+## Catalog reconciliation (`/recordings/maintenance` → Reconciliation)
 
-Open the **Reconciliation** view and choose **Inspect catalog**. The dry run reads
-at most 4,096 catalog rows and 4,096 archive entries and returns at most 128
-findings. Scan limits are explicit: an incomplete report cannot authorize a
-remedy. Reports expire after ten minutes and belong to the requesting
-Administrator. At most sixteen reports are retained in server memory.
+Choose **Inspect catalog** to run a bounded read-only inventory comparing the catalog against archive roots:
 
-The inventory reports missing and unknown files, duplicate paths or catalog file
-identities, size or identity mismatch, rejected paths, temporary files, interrupted
-work, corrupt containers, and playback-index mismatch. Protected recordings are
-not mislabeled as interrupted jobs. Active recordings are not parsed while their
-writer can still change them.
+- **Scan bounds:** Reads at most **4,096 catalog rows** and **4,096 archive entries**, returning at most **128 findings**. Incomplete reports explicitly disable all remedies. Reports belong to the requesting Administrator, expire after **10 minutes**, and at most **16** live in server memory.
+- **Findings reported:** Missing/unknown files, duplicate paths or catalog file identities, size/identity mismatch, rejected paths, temporary files, interrupted work, corrupt containers, and playback-index mismatch. Protected recordings are not mislabeled as interrupted; active recordings are never parsed.
+- **Bounded fMP4 validation:** Finalized cataloged files verify box boundaries, decode times, track IDs, sample extents, and decoder metadata up to **4,096 fragments**, **8 MiB metadata**, **2 tracks**, and **65,536 samples/track fragment**. This is a structural check, not a full media decode or content checksum.
+- **Reports & remedies:** Filter by category and save evidence via **Download reconciliation report**. Mutating remedies share storage coordination with deletion/restore and require a fresh scan afterward. Quarantine, content-checksum comparison, and previewed temp-file deletion are not implemented.
 
-Finalized cataloged files use bounded fragmented-MP4 validation: box boundaries,
-decode times, track identities, sample extents, and decoder metadata are checked.
-The parser accepts at most 4,096 fragments, 8 MiB of metadata and two tracks; each
-track fragment has at most 65,536 samples. This is not a full media decode or a
-stored-content checksum comparison. Unknown files are never automatically adopted,
-moved, or deleted.
+| Remedy               | Eligible finding                                                       | Effect & preconditions                                                                                                                                                                      |
+| -------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Acknowledge**      | Any finding                                                            | Marks ignored in the in-memory report only; touches neither catalog nor disk.                                                                                                               |
+| **Retain tombstone** | Missing, unprotected cataloged file                                    | Rechecks absence and catalog revision, removes stale row/playback indexes, preserves deletion-coverage tombstone; deletes **no** disk bytes. Rejected if file reappears or catalog changed. |
+| **Rebuild index**    | Existing unprotected cataloged file with valid fMP4 and index mismatch | Rechecks revision, index fingerprint, and file identity, then rebuilds fragment/keyframe indexes and coverage in one transaction; media bytes untouched. Unavailable for unknown files.     |
 
-- **Acknowledge** records an explicit ignore decision in the retained report and
-  leaves the file and catalog untouched.
-- **Retain tombstone** is available only for a missing, unprotected cataloged
-  file. It rechecks absence and catalog revision, then removes the stale row and
-  playback indexes while retaining existing coverage-derived deletion evidence.
-  No filesystem bytes are deleted. A reappeared file or changed catalog rejects
-  the operation; inspect again before making another change.
-- **Rebuild index** is available only for an existing unprotected catalog recording
-  whose container validates and whose playback index differs. After confirmation,
-  it rechecks the catalog revision, exact index fingerprint and retained file
-  observation. It replaces fragment/keyframe indexes and derived coverage in one
-  transaction. The media bytes are unchanged. Unknown files cannot use this action.
+## Preflight statuses and filesystem trust boundaries
 
-Category filters and **Download reconciliation report** preserve inspection
-results. A new scan is required after a catalog-changing remedy. Mutating remedies
-share storage coordination with deletion and restore. Quarantine, content-checksum
-comparison, and previewed deletion of owned temporary files are not implemented yet.
+Internal preflight checks run an actor-owned queued job by taking one catalog read transaction first, closing it, and performing at most **128 filesystem checks** under a shared **2-second cooperative deadline** (paths bounded to **4,096 bytes** and **16 components**; timeouts return no partial report, and malformed persisted fingerprints fail with redacted errors).
 
-## Read a preflight report
+| Preflight status                                            | Meaning                                                                                                             |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `Present`                                                   | Preparation fingerprint, current catalog ID, observed file identity, and byte size all match (contents not hashed). |
+| `IdentityChanged`                                           | Preparation fingerprint, current catalog ID, and observed file disagree.                                            |
+| `IdentityUnavailable`                                       | Missing preparation or catalog identity evidence (path/size alone never match).                                     |
+| `MissingFile` / `MissingCatalog`                            | File absent at resolved path, or catalog row absent (disk state unknown).                                           |
+| `CatalogChanged`                                            | Source, stream, time bounds, or recorded byte count changed since preview.                                          |
+| `ActiveRecording` / `ProtectedRecording` / `CleanupPending` | Catalog state blocks manual maintenance (reported before filesystem inspection).                                    |
+| `SizeMismatch`                                              | Observed file length differs from catalog byte count.                                                               |
+| `PathRejected` / `InspectionFailed`                         | Escapes, hidden directories (such as `.exports`), alternate streams, links, nonregular files, or OS I/O error.      |
 
-Preflight accepts an actor-owned queued job. Its caller must authenticate and
-authorize the Administrator and supply the configured archive. These internal
-storage methods are not themselves a network authorization boundary.
+### What filesystem checks prove—and remaining Alpha boundaries
 
-The job, ledger, current recording rows, and observed catalog revision share one
-read transaction on the catalog search worker. Filesystem checks run only after
-that transaction closes. Reports preserve snapshot order and do not expose host
-paths or confirmation secrets.
+- **Path & handle safety:** Inspection pins the archive root and traverses descendant directories without following links, rejecting hidden directories, traversal, alternate data streams, symlinks, nonregular files, and multi-hardlink files both before and on the opened non-writable handle (nonblocking open on Unix; attribute open on Windows; never reads media bytes or requests write/truncate access).
+- **Staging & OS guarantees:** Deletion moves files into owner-only private staging, revalidates identity, and syncs directories before catalog completion. Unix enforces process-owned directories, atomic no-replace rename, and post-unlink inode link-count verification. Native Windows requires **NTFS** with persistent ACLs, checked directory flushes, and handle-based rename/disposition—**ReFS** (which needs 128-bit identity and a separate durability contract), FAT, and network shares are rejected before mutation.
+- **Explicit limits:** A `Present` preflight is never standalone permission to delete (filesystem checks are not atomic with catalog reads or unlinks, and file IDs can be reused after handle drop). Checks do **not** isolate maintenance from another process running under the same OS user or `root`; do not treat retries after external staging tampering as qualified recovery.
+- **Qualification status:** Implementation [issue #133](https://github.com/xnorpx/keeppeek/issues/133) passed native Windows/macOS/Linux synthetic checks, while deployment-specific qualification remains open under [Alpha gate #145](https://github.com/xnorpx/keeppeek/issues/145) (adversarial replacement at mutation boundaries, full NTFS/Linux runtime and unsupported-FS coverage, cross-feature coordination/audit, crash recovery across all file/catalog/tombstone states, remaining reconciliation remedies, browser retry/revocation flows, and final-commit performance evidence).
 
-| Status                | Meaning                                                                                                              |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `Present`             | Planned and current device/file fingerprints match the observed file, and its size matches. Content is not verified. |
-| `IdentityChanged`     | The preparation-time fingerprint, current catalog identifier, and observed file do not all agree.                    |
-| `IdentityUnavailable` | The preparation or current catalog lacks identity evidence; path and size cannot establish a match.                  |
-| `MissingFile`         | The catalog-resolved file could not be found during inspection.                                                      |
-| `MissingCatalog`      | The recording row is absent. Its file location and whether bytes remain are unknown.                                 |
-| `CatalogChanged`      | Source, logical stream, recording bounds, or recorded size no longer match the plan.                                 |
-| `ActiveRecording`     | The recording is no longer finalized.                                                                                |
-| `ProtectedRecording`  | Current catalog protection blocks maintenance.                                                                       |
-| `CleanupPending`      | Automatic retention already has pending work for the recording.                                                      |
-| `SizeMismatch`        | The observed file size differs from the catalog byte count.                                                          |
-| `PathRejected`        | The path is not eligible for inspection, including escapes, hidden paths, or links.                                  |
-| `InspectionFailed`    | Another filesystem error prevented a usable observation.                                                             |
-
-Malformed identity evidence or an inconsistent ledger rejects the report rather
-than reconstructing work from current files. Known catalog blockers are reported
-before inspecting the affected path. Both the planned and observed catalog
-revisions are returned; a changed revision requires another preview.
-
-Malformed persisted fingerprints also reject intent reads and confirmation retries
-with a redacted error. Rejected values and internal paths are not included in
-public diagnostic messages.
-
-The entire request shares one two-second deadline across queueing, catalog reads,
-and at most 128 filesystem checks. Paths are limited to 4,096 bytes and sixteen
-components. The deadline is cooperative: it cannot interrupt an operating-system
-or database call already in progress. A timeout returns no partial report.
-
-## Know what file inspection proves
-
-Inspection pins the configured archive directory and opens each descendant
-directory without following links. It rejects hidden directories such as
-`.exports`, traversal, alternate-stream syntax, leaf symlinks, nonregular files,
-and files with multiple hard links. Checks before opening do not replace the
-checks on the opened file.
-
-Each observation retains a non-writable file handle until it is dropped. Unix
-uses nonblocking opens to avoid waiting for a writer if a regular file is swapped
-for a FIFO. Unix requires read permission; Windows requests file attributes.
-Inspection does not read media bytes or request write, create, or truncate access.
-Preflight releases each file observation as it advances to the next object.
-
-A retained handle pins the observed object, not its pathname. Another handle can
-still change the file's contents. Device/file identifiers can be reused outside
-the lifetime of an open handle, and the available 64-bit Windows file index is not
-a complete ReFS identity. These checks do not certify immutable recording ownership
-or qualify Windows reparse-point races without runtime verification.
-
-Even an all-`Present` report with a matching revision is not permission to delete.
-Filesystem observations are not atomic with the catalog read or with one another.
-Revalidating a file and then unlinking its pathname still leaves a replacement
-race. Missing catalog metadata is never evidence that an unknown file is safe to
-remove.
-
-The removal path uses separate private staging directories, revalidates the
-staged object, and synchronizes directory changes before recording completion.
-Unix directories must be owned by the process user and deny untrusted mutation;
-private staging denies group and other access. macOS and Linux use atomic
-no-replace rename, so a destination introduced before the move is not overwritten.
-Unix also checks the retained selected inode after unlink and rejects the attempt
-if that inode is still linked.
-
-These checks do not isolate maintenance from another process running as the same
-operating-system account or root. Such a process can replace private staging
-names immediately before Unix pathname-based unlink. Post-unlink checks can
-detect some substitutions, but cannot prevent the replacement from being removed
-or establish where a relocated recording went. Do not treat retries after external
-staging manipulation as qualified recovery. A trusted service-account boundary
-or stronger process isolation must be resolved before this feature is qualified.
-
-The native Windows implementation targets NTFS with persistent ACLs, checked
-directory flushes, and handle-based rename/disposition. Other filesystems,
-including ReFS, are rejected before source-file mutation. ReFS requires a full
-128-bit file identity and a separately justified namespace-durability strategy;
-a successful directory-flush call alone is not sufficient. The
-[PR CI run](https://github.com/xnorpx/keeppeek/actions/runs/34722005032) and
-[extended Main run](https://github.com/xnorpx/keeppeek/actions/runs/34722240086)
-exercise the implementation, including Windows and synthetic deletion, on production
-tree `4df9a94e` (equivalent to `4bc3ab18`). This establishes automated coverage of
-the exercised fixtures, not every NTFS race, crash boundary, device, or deployment.
-
-## Qualification still required
-
-For day-to-day operation, treat an unresolved reservation, missing staging identity, or incomplete
-reconciliation report as an inspection task. Preserve the report and the original files, close
-competing playback or exports when directed, and refresh the authoritative preview. Do not clear
-catalog rows or hidden staging entries manually to make a retry available. See
-[Recording archive recovery](./recording-archive-recovery.md#diagnose-incomplete-recovery) for the
-difference between index repair, tombstones, and recovering missing bytes.
-
-For a deployment and final release candidate, retain explicit evidence for:
-
-- exact object ownership and adversarial replacement at every mutation boundary;
-- Windows NTFS and Linux runtime tests, plus supported-filesystem failure behavior;
-- holds, shares, operational investigations, moves, restores, and current access
-  coordination, including audit completeness;
-- partial failure, lost replies, cancellation, and crash recovery across all
-  file/catalog/tombstone combinations;
-- the remaining reconciliation categories and remedies;
-- browser conflict regeneration, failed-job retry, access revocation, and truthful
-  timeline results, beyond the existing desktop/mobile happy-path coverage;
-- final-commit canonical checks and reproducible performance evidence.
-
-Unknown files must never be adopted or deleted automatically. A ready export must
-not be removed as a side effect of deleting its source, and a bookmark is not an
-evidence hold. The implementation and acceptance criteria are tracked in
-[issue #133](https://github.com/xnorpx/keeppeek/issues/133).
-
-Use [Recording and evidence](./recording-and-evidence.md) for recording policies,
-playable coverage, and evidence exports. See [Backup and restore](./backup-and-restore.md)
-before changing storage, and [Release readiness and known limitations](./release-readiness.md)
-for the qualification status of the wider system.
+See [Diagnose incomplete recovery](./recording-archive-recovery.md#diagnose-incomplete-recovery) when troubleshooting missing bytes vs. catalog drift, [Backup and restore](./backup-and-restore.md) before changing storage, and [Release readiness and known limitations](./release-readiness.md).
