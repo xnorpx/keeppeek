@@ -5898,6 +5898,8 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("keeppeek-updates-cfg-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
+        #[cfg(not(windows))]
+        let root = root.canonicalize().unwrap();
         let config_path = root.join("config.toml");
         std::fs::write(
             &config_path,
