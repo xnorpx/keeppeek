@@ -23,9 +23,31 @@ use std::{
 const ANNEXB_START_CODE: [u8; 4] = [0, 0, 0, 1];
 const MAX_PENDING_MP4_SAMPLES: usize = 512;
 const MAX_PENDING_MP4_BYTES: usize = 16 * 1024 * 1024;
+const MAX_BUFFERED_RTP_PACKETS: usize = 50_000;
+const MAX_BUFFERED_RTP_BYTES: u64 = 16 * 1024 * 1024;
 const DEFAULT_MP4_TIMESCALE: u32 = 90_000;
 const DEFAULT_FRAME_DURATION_TICKS: u32 = 3_000;
 const RTP_MIN_HEADER_LEN: usize = 12;
+
+/// Controls which media artifacts [`BitstreamRecorder`] persists to disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BitstreamRecordOptions {
+    pub write_video: bool,
+    pub write_audio: bool,
+    pub write_muxed_mp4: bool,
+    pub write_rtp_dump: bool,
+}
+
+impl Default for BitstreamRecordOptions {
+    fn default() -> Self {
+        Self {
+            write_video: true,
+            write_audio: true,
+            write_muxed_mp4: true,
+            write_rtp_dump: true,
+        }
+    }
+}
 
 /// Video bitstream codec supported by [`BitstreamRecorder`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,6 +189,9 @@ pub struct BitstreamRecorder {
     capture_dir: PathBuf,
     max_bytes: u64,
     bytes_written: u64,
+    write_video: bool,
+    write_audio: bool,
+    write_muxed_mp4: bool,
     write_rtp_dump: bool,
     video_params: Option<VideoStreamParams>,
     audio_params: Option<AudioStreamParams>,
@@ -189,6 +214,7 @@ pub struct BitstreamRecorder {
     first_audio_pts_us: Option<u64>,
     fua_tracks: HashMap<String, FuaTrackState>,
     rtp_first_ts_us: Option<u64>,
+    rtp_buffered_bytes: u64,
     rtp_packets: Vec<CapturedRtpPacket>,
     report: BitstreamAnomalyReport,
 }
@@ -203,6 +229,25 @@ impl BitstreamRecorder {
         max_bytes: u64,
         write_rtp_dump: bool,
     ) -> anyhow::Result<Self> {
+        Self::with_options(
+            capture_dir,
+            max_bytes,
+            BitstreamRecordOptions {
+                write_rtp_dump,
+                ..BitstreamRecordOptions::default()
+            },
+        )
+    }
+
+    /// Creates a recorder with explicit artifact selection flags.
+    ///
+    /// # Errors
+    /// Returns an error if `max_bytes` is zero or `capture_dir` cannot be created.
+    pub fn with_options(
+        capture_dir: impl AsRef<Path>,
+        max_bytes: u64,
+        options: BitstreamRecordOptions,
+    ) -> anyhow::Result<Self> {
         ensure!(max_bytes > 0, "bitstream max_bytes must be positive");
         let capture_dir = capture_dir.as_ref().to_path_buf();
         std::fs::create_dir_all(&capture_dir)?;
@@ -210,7 +255,10 @@ impl BitstreamRecorder {
             capture_dir,
             max_bytes,
             bytes_written: 0,
-            write_rtp_dump,
+            write_video: options.write_video,
+            write_audio: options.write_audio,
+            write_muxed_mp4: options.write_muxed_mp4,
+            write_rtp_dump: options.write_rtp_dump,
             video_params: None,
             audio_params: None,
             video_file: None,
@@ -232,6 +280,7 @@ impl BitstreamRecorder {
             first_audio_pts_us: None,
             fua_tracks: HashMap::new(),
             rtp_first_ts_us: None,
+            rtp_buffered_bytes: 0,
             rtp_packets: Vec::new(),
             report: BitstreamAnomalyReport::default(),
         })
@@ -297,7 +346,12 @@ impl BitstreamRecorder {
         }
         let origin_us = *self.rtp_first_ts_us.get_or_insert(timestamp_us);
         let delay_ms = timestamp_us.saturating_sub(origin_us) / 1_000;
-        if self.bytes_written.saturating_add(raw_rtp.len() as u64) <= self.max_bytes {
+        let rtp_cap = self.max_bytes.min(MAX_BUFFERED_RTP_BYTES);
+        let rtp_bytes = u64::try_from(raw_rtp.len()).unwrap_or(u64::MAX);
+        if self.rtp_packets.len() < MAX_BUFFERED_RTP_PACKETS
+            && self.rtp_buffered_bytes.saturating_add(rtp_bytes) <= rtp_cap
+        {
+            self.rtp_buffered_bytes += rtp_bytes;
             self.rtp_packets.push(CapturedRtpPacket {
                 track: track.to_owned(),
                 channel,
@@ -309,9 +363,9 @@ impl BitstreamRecorder {
                 delay_ms,
                 payload: parsed.payload.to_vec(),
             });
-            if self.write_rtp_dump {
-                self.append_rtp_dump(track, channel, timestamp_us, raw_rtp)?;
-            }
+        }
+        if self.write_rtp_dump {
+            self.append_rtp_dump(track, channel, timestamp_us, raw_rtp)?;
         }
         Ok(())
     }
@@ -345,9 +399,15 @@ impl BitstreamRecorder {
         if has_idr {
             self.report.idr_count += 1;
         }
-        self.write_video_annexb(codec, &nalus)?;
+        if self.write_video {
+            self.write_video_annexb(codec, &nalus)?;
+        }
         let mp4_payload = filter_mp4_video_nalus(codec, &nalus);
-        if !mp4_payload.is_empty() {
+        if self.write_muxed_mp4
+            && !self.mp4_failed
+            && !mp4_payload.is_empty()
+            && self.bytes_written < self.max_bytes
+        {
             let pts_90k = pts_us.saturating_mul(90) / 1_000;
             self.push_mp4_sample(PendingSample {
                 is_audio: false,
@@ -379,8 +439,14 @@ impl BitstreamRecorder {
             | AudioElementaryCodec::Pcma
             | AudioElementaryCodec::Opus => frame_bytes.to_vec(),
         };
-        self.write_audio_elementary(params.codec, &elem)?;
-        if params.codec == AudioElementaryCodec::Aac {
+        if self.write_audio {
+            self.write_audio_elementary(params.codec, &elem)?;
+        }
+        if self.write_muxed_mp4
+            && !self.mp4_failed
+            && params.codec == AudioElementaryCodec::Aac
+            && self.bytes_written < self.max_bytes
+        {
             let raw =
                 parse_adts(frame_bytes).map_or(frame_bytes, |info| &frame_bytes[info.header_len..]);
             if !raw.is_empty() {
@@ -431,9 +497,16 @@ impl BitstreamRecorder {
         if let Some(mut file) = self.rtp_dump_file.take() {
             file.flush()?;
         }
-        self.try_init_mp4()?;
-        if let Some(mut mp4) = self.mp4_writer.take() {
-            mp4.write_end().context("finalize muxed.mp4")?;
+        if self.write_muxed_mp4 {
+            self.try_init_mp4()?;
+        }
+        if let Some(mut mp4) = self.mp4_writer.take()
+            && mp4.write_end().is_err()
+        {
+            self.cleanup_failed_mp4();
+        }
+        if self.mp4_failed {
+            self.cleanup_failed_mp4();
         }
         Ok(BitstreamOutputs {
             video_path: self.video_path,
@@ -545,18 +618,18 @@ impl BitstreamRecorder {
     }
 
     fn write_video_annexb(&mut self, codec: VideoCodecKind, nalus: &[&[u8]]) -> anyhow::Result<()> {
-        if self.video_file.is_none() {
-            let path = self
-                .capture_dir
-                .join(format!("video.{}", codec.extension()));
-            let file = File::create(&path)?;
-            self.video_file = Some(BufWriter::new(file));
-            self.video_path = Some(path);
-        }
         for nalu in nalus {
             let needed = u64::try_from(4 + nalu.len()).context("NALU size")?;
             if self.bytes_written.saturating_add(needed) > self.max_bytes {
                 return Ok(());
+            }
+            if self.video_file.is_none() {
+                let path = self
+                    .capture_dir
+                    .join(format!("video.{}", codec.extension()));
+                let file = File::create(&path)?;
+                self.video_file = Some(BufWriter::new(file));
+                self.video_path = Some(path);
             }
             if let Some(file) = self.video_file.as_mut() {
                 file.write_all(&ANNEXB_START_CODE)?;
@@ -572,6 +645,13 @@ impl BitstreamRecorder {
         codec: AudioElementaryCodec,
         bytes: &[u8],
     ) -> anyhow::Result<()> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let needed = u64::try_from(bytes.len()).context("audio frame size")?;
+        if self.bytes_written.saturating_add(needed) > self.max_bytes {
+            return Ok(());
+        }
         if self.audio_file.is_none() {
             let path = self
                 .capture_dir
@@ -579,10 +659,6 @@ impl BitstreamRecorder {
             let file = File::create(&path)?;
             self.audio_file = Some(BufWriter::new(file));
             self.audio_path = Some(path);
-        }
-        let needed = u64::try_from(bytes.len()).context("audio frame size")?;
-        if self.bytes_written.saturating_add(needed) > self.max_bytes {
-            return Ok(());
         }
         if let Some(file) = self.audio_file.as_mut() {
             file.write_all(bytes)?;
@@ -598,18 +674,18 @@ impl BitstreamRecorder {
         timestamp_us: u64,
         raw_rtp: &[u8],
     ) -> anyhow::Result<()> {
-        if self.rtp_dump_file.is_none() {
-            let path = self.capture_dir.join("rtp_packets.bin");
-            let file = File::create(&path)?;
-            self.rtp_dump_file = Some(BufWriter::new(file));
-            self.rtp_dump_path = Some(path);
-        }
         let track_bytes = track.as_bytes();
         let track_len = u8::try_from(track_bytes.len().min(255)).unwrap_or(255);
         let rtp_len = u32::try_from(raw_rtp.len()).context("RTP packet length")?;
         let needed = 1 + usize::from(track_len) + 2 + 8 + 4 + raw_rtp.len();
         if self.bytes_written.saturating_add(needed as u64) > self.max_bytes {
             return Ok(());
+        }
+        if self.rtp_dump_file.is_none() {
+            let path = self.capture_dir.join("rtp_packets.bin");
+            let file = File::create(&path)?;
+            self.rtp_dump_file = Some(BufWriter::new(file));
+            self.rtp_dump_path = Some(path);
         }
         if let Some(file) = self.rtp_dump_file.as_mut() {
             file.write_all(&[track_len])?;
@@ -624,30 +700,42 @@ impl BitstreamRecorder {
     }
 
     fn push_mp4_sample(&mut self, sample: PendingSample) -> anyhow::Result<()> {
-        if self.mp4_failed {
+        if self.mp4_failed || !self.write_muxed_mp4 {
             return Ok(());
         }
         if self.mp4_writer.is_some() {
             return self.write_mp4_sample(sample);
         }
-        if self.pending_mp4.len() < MAX_PENDING_MP4_SAMPLES
-            && self.pending_mp4_bytes.saturating_add(sample.bytes.len()) <= MAX_PENDING_MP4_BYTES
-        {
+        let sample_bytes = u64::try_from(sample.bytes.len()).unwrap_or(u64::MAX);
+        if self.bytes_written.saturating_add(sample_bytes) > self.max_bytes {
+            return Ok(());
+        }
+        let queued = self.pending_mp4.len() < MAX_PENDING_MP4_SAMPLES
+            && self.pending_mp4_bytes.saturating_add(sample.bytes.len()) <= MAX_PENDING_MP4_BYTES;
+        if queued {
             self.pending_mp4_bytes += sample.bytes.len();
             self.pending_mp4.push(sample);
         }
-        self.try_init_mp4()
+        let buffer_full = self.pending_mp4.len() >= MAX_PENDING_MP4_SAMPLES
+            || self.pending_mp4_bytes >= MAX_PENDING_MP4_BYTES;
+        if self.audio_params.is_some() || buffer_full {
+            self.try_init_mp4()?;
+        }
+        Ok(())
     }
 
     fn try_init_mp4(&mut self) -> anyhow::Result<()> {
-        if self.mp4_writer.is_some() || self.mp4_failed {
+        if !self.write_muxed_mp4 || self.mp4_writer.is_some() || self.mp4_failed {
             return Ok(());
         }
         let Some(video_track) = self.build_mp4_video_track() else {
             return Ok(());
         };
         let path = self.capture_dir.join("muxed.mp4");
-        let file = File::create(&path)?;
+        let Ok(file) = File::create(&path) else {
+            self.mp4_failed = true;
+            return Ok(());
+        };
         let config = Mp4Config {
             major_brand: "isom".parse().expect("valid fourcc"),
             minor_version: 512,
@@ -658,11 +746,21 @@ impl BitstreamRecorder {
             ],
             timescale: DEFAULT_MP4_TIMESCALE,
         };
-        let mut writer = Mp4Writer::write_start(BufWriter::new(file), &config)?;
-        writer.add_track(&video_track)?;
+        let Ok(mut writer) = Mp4Writer::write_start(BufWriter::new(file), &config) else {
+            self.mp4_failed = true;
+            let _ = std::fs::remove_file(&path);
+            return Ok(());
+        };
+        if writer.add_track(&video_track).is_err() {
+            self.mp4_failed = true;
+            drop(writer);
+            let _ = std::fs::remove_file(&path);
+            return Ok(());
+        }
         self.mp4_video_track_id = Some(1);
-        if let Some(audio_track) = self.build_mp4_audio_track() {
-            writer.add_track(&audio_track)?;
+        if let Some(audio_track) = self.build_mp4_audio_track()
+            && writer.add_track(&audio_track).is_ok()
+        {
             self.mp4_audio_track_id = Some(2);
         }
         self.mp4_writer = Some(writer);
@@ -673,6 +771,16 @@ impl BitstreamRecorder {
             self.write_mp4_sample(sample)?;
         }
         Ok(())
+    }
+
+    fn cleanup_failed_mp4(&mut self) {
+        self.mp4_failed = true;
+        self.mp4_writer = None;
+        self.pending_mp4.clear();
+        self.pending_mp4_bytes = 0;
+        if let Some(path) = self.mp4_path.take() {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     fn build_mp4_video_track(&self) -> Option<TrackConfig> {
@@ -752,7 +860,7 @@ impl BitstreamRecorder {
                 },
             );
             if res.is_err() {
-                self.mp4_failed = true;
+                self.cleanup_failed_mp4();
                 return Ok(());
             }
             self.bytes_written += needed;
@@ -1142,5 +1250,65 @@ mod tests {
         let out = rec.finish().unwrap();
         assert!(out.audio_path.unwrap().exists());
         assert_eq!(out.anomalies.audio_frames, 2);
+    }
+
+    #[test]
+    fn deferred_mp4_init_includes_late_audio_and_respects_budget_and_options() {
+        let dir = TempDir::new();
+        let sps = STANDARD
+            .decode("Z00AKZpkA8ARPyzUBAQFAAADA+gAAOpgBA==")
+            .unwrap();
+        let pps = STANDARD.decode("aO48gA==").unwrap();
+        let opts = BitstreamRecordOptions {
+            write_video: true,
+            write_audio: true,
+            write_muxed_mp4: true,
+            write_rtp_dump: false,
+        };
+        let mut rec = BitstreamRecorder::with_options(dir.path(), 8 * 1024 * 1024, opts).unwrap();
+        rec.configure_video(VideoStreamParams {
+            codec: VideoCodecKind::H264,
+            width: 640,
+            height: 360,
+            sps: Some(sps.clone()),
+            pps: Some(pps.clone()),
+            vps: None,
+        });
+        let mut frame1 = Vec::new();
+        for nalu in [sps.as_slice(), pps.as_slice(), &[0x65, 0x88, 0x84, 0x21]] {
+            frame1.extend_from_slice(&ANNEXB_START_CODE);
+            frame1.extend_from_slice(nalu);
+        }
+        rec.record_video_frame(VideoCodecKind::H264, VideoFraming::AnnexB, 0, true, &frame1)
+            .unwrap();
+        let aac = AudioStreamParams {
+            codec: AudioElementaryCodec::Aac,
+            sample_rate_hz: 16_000,
+            channels: 1,
+            aac_profile: 2,
+        };
+        rec.record_audio_frame(aac, 20_000, &[0x11, 0x22, 0x33])
+            .unwrap();
+        let out = rec.finish().unwrap();
+        assert!(out.rtp_dump_path.is_none());
+        let mp4_path = out.muxed_mp4_path.unwrap();
+        let reader = mp4::read_mp4(File::open(&mp4_path).unwrap()).unwrap();
+        assert_eq!(reader.tracks().len(), 2);
+
+        let zero_dir = TempDir::new();
+        let mut zero_rec =
+            BitstreamRecorder::with_options(zero_dir.path(), 1, BitstreamRecordOptions::default())
+                .unwrap();
+        zero_rec
+            .record_video_frame(VideoCodecKind::H264, VideoFraming::AnnexB, 0, true, &frame1)
+            .unwrap();
+        zero_rec
+            .record_audio_frame(aac, 0, &[0x11, 0x22, 0x33])
+            .unwrap();
+        let zero_out = zero_rec.finish().unwrap();
+        assert!(zero_out.video_path.is_none());
+        assert!(zero_out.audio_path.is_none());
+        assert!(!zero_dir.path().join("video.h264").exists());
+        assert!(!zero_dir.path().join("audio.aac").exists());
     }
 }

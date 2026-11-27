@@ -75,7 +75,7 @@ pub(super) struct Runtime {
 
 impl Runtime {
     pub(super) fn new(config: McpConfig, secrets: Secrets) -> Self {
-        let runtime = Self {
+        Self {
             config,
             active_requests: Arc::new(AtomicUsize::new(0)),
             secrets: Arc::new(RwLock::new(CachedSecrets {
@@ -85,9 +85,7 @@ impl Runtime {
             snapshot_limiter: Arc::new(mcp_snapshot::SnapshotRateLimiter::new()),
             handoffs: Arc::new(mcp_secret_handoff::HandoffStore::new()),
             camera_debug: Arc::new(mcp_camera_debug::EngineCameraDebugService::default()),
-        };
-        runtime.emit_startup_warning();
-        runtime
+        }
     }
 
     pub(super) fn emit_startup_warning(&self) {
@@ -125,7 +123,7 @@ impl Runtime {
         self
     }
 
-    fn secrets_snapshot(&self, config_path: Option<&std::path::Path>) -> Secrets {
+    pub(super) fn secrets_snapshot(&self, config_path: Option<&std::path::Path>) -> Secrets {
         let Some(path) = config_path else {
             return self
                 .secrets
@@ -5702,78 +5700,78 @@ display_name = "Front Door"
         }));
 
         // Normal MCP tools remain strictly redacted even when allow_camera_debugging is true.
-        let cfg_resp = super::super::handle_request(
-            &mcp_post_request(
-                &json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_configuration","arguments":{}}}),
-                Vec::new(),
-                "127.0.0.1:50000",
-            ),
-            &router_tx,
-            &state,
-        );
-        let cfg_text = serde_json::to_string(&read_response_json(cfg_resp)).unwrap();
-        assert!(!cfg_text.contains(sentinel));
+        let cfg_resp = call_mcp_tool(&state, &router_tx, 1, "get_configuration", json!({}));
+        assert!(!serde_json::to_string(&cfg_resp).unwrap().contains(sentinel));
 
         // Default capture (include_raw_auth: true) passes raw debug credentials when allowed.
-        let raw_cap = super::super::handle_request(
-            &mcp_post_request(
-                &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"camera_debugging","arguments":{"action":"capture","camera_id":"192.0.2.10"}}}),
-                Vec::new(),
-                "127.0.0.1:50000",
-            ),
-            &router_tx,
+        let raw_cap_json = call_mcp_tool(
             &state,
+            &router_tx,
+            2,
+            "camera_debugging",
+            json!({"action":"capture","camera_id":"192.0.2.10"}),
         );
-        let raw_cap_json = read_response_json(raw_cap);
         assert_eq!(
             raw_cap_json["result"]["structuredContent"]["password"],
             sentinel
         );
 
         // capture with include_raw_auth: false enforces SecretRedactor.
-        let redacted_cap = super::super::handle_request(
-            &mcp_post_request(
-                &json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"camera_debugging","arguments":{"action":"capture","camera_id":"192.0.2.10","include_raw_auth":false}}}),
-                Vec::new(),
-                "127.0.0.1:50000",
-            ),
-            &router_tx,
+        let redacted_cap_json = call_mcp_tool(
             &state,
+            &router_tx,
+            3,
+            "camera_debugging",
+            json!({"action":"capture","camera_id":"192.0.2.10","include_raw_auth":false}),
         );
-        let redacted_cap_text = serde_json::to_string(&read_response_json(redacted_cap)).unwrap();
-        assert!(!redacted_cap_text.contains(sentinel));
+        assert!(
+            !serde_json::to_string(&redacted_cap_json)
+                .unwrap()
+                .contains(sentinel)
+        );
 
+        assert_repro_export_redaction_boundary(&state, &router_tx, sentinel);
+        assert_read_only_header_blocks_capture_only(&state, &router_tx);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn assert_repro_export_redaction_boundary(
+        state: &ServerState,
+        router_tx: &FacadeSender<RouterMessage>,
+        sentinel: &str,
+    ) {
         // export_repro_fixture strictly redacts when strip_credentials is true (default).
-        let stripped_export = super::super::handle_request(
-            &mcp_post_request(
-                &json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"camera_debugging","arguments":{"action":"export_repro_fixture","capture_id":"cap-http-1"}}}),
-                Vec::new(),
-                "127.0.0.1:50000",
-            ),
-            &router_tx,
-            &state,
+        let stripped_export_json = call_mcp_tool(
+            state,
+            router_tx,
+            4,
+            "camera_debugging",
+            json!({"action":"export_repro_fixture","capture_id":"cap-http-1"}),
         );
-        let stripped_export_text =
-            serde_json::to_string(&read_response_json(stripped_export)).unwrap();
-        assert!(!stripped_export_text.contains(sentinel));
+        assert!(
+            !serde_json::to_string(&stripped_export_json)
+                .unwrap()
+                .contains(sentinel)
+        );
 
         // export_repro_fixture with strip_credentials: false allows unredacted fixture output.
-        let raw_export = super::super::handle_request(
-            &mcp_post_request(
-                &json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"camera_debugging","arguments":{"action":"export_repro_fixture","capture_id":"cap-http-1","strip_credentials":false}}}),
-                Vec::new(),
-                "127.0.0.1:50000",
-            ),
-            &router_tx,
-            &state,
+        let raw_export_json = call_mcp_tool(
+            state,
+            router_tx,
+            5,
+            "camera_debugging",
+            json!({"action":"export_repro_fixture","capture_id":"cap-http-1","strip_credentials":false}),
         );
-        let raw_export_json = read_response_json(raw_export);
         assert_eq!(
             raw_export_json["result"]["structuredContent"]["leaked_if_unredacted"],
             sentinel
         );
+    }
 
-        // X-KeepPeek-MCP-Read-Only: true rejects capture but allows export_repro_fixture.
+    fn assert_read_only_header_blocks_capture_only(
+        state: &ServerState,
+        router_tx: &FacadeSender<RouterMessage>,
+    ) {
         let ro_headers = vec![(READ_ONLY_HEADER.to_owned(), "true".to_owned())];
         let ro_cap = super::super::handle_request(
             &mcp_post_request(
@@ -5781,8 +5779,8 @@ display_name = "Front Door"
                 ro_headers.clone(),
                 "127.0.0.1:50000",
             ),
-            &router_tx,
-            &state,
+            router_tx,
+            state,
         );
         assert_eq!(read_response_json(ro_cap)["error"]["code"], ERROR_FORBIDDEN);
 
@@ -5792,12 +5790,10 @@ display_name = "Front Door"
                 ro_headers,
                 "127.0.0.1:50000",
             ),
-            &router_tx,
-            &state,
+            router_tx,
+            state,
         );
         assert!(read_response_json(ro_export)["result"].is_object());
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn call_mcp_tool(

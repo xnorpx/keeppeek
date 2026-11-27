@@ -9,11 +9,13 @@ use crate::{
     camera_debug::{
         bitstream::{
             AudioElementaryCodec, AudioStreamParams, BitstreamAnomalyReport, BitstreamOutputs,
-            BitstreamRecorder, CapturedRtpPacket, VideoCodecKind, VideoFraming, VideoStreamParams,
+            BitstreamRecordOptions, BitstreamRecorder, CapturedRtpPacket, VideoCodecKind,
+            VideoFraming, VideoStreamParams,
         },
         pcapng::{
             FlowDirection, PcapngWriter, TcpFlowKey, format_packet_comment, unix_timestamp_us,
         },
+        repro,
         store::{CaptureMetadata, CaptureStore},
     },
     cameras::CameraTransport,
@@ -26,7 +28,7 @@ use onvif::soap::client::{
 };
 use reo_proto::{
     BcError, BcSession, BcSessionConfig, Command as BcCommand, Event as BcEvent, Input as BcInput,
-    LoginParams, Output as BcOutput, Role as BcRole, StreamSubscription, StreamType,
+    LoginParams, Output as BcOutput, PacketHeader, Role as BcRole, StreamSubscription, StreamType,
     auth::EncryptionMode,
     media::{AudioCodec as BcAudioCodec, VideoCodec as BcVideoCodec},
 };
@@ -45,9 +47,10 @@ use rumqttc::tokio_native_tls::native_tls::{TlsConnector, TlsStream};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
+    fmt,
     fs::File,
     io::{BufWriter, Read, Write},
-    net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket},
     num::NonZeroU16,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -65,6 +68,7 @@ use ureq::{
     },
 };
 use url::Url;
+use zeroize::Zeroize;
 
 /// Schema version written into `protocol_transcript.json`.
 pub const TRANSCRIPT_SCHEMA_VERSION: &str = "keeppeek.protocol-transcript.v1";
@@ -103,8 +107,30 @@ impl CaptureProtocol {
     }
 }
 
+/// Artifact flags controlling which files [`run_capture`] writes to disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureArtifacts {
+    pub pcapng: bool,
+    pub video_bitstream: bool,
+    pub audio_bitstream: bool,
+    pub muxed_mp4: bool,
+    pub protocol_transcript: bool,
+}
+
+impl Default for CaptureArtifacts {
+    fn default() -> Self {
+        Self {
+            pcapng: true,
+            video_bitstream: true,
+            audio_bitstream: true,
+            muxed_mp4: true,
+            protocol_transcript: true,
+        }
+    }
+}
+
 /// Target endpoint and options for [`run_capture`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CaptureRequest {
     pub capture_id: String,
     pub camera_id: String,
@@ -119,6 +145,39 @@ pub struct CaptureRequest {
     pub tls_accept_invalid_certs: bool,
     pub duration_max_ms: u64,
     pub frames_max: u64,
+    pub artifacts: CaptureArtifacts,
+}
+
+impl fmt::Debug for CaptureRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let host = Url::parse(&self.target_url)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_owned));
+        formatter
+            .debug_struct("CaptureRequest")
+            .field("capture_id", &self.capture_id)
+            .field("camera_id", &self.camera_id)
+            .field("protocol", &self.protocol)
+            .field("target_host", &host)
+            .field(
+                "has_credentials",
+                &(!self.username.is_empty() || !self.password.is_empty()),
+            )
+            .field("transport", &self.transport)
+            .field("include_raw_auth", &self.include_raw_auth)
+            .field("trigger_probe", &self.trigger_probe)
+            .field("duration_max_ms", &self.duration_max_ms)
+            .field("frames_max", &self.frames_max)
+            .finish()
+    }
+}
+
+impl Drop for CaptureRequest {
+    fn drop(&mut self) {
+        self.target_url.zeroize();
+        self.username.zeroize();
+        self.password.zeroize();
+    }
 }
 
 impl CaptureRequest {
@@ -143,7 +202,19 @@ impl CaptureRequest {
             tls_accept_invalid_certs: false,
             duration_max_ms: DEFAULT_DURATION_MAX_MS,
             frames_max: DEFAULT_FRAMES_MAX,
+            artifacts: CaptureArtifacts::default(),
         }
+    }
+
+    fn secret_values(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if !self.username.is_empty() {
+            out.push(self.username.clone());
+        }
+        if !self.password.is_empty() {
+            out.push(self.password.clone());
+        }
+        out
     }
 }
 
@@ -262,8 +333,9 @@ pub fn run_capture(store: &CaptureStore, req: &CaptureRequest) -> anyhow::Result
         .host_str()
         .context("target_url missing host")?
         .to_owned();
-    let (_guard, capture_dir) = store.begin_capture(&req.camera_id, &req.capture_id)?;
+    let (guard, capture_dir) = store.begin_capture(&req.camera_id, &req.capture_id)?;
     let run_res = execute_capture_inside_dir(store, &capture_dir, &host, &url, req);
+    drop(guard);
     if run_res.is_err() {
         let _ = store.delete_capture(&req.capture_id);
     }
@@ -280,20 +352,7 @@ fn execute_capture_inside_dir(
     let started = Instant::now();
     let created_at = unix_now_secs();
     let max_bytes = store.limits().max_capture_bytes;
-    let pcap = PcapngWriter::new(
-        BufWriter::new(File::create(capture_dir.join("capture.pcapng"))?),
-        max_bytes / 2,
-    )?;
-    let bitstream = BitstreamRecorder::new(capture_dir, max_bytes / 2, req.write_rtp_dump)?;
-    let mut ctx = CaptureContext {
-        req,
-        capture_dir: capture_dir.to_path_buf(),
-        started,
-        pcap: Some(pcap),
-        bitstream,
-        tls_decrypted: false,
-        warnings: Vec::new(),
-    };
+    let mut ctx = open_capture_context(capture_dir, max_bytes, started, req)?;
     let mut transcript = new_transcript(req, host);
     dispatch_protocol_capture(&mut ctx, url, &mut transcript)?;
     transcript.tls_decrypted = ctx.tls_decrypted;
@@ -304,7 +363,10 @@ fn execute_capture_inside_dir(
     let warnings = std::mem::take(&mut ctx.warnings);
     let tls_decrypted = ctx.tls_decrypted;
     let bitstream_out = ctx.bitstream.finish()?;
-    save_transcript_json(capture_dir, &transcript)?;
+    if req.artifacts.protocol_transcript {
+        let transcript_budget = remaining_transcript_budget(capture_dir, max_bytes);
+        save_transcript_json_bounded(capture_dir, &mut transcript, transcript_budget)?;
+    }
     let mut metadata = CaptureMetadata {
         capture_id: req.capture_id.clone(),
         camera_id: req.camera_id.clone(),
@@ -327,6 +389,47 @@ fn execute_capture_inside_dir(
         metadata,
         transcript,
         bitstream: bitstream_out,
+    })
+}
+
+fn open_capture_context<'a>(
+    capture_dir: &Path,
+    max_bytes: u64,
+    started: Instant,
+    req: &'a CaptureRequest,
+) -> anyhow::Result<CaptureContext<'a>> {
+    let reserved = (max_bytes / 4).clamp(4_096, 512 * 1024).min(max_bytes / 2);
+    let media_budget = max_bytes.saturating_sub(reserved).max(1_024);
+    let pcap_budget = media_budget / 2;
+    let bitstream_budget = media_budget.saturating_sub(pcap_budget).max(512);
+    let pcap = req
+        .artifacts
+        .pcapng
+        .then(|| {
+            PcapngWriter::new(
+                BufWriter::new(File::create(capture_dir.join("capture.pcapng"))?),
+                pcap_budget,
+            )
+        })
+        .transpose()?;
+    let bitstream = BitstreamRecorder::with_options(
+        capture_dir,
+        bitstream_budget,
+        BitstreamRecordOptions {
+            write_video: req.artifacts.video_bitstream,
+            write_audio: req.artifacts.audio_bitstream,
+            write_muxed_mp4: req.artifacts.muxed_mp4,
+            write_rtp_dump: req.write_rtp_dump && req.artifacts.protocol_transcript,
+        },
+    )?;
+    Ok(CaptureContext {
+        req,
+        capture_dir: capture_dir.to_path_buf(),
+        started,
+        pcap,
+        bitstream,
+        tls_decrypted: false,
+        warnings: Vec::new(),
     })
 }
 
@@ -393,7 +496,7 @@ pub fn compare_transports(
                     .map(|pkt| pkt.delay_ms);
                 entries.push(TransportComparisonEntry {
                     transport: transport_label(transport).to_owned(),
-                    capture_id: req.capture_id,
+                    capture_id: req.capture_id.clone(),
                     success: true,
                     error: None,
                     duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -405,7 +508,7 @@ pub fn compare_transports(
             Err(error) => {
                 entries.push(TransportComparisonEntry {
                     transport: transport_label(transport).to_owned(),
-                    capture_id: req.capture_id,
+                    capture_id: req.capture_id.clone(),
                     success: false,
                     error: Some(error.to_string()),
                     duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -458,8 +561,42 @@ struct CaptureContext<'a> {
 }
 
 impl CaptureContext<'_> {
-    const fn pcap_mut(&mut self) -> &mut PcapngWriter<BufWriter<File>> {
-        self.pcap.as_mut().expect("pcap writer must remain present")
+    fn write_tcp_pcap(
+        &mut self,
+        flow: TcpFlowKey,
+        dir: FlowDirection,
+        payload: &[u8],
+        comment: &str,
+    ) -> anyhow::Result<()> {
+        if let Some(pcap) = self.pcap.as_mut() {
+            pcap.write_tcp_payload(flow, dir, unix_timestamp_us(), payload, Some(comment))?;
+        }
+        Ok(())
+    }
+
+    fn close_tcp_pcap(&mut self, flow: TcpFlowKey) {
+        if let Some(pcap) = self.pcap.as_mut() {
+            let _ = pcap.close_tcp_flow(
+                flow,
+                FlowDirection::ClientToServer,
+                unix_timestamp_us(),
+                None,
+            );
+        }
+    }
+
+    fn write_udp_pcap(
+        &mut self,
+        src: SocketAddr,
+        dst: SocketAddr,
+        ts: u64,
+        data: &[u8],
+        comment: &str,
+    ) -> anyhow::Result<()> {
+        if let Some(pcap) = self.pcap.as_mut() {
+            pcap.write_udp_packet(src, dst, ts, data, Some(comment))?;
+        }
+        Ok(())
     }
 }
 
@@ -558,6 +695,9 @@ fn capture_rtsp(ctx: &mut CaptureContext<'_>, raw_url: &Url) -> anyhow::Result<R
     ctx.tls_decrypted = use_tls;
     let mut rtsp_url = raw_url.clone();
     if use_tls {
+        if raw_url.port().is_none() {
+            let _ = rtsp_url.set_port(Some(322));
+        }
         rtsp_url
             .set_scheme("rtsp")
             .map_err(|()| anyhow::anyhow!("unable to normalize rtsps scheme"))?;
@@ -623,12 +763,42 @@ impl RtspDriver<'_, '_> {
             }
         }
         if let Some((_, _, flow)) = self.socket.take() {
-            let _ = self.ctx.pcap_mut().close_tcp_flow(
-                flow,
-                FlowDirection::ClientToServer,
-                unix_timestamp_us(),
-                None,
-            );
+            if !self.ctx.req.include_raw_auth && !self.tx_wire_buf.is_empty() {
+                let trailing = std::mem::take(&mut self.tx_wire_buf);
+                let scrubbed =
+                    redact_wire_bytes_if_needed(&trailing, false, &self.ctx.req.secret_values());
+                let comment = format_packet_comment(
+                    self.use_tls,
+                    &self.ctx.req.camera_id,
+                    if self.use_tls { "rtsps" } else { "rtsp" },
+                );
+                let _ = self.ctx.write_tcp_pcap(
+                    flow,
+                    FlowDirection::ClientToServer,
+                    &scrubbed,
+                    &comment,
+                );
+            }
+            if !self.ctx.req.include_raw_auth
+                && !self.interleave_buf.is_empty()
+                && !self.interleave_buf.starts_with(&[RTSP_INTERLEAVE_MAGIC])
+            {
+                let trailing = std::mem::take(&mut self.interleave_buf);
+                let scrubbed =
+                    redact_wire_bytes_if_needed(&trailing, false, &self.ctx.req.secret_values());
+                let comment = format_packet_comment(
+                    self.use_tls,
+                    &self.ctx.req.camera_id,
+                    if self.use_tls { "rtsps" } else { "rtsp" },
+                );
+                let _ = self.ctx.write_tcp_pcap(
+                    flow,
+                    FlowDirection::ServerToClient,
+                    &scrubbed,
+                    &comment,
+                );
+            }
+            self.ctx.close_tcp_pcap(flow);
         }
         Ok(RtspTranscript {
             sdp: self.sdp.clone(),
@@ -830,22 +1000,28 @@ impl RtspDriver<'_, '_> {
             sock.flush()?;
             *flow
         };
-        let wire = redact_wire_bytes_if_needed(data, self.ctx.req.include_raw_auth);
+        let secrets = self.ctx.req.secret_values();
         let comment = format_packet_comment(
             self.use_tls,
             &self.ctx.req.camera_id,
             if self.use_tls { "rtsps" } else { "rtsp" },
         );
-        self.ctx.pcap_mut().write_tcp_payload(
-            flow,
-            FlowDirection::ClientToServer,
-            unix_timestamp_us(),
-            &wire,
-            Some(&comment),
-        )?;
-        self.tx_wire_buf.extend_from_slice(&wire);
+        if self.ctx.req.include_raw_auth {
+            self.ctx
+                .write_tcp_pcap(flow, FlowDirection::ClientToServer, data, &comment)?;
+        }
+        self.tx_wire_buf.extend_from_slice(data);
         while let Some(msg) = try_take_rtsp_or_http_message(&mut self.tx_wire_buf) {
-            self.pending_requests.push(msg);
+            let effective = if self.ctx.req.include_raw_auth {
+                msg
+            } else {
+                let scrubbed = scrub_http_message(&msg, &secrets);
+                let wire = encode_http_message(&scrubbed);
+                self.ctx
+                    .write_tcp_pcap(flow, FlowDirection::ClientToServer, &wire, &comment)?;
+                scrubbed
+            };
+            self.pending_requests.push(effective);
         }
         self.client.handle_input(RtspInput::TcpWriteCompleted {
             time: rtsp_now(),
@@ -992,20 +1168,20 @@ impl RtspDriver<'_, '_> {
             }
             Ok(len) => {
                 let chunk = &buf[..len];
-                let wire = redact_wire_bytes_if_needed(chunk, self.ctx.req.include_raw_auth);
                 let comment = format_packet_comment(
                     self.use_tls,
                     &self.ctx.req.camera_id,
                     if self.use_tls { "rtsps" } else { "rtsp" },
                 );
-                self.ctx.pcap_mut().write_tcp_payload(
-                    flow,
-                    FlowDirection::ServerToClient,
-                    unix_timestamp_us(),
-                    &wire,
-                    Some(&comment),
-                )?;
-                self.tap_rtsp_server_bytes(&wire)?;
+                if self.ctx.req.include_raw_auth {
+                    self.ctx.write_tcp_pcap(
+                        flow,
+                        FlowDirection::ServerToClient,
+                        chunk,
+                        &comment,
+                    )?;
+                }
+                self.tap_rtsp_server_bytes(flow, &comment, chunk)?;
                 self.apply(RtspInput::TcpData {
                     time: rtsp_now(),
                     connection: conn_id,
@@ -1068,9 +1244,7 @@ impl RtspDriver<'_, '_> {
         for (stream_idx, kind, track, video_hint, src, dst, data) in datagrams {
             let ts = unix_timestamp_us();
             let comment = format_packet_comment(false, &self.ctx.req.camera_id, "rtp-udp");
-            self.ctx
-                .pcap_mut()
-                .write_udp_packet(src, dst, ts, &data, Some(&comment))?;
+            self.ctx.write_udp_pcap(src, dst, ts, &data, &comment)?;
             if kind == UdpPacketKind::Rtp {
                 self.ctx
                     .bitstream
@@ -1086,17 +1260,32 @@ impl RtspDriver<'_, '_> {
         Ok(())
     }
 
-    fn tap_rtsp_server_bytes(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
+    fn tap_rtsp_server_bytes(
+        &mut self,
+        flow: TcpFlowKey,
+        comment: &str,
+        bytes: &[u8],
+    ) -> anyhow::Result<()> {
+        let secrets = self.ctx.req.secret_values();
         self.interleave_buf.extend_from_slice(bytes);
         while !self.interleave_buf.is_empty() {
             if self.interleave_buf[0] == RTSP_INTERLEAVE_MAGIC {
-                if !self.try_consume_interleaved_rtp()? {
+                if !self.try_consume_interleaved_rtp(flow, comment)? {
                     break;
                 }
                 continue;
             }
             if let Some(resp) = try_take_rtsp_or_http_message(&mut self.interleave_buf) {
-                self.record_rtsp_exchange(resp);
+                let effective = if self.ctx.req.include_raw_auth {
+                    resp
+                } else {
+                    let scrubbed = scrub_http_message(&resp, &secrets);
+                    let wire = encode_http_message(&scrubbed);
+                    self.ctx
+                        .write_tcp_pcap(flow, FlowDirection::ServerToClient, &wire, comment)?;
+                    scrubbed
+                };
+                self.record_rtsp_exchange(effective);
                 continue;
             }
             break;
@@ -1104,18 +1293,33 @@ impl RtspDriver<'_, '_> {
         Ok(())
     }
 
-    fn try_consume_interleaved_rtp(&mut self) -> anyhow::Result<bool> {
+    fn try_consume_interleaved_rtp(
+        &mut self,
+        flow: TcpFlowKey,
+        comment: &str,
+    ) -> anyhow::Result<bool> {
         if self.interleave_buf.len() < 4 {
             return Ok(false);
         }
         let channel = self.interleave_buf[1];
         let payload_len =
             u16::from_be_bytes([self.interleave_buf[2], self.interleave_buf[3]]) as usize;
-        if self.interleave_buf.len() < 4 + payload_len {
+        let Some(total_len) = 4_usize.checked_add(payload_len) else {
+            return Ok(false);
+        };
+        if self.interleave_buf.len() < total_len {
             return Ok(false);
         }
-        let payload = self.interleave_buf[4..4 + payload_len].to_vec();
-        self.interleave_buf.drain(..4 + payload_len);
+        let raw_interleaved: Vec<u8> = self.interleave_buf.drain(..total_len).collect();
+        if !self.ctx.req.include_raw_auth {
+            self.ctx.write_tcp_pcap(
+                flow,
+                FlowDirection::ServerToClient,
+                &raw_interleaved,
+                comment,
+            )?;
+        }
+        let payload = &raw_interleaved[4..];
         if channel.is_multiple_of(2) {
             let (track, hint) = self
                 .channel_tracks
@@ -1127,7 +1331,7 @@ impl RtspDriver<'_, '_> {
                 Some(channel),
                 hint,
                 unix_timestamp_us(),
-                &payload,
+                payload,
             )?;
         }
         Ok(true)
@@ -1265,13 +1469,25 @@ struct HttpTapState {
     camera_id: String,
     proto_label: &'static str,
     include_raw_auth: bool,
+    secrets: Vec<String>,
     started: Instant,
     tls_decrypted: bool,
+    next_ephemeral_port: u16,
+    last_tx_flow: Option<TcpFlowKey>,
+    last_rx_flow: Option<TcpFlowKey>,
     tx_buf: Vec<u8>,
     rx_buf: Vec<u8>,
     pending_requests: Vec<RawHttpMessage>,
     exchanges: Vec<HttpExchangeTranscript>,
     pcap: Option<PcapngWriter<BufWriter<File>>>,
+}
+
+impl Drop for HttpTapState {
+    fn drop(&mut self) {
+        for secret in &mut self.secrets {
+            secret.zeroize();
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1304,17 +1520,24 @@ impl<Inner: Transport> Connector<Inner> for TapConnector {
             .first()
             .copied()
             .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 80));
-        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 54_321);
-        if inner.is_tls()
-            && let Ok(mut guard) = self.state.lock()
-        {
+        let local_ip = if remote.is_ipv6() {
+            IpAddr::V6(Ipv6Addr::LOCALHOST)
+        } else {
+            IpAddr::V4(Ipv4Addr::LOCALHOST)
+        };
+        let mut guard = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let port = guard.alloc_ephemeral_port();
+        if inner.is_tls() {
             guard.tls_decrypted = true;
         }
         Ok(Some(TapTransport {
             inner,
             state: Arc::clone(&self.state),
             flow: TcpFlowKey {
-                client: local,
+                client: SocketAddr::new(local_ip, port),
                 server: remote,
             },
         }))
@@ -1326,6 +1549,14 @@ struct TapTransport<Inner> {
     inner: Inner,
     state: Arc<Mutex<HttpTapState>>,
     flow: TcpFlowKey,
+}
+
+impl<Inner> Drop for TapTransport<Inner> {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.state.lock() {
+            guard.close_flow(self.flow);
+        }
+    }
 }
 
 impl<Inner: Transport> Transport for TapTransport<Inner> {
@@ -1372,26 +1603,57 @@ impl<Inner: Transport> Transport for TapTransport<Inner> {
 }
 
 impl HttpTapState {
+    const fn alloc_ephemeral_port(&mut self) -> u16 {
+        let port = self.next_ephemeral_port;
+        self.next_ephemeral_port = if port >= 65_534 { 49_152 } else { port + 1 };
+        port
+    }
+
+    fn close_flow(&mut self, flow: TcpFlowKey) {
+        if let Some(pcap) = self.pcap.as_mut() {
+            let _ = pcap.close_tcp_flow(
+                flow,
+                FlowDirection::ClientToServer,
+                unix_timestamp_us(),
+                None,
+            );
+        }
+    }
+
+    fn write_pcap(
+        &mut self,
+        flow: TcpFlowKey,
+        dir: FlowDirection,
+        tls_decrypted: bool,
+        wire: &[u8],
+    ) {
+        let comment = format_packet_comment(tls_decrypted, &self.camera_id, self.proto_label);
+        if let Some(pcap) = self.pcap.as_mut() {
+            let _ = pcap.write_tcp_payload(flow, dir, unix_timestamp_us(), wire, Some(&comment));
+        }
+    }
+
     fn record_tx(
         &mut self,
         flow: TcpFlowKey,
         tls_decrypted: bool,
         bytes: &[u8],
     ) -> anyhow::Result<()> {
-        let wire = redact_wire_bytes_if_needed(bytes, self.include_raw_auth);
-        let comment = format_packet_comment(tls_decrypted, &self.camera_id, self.proto_label);
-        if let Some(pcap) = self.pcap.as_mut() {
-            pcap.write_tcp_payload(
-                flow,
-                FlowDirection::ClientToServer,
-                unix_timestamp_us(),
-                &wire,
-                Some(&comment),
-            )?;
+        self.last_tx_flow = Some(flow);
+        if self.include_raw_auth {
+            self.write_pcap(flow, FlowDirection::ClientToServer, tls_decrypted, bytes);
         }
-        self.tx_buf.extend_from_slice(&wire);
+        self.tx_buf.extend_from_slice(bytes);
         while let Some(msg) = try_take_rtsp_or_http_message(&mut self.tx_buf) {
-            self.pending_requests.push(msg);
+            let effective = if self.include_raw_auth {
+                msg
+            } else {
+                let scrubbed = scrub_http_message(&msg, &self.secrets);
+                let wire = encode_http_message(&scrubbed);
+                self.write_pcap(flow, FlowDirection::ClientToServer, tls_decrypted, &wire);
+                scrubbed
+            };
+            self.pending_requests.push(effective);
         }
         Ok(())
     }
@@ -1402,25 +1664,47 @@ impl HttpTapState {
         tls_decrypted: bool,
         bytes: &[u8],
     ) -> anyhow::Result<()> {
-        let wire = redact_wire_bytes_if_needed(bytes, self.include_raw_auth);
-        let comment = format_packet_comment(tls_decrypted, &self.camera_id, self.proto_label);
-        if let Some(pcap) = self.pcap.as_mut() {
-            pcap.write_tcp_payload(
-                flow,
-                FlowDirection::ServerToClient,
-                unix_timestamp_us(),
-                &wire,
-                Some(&comment),
-            )?;
+        self.last_rx_flow = Some(flow);
+        if self.include_raw_auth {
+            self.write_pcap(flow, FlowDirection::ServerToClient, tls_decrypted, bytes);
         }
-        self.rx_buf.extend_from_slice(&wire);
+        self.rx_buf.extend_from_slice(bytes);
         while let Some(resp) = try_take_rtsp_or_http_message(&mut self.rx_buf) {
+            let effective = if self.include_raw_auth {
+                resp
+            } else {
+                let scrubbed = scrub_http_message(&resp, &self.secrets);
+                let wire = encode_http_message(&scrubbed);
+                self.write_pcap(flow, FlowDirection::ServerToClient, tls_decrypted, &wire);
+                scrubbed
+            };
             let req = (!self.pending_requests.is_empty()).then(|| self.pending_requests.remove(0));
             let delay_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(0);
             self.exchanges
-                .push(build_http_exchange(req, resp, delay_ms));
+                .push(build_http_exchange(req, effective, delay_ms));
         }
         Ok(())
+    }
+
+    fn flush_trailing_unparsed(&mut self) {
+        if self.include_raw_auth {
+            return;
+        }
+        let tls = self.tls_decrypted;
+        if !self.tx_buf.is_empty()
+            && let Some(flow) = self.last_tx_flow
+        {
+            let raw = std::mem::take(&mut self.tx_buf);
+            let scrubbed = redact_wire_bytes_if_needed(&raw, false, &self.secrets);
+            self.write_pcap(flow, FlowDirection::ClientToServer, tls, &scrubbed);
+        }
+        if !self.rx_buf.is_empty()
+            && let Some(flow) = self.last_rx_flow
+        {
+            let raw = std::mem::take(&mut self.rx_buf);
+            let scrubbed = redact_wire_bytes_if_needed(&raw, false, &self.secrets);
+            self.write_pcap(flow, FlowDirection::ServerToClient, tls, &scrubbed);
+        }
     }
 }
 
@@ -1428,40 +1712,43 @@ fn build_tapped_http_agent(
     ctx: &mut CaptureContext<'_>,
     proto_label: &'static str,
 ) -> anyhow::Result<(Agent, Arc<Mutex<HttpTapState>>)> {
-    let pcap = ctx
-        .pcap
-        .take()
-        .context("PCAPNG writer already consumed for HTTP tap")?;
+    let pcap = ctx.pcap.take();
     let state = Arc::new(Mutex::new(HttpTapState {
         camera_id: ctx.req.camera_id.clone(),
         proto_label,
         include_raw_auth: ctx.req.include_raw_auth,
+        secrets: ctx.req.secret_values(),
         started: ctx.started,
         tls_decrypted: false,
+        next_ephemeral_port: 49_152,
+        last_tx_flow: None,
+        last_rx_flow: None,
         tx_buf: Vec::new(),
         rx_buf: Vec::new(),
         pending_requests: Vec::new(),
         exchanges: Vec::new(),
-        pcap: Some(pcap),
+        pcap,
     }));
-    let agent = build_tapped_http_agent_reuse(&state, ctx.req)?;
+    let timeout = Duration::from_millis(ctx.req.duration_max_ms);
+    let agent = build_tapped_http_agent_reuse(&state, timeout, ctx.req.tls_accept_invalid_certs)?;
     Ok((agent, state))
 }
 
 fn build_tapped_http_agent_reuse(
     state: &Arc<Mutex<HttpTapState>>,
-    req: &CaptureRequest,
+    timeout: Duration,
+    tls_accept_invalid_certs: bool,
 ) -> anyhow::Result<Agent> {
     let tls_config = TlsConfig::builder()
         .provider(TlsProvider::NativeTls)
         .root_certs(RootCerts::PlatformVerifier)
-        .disable_verification(req.tls_accept_invalid_certs)
+        .disable_verification(tls_accept_invalid_certs)
         .build();
     let config = Agent::config_builder()
         .proxy(None)
         .max_redirects(0)
         .http_status_as_error(false)
-        .timeout_global(Some(Duration::from_millis(req.duration_max_ms)))
+        .timeout_global(Some(timeout))
         .tls_config(tls_config)
         .build();
     let connector =
@@ -1485,6 +1772,7 @@ impl CaptureContext<'_> {
         let mut guard = state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.flush_trailing_unparsed();
         self.tls_decrypted = guard.tls_decrypted;
         if let Some(mut pcap) = guard.pcap.take() {
             pcap.flush()?;
@@ -1521,7 +1809,7 @@ fn capture_onvif(
         &schema::devicemgmt::GetDeviceInformation {},
     );
     if ctx.req.trigger_probe {
-        probe_onvif_media(&client, &tap, ctx.req, creds, tls_ver)?;
+        probe_onvif_media(&client, &tap, ctx, creds, tls_ver)?;
     }
     ctx.finish_http_tap(tap)
 }
@@ -1529,10 +1817,13 @@ fn capture_onvif(
 fn probe_onvif_media(
     client: &onvif::soap::client::Client,
     tap: &Arc<Mutex<HttpTapState>>,
-    req: &CaptureRequest,
+    ctx: &CaptureContext<'_>,
     creds: Option<OnvifCredentials>,
     tls_ver: TlsVerification,
 ) -> anyhow::Result<()> {
+    let remaining = Duration::from_millis(ctx.req.duration_max_ms)
+        .saturating_sub(ctx.started.elapsed())
+        .max(Duration::from_millis(100));
     let Ok(resp) = schema::devicemgmt::get_services(
         client,
         &schema::devicemgmt::GetServices {
@@ -1549,13 +1840,15 @@ fn probe_onvif_media(
     else {
         return Ok(());
     };
-    let media_agent = build_tapped_http_agent_reuse(tap, req)?;
+    let media_agent =
+        build_tapped_http_agent_reuse(tap, remaining, ctx.req.tls_accept_invalid_certs)?;
     let media_client = OnvifClientBuilder::new(&media_url)
         .agent(media_agent)
         .credentials(creds)
         .auth_type(OnvifAuthType::Any)
         .tls_verification(tls_ver)
         .follow_redirects(false)
+        .timeout(remaining)
         .build();
     if let Ok(profiles) = schema::media::get_profiles(&media_client, &schema::media::GetProfiles {})
         && let Some(first) = profiles.profiles.first()
@@ -1752,18 +2045,15 @@ fn capture_reo_proto(
             Err(err) => return Err(err.into()),
         }
     }
-    let _ = ctx.pcap_mut().close_tcp_flow(
-        flow,
-        FlowDirection::ClientToServer,
-        unix_timestamp_us(),
-        None,
-    );
+    ctx.close_tcp_pcap(flow);
     Ok(state.frames)
 }
 
 #[derive(Default)]
 struct ReoCaptureState {
     frames: Vec<ReoFrameTranscript>,
+    rx_read_buf: reo_proto::ReadBuffer,
+    tx_read_buf: reo_proto::ReadBuffer,
     stream_started: bool,
     frames_captured: u64,
 }
@@ -1776,14 +2066,20 @@ fn handle_reo_tcp_chunk(
     state: &mut ReoCaptureState,
 ) -> anyhow::Result<()> {
     let comment = format_packet_comment(false, &ctx.req.camera_id, "reo_proto");
-    ctx.pcap_mut().write_tcp_payload(
+    let secrets = ctx.req.secret_values();
+    if ctx.req.include_raw_auth {
+        ctx.write_tcp_pcap(flow, FlowDirection::ServerToClient, chunk, &comment)?;
+    }
+    state.rx_read_buf.extend(chunk);
+    record_buffered_baichuan_frames(
+        ctx,
+        &mut state.rx_read_buf,
         flow,
         FlowDirection::ServerToClient,
-        unix_timestamp_us(),
-        chunk,
-        Some(&comment),
+        &comment,
+        &secrets,
+        &mut state.frames,
     )?;
-    record_raw_baichuan_frames(chunk, "server_to_client", ctx.started, &mut state.frames);
     session.handle_input(BcInput::TcpData(Instant::now(), chunk))?;
     Ok(())
 }
@@ -1796,25 +2092,26 @@ fn drain_reo_outputs(
     state: &mut ReoCaptureState,
 ) -> anyhow::Result<()> {
     let mut media_buf = vec![0_u8; 512 * 1024];
+    let secrets = ctx.req.secret_values();
     loop {
         match session.poll_output(&mut media_buf) {
             Ok(BcOutput::TcpSend { data }) => {
                 tcp.write_all(data)?;
                 tcp.flush()?;
                 let comment = format_packet_comment(false, &ctx.req.camera_id, "reo_proto");
-                ctx.pcap_mut().write_tcp_payload(
+                if ctx.req.include_raw_auth {
+                    ctx.write_tcp_pcap(flow, FlowDirection::ClientToServer, data, &comment)?;
+                }
+                state.tx_read_buf.extend(data);
+                record_buffered_baichuan_frames(
+                    ctx,
+                    &mut state.tx_read_buf,
                     flow,
                     FlowDirection::ClientToServer,
-                    unix_timestamp_us(),
-                    data,
-                    Some(&comment),
-                )?;
-                record_raw_baichuan_frames(
-                    data,
-                    "client_to_server",
-                    ctx.started,
+                    &comment,
+                    &secrets,
                     &mut state.frames,
-                );
+                )?;
             }
             Ok(BcOutput::Event(event)) => handle_reo_event(ctx, session, event, state)?,
             Ok(BcOutput::Timeout(_)) => return Ok(()),
@@ -1897,31 +2194,68 @@ const fn map_bc_audio_codec(codec: BcAudioCodec) -> Option<AudioElementaryCodec>
     }
 }
 
-fn record_raw_baichuan_frames(
-    bytes: &[u8],
-    direction: &str,
-    started: Instant,
+fn record_buffered_baichuan_frames(
+    ctx: &mut CaptureContext<'_>,
+    reader: &mut reo_proto::ReadBuffer,
+    flow: TcpFlowKey,
+    dir: FlowDirection,
+    comment: &str,
+    secrets: &[String],
     out: &mut Vec<ReoFrameTranscript>,
-) {
-    let mut reader = reo_proto::ReadBuffer::new();
-    reader.extend(bytes);
+) -> anyhow::Result<()> {
+    let direction_label = match dir {
+        FlowDirection::ClientToServer => "client_to_server",
+        FlowDirection::ServerToClient => "server_to_client",
+    };
     while let Ok(Some(msg)) = reader.try_parse_message() {
-        if out.len() >= 128 {
-            break;
+        let is_login = msg.header.msg_id == reo_proto::COMMAND_LOGIN;
+        if !ctx.req.include_raw_auth {
+            let wire = serialize_baichuan_packet_for_pcap(&msg.header, &msg.body, is_login);
+            ctx.write_tcp_pcap(flow, dir, &wire, comment)?;
         }
-        let xml = (!msg.body.is_empty() && msg.body.starts_with(b"<"))
-            .then(|| String::from_utf8_lossy(&msg.body).into_owned());
-        let b64 = xml.is_none().then(|| BASE64.encode(&msg.body));
+        if out.len() >= 128 {
+            continue;
+        }
+        let xml = (!msg.body.is_empty() && msg.body.starts_with(b"<")).then(|| {
+            let text = String::from_utf8_lossy(&msg.body).into_owned();
+            if ctx.req.include_raw_auth {
+                text
+            } else {
+                repro::scrub_wire_text(&text, secrets)
+            }
+        });
+        let b64 = (xml.is_none() && (ctx.req.include_raw_auth || !is_login))
+            .then(|| BASE64.encode(&msg.body));
         out.push(ReoFrameTranscript {
-            direction: direction.to_owned(),
+            direction: direction_label.to_owned(),
             msg_id: msg.header.msg_id,
             channel_id: msg.header.channel_id(),
             stream_type: msg.header.stream_type_id(),
             payload_xml: xml,
             payload_base64: b64,
-            delay_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(0),
+            delay_ms: u64::try_from(ctx.started.elapsed().as_millis()).unwrap_or(0),
         });
     }
+    Ok(())
+}
+
+fn serialize_baichuan_packet_for_pcap(
+    header: &PacketHeader,
+    body: &[u8],
+    redact_body: bool,
+) -> Vec<u8> {
+    let payload: &[u8] = if redact_body { b"[REDACTED]" } else { body };
+    let mut hdr = *header;
+    hdr.body_len = u32::try_from(payload.len()).unwrap_or(0);
+    if redact_body {
+        hdr.encryption_offset = 0;
+    }
+    let mut hdr_buf = [0_u8; reo_proto::magic::HEADER_LEN_EXTENDED];
+    let hlen = hdr.serialize(&mut hdr_buf);
+    let mut out = Vec::with_capacity(hlen + payload.len());
+    out.extend_from_slice(&hdr_buf[..hlen]);
+    out.extend_from_slice(payload);
+    out
 }
 
 #[derive(Clone)]
@@ -1960,10 +2294,11 @@ fn try_take_rtsp_or_http_message(buf: &mut Vec<u8>) -> Option<RawHttpMessage> {
             headers.push((name, val));
         }
     }
-    let body_start = header_end + 4;
+    let body_start = header_end.checked_add(4)?;
     if chunked {
         let (decoded, total_consumed) = decode_chunked_body(&buf[body_start..])?;
-        buf.drain(..body_start + total_consumed);
+        let drain_end = body_start.checked_add(total_consumed)?;
+        buf.drain(..drain_end);
         return Some(RawHttpMessage {
             start_a,
             start_b,
@@ -1972,11 +2307,15 @@ fn try_take_rtsp_or_http_message(buf: &mut Vec<u8>) -> Option<RawHttpMessage> {
             body: decoded,
         });
     }
-    if buf.len() < body_start + content_len {
+    if content_len > HTTP_RESPONSE_LIMIT_BYTES as usize {
         return None;
     }
-    let body = buf[body_start..body_start + content_len].to_vec();
-    buf.drain(..body_start + content_len);
+    let total_len = body_start.checked_add(content_len)?;
+    if buf.len() < total_len {
+        return None;
+    }
+    let body = buf[body_start..total_len].to_vec();
+    buf.drain(..total_len);
     Some(RawHttpMessage {
         start_a,
         start_b,
@@ -1987,29 +2326,78 @@ fn try_take_rtsp_or_http_message(buf: &mut Vec<u8>) -> Option<RawHttpMessage> {
 }
 
 fn decode_chunked_body(data: &[u8]) -> Option<(Vec<u8>, usize)> {
-    let mut pos = 0;
+    let mut pos = 0_usize;
     let mut out = Vec::new();
+    let limit = HTTP_RESPONSE_LIMIT_BYTES as usize;
     loop {
-        let line_end = data[pos..].windows(2).position(|w| w == b"\r\n")?;
-        let size_str = std::str::from_utf8(&data[pos..pos + line_end])
+        let line_end = data.get(pos..)?.windows(2).position(|w| w == b"\r\n")?;
+        let size_end = pos.checked_add(line_end)?;
+        let size_str = std::str::from_utf8(data.get(pos..size_end)?)
             .ok()?
             .split(';')
             .next()?
             .trim();
         let size = usize::from_str_radix(size_str, 16).ok()?;
-        pos += line_end + 2;
+        pos = size_end.checked_add(2)?;
         if size == 0 {
-            if data.len() < pos + 2 {
+            let end = pos.checked_add(2)?;
+            if data.len() < end {
                 return None;
             }
-            return Some((out, pos + 2));
+            return Some((out, end));
         }
-        if data.len() < pos + size + 2 {
+        if size > limit || out.len().checked_add(size)? > limit {
             return None;
         }
-        out.extend_from_slice(&data[pos..pos + size]);
-        pos += size + 2;
+        let chunk_end = pos.checked_add(size)?;
+        let next_pos = chunk_end.checked_add(2)?;
+        if data.len() < next_pos {
+            return None;
+        }
+        out.extend_from_slice(&data[pos..chunk_end]);
+        pos = next_pos;
     }
+}
+
+fn scrub_http_message(msg: &RawHttpMessage, secrets: &[String]) -> RawHttpMessage {
+    let body = std::str::from_utf8(&msg.body).map_or_else(
+        |_| msg.body.clone(),
+        |text| repro::scrub_wire_text(text, secrets).into_bytes(),
+    );
+    let mut headers = Vec::with_capacity(msg.headers.len());
+    for (k, v) in &msg.headers {
+        let val = if repro::is_sensitive_header_name(k) {
+            "[REDACTED]".to_owned()
+        } else if k.eq_ignore_ascii_case("content-length") {
+            body.len().to_string()
+        } else {
+            repro::scrub_wire_text(v, secrets)
+        };
+        headers.push((k.clone(), val));
+    }
+    RawHttpMessage {
+        start_a: msg.start_a.clone(),
+        start_b: repro::scrub_wire_text(&msg.start_b, secrets),
+        start_c: msg.start_c.clone(),
+        headers,
+        body,
+    }
+}
+
+fn encode_http_message(msg: &RawHttpMessage) -> Vec<u8> {
+    let mut out = Vec::new();
+    let start = if msg.start_c.is_empty() {
+        format!("{} {}\r\n", msg.start_a, msg.start_b)
+    } else {
+        format!("{} {} {}\r\n", msg.start_a, msg.start_b, msg.start_c)
+    };
+    out.extend_from_slice(start.as_bytes());
+    for (k, v) in &msg.headers {
+        out.extend_from_slice(format!("{k}: {v}\r\n").as_bytes());
+    }
+    out.extend_from_slice(b"\r\n");
+    out.extend_from_slice(&msg.body);
+    out
 }
 
 fn build_http_exchange(
@@ -2049,25 +2437,24 @@ fn build_http_exchange(
     }
 }
 
-fn redact_wire_bytes_if_needed(bytes: &[u8], include_raw_auth: bool) -> Vec<u8> {
+fn redact_wire_bytes_if_needed(
+    bytes: &[u8],
+    include_raw_auth: bool,
+    secrets: &[String],
+) -> Vec<u8> {
     if include_raw_auth {
         return bytes.to_vec();
     }
-    let Ok(text) = std::str::from_utf8(bytes) else {
-        return bytes.to_vec();
-    };
+    let text = String::from_utf8_lossy(bytes);
     let mut out = String::with_capacity(text.len());
     for segment in text.split_inclusive("\r\n") {
-        let lower = segment.to_ascii_lowercase();
-        if lower.starts_with("authorization:")
-            || lower.starts_with("cookie:")
-            || lower.starts_with("set-cookie:")
+        if let Some((name, _)) = segment.split_once(':')
+            && repro::is_sensitive_header_name(name.trim())
         {
-            let header_name = segment.split(':').next().unwrap_or("Authorization");
-            out.push_str(header_name);
+            out.push_str(name);
             out.push_str(": [REDACTED]\r\n");
         } else {
-            out.push_str(segment);
+            out.push_str(&repro::scrub_wire_text(segment, secrets));
         }
     }
     out.into_bytes()
@@ -2095,8 +2482,40 @@ fn connect_tcp_with_deadline(
     }
 }
 
-fn save_transcript_json(capture_dir: &Path, transcript: &ProtocolTranscript) -> anyhow::Result<()> {
-    let json = serde_json::to_vec_pretty(transcript)?;
+fn remaining_transcript_budget(capture_dir: &Path, max_capture_bytes: u64) -> usize {
+    let used = std::fs::read_dir(capture_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|e| e.metadata().ok())
+        .filter(std::fs::Metadata::is_file)
+        .map(|m| m.len())
+        .sum::<u64>();
+    let budget = max_capture_bytes.saturating_sub(used.saturating_add(4_096));
+    usize::try_from(budget).unwrap_or(usize::MAX).max(1_024)
+}
+
+fn save_transcript_json_bounded(
+    capture_dir: &Path,
+    transcript: &mut ProtocolTranscript,
+    max_bytes: usize,
+) -> anyhow::Result<()> {
+    let mut json = serde_json::to_vec_pretty(transcript)?;
+    while json.len() > max_bytes {
+        let truncated = match transcript.rtsp.as_mut() {
+            Some(rtsp) if !rtsp.rtp_packets.is_empty() => {
+                let keep = rtsp.rtp_packets.len() / 2;
+                rtsp.rtp_packets.truncate(keep);
+                true
+            }
+            _ => false,
+        };
+        if !truncated {
+            break;
+        }
+        json = serde_json::to_vec_pretty(transcript)?;
+    }
     std::fs::write(capture_dir.join("protocol_transcript.json"), json)?;
     Ok(())
 }
@@ -2141,8 +2560,7 @@ mod tests {
     use super::*;
     use crate::camera_debug::store::StoreLimits;
     use reo_proto::{
-        COMMAND_LOGIN, COMMAND_STREAM, CameraIdentity, MAX_XML_BODY, PacketHeader, auth,
-        encryption,
+        COMMAND_LOGIN, COMMAND_STREAM, CameraIdentity, MAX_XML_BODY, auth, encryption,
         magic::{BC_CLASS_LEGACY, BC_CLASS_MODERN_EXT, HEADER_LEN_EXTENDED, make_status},
         media::{MEDIA_MAGIC_IFRAME_BASE, MEDIA_MAGIC_INFO_V1},
     };
@@ -2525,5 +2943,138 @@ mod tests {
         assert!(pcap_lossy.contains("tls_decrypted=true"));
         assert!(pcap_lossy.contains("tok123"));
         server.join().unwrap();
+    }
+
+    #[test]
+    fn redacts_http_onvif_and_baichuan_when_include_raw_auth_false() {
+        let root = TempDir::new();
+        let store = CaptureStore::new(root.path(), StoreLimits::default()).unwrap();
+        assert_http_and_onvif_redacted(&store);
+        assert_baichuan_login_redacted(&store);
+    }
+
+    fn assert_http_and_onvif_redacted(store: &CaptureStore) {
+        let server = rouille::Server::new("127.0.0.1:0", |req| {
+            if req.url().contains("api.cgi") {
+                return rouille::Response::json(
+                    &serde_json::json!([{ "cmd": "Login", "code": 0, "value": { "Token": { "name": "tok-secret-99" } } }]),
+                );
+            }
+            rouille::Response::text(
+                "<s:Envelope><s:Body><GetDeviceInformationResponse/></s:Body></s:Envelope>",
+            )
+        })
+        .unwrap();
+        let http_addr = server.server_addr();
+        let (handle, stop) = server.stoppable();
+        for (id, proto, url, pw) in [
+            (
+                "reo-red",
+                CaptureProtocol::ReolinkHttp,
+                format!("http://{http_addr}/cgi-bin/api.cgi"),
+                "reo-pass-99",
+            ),
+            (
+                "onv-red",
+                CaptureProtocol::Onvif,
+                format!("http://{http_addr}/onvif/device_service"),
+                "onvif-pass-99",
+            ),
+        ] {
+            let mut req = CaptureRequest::new(id, "cam-red", proto, url);
+            req.username = "camadmin".to_owned();
+            req.password = pw.to_owned();
+            req.include_raw_auth = false;
+            req.trigger_probe = false;
+            let res = run_capture(store, &req).unwrap();
+            let pcap = String::from_utf8_lossy(
+                &std::fs::read(res.capture_dir.join("capture.pcapng")).unwrap(),
+            )
+            .into_owned();
+            let json =
+                std::fs::read_to_string(res.capture_dir.join("protocol_transcript.json")).unwrap();
+            for leak in [pw, "tok-secret-99", "camadmin"] {
+                assert!(!pcap.contains(leak), "pcap leaked {leak}");
+                assert!(!json.contains(leak), "transcript leaked {leak}");
+            }
+        }
+        let _ = stop.send(());
+        let _ = std::net::TcpStream::connect(http_addr);
+        let _ = handle.join();
+    }
+
+    fn assert_baichuan_login_redacted(store: &CaptureStore) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let bc_addr = listener.local_addr().unwrap();
+        let bc_srv = std::thread::spawn(move || serve_fake_baichuan(listener));
+        let mut bc_req = CaptureRequest::new(
+            "bc-red",
+            "cam-bc",
+            CaptureProtocol::ReoProto,
+            format!("reo://{bc_addr}"),
+        );
+        bc_req.username = "bcadmin".to_owned();
+        bc_req.password = "bc-pass-99".to_owned();
+        bc_req.include_raw_auth = false;
+        bc_req.duration_max_ms = 2_000;
+        bc_req.frames_max = 1;
+        let bc_res = run_capture(store, &bc_req).unwrap();
+        assert!(
+            bc_res
+                .transcript
+                .reo_proto
+                .iter()
+                .filter(|f| f.msg_id == 1)
+                .all(|f| f.payload_base64.is_none())
+        );
+        let bc_pcap = String::from_utf8_lossy(
+            &std::fs::read(bc_res.capture_dir.join("capture.pcapng")).unwrap(),
+        )
+        .into_owned();
+        assert!(!bc_pcap.contains("bcadmin"));
+        assert!(!bc_pcap.contains("bc-pass-99"));
+        bc_srv.join().unwrap();
+    }
+
+    #[test]
+    fn handles_split_rtsp_http_overflow_and_tight_capture_budget() {
+        let mut overflow =
+            b"RTSP/1.0 200 OK\r\nContent-Length: 18446744073709551615\r\n\r\nbody".to_vec();
+        assert!(try_take_rtsp_or_http_message(&mut overflow).is_none());
+        assert!(decode_chunked_body(b"ffffffffffffffff\r\n").is_none());
+
+        let mut mixed =
+            b"RTSP/1.0 200 OK\r\nContent-Length: 4\r\n\r\nping$\x00\x00\x04ABCD".to_vec();
+        let msg = try_take_rtsp_or_http_message(&mut mixed).unwrap();
+        assert_eq!(msg.body, b"ping");
+        assert_eq!(mixed, b"$\x00\x00\x04ABCD");
+
+        let server = RtspServer::from_mp4(fixture_mp4("cc-4k-640x360-h264.mp4")).unwrap();
+        let root = TempDir::new();
+        let limits = StoreLimits {
+            max_capture_bytes: 65_536,
+            max_storage_bytes: 512 * 1024,
+            ..StoreLimits::default()
+        };
+        let store = CaptureStore::new(root.path(), limits).unwrap();
+        let mut req = CaptureRequest::new(
+            "rtsp-tight",
+            "cam-tight",
+            CaptureProtocol::Rtsp,
+            server.url().as_str(),
+        );
+        req.username = "op".to_owned();
+        req.password = "pw-tight".to_owned();
+        req.include_raw_auth = false;
+        req.duration_max_ms = 1_500;
+        req.frames_max = 60;
+        let res = run_capture(&store, &req).unwrap();
+        assert!(res.metadata.total_bytes <= 65_536);
+        let pcap = String::from_utf8_lossy(
+            &std::fs::read(res.capture_dir.join("capture.pcapng")).unwrap(),
+        )
+        .into_owned();
+        assert!(!pcap.contains("pw-tight"));
+        drop(server);
     }
 }

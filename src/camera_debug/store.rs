@@ -183,6 +183,15 @@ impl CaptureStore {
         Ok(path)
     }
 
+    /// Returns `true` if a capture is currently active for `camera_id` in this store.
+    #[must_use]
+    pub fn is_camera_capture_active(&self, camera_id: &str) -> bool {
+        let guard = active_capture_registry()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.contains(&(self.root_dir.clone(), camera_id.to_owned()))
+    }
+
     /// Prunes expired captures, acquires the per-camera concurrency guard, and creates the directory.
     ///
     /// # Errors
@@ -489,42 +498,14 @@ fn write_private_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(windows)]
-fn replace_file_atomically(temp: &Path, target: &Path, _parent: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt as _;
-    use windows::{
-        Win32::Storage::FileSystem::{
-            MOVE_FILE_FLAGS, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-        },
-        core::PCWSTR,
-    };
-    let src: Vec<u16> = temp
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let dst: Vec<u16> = target
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    // SAFETY: Both buffers are NUL-terminated UTF-16 paths that stay valid across the Win32 call.
-    unsafe {
-        MoveFileExW(
-            PCWSTR(src.as_ptr()),
-            PCWSTR(dst.as_ptr()),
-            MOVE_FILE_FLAGS(MOVEFILE_REPLACE_EXISTING.0 | MOVEFILE_WRITE_THROUGH.0),
-        )
-    }
-    .map_err(std::io::Error::other)
-}
-
-#[cfg(not(windows))]
 fn replace_file_atomically(temp: &Path, target: &Path, parent: &Path) -> std::io::Result<()> {
     std::fs::rename(temp, target)?;
+    #[cfg(unix)]
     if let Ok(dir) = std::fs::File::open(parent) {
         let _ = dir.sync_all();
     }
+    #[cfg(not(unix))]
+    let _ = parent;
     Ok(())
 }
 

@@ -13,11 +13,14 @@ use crate::{
     api::{CameraStatus, proto},
     camera_debug::{
         protocols::{
-            self as debug_protocols, CaptureProtocol, CaptureRequest as EngineCaptureRequest,
-            CaptureResult, TransportComparisonEntry,
+            self as debug_protocols, CaptureArtifacts, CaptureProtocol,
+            CaptureRequest as EngineCaptureRequest, CaptureResult, TransportComparisonEntry,
         },
         repro::{self, ExportReproOptions, TrimMediaMode as ReproTrimMediaMode},
-        store::{CaptureMetadata, CaptureStore, DEFAULT_CAPTURE_TTL_SECS, StoreLimits},
+        store::{
+            CaptureMetadata, CaptureStore, DEFAULT_CAPTURE_TTL_SECS, StoreLimits,
+            validate_capture_id as validate_store_capture_id,
+        },
     },
     cameras::{BAICHUAN_PORT, CameraTransport},
     config::mcp::McpConfig,
@@ -36,10 +39,10 @@ use std::{
     sync::Mutex,
     time::{Duration, Instant},
 };
+use url::Url;
 use zeroize::Zeroize;
 
-const CAMERA_ID_MAX_BYTES: usize = 256;
-const CAPTURE_ID_MAX_BYTES: usize = 128;
+const CAMERA_ID_MAX_BYTES: usize = 128;
 const DURATION_SECONDS_DEFAULT: u64 = 10;
 const DURATION_SECONDS_MIN: u64 = 1;
 const DURATION_SECONDS_MAX: u64 = 60;
@@ -418,27 +421,30 @@ impl EngineCameraDebugService {
 
 impl CameraDebugService for EngineCameraDebugService {
     fn capture(&self, request: CaptureRequest) -> Result<Value, ControlCommandError> {
-        let remaining = remaining_timeout(request.deadline)?;
+        remaining_timeout(request.deadline)?;
         let store = open_capture_store(
             request.config_dir.as_deref(),
             u64::try_from(request.max_bytes).unwrap_or(u64::MAX),
             request.max_storage_bytes,
         )?;
         let targets = resolve_capture_targets(&request)?;
-        let target_count = u64::try_from(targets.len()).unwrap_or(1).max(1);
-        let duration_max_ms =
-            bounded_capture_duration_ms(request.duration_seconds, remaining, target_count)?;
+        let total_targets = targets.len().max(1);
         let frames_max = request
             .duration_seconds
             .saturating_mul(DEFAULT_CAPTURE_FPS)
             .clamp(60, 1800);
-        let write_rtp_dump = request
-            .artifacts
-            .contains(&DebugArtifact::ProtocolTranscript)
-            || request.artifacts.contains(&DebugArtifact::VideoBitstream)
-            || request.artifacts.contains(&DebugArtifact::AudioBitstream);
+        let artifacts = map_capture_artifacts(&request.artifacts);
         let mut results = Vec::with_capacity(targets.len());
         for (idx, (protocol, stream_label, target_url)) in targets.into_iter().enumerate() {
+            let remaining = remaining_timeout(request.deadline)?;
+            let remaining_targets = u64::try_from(total_targets.saturating_sub(idx))
+                .unwrap_or(1)
+                .max(1);
+            let duration_max_ms = bounded_capture_duration_ms(
+                request.duration_seconds,
+                remaining,
+                remaining_targets,
+            )?;
             let capture_id = generate_capture_id(
                 &request.target.camera_id,
                 protocol.as_str(),
@@ -460,7 +466,7 @@ impl CameraDebugService for EngineCameraDebugService {
             engine_req.transport = parse_camera_transport(&request.target.transport);
             engine_req.include_raw_auth = request.include_raw_auth;
             engine_req.trigger_probe = request.trigger_probe;
-            engine_req.write_rtp_dump = write_rtp_dump;
+            engine_req.artifacts = artifacts;
             engine_req.duration_max_ms = duration_max_ms;
             engine_req.frames_max = frames_max;
             let result = debug_protocols::run_capture(&store, &engine_req)
@@ -584,13 +590,14 @@ impl CameraDebugService for EngineCameraDebugService {
             return Err(not_found_capture(capture_id));
         }
         let store = open_store_at(&root_dir, StoreLimits::default())?;
-        if let Ok(meta) = store.load_metadata(capture_id) {
-            check_capture_scope(
-                &meta,
-                request.allowed_camera_ids.as_deref(),
-                request.camera_id.as_deref(),
-            )?;
+        if !store
+            .capture_dir(capture_id)
+            .map_err(|err| engine_error("delete_capture", err))?
+            .exists()
+        {
+            return Err(not_found_capture(capture_id));
         }
+        ensure_delete_capture_allowed(&store, capture_id, &request)?;
         let existed = store
             .delete_capture(capture_id)
             .map_err(|err| engine_error("delete_capture", err))?;
@@ -670,7 +677,7 @@ impl EngineCameraDebugService {
         &self,
         store: &CaptureStore,
         request: &CompareTransportsRequest,
-        remaining: Duration,
+        _remaining: Duration,
     ) -> Result<Value, ControlCommandError> {
         let candidates = resolve_event_channel_targets(&request.target);
         if candidates.is_empty() {
@@ -678,11 +685,18 @@ impl EngineCameraDebugService {
                 "camera does not have an ONVIF, HTTP, or Reolink event channel endpoint configured",
             ));
         }
-        let count = u64::try_from(candidates.len()).unwrap_or(1).max(1);
-        let duration_max_ms =
-            bounded_capture_duration_ms(request.duration_seconds, remaining, count)?;
+        let total_candidates = candidates.len().max(1);
         let mut entries = Vec::with_capacity(candidates.len());
         for (idx, (protocol, url)) in candidates.into_iter().enumerate() {
+            let remaining_budget = remaining_timeout(request.deadline)?;
+            let remaining_candidates = u64::try_from(total_candidates.saturating_sub(idx))
+                .unwrap_or(1)
+                .max(1);
+            let duration_max_ms = bounded_capture_duration_ms(
+                request.duration_seconds,
+                remaining_budget,
+                remaining_candidates,
+            )?;
             let capture_id =
                 generate_capture_id(&request.target.camera_id, "evt", protocol.as_str(), idx);
             let mut req = EngineCaptureRequest::new(
@@ -770,6 +784,9 @@ impl EngineCameraDebugService {
             ) {
                 continue;
             }
+            if store.is_camera_capture_active(&meta.camera_id) {
+                return Err(active_capture_conflict(&meta.capture_id, &meta.camera_id));
+            }
             if store
                 .delete_capture(&meta.capture_id)
                 .map_err(|err| engine_error("delete_capture", err))?
@@ -784,6 +801,59 @@ impl EngineCameraDebugService {
             "deleted_capture_ids": deleted_ids,
         }))
     }
+}
+
+fn map_capture_artifacts(artifacts: &[DebugArtifact]) -> CaptureArtifacts {
+    CaptureArtifacts {
+        pcapng: artifacts.contains(&DebugArtifact::Pcapng),
+        video_bitstream: artifacts.contains(&DebugArtifact::VideoBitstream),
+        audio_bitstream: artifacts.contains(&DebugArtifact::AudioBitstream),
+        muxed_mp4: artifacts.contains(&DebugArtifact::MuxedMp4),
+        protocol_transcript: artifacts.contains(&DebugArtifact::ProtocolTranscript),
+    }
+}
+
+fn active_capture_conflict(capture_id: &str, camera_id: &str) -> ControlCommandError {
+    ControlCommandError::new(
+        proto::ErrorCode::Rejected,
+        409,
+        format!(
+            "cannot delete capture '{capture_id}' while capture for camera '{camera_id}' is active"
+        ),
+    )
+}
+
+fn ensure_delete_capture_allowed(
+    store: &CaptureStore,
+    capture_id: &str,
+    request: &DeleteCaptureRequest,
+) -> Result<(), ControlCommandError> {
+    if let Ok(meta) = store.load_metadata(capture_id) {
+        check_capture_scope(
+            &meta,
+            request.allowed_camera_ids.as_deref(),
+            request.camera_id.as_deref(),
+        )?;
+        if store.is_camera_capture_active(&meta.camera_id) {
+            return Err(active_capture_conflict(capture_id, &meta.camera_id));
+        }
+        return Ok(());
+    }
+    if request.allowed_camera_ids.is_some() {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            403,
+            format!(
+                "cannot delete capture '{capture_id}' without readable metadata while [mcp].debug_camera_ids is active"
+            ),
+        ));
+    }
+    if request.camera_id.is_some() {
+        return Err(invalid(&format!(
+            "cannot delete capture '{capture_id}' without readable metadata while camera_id filter is set"
+        )));
+    }
+    Ok(())
 }
 
 fn resolve_store_root(config_dir: Option<&Path>) -> PathBuf {
@@ -1143,6 +1213,7 @@ fn not_found_capture(capture_id: &str) -> ControlCommandError {
 }
 
 /// Output from executing `camera_debugging`, including its redaction boundary decision.
+#[derive(Debug)]
 pub(super) struct CameraDebugExecution {
     pub(super) result: ToolCallResult,
     pub(super) bypass_redaction: bool,
@@ -1492,59 +1563,10 @@ fn inspect_pipeline(
     args: &CameraDebuggingArgs,
 ) -> Result<(Value, bool), ControlCommandError> {
     let include_raw_auth = args.include_raw_auth.unwrap_or(false);
-    let cameras = match args.camera_id.as_deref() {
-        Some(raw_id) => {
-            let camera_id = validate_camera_id(raw_id)?;
-            vec![resolve_allowed_camera(
-                ctx.state,
-                ctx.principal,
-                ctx.classification,
-                ctx.cfg,
-                camera_id,
-            )?]
-        }
-        None => ctx
-            .state
-            .camera_entries()
-            .into_iter()
-            .filter(|camera| camera_entry_allowed(ctx.cfg, camera))
-            .take(INSPECT_CAMERAS_MAX)
-            .collect(),
-    };
+    let cameras = resolve_inspect_cameras(ctx, args.camera_id.as_deref())?;
     let (router_statuses, router_available) = read_router_statuses(router_tx);
-    let mut ingress_by_ip = ctx
-        .state
-        .health
-        .snapshot()
-        .into_iter()
-        .map(|report| (report.ip, report))
-        .collect::<HashMap<_, _>>();
-    let recording_by_stream = ctx
-        .state
-        .recording_health
-        .snapshot()
-        .streams
-        .into_iter()
-        .map(|stream| (stream.stream_id.clone(), stream))
-        .collect::<HashMap<_, _>>();
-    let mut pipelines = Vec::with_capacity(cameras.len());
-    for camera in &cameras {
-        let ingress = camera
-            .info
-            .ip
-            .parse::<IpAddr>()
-            .ok()
-            .and_then(|ip| ingress_by_ip.remove(&ip))
-            .map_or_else(Vec::new, |report| report.streams);
-        pipelines.push(build_camera_pipeline_json(
-            ctx.state,
-            camera,
-            router_statuses.get(&camera.recording_label),
-            &ingress,
-            &recording_by_stream,
-            include_raw_auth,
-        ));
-    }
+    let pipelines =
+        collect_camera_pipelines(ctx.state, &cameras, &router_statuses, include_raw_auth);
     let single_camera_id = (cameras.len() == 1).then(|| cameras[0].info.id.clone());
     let payload = json!({
         "action": "inspect_pipeline",
@@ -1556,6 +1578,71 @@ fn inspect_pipeline(
         "cameras": pipelines,
     });
     Ok((payload, include_raw_auth))
+}
+
+fn resolve_inspect_cameras(
+    ctx: &ActionContext<'_>,
+    raw_camera_id: Option<&str>,
+) -> Result<Vec<CameraEntry>, ControlCommandError> {
+    match raw_camera_id {
+        Some(raw_id) => {
+            let camera_id = validate_camera_id(raw_id)?;
+            Ok(vec![resolve_allowed_camera(
+                ctx.state,
+                ctx.principal,
+                ctx.classification,
+                ctx.cfg,
+                camera_id,
+            )?])
+        }
+        None => Ok(ctx
+            .state
+            .camera_entries()
+            .into_iter()
+            .filter(|camera| camera_entry_allowed(ctx.cfg, camera))
+            .take(INSPECT_CAMERAS_MAX)
+            .collect()),
+    }
+}
+
+fn collect_camera_pipelines(
+    state: &ServerState,
+    cameras: &[CameraEntry],
+    router_statuses: &HashMap<String, CameraStatus>,
+    include_raw_auth: bool,
+) -> Vec<Value> {
+    let mut ingress_by_ip = state
+        .health
+        .snapshot()
+        .into_iter()
+        .map(|report| (report.ip, report))
+        .collect::<HashMap<_, _>>();
+    let recording_by_stream = state
+        .recording_health
+        .snapshot()
+        .streams
+        .into_iter()
+        .map(|stream| (stream.stream_id.clone(), stream))
+        .collect::<HashMap<_, _>>();
+    let mut pipelines = Vec::with_capacity(cameras.len());
+    for camera in cameras {
+        let ingress = camera
+            .info
+            .ip
+            .parse::<IpAddr>()
+            .ok()
+            .and_then(|ip| ingress_by_ip.remove(&ip))
+            .map_or_else(Vec::new, |report| report.streams);
+        pipelines.push(build_camera_pipeline_json(
+            state,
+            camera,
+            router_statuses.get(&camera.recording_label),
+            &ingress,
+            &recording_by_stream,
+            include_raw_auth,
+        ));
+    }
+    pipelines
 }
 
 fn build_camera_pipeline_json(
@@ -1750,14 +1837,42 @@ fn allowed_camera_scope(state: &ServerState, cfg: &McpConfig) -> Option<Vec<Stri
     Some(scope)
 }
 
+fn push_unique_secret(secrets: &mut Vec<String>, candidate: &str) {
+    if !candidate.is_empty() && !secrets.iter().any(|existing| existing == candidate) {
+        secrets.push(candidate.to_owned());
+    }
+}
+
+fn push_url_credentials(secrets: &mut Vec<String>, raw_url: Option<&str>) {
+    let Some(raw) = raw_url else {
+        return;
+    };
+    let Ok(parsed) = Url::parse(raw) else {
+        return;
+    };
+    push_unique_secret(secrets, parsed.username());
+    if let Some(password) = parsed.password() {
+        push_unique_secret(secrets, password);
+    }
+}
+
 fn collect_camera_secrets(state: &ServerState) -> ZeroizedSecretList {
     let mut secrets = Vec::new();
+    for secret in state
+        .mcp
+        .secrets_snapshot(state.camera_config_path.as_deref())
+        .redaction_values()
+    {
+        push_unique_secret(&mut secrets, &secret);
+    }
     for camera in state.camera_entries() {
-        if !camera.configuration.password.is_empty()
-            && !secrets.contains(&camera.configuration.password)
-        {
-            secrets.push(camera.configuration.password);
+        push_unique_secret(&mut secrets, &camera.configuration.username);
+        push_unique_secret(&mut secrets, &camera.configuration.password);
+        if let Some(uid) = camera.configuration.uid.as_deref() {
+            push_unique_secret(&mut secrets, uid);
         }
+        push_url_credentials(&mut secrets, camera.configuration.main_rtsp_url.as_deref());
+        push_url_credentials(&mut secrets, camera.configuration.sub_rtsp_url.as_deref());
     }
     ZeroizedSecretList(secrets)
 }
@@ -1782,7 +1897,7 @@ fn validate_camera_id(raw: &str) -> Result<&str, ControlCommandError> {
         || trimmed.chars().any(char::is_control)
     {
         return Err(invalid(
-            "camera_id must contain 1 to 256 printable characters",
+            "camera_id must contain 1 to 128 printable characters",
         ));
     }
     Ok(trimmed)
@@ -1791,16 +1906,9 @@ fn validate_camera_id(raw: &str) -> Result<&str, ControlCommandError> {
 fn validate_capture_id(raw: Option<&str>) -> Result<&str, ControlCommandError> {
     let raw = raw.ok_or_else(|| invalid("capture_id is required for this action"))?;
     let trimmed = raw.trim();
-    let valid_chars = trimmed
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'));
-    if trimmed.is_empty()
-        || trimmed.len() > CAPTURE_ID_MAX_BYTES
-        || trimmed.contains("..")
-        || !valid_chars
-    {
+    if validate_store_capture_id(trimmed).is_err() {
         return Err(invalid(
-            "capture_id must be 1 to 128 safe ASCII characters ([A-Za-z0-9._-])",
+            "capture_id must be 1 to 128 safe ASCII characters ([A-Za-z0-9_-])",
         ));
     }
     Ok(trimmed)
@@ -2116,8 +2224,7 @@ mod tests {
             Instant::now() + Duration::from_secs(5),
             json!({ "action": "inspect_pipeline" }),
         )
-        .err()
-        .expect("User role must be denied");
+        .expect_err("User role must be denied");
         assert_eq!(err._http_status, 403);
 
         let (disabled_state, router_tx) = test_state(
@@ -2137,8 +2244,7 @@ mod tests {
             Instant::now() + Duration::from_secs(5),
             json!({ "action": "inspect_pipeline" }),
         )
-        .err()
-        .expect("disabled allow_camera_debugging must fail closed");
+        .expect_err("disabled allow_camera_debugging must fail closed");
         assert_eq!(err._http_status, 403);
     }
 
@@ -2168,8 +2274,7 @@ mod tests {
                 deadline,
                 blocked,
             )
-            .err()
-            .expect("read-only header must reject action");
+            .expect_err("read-only header must reject action");
             assert_eq!(err._http_status, 403);
         }
 
@@ -2217,8 +2322,7 @@ mod tests {
             deadline,
             json!({ "action": "capture", "camera_id": "192.0.2.11" }),
         )
-        .err()
-        .expect("unlisted camera must be denied");
+        .expect_err("unlisted camera must be denied");
         assert_eq!(denied._http_status, 403);
 
         let inspected = execute(
@@ -2259,8 +2363,7 @@ mod tests {
                 deadline,
                 bad,
             )
-            .err()
-            .expect("invalid bounded argument must fail");
+            .expect_err("invalid bounded argument must fail");
             assert_eq!(err._http_status, 400);
         }
     }
@@ -2325,5 +2428,98 @@ mod tests {
         )
         .unwrap();
         assert!(export_raw.bypass_redaction);
+    }
+
+    #[test]
+    fn delete_capture_fails_closed_without_metadata_and_blocks_active() {
+        let dir = std::env::temp_dir().join(format!("keeppeek-mcp-del-{}", uuid::Uuid::new_v4()));
+        let store_root = dir.join("camera-debug");
+        std::fs::create_dir_all(store_root.join("orphan-cap")).unwrap();
+        std::fs::write(store_root.join("orphan-cap/capture.pcapng"), b"pcap").unwrap();
+
+        let service = EngineCameraDebugService::default();
+        let scoped_err = service
+            .delete_capture(DeleteCaptureRequest {
+                capture_id: Some("orphan-cap".to_owned()),
+                camera_id: None,
+                delete_all: false,
+                allowed_camera_ids: Some(vec!["192.0.2.10".to_owned()]),
+                config_dir: Some(dir.clone()),
+            })
+            .unwrap_err();
+        assert_eq!(scoped_err._http_status, 403);
+
+        let store = CaptureStore::new(&store_root, StoreLimits::default()).unwrap();
+        let (cap, _) = store.begin_capture("192.0.2.10", "active-cap").unwrap();
+        let meta = CaptureMetadata {
+            capture_id: "active-cap".to_owned(),
+            camera_id: "192.0.2.10".to_owned(),
+            protocol: "rtsp".to_owned(),
+            created_at_unix_secs: 1,
+            duration_ms: 10,
+            total_bytes: 0,
+            packet_count: 0,
+            include_raw_auth: false,
+            trigger_probe: false,
+            tls_decrypted: false,
+            transport: "tcp".to_owned(),
+            files: Vec::new(),
+            anomalies: Default::default(),
+            warnings: Vec::new(),
+        };
+        store.save_metadata("active-cap", &meta).unwrap();
+        let active_req = DeleteCaptureRequest {
+            capture_id: Some("active-cap".to_owned()),
+            camera_id: None,
+            delete_all: false,
+            allowed_camera_ids: None,
+            config_dir: Some(dir.clone()),
+        };
+        assert_eq!(
+            service.delete_capture(active_req).unwrap_err()._http_status,
+            409
+        );
+        drop(cap);
+        assert!(
+            service
+                .delete_capture(DeleteCaptureRequest {
+                    capture_id: Some("active-cap".to_owned()),
+                    camera_id: None,
+                    delete_all: false,
+                    allowed_camera_ids: None,
+                    config_dir: Some(dir.clone()),
+                })
+                .is_ok()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rejects_oversized_camera_id_and_dot_in_capture_id() {
+        let (state, router_tx) = test_state(
+            McpConfig {
+                enabled: true,
+                allow_camera_debugging: true,
+                ..McpConfig::default()
+            },
+            Arc::new(MockCameraDebugService::new(None)),
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        for bad in [
+            json!({ "action": "inspect_pipeline", "camera_id": "x".repeat(129) }),
+            json!({ "action": "delete_capture", "capture_id": "cap.with.dot" }),
+        ] {
+            let err = execute(
+                &state,
+                &router_tx,
+                &admin(),
+                ClientClassificationReason::DirectLocal,
+                false,
+                deadline,
+                bad,
+            )
+            .unwrap_err();
+            assert_eq!(err._http_status, 400);
+        }
     }
 }

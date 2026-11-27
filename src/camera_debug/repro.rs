@@ -16,7 +16,8 @@ use crate::camera_debug::{
 use anyhow::{Context, ensure};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
-use std::{net::Ipv4Addr, path::Path};
+use std::{fmt, net::Ipv4Addr, path::Path};
+use zeroize::Zeroize;
 
 /// Schema identifier expected by `ReplayCameraServer`.
 pub const REPRO_SCHEMA_VERSION: &str = "keeppeek.camera-repro.v1";
@@ -47,7 +48,7 @@ pub struct IndexRange {
 }
 
 /// Options governing sanitization, anonymization, and media slicing on repro export.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ExportReproOptions {
     pub strip_credentials: bool,
     pub anonymize_network: bool,
@@ -55,6 +56,28 @@ pub struct ExportReproOptions {
     pub packet_range: Option<IndexRange>,
     pub nalu_range: Option<IndexRange>,
     pub extra_secrets: Vec<String>,
+}
+
+impl fmt::Debug for ExportReproOptions {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ExportReproOptions")
+            .field("strip_credentials", &self.strip_credentials)
+            .field("anonymize_network", &self.anonymize_network)
+            .field("trim_media", &self.trim_media)
+            .field("packet_range", &self.packet_range)
+            .field("nalu_range", &self.nalu_range)
+            .field("extra_secrets_count", &self.extra_secrets.len())
+            .finish()
+    }
+}
+
+impl Drop for ExportReproOptions {
+    fn drop(&mut self) {
+        for secret in &mut self.extra_secrets {
+            secret.zeroize();
+        }
+    }
 }
 
 impl Default for ExportReproOptions {
@@ -454,6 +477,10 @@ fn build_http_exchange(
         .response_body_text
         .as_deref()
         .map(|text| scrubber.scrub_text(text));
+    let body_base64 = ex
+        .response_body_base64
+        .as_deref()
+        .and_then(|b64| scrub_base64_payload(b64, scrubber, false));
     let match_body_contains = ex.request_body_text.as_deref().and_then(extract_match_hint);
     ReproHttpExchange {
         match_method: Some(ex.method.clone()),
@@ -464,7 +491,7 @@ fn build_http_exchange(
         status_reason: (!ex.status_reason.is_empty()).then(|| ex.status_reason.clone()),
         headers: scrub_headers(&ex.response_headers, scrubber),
         body_text,
-        body_base64: ex.response_body_base64.clone(),
+        body_base64,
         delay_ms: (ex.delay_ms > 0).then_some(ex.delay_ms),
     }
 }
@@ -478,22 +505,7 @@ fn build_reo_frames(
         .iter()
         .filter(|f| f.direction == "server_to_client")
         .collect();
-    let sliced = options.packet_range.map_or_else(
-        || {
-            if options.trim_media == TrimMediaMode::HeadersAndMinimalFailingSlice
-                && server_frames.len() > MINIMAL_SLICE_PACKET_CAP
-            {
-                &server_frames[..MINIMAL_SLICE_PACKET_CAP]
-            } else {
-                &server_frames[..]
-            }
-        },
-        |range| {
-            let start = range.start.min(server_frames.len());
-            let end = range.end.min(server_frames.len());
-            &server_frames[start..end]
-        },
-    );
+    let sliced = slice_reo_frames(&server_frames, options);
     sliced
         .iter()
         .map(|frame| {
@@ -501,9 +513,10 @@ fn build_reo_frames(
                 .payload_xml
                 .as_deref()
                 .map(|xml| scrubber.scrub_text(xml));
+            let is_login = frame.msg_id == reo_proto::COMMAND_LOGIN;
             let payload_base64 = match (&frame.payload_base64, options.trim_media) {
                 (Some(_), TrimMediaMode::SyntheticPayloads) => Some(BASE64.encode([0_u8; 16])),
-                (Some(b64), _) => Some(b64.clone()),
+                (Some(b64), _) => scrub_base64_payload(b64, scrubber, is_login),
                 (None, _) => None,
             };
             ReproReoFrame {
@@ -517,6 +530,64 @@ fn build_reo_frames(
             }
         })
         .collect()
+}
+
+fn slice_reo_frames<'a>(
+    server_frames: &'a [&'a ReoFrameTranscript],
+    options: &ExportReproOptions,
+) -> &'a [&'a ReoFrameTranscript] {
+    options.packet_range.map_or_else(
+        || {
+            if options.trim_media == TrimMediaMode::HeadersAndMinimalFailingSlice
+                && server_frames.len() > MINIMAL_SLICE_PACKET_CAP
+            {
+                &server_frames[..MINIMAL_SLICE_PACKET_CAP]
+            } else {
+                server_frames
+            }
+        },
+        |range| {
+            let start = range.start.min(server_frames.len());
+            let end = range.end.min(server_frames.len());
+            &server_frames[start..end]
+        },
+    )
+}
+
+fn scrub_base64_payload(
+    encoded: &str,
+    scrubber: &TextScrubber<'_>,
+    strip_entire_login: bool,
+) -> Option<String> {
+    if !scrubber.strip_credentials && !scrubber.anonymize_network {
+        return Some(encoded.to_owned());
+    }
+    if strip_entire_login && scrubber.strip_credentials {
+        return None;
+    }
+    let Ok(bytes) = BASE64.decode(encoded) else {
+        return (!scrubber.strip_credentials).then(|| encoded.to_owned());
+    };
+    if let Ok(text) = std::str::from_utf8(&bytes) {
+        return Some(BASE64.encode(scrubber.scrub_text(text).as_bytes()));
+    }
+    if scrubber.strip_credentials && contains_binary_secret(&bytes, scrubber.extra_secrets) {
+        return None;
+    }
+    Some(encoded.to_owned())
+}
+
+fn contains_binary_secret(bytes: &[u8], extra_secrets: &[String]) -> bool {
+    if extra_secrets.iter().any(|secret| {
+        !secret.is_empty() && bytes.windows(secret.len()).any(|w| w == secret.as_bytes())
+    }) {
+        return true;
+    }
+    let lossy = String::from_utf8_lossy(bytes).to_ascii_lowercase();
+    lossy.contains("authorization: basic ")
+        || lossy.contains("authorization: digest ")
+        || lossy.contains("\"password\"")
+        || lossy.contains("token=")
 }
 
 fn build_safety_report(
@@ -565,14 +636,47 @@ fn audit_exported_fixture(
         serialized.len()
     );
     let mut warnings = Vec::new();
-    if options.strip_credentials {
-        for secret in &options.extra_secrets {
-            if !secret.is_empty() && serialized.contains(secret) {
-                warnings.push("residual secret matched caller extra_secrets".to_owned());
-                break;
-            }
+    audit_text_payload(&serialized, options, &mut warnings);
+    for b64 in collect_fixture_base64_blobs(fixture) {
+        if let Ok(decoded) = BASE64.decode(b64) {
+            let lossy = String::from_utf8_lossy(&decoded);
+            audit_text_payload(&lossy, options, &mut warnings);
         }
-        let lower = serialized.to_ascii_lowercase();
+    }
+    warnings.sort();
+    warnings.dedup();
+    Ok(warnings)
+}
+
+fn collect_fixture_base64_blobs(fixture: &CameraReproFixture) -> Vec<&str> {
+    let mut blobs = Vec::new();
+    if let Some(http) = &fixture.http {
+        blobs.extend(
+            http.exchanges
+                .iter()
+                .filter_map(|ex| ex.body_base64.as_deref()),
+        );
+    }
+    if let Some(reo) = &fixture.reo_proto {
+        blobs.extend(
+            reo.frames
+                .iter()
+                .filter_map(|frame| frame.payload_base64.as_deref()),
+        );
+    }
+    blobs
+}
+
+fn audit_text_payload(text: &str, options: &ExportReproOptions, warnings: &mut Vec<String>) {
+    if options.strip_credentials {
+        if options
+            .extra_secrets
+            .iter()
+            .any(|secret| !secret.is_empty() && text.contains(secret))
+        {
+            warnings.push("residual secret matched caller extra_secrets".to_owned());
+        }
+        let lower = text.to_ascii_lowercase();
         if lower.contains("authorization: basic ")
             || lower.contains("authorization: digest ")
             || lower.contains("authorization\",\"basic ")
@@ -582,10 +686,31 @@ fn audit_exported_fixture(
                 .push("residual Authorization header found after credential scrubbing".to_owned());
         }
     }
-    if options.anonymize_network && has_non_testnet_ipv4(&serialized) {
+    if options.anonymize_network && has_non_testnet_ipv4(text) {
         warnings.push("non-TEST-NET IPv4 literal remained after anonymization".to_owned());
     }
-    Ok(warnings)
+}
+
+pub(crate) fn scrub_wire_text(input: &str, extra_secrets: &[String]) -> String {
+    let scrubber = TextScrubber {
+        strip_credentials: true,
+        anonymize_network: false,
+        source_host: "",
+        extra_secrets,
+    };
+    scrubber.scrub_text(input)
+}
+
+pub(crate) fn is_sensitive_header_name(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "authorization"
+            | "proxy-authorization"
+            | "cookie"
+            | "set-cookie"
+            | "x-auth-token"
+            | "x-api-key"
+    )
 }
 
 struct TextScrubber<'a> {
@@ -604,7 +729,10 @@ impl TextScrubber<'_> {
                     out = out.replace(secret, "[REDACTED]");
                 }
             }
-            for tag in ["Password", "password", "userName", "UserName", "Nonce"] {
+            for tag in [
+                "Password", "password", "Username", "username", "userName", "UserName", "Nonce",
+                "nonce",
+            ] {
                 out = redact_xml_tag(&out, tag);
             }
             for key in ["password", "userName", "token", "name"] {
@@ -630,12 +758,7 @@ fn scrub_headers(
     headers
         .iter()
         .map(|(k, v)| {
-            let lower = k.to_ascii_lowercase();
-            let val = if scrubber.strip_credentials
-                && matches!(
-                    lower.as_str(),
-                    "authorization" | "cookie" | "set-cookie" | "x-auth-token"
-                ) {
+            let val = if scrubber.strip_credentials && is_sensitive_header_name(k) {
                 "[REDACTED]".to_owned()
             } else {
                 scrubber.scrub_text(v)
@@ -651,14 +774,23 @@ fn redact_xml_tag(input: &str, tag: &str) -> String {
     let mut search_from = 0;
     while let Some(open_pos) = out[search_from..].find(tag) {
         let abs_tag = search_from + open_pos;
-        let is_open_tag = abs_tag > 0
+        let after_tag = abs_tag + tag.len();
+        let next_byte = out.as_bytes().get(after_tag).copied();
+        let valid_tag_boundary = abs_tag > 0
             && matches!(out.as_bytes()[abs_tag - 1], b'<' | b':')
-            && out[abs_tag + tag.len()..].starts_with('>');
-        if !is_open_tag {
-            search_from = abs_tag + tag.len();
+            && next_byte.is_some_and(|b| b == b'>' || b.is_ascii_whitespace());
+        if !valid_tag_boundary {
+            search_from = after_tag;
             continue;
         }
-        let val_start = abs_tag + tag.len() + 1;
+        let Some(open_end_rel) = out[after_tag..].find('>') else {
+            break;
+        };
+        if out[after_tag..after_tag + open_end_rel].ends_with('/') {
+            search_from = after_tag + open_end_rel + 1;
+            continue;
+        }
+        let val_start = after_tag + open_end_rel + 1;
         let Some(rel_close) = out[val_start..].find(close_needle) else {
             break;
         };
@@ -906,21 +1038,17 @@ mod tests {
     #[test]
     fn flags_unsafe_options_and_supports_synthetic_and_nalu_slicing() {
         let transcript = sample_rtsp_transcript();
-        let raw_opts = ExportReproOptions {
-            strip_credentials: false,
-            anonymize_network: false,
-            trim_media: TrimMediaMode::KeepRawFrames,
-            ..ExportReproOptions::default()
-        };
+        let mut raw_opts = ExportReproOptions::default();
+        raw_opts.strip_credentials = false;
+        raw_opts.anonymize_network = false;
+        raw_opts.trim_media = TrimMediaMode::KeepRawFrames;
         let unsafe_fixture = export_repro_fixture_from_transcript(&transcript, &raw_opts).unwrap();
         assert!(!unsafe_fixture.sharing_safety_report.safe_to_share_publicly);
         assert_eq!(unsafe_fixture.sharing_safety_report.warnings.len(), 3);
 
-        let synth_opts = ExportReproOptions {
-            trim_media: TrimMediaMode::SyntheticPayloads,
-            nalu_range: Some(IndexRange { start: 0, end: 1 }),
-            ..ExportReproOptions::default()
-        };
+        let mut synth_opts = ExportReproOptions::default();
+        synth_opts.trim_media = TrimMediaMode::SyntheticPayloads;
+        synth_opts.nalu_range = Some(IndexRange { start: 0, end: 1 });
         let synth_fixture = export_repro_fixture_from_transcript(&transcript, &synth_opts).unwrap();
         let pkts = &synth_fixture.rtsp.as_ref().unwrap().sessions[0].rtp_packets;
         assert_eq!(pkts.len(), 2);
@@ -980,5 +1108,86 @@ mod tests {
         assert!(!json.contains("pw123"));
         assert!(!json.contains("10.0.0.42"));
         assert!(fixture.sharing_safety_report.safe_to_share_publicly);
+    }
+
+    fn sample_sensitive_transcript() -> ProtocolTranscript {
+        ProtocolTranscript {
+            schema_version: TRANSCRIPT_SCHEMA_VERSION.to_owned(),
+            camera_id: "cam-xml".to_owned(),
+            camera_host: "10.0.0.42".to_owned(),
+            protocol: CaptureProtocol::Onvif,
+            tls_decrypted: false,
+            include_raw_auth: true,
+            rtsp: None,
+            http: vec![HttpExchangeTranscript {
+                method: "POST".to_owned(),
+                path: "/onvif/device_service".to_owned(),
+                soap_action: None,
+                request_headers: vec![
+                    (
+                        "Proxy-Authorization".to_owned(),
+                        "Basic YWRtaW46cHc=".to_owned(),
+                    ),
+                    ("X-Api-Key".to_owned(), "api-key-999".to_owned()),
+                ],
+                request_body_text: Some(
+                    r#"<wsse:Username>camuser</wsse:Username><wsse:Password Type="http://example#Digest">digest-pw</wsse:Password><wsse:Nonce EncodingType="http://example#Base64">nonce-val</wsse:Nonce>"#
+                        .to_owned(),
+                ),
+                status: 200,
+                status_reason: "OK".to_owned(),
+                response_headers: vec![("X-Auth-Token".to_owned(), "tok-hdr".to_owned())],
+                response_body_text: None,
+                response_body_base64: Some(BASE64.encode(b"payload-secret-xyz")),
+                delay_ms: 4,
+            }],
+            reo_proto: vec![ReoFrameTranscript {
+                direction: "client_to_server".to_owned(),
+                msg_id: 1,
+                channel_id: 0,
+                stream_type: 0,
+                payload_xml: Some(
+                    "<Username>camuser</Username><Password>pw123</Password>".to_owned(),
+                ),
+                payload_base64: Some(BASE64.encode(b"raw-login-bytes")),
+                delay_ms: 8,
+            }],
+        }
+    }
+
+    #[test]
+    fn scrubs_xml_attributes_headers_and_base64_and_flags_base64_leak() {
+        let transcript = sample_sensitive_transcript();
+        let mut safe_opts = ExportReproOptions::default();
+        safe_opts.extra_secrets = vec!["payload-secret-xyz".to_owned()];
+        let safe = export_repro_fixture_from_transcript(&transcript, &safe_opts).unwrap();
+        let safe_json = serde_json::to_string(&safe).unwrap();
+        for leaked in [
+            "digest-pw",
+            "nonce-val",
+            "camuser",
+            "pw123",
+            "payload-secret-xyz",
+            "raw-login-bytes",
+            "api-key-999",
+            "tok-hdr",
+        ] {
+            assert!(!safe_json.contains(leaked), "leaked {leaked}");
+        }
+        assert!(safe.sharing_safety_report.safe_to_share_publicly);
+
+        let mut raw_opts = ExportReproOptions::default();
+        raw_opts.strip_credentials = false;
+        raw_opts.extra_secrets = vec!["payload-secret-xyz".to_owned()];
+        let leaked = export_repro_fixture_from_transcript(&transcript, &raw_opts).unwrap();
+        assert!(!leaked.sharing_safety_report.safe_to_share_publicly);
+        assert!(!leaked.sharing_safety_report.sanitized);
+        assert!(!leaked.sharing_safety_report.warnings.is_empty());
+
+        let mut ip_fixture = safe;
+        ip_fixture.http.as_mut().unwrap().exchanges[0].body_base64 =
+            Some(BASE64.encode(b"peer=10.20.30.40"));
+        let audit = audit_exported_fixture(&ip_fixture, &ExportReproOptions::default()).unwrap();
+        assert!(audit.iter().any(|w| w.contains("IPv4")));
     }
 }

@@ -336,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_enforces_exact_lower_and_upper_bounds() {
+    fn validation_accepts_exact_lower_and_upper_bounds() {
         let valid_min = McpConfig {
             enabled: true,
             allow_writes: true,
@@ -375,7 +375,10 @@ mod tests {
                 .collect(),
         };
         assert!(valid_max.validate().is_ok());
+    }
 
+    #[test]
+    fn validation_rejects_out_of_range_numeric_bounds() {
         let invalid_cases = [
             McpConfig {
                 max_concurrent_requests: 0,
@@ -425,6 +428,16 @@ mod tests {
                 snapshot_min_interval_seconds: MAX_SNAPSHOT_MIN_INTERVAL_SECONDS + 1,
                 ..McpConfig::default()
             },
+        ];
+
+        for invalid in invalid_cases {
+            assert!(invalid.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn validation_rejects_invalid_debug_bounds_and_camera_ids() {
+        let invalid_cases = [
             McpConfig {
                 max_debug_capture_bytes: MIN_MAX_DEBUG_CAPTURE_BYTES - 1,
                 ..McpConfig::default()
