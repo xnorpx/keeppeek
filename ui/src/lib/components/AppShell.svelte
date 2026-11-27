@@ -12,7 +12,10 @@
 	import MoonIcon from '@lucide/svelte/icons/moon';
 	import LogOutIcon from '@lucide/svelte/icons/log-out';
 	import SunIcon from '@lucide/svelte/icons/sun';
+	import ShieldAlertIcon from '@lucide/svelte/icons/shield-alert';
+	import BellOffIcon from '@lucide/svelte/icons/bell-off';
 	import { resolve } from '$app/paths';
+	import { mcpAccessCapability } from '$lib/control-client-mcp-access';
 	import { page } from '$app/state';
 	import { setLivePeer } from '$lib/stream-peer-context';
 	import { setCapabilityState } from '$lib/capability-context';
@@ -279,6 +282,13 @@
 		const closeCapabilities = controlClient.onCapabilities((capabilityIds) => {
 			capabilities.updateAdvertised(capabilityIds);
 		});
+		const closeMcpAccessState =
+			controlClient.mcpAccess?.onStateChange((next) => {
+				if (!next.enabled || !next.longEnabledWarningActive) {
+					clearMcpIssueFromShellHealth();
+				}
+				mcpBannerError = null;
+			}) ?? (() => {});
 		const closeAccessState = controlClient.onAccessState((state) => {
 			const wasAuthenticated = accessState.status === 'authenticated';
 			const previousPrincipalId = accessState.session?.principalId ?? null;
@@ -337,6 +347,7 @@
 			clearNavigationChord();
 			closeAppearance();
 			closeCapabilities();
+			closeMcpAccessState();
 			closeAccessState();
 			profileWatchGeneration++;
 			if (closeProfileActiveWatch) void closeProfileActiveWatch().catch(() => undefined);
@@ -511,6 +522,63 @@
 	] as const;
 	let administrator = $derived(accessState.session?.role === 'administrator');
 	let navigation = $derived(allNavigation.filter((item) => administrator || !item.administrator));
+	let mcpLongEnabledIssue = $derived(
+		administrator
+			? (shellHealth?.issues.find(
+					(issue) => issue.scope === 'mcp' && issue.severity === 'warning'
+				) ?? null)
+			: null
+	);
+	let mcpAccessSupported = $derived(capabilities.supports(mcpAccessCapability));
+	let mcpBannerHumanControlAllowed = $derived(
+		accessState.session?.local === true ||
+			accessState.session?.authentication?.method === 'trusted-local' ||
+			accessState.session?.authentication?.method === 'oidc' ||
+			accessState.session?.authentication?.method === 'proxy'
+	);
+	let mcpBannerBusy = $state<'disable' | 'silence' | null>(null);
+	let mcpBannerError = $state<string | null>(null);
+
+	function clearMcpIssueFromShellHealth(): void {
+		if (!shellHealth) return;
+		shellHealth = {
+			...shellHealth,
+			issues: shellHealth.issues.filter((issue) => issue.scope !== 'mcp')
+		};
+	}
+
+	async function refreshShellHealthAfterMcpAction(): Promise<void> {
+		try {
+			shellHealth = await controlClient.getHealth();
+		} catch {
+			clearMcpIssueFromShellHealth();
+		}
+	}
+
+	async function handleMcpBannerAction(action: 'disable' | 'silence'): Promise<void> {
+		if (!administrator || !mcpAccessSupported || mcpBannerBusy !== null) return;
+		mcpBannerBusy = action;
+		mcpBannerError = null;
+		try {
+			const current = await controlClient.mcpAccess.getState();
+			if (action === 'disable') {
+				await controlClient.mcpAccess.setEnabled(false, false, current.configurationRevision);
+			} else {
+				await controlClient.mcpAccess.silenceLongEnabledWarning(current.configurationRevision);
+			}
+			clearMcpIssueFromShellHealth();
+			void refreshShellHealthAfterMcpAction();
+		} catch (cause) {
+			mcpBannerError =
+				cause instanceof Error
+					? cause.message
+					: action === 'disable'
+						? 'Unable to disable MCP access.'
+						: 'Unable to silence the MCP warning.';
+		} finally {
+			mcpBannerBusy = null;
+		}
+	}
 
 	function matchesRoute(paths: readonly string[], pathname: string): boolean {
 		return paths.some((path) =>
@@ -841,6 +909,53 @@
 							{/if}
 						</button>
 					</header>
+				{/if}
+
+				{#if mcpLongEnabledIssue}
+					<div
+						role="region"
+						aria-label="MCP access warning"
+						data-testid="mcp-long-enabled-banner"
+						class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-foreground"
+					>
+						<div class="flex min-w-0 items-center gap-2">
+							<ShieldAlertIcon class="size-4 shrink-0 text-amber-500" />
+							<span class="leading-5">{mcpLongEnabledIssue.message}</span>
+						</div>
+						<div class="flex flex-wrap items-center gap-2">
+							{#if mcpAccessSupported}
+								<button
+									type="button"
+									disabled={mcpBannerBusy !== null}
+									onclick={() => void handleMcpBannerAction('disable')}
+									class="text-destructive-foreground inline-flex h-7 items-center gap-1.5 rounded-sm border border-destructive/50 bg-destructive px-2.5 text-xs font-medium hover:bg-destructive/90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-50"
+								>
+									{mcpBannerBusy === 'disable' ? 'Disabling…' : 'Disable MCP'}
+								</button>
+								<button
+									type="button"
+									disabled={mcpBannerBusy !== null || !mcpBannerHumanControlAllowed}
+									title={mcpBannerHumanControlAllowed
+										? 'Silence this 7-day MCP warning until MCP is disabled'
+										: 'Silencing requires trusted local network access or an interactive OIDC/identity-proxy browser session, not a Bearer access key'}
+									onclick={() => void handleMcpBannerAction('silence')}
+									class="inline-flex h-7 items-center gap-1.5 rounded-sm border border-border bg-background px-2.5 text-xs font-medium hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-50"
+								>
+									<BellOffIcon class="size-3.5" />
+									{mcpBannerBusy === 'silence' ? 'Silencing…' : 'Silence warning'}
+								</button>
+							{/if}
+							<a
+								href={resolve('/settings#integrations')}
+								class="inline-flex h-7 items-center rounded-sm border border-border bg-background px-2.5 text-xs font-medium hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+							>
+								Manage MCP
+							</a>
+						</div>
+						{#if mcpBannerError}
+							<p class="w-full text-xs text-destructive" role="alert">{mcpBannerError}</p>
+						{/if}
+					</div>
 				{/if}
 
 				<main

@@ -191,6 +191,101 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
+    #[test]
+    fn bearer_session_cannot_plan_or_apply_external_authentication_changes() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-auth-bearer-reject-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        #[cfg(not(windows))]
+        let directory = directory.canonicalize().unwrap();
+        let path = directory.join("config.toml");
+        std::fs::write(&path, "host = '127.0.0.1'\nport = 8081\n").unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let state = ServerState::empty().with_camera_config_path(path.clone());
+        let revision = current_configuration_revision(&state).unwrap();
+
+        let bearer_admin = ApiPrincipal {
+            identity: crate::server::ApiPrincipalIdentity::Credential {
+                id: Uuid::new_v4(),
+                revision: 1,
+            },
+            display_name: "Agent Bearer".to_owned(),
+            role: crate::access::AccessRole::Administrator,
+            credential_expires_at_ms: None,
+        };
+        let session = SessionId::from_u64(42);
+        let settings = proxy_settings();
+
+        // 1. Bearer session cannot plan an [external_auth] change via WebRTC ConfigurationCommand.
+        let plan_err = dispatch_as(
+            &state,
+            session,
+            &bearer_admin,
+            proto::ConfigurationCommand {
+                action: Some(proto::configuration_command::Action::Plan(
+                    proto::PlanConfigurationChange {
+                        expected_configuration_revision: revision.clone(),
+                        targets: None,
+                        change: Some(proto::ConfigurationChange {
+                            change: Some(
+                                proto::configuration_change::Change::ExternalAuthentication(
+                                    proto::ExternalAuthenticationUpdate {
+                                        value: Some(
+                                            proto::external_authentication_update::Value::Set(
+                                                settings.clone(),
+                                            ),
+                                        ),
+                                    },
+                                ),
+                            ),
+                        }),
+                    },
+                )),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(plan_err._http_status, 403);
+
+        // 2. Even if a plan already exists (e.g., created by a human), Bearer cannot apply it.
+        let human_plan = plan_configuration_change(
+            &state,
+            proto::PlanConfigurationChange {
+                expected_configuration_revision: revision.clone(),
+                targets: None,
+                change: Some(proto::ConfigurationChange {
+                    change: Some(proto::configuration_change::Change::ExternalAuthentication(
+                        proto::ExternalAuthenticationUpdate {
+                            value: Some(proto::external_authentication_update::Value::Set(
+                                settings,
+                            )),
+                        },
+                    )),
+                }),
+            },
+        )
+        .unwrap();
+        let apply_err = dispatch_as(
+            &state,
+            session,
+            &bearer_admin,
+            proto::ConfigurationCommand {
+                action: Some(proto::configuration_command::Action::Apply(
+                    proto::ApplyConfigurationPlan {
+                        plan_id: human_plan.plan_id,
+                        expected_configuration_revision: revision,
+                        administrator_confirmation: None,
+                    },
+                )),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(apply_err._http_status, 403);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(config::load_config(&path).unwrap().external_auth.is_none());
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     fn proxy_settings() -> proto::ExternalAuthenticationSettings {
         proto::ExternalAuthenticationSettings {
             allowed_origins: vec!["https://keeppeek.example".into()],

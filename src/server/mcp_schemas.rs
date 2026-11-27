@@ -633,6 +633,29 @@ fn admin_management_write_tool_definitions() -> Vec<ToolDefinition> {
             }),
             ToolAnnotations::write(false, true),
         ),
+        tool_def(
+            "disable_mcp_access",
+            "Immediately disable KeepPeek MCP server access ([mcp].enabled = false) and invalidate pending secret-entry handoffs. Permitted for Administrator callers even when [mcp].allow_writes is false (blocked under X-KeepPeek-MCP-Read-Only: true). Re-enabling MCP always requires a human Administrator in the Web UI or direct config.toml edit.",
+            json!({
+                "type": "object",
+                "required": ["confirm"],
+                "properties": {
+                    "confirm": {
+                        "type": "boolean",
+                        "const": true,
+                        "description": "Must be true to confirm disabling MCP access immediately."
+                    },
+                    "reason": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256,
+                        "description": "Optional short note explaining why the assistant disabled MCP access."
+                    }
+                },
+                "additionalProperties": false
+            }),
+            ToolAnnotations::write(true, true),
+        ),
     ]
 }
 

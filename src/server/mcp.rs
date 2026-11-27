@@ -13,7 +13,7 @@ use super::{
     mcp_catalog_probe, mcp_device_settings, mcp_diagnostics, mcp_schemas, mcp_secret_handoff,
     mcp_snapshot, notification_command_error, proto_notification_rule_record, record_access_audit,
     restore_notification_destinations, runtime_configuration, save_camera_settings, server_health,
-    service_error, state_store, unix_time_ms, validate_client_id,
+    server_health_status, service_error, state_store, unix_time_ms, validate_client_id,
 };
 use crate::{
     access::AccessRole,
@@ -45,7 +45,7 @@ use std::{
     net::IpAddr,
     sync::{
         Arc, RwLock,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -65,7 +65,8 @@ struct CachedSecrets {
 /// Server-owned MCP runtime state, concurrency tracker, and redaction snapshot.
 #[derive(Clone)]
 pub(super) struct Runtime {
-    config: McpConfig,
+    enabled: Arc<AtomicBool>,
+    config: Arc<RwLock<McpConfig>>,
     active_requests: Arc<AtomicUsize>,
     secrets: Arc<RwLock<CachedSecrets>>,
     snapshot_limiter: Arc<mcp_snapshot::SnapshotRateLimiter>,
@@ -76,7 +77,8 @@ pub(super) struct Runtime {
 impl Runtime {
     pub(super) fn new(config: McpConfig, secrets: Secrets) -> Self {
         Self {
-            config,
+            enabled: Arc::new(AtomicBool::new(config.enabled)),
+            config: Arc::new(RwLock::new(config)),
             active_requests: Arc::new(AtomicUsize::new(0)),
             secrets: Arc::new(RwLock::new(CachedSecrets {
                 stamp: None,
@@ -89,17 +91,40 @@ impl Runtime {
     }
 
     pub(super) fn emit_startup_warning(&self) {
-        if let Some(warning) = crate::health::mcp_camera_debugging_warning(&self.config) {
+        if let Some(warning) = crate::health::mcp_camera_debugging_warning(&self.config()) {
             tracing::warn!(target: "keeppeek::mcp", scope = "mcp", "{warning}");
         }
     }
 
-    pub(super) const fn enabled(&self) -> bool {
-        self.config.enabled
+    pub(super) fn enabled(&self) -> bool {
+        self.enabled.load(Ordering::Acquire)
     }
 
-    pub(super) const fn config(&self) -> &McpConfig {
-        &self.config
+    pub(super) fn enabled_flag(&self) -> &AtomicBool {
+        &self.enabled
+    }
+
+    pub(super) fn config(&self) -> McpConfig {
+        self.config
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Updates live MCP settings and flips endpoint availability immediately without a restart.
+    pub(super) fn apply_live_config(&self, config: McpConfig) {
+        let enabled = config.enabled;
+        {
+            let mut guard = self
+                .config
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *guard = config;
+        }
+        self.enabled.store(enabled, Ordering::SeqCst);
+        if !enabled {
+            self.handoffs.clear_all();
+        }
     }
 
     pub(super) fn snapshot_limiter(&self) -> &mcp_snapshot::SnapshotRateLimiter {
@@ -175,7 +200,7 @@ impl Runtime {
     }
 
     pub(super) fn try_acquire(&self) -> Option<RequestGuard> {
-        let limit = self.config.max_concurrent_requests;
+        let limit = self.config().max_concurrent_requests;
         let mut current = self.active_requests.load(Ordering::Acquire);
         loop {
             if current >= limit {
@@ -224,11 +249,11 @@ impl McpContext<'_> {
         matches!(self.identity.principal.role, AccessRole::Administrator)
     }
 
-    pub(super) const fn writes_allowed(&self) -> bool {
+    pub(super) fn writes_allowed(&self) -> bool {
         self.is_admin() && self.state.mcp.config().allow_writes && !self.read_only_header
     }
 
-    pub(super) const fn snapshots_allowed(&self) -> bool {
+    pub(super) fn snapshots_allowed(&self) -> bool {
         self.state.mcp.config().allow_snapshots
     }
 
@@ -459,7 +484,7 @@ fn handle_authenticated_post(
             );
         }
     };
-    let response_limit = response_byte_limit(state.mcp.config(), &parsed);
+    let response_limit = response_byte_limit(&state.mcp.config(), &parsed);
     let host_port = parse_host_header(request)
         .ok()
         .and_then(|url| url.port_or_known_default());
@@ -855,6 +880,7 @@ fn dispatch_onboarding_or_write_tool(
         "manage_notification_rule" => tool_manage_notification_rule(ctx, args).map(|r| (r, false)),
         "set_runtime_profile" => tool_set_runtime_profile(ctx, args).map(|r| (r, false)),
         "set_logging_filter" => tool_set_logging_filter(ctx, args).map(|r| (r, false)),
+        "disable_mcp_access" => tool_disable_mcp_access(ctx, args).map(|r| (r, false)),
         other => Err(ToolError {
             code: ERROR_METHOD_NOT_FOUND,
             message: format!("unknown MCP tool: {other}"),
@@ -1087,7 +1113,9 @@ fn tool_get_server_health(ctx: &McpContext<'_>) -> Result<ToolCallResult, ToolEr
 }
 
 fn filter_health_for_user(health: &mut ServerHealthResponse, policy: &crate::access::CameraAccess) {
+    health.issues.retain(|issue| issue.scope != "mcp");
     if policy.all_cameras {
+        health.status = server_health_status(&health.issues).to_owned();
         return;
     }
     health.cameras.retain(|camera| policy.allows(&camera.id));
@@ -1130,6 +1158,7 @@ fn filter_health_for_user(health: &mut ServerHealthResponse, policy: &crate::acc
         }
     }
     health.totals = totals;
+    health.status = server_health_status(&health.issues).to_owned();
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1884,6 +1913,90 @@ fn tool_set_logging_filter(ctx: &McpContext<'_>, args: Value) -> Result<ToolCall
             Err(ToolError::from_control(error))
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DisableMcpAccessArgs {
+    confirm: bool,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+fn tool_disable_mcp_access(ctx: &McpContext<'_>, args: Value) -> Result<ToolCallResult, ToolError> {
+    ctx.require_admin()?;
+    if ctx.read_only_header {
+        return Err(ToolError::forbidden(
+            "disable_mcp_access is blocked while X-KeepPeek-MCP-Read-Only: true is set",
+        ));
+    }
+    let args: DisableMcpAccessArgs = serde_json::from_value(args).map_err(|error| {
+        ToolError::invalid_params(format!("invalid disable_mcp_access params: {error}"))
+    })?;
+    if !args.confirm {
+        return Err(ToolError::invalid_params(
+            "disable_mcp_access requires confirm = true",
+        ));
+    }
+    if let Some(reason) = args.reason.as_deref() {
+        let trimmed = reason.trim();
+        if trimmed.is_empty()
+            || reason.chars().count() > 256
+            || reason.bytes().any(|byte| byte < 0x20 || byte == 0x7f)
+        {
+            return Err(ToolError::invalid_params(
+                "disable_mcp_access reason must be 1 to 256 printable characters",
+            ));
+        }
+    }
+    let now_secs = (unix_time_ms() / 1_000).max(1);
+    let _lock = ctx
+        .state
+        .config_update
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let next_mcp = if let Some(path) = ctx.state.camera_config_path.as_deref() {
+        match config::mcp::update(path, None, |mcp| {
+            mcp.apply_enabled_transition(false, now_secs);
+            Ok(())
+        }) {
+            Ok((updated, _)) => updated.mcp,
+            Err(error) => {
+                // Fail safe: disable live MCP even when config.toml persistence fails.
+                let mut live_disabled = ctx.state.mcp.config();
+                live_disabled.apply_enabled_transition(false, now_secs);
+                ctx.state.mcp.apply_live_config(live_disabled);
+                ctx.audit("mcp_disable_access", None, "live_only_persist_failed");
+                return Err(ToolError::internal(format!(
+                    "MCP access was disabled live, but failed to persist disabled state to config.toml: {error}"
+                )));
+            }
+        }
+    } else {
+        let mut updated = ctx.state.mcp.config();
+        updated.apply_enabled_transition(false, now_secs);
+        updated
+    };
+    ctx.state.mcp.apply_live_config(next_mcp);
+    ctx.audit("mcp_disable_access", None, "success");
+    let redacted_reason = args.reason.as_deref().map(|reason| {
+        let secrets = ctx
+            .state
+            .mcp
+            .secrets_snapshot(ctx.state.camera_config_path.as_deref());
+        let redactor = SecretRedactor::new(&secrets, std::iter::empty(), None);
+        redactor.redact_str(reason.trim())
+    });
+    tracing::info!(
+        principal_id = %ctx.identity.principal.id(),
+        reason = redacted_reason.as_deref().unwrap_or(""),
+        "MCP access disabled by Administrator MCP tool call"
+    );
+    Ok(ToolCallResult::json(json!({
+        "disabled": true,
+        "effective_immediately": true,
+        "re_enable_requires": "human_administrator_browser_or_config_edit",
+    })))
 }
 
 fn deserialize_double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
@@ -3966,7 +4079,7 @@ display_name = "Front Door"
         assert_eq!(lines[0]["result"]["protocolVersion"], "2025-03-26");
 
         let tools = lines[1]["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 28);
+        assert_eq!(tools.len(), 29);
         let tool_names: Vec<&str> = tools
             .iter()
             .map(|tool| tool["name"].as_str().unwrap())
@@ -4000,6 +4113,7 @@ display_name = "Front Door"
             "manage_notification_rule",
             "set_runtime_profile",
             "set_logging_filter",
+            "disable_mcp_access",
         ] {
             assert!(
                 tool_names.contains(&expected),
@@ -6176,6 +6290,243 @@ display_name = "Front Door"
                 .unwrap()
                 .contains(sentinel)
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn disable_mcp_access_works_without_allow_writes_disables_live_and_blocks_user_and_readonly() {
+        let dir = std::env::temp_dir().join(format!(
+            "keeppeek-mcp-self-disable-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        #[cfg(not(windows))]
+        let dir = dir.canonicalize().unwrap();
+        let config_path = dir.join("config.toml");
+        let now_secs = unix_time_ms() / 1_000;
+        let eight_days_ago = now_secs.saturating_sub(8 * 86_400);
+        std::fs::write(
+            &config_path,
+            format!(
+                "host = \"127.0.0.1\"\nport = 8081\n\n[mcp]\nenabled = true\nenabled_at_unix_secs = {eight_days_ago}\nallow_writes = false\nmax_concurrent_requests = 6\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(config::secrets_path(&config_path), "").unwrap();
+
+        let loaded = config::load_config(&config_path).unwrap();
+        let access_manager = AccessManager::ephemeral(loaded.access_key);
+        let IssuedCredential {
+            access_key: user_key,
+            ..
+        } = access_manager
+            .create_credential("viewer", None, AccessRole::User, None, 1_000)
+            .unwrap();
+        let (mut state, router_tx) = state_with_mcp(loaded.mcp);
+        state.camera_config_path = Some(config_path.clone());
+        state = state.with_access_manager(access_manager);
+
+        // 1. 8-day enabled MCP emits a warning HealthIssue with scope "mcp".
+        let health = server_health(&router_tx, &state);
+        assert!(
+            health
+                .issues
+                .iter()
+                .any(|issue| issue.scope == "mcp" && issue.severity == "warning"),
+            "expected mcp 7-day warning in health issues: {:?}",
+            health.issues
+        );
+
+        // 1b. Non-admin User health omits scope "mcp" and does not report degraded status from it.
+        let user_health_req = Request::fake_https_from(
+            "198.51.100.10:50000".parse().unwrap(),
+            "POST",
+            "/mcp",
+            vec![
+                ("Host".to_owned(), "127.0.0.1:8081".to_owned()),
+                ("Content-Type".to_owned(), "application/json".to_owned()),
+                (
+                    "Authorization".to_owned(),
+                    format!("Bearer {}", user_key.canonical()),
+                ),
+            ],
+            serde_json::to_vec(&json!({
+                "jsonrpc": "2.0",
+                "id": 99,
+                "method": "tools/call",
+                "params": { "name": "get_server_health", "arguments": {} }
+            }))
+            .unwrap(),
+        );
+        let user_health_body =
+            read_response_json(handle_http(&user_health_req, &router_tx, &state));
+        let user_health = &user_health_body["result"]["structuredContent"];
+        assert!(
+            !user_health["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["scope"] == "mcp")
+        );
+
+        let mut mcp_only_health = health;
+        mcp_only_health.issues.retain(|issue| issue.scope == "mcp");
+        mcp_only_health.status = server_health_status(&mcp_only_health.issues).to_owned();
+        assert_eq!(mcp_only_health.status, "degraded");
+        filter_health_for_user(
+            &mut mcp_only_health,
+            &CameraAccess {
+                all_cameras: true,
+                ..CameraAccess::default()
+            },
+        );
+        assert!(mcp_only_health.issues.is_empty());
+        assert_eq!(mcp_only_health.status, "healthy");
+
+        // 2. Non-admin User credential cannot call disable_mcp_access.
+        let disable_call = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "disable_mcp_access",
+                "arguments": { "confirm": true, "reason": "Finished maintenance" }
+            }
+        });
+        let user_req = Request::fake_https_from(
+            "198.51.100.10:50000".parse().unwrap(),
+            "POST",
+            "/mcp",
+            vec![
+                ("Host".to_owned(), "127.0.0.1:8081".to_owned()),
+                ("Content-Type".to_owned(), "application/json".to_owned()),
+                (
+                    "Authorization".to_owned(),
+                    format!("Bearer {}", user_key.canonical()),
+                ),
+            ],
+            serde_json::to_vec(&disable_call).unwrap(),
+        );
+        let user_resp = handle_http(&user_req, &router_tx, &state);
+        assert_eq!(user_resp.status_code, 200);
+        let user_body = read_response_json(user_resp);
+        assert_eq!(user_body["error"]["code"], ERROR_FORBIDDEN);
+        assert!(state.mcp_enabled());
+
+        // 3. Read-only header blocks disable_mcp_access.
+        let ro_resp = handle_http(
+            &mcp_post_request(
+                &disable_call,
+                vec![(READ_ONLY_HEADER.to_owned(), "true".to_owned())],
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        let ro_body = read_response_json(ro_resp);
+        assert_eq!(ro_body["error"]["code"], ERROR_FORBIDDEN);
+        assert!(state.mcp_enabled());
+
+        // 4. confirm = false is rejected with ERROR_INVALID_PARAMS.
+        let unconfirmed_call = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "disable_mcp_access",
+                "arguments": { "confirm": false }
+            }
+        });
+        let bad_resp = handle_http(
+            &mcp_post_request(&unconfirmed_call, Vec::new(), "127.0.0.1:50000"),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(
+            read_response_json(bad_resp)["error"]["code"],
+            ERROR_INVALID_PARAMS
+        );
+
+        // 5. Create a pending secret-entry handoff, then disable MCP even with allow_writes = false.
+        let handoff_call = json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "request_secret_entry",
+                "arguments": {
+                    "keys": [{ "key": "CAM_PASS", "purpose": "Camera password" }]
+                }
+            }
+        });
+        let handoff_resp = read_response_json(handle_http(
+            &mcp_post_request(&handoff_call, Vec::new(), "127.0.0.1:50000"),
+            &router_tx,
+            &state,
+        ));
+        let entry_url = handoff_resp["result"]["structuredContent"]["local_ui_url"]
+            .as_str()
+            .expect("local_ui_url must be returned")
+            .to_owned();
+        let token = entry_url
+            .split("token=")
+            .nth(1)
+            .expect("token query param")
+            .to_owned();
+
+        let ok_resp = handle_http(
+            &mcp_post_request(&disable_call, Vec::new(), "127.0.0.1:50000"),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(ok_resp.status_code, 200);
+        let ok_body = read_response_json(ok_resp);
+        assert_eq!(ok_body["result"]["structuredContent"]["disabled"], true);
+        assert_eq!(
+            ok_body["result"]["structuredContent"]["effective_immediately"],
+            true
+        );
+
+        // 6. Persisted config has enabled = false, cleared timestamp & silence, preserved max_concurrent_requests.
+        let persisted = config::load_config(&config_path).unwrap();
+        assert!(!persisted.mcp.enabled);
+        assert_eq!(persisted.mcp.enabled_at_unix_secs, None);
+        assert!(!persisted.mcp.long_enabled_warning_silenced);
+        assert_eq!(persisted.mcp.max_concurrent_requests, 6);
+
+        // 7. Very next POST /mcp and GET /mcp/secret-entry immediately return 404.
+        let next_post = handle_http(
+            &mcp_post_request(&disable_call, Vec::new(), "127.0.0.1:50000"),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(next_post.status_code, 404);
+        let next_handoff = mcp_secret_handoff::handle_get(
+            &Request::fake_http(
+                "GET",
+                format!("/mcp/secret-entry?token={token}"),
+                vec![("Host".to_owned(), "127.0.0.1:8081".to_owned())],
+                Vec::new(),
+            ),
+            &state,
+        );
+        assert_eq!(next_handoff.status_code, 404);
+
+        // 8. Health issues no longer include the mcp warning after disable.
+        let health_after = server_health(&router_tx, &state);
+        assert!(
+            !health_after.issues.iter().any(|issue| issue.scope == "mcp"),
+            "mcp warning must disappear once disabled"
+        );
+
+        // 9. No enable_mcp_access or silence tool exists in the catalog.
+        let admin_tools = mcp_schemas::tool_definitions(true);
+        assert!(
+            !admin_tools
+                .iter()
+                .any(|t| t.name.contains("enable_mcp") || t.name.contains("silence"))
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -469,6 +469,58 @@ pub(in crate::server) fn authorize_upload(
     context: crate::backup::ConfigurationApply<'_>,
 ) -> anyhow::Result<crate::api::backup_proto::RestoreRecord> {
     let before = config::load_config(context.config_path())?;
+    if principal.credential_binding().is_some() {
+        let after = &context.candidate.configuration;
+        let after_mcp = &after.mcp;
+        if !before.mcp.enabled && after_mcp.enabled {
+            return Err(crate::backup::ServiceError::forbidden(
+                "Bearer credentials cannot enable MCP access via configuration restore; a human Administrator browser session or local config edit is required",
+            )
+            .into());
+        }
+        if !before.mcp.long_enabled_warning_silenced && after_mcp.long_enabled_warning_silenced {
+            return Err(crate::backup::ServiceError::forbidden(
+                "Bearer credentials cannot silence the MCP long-enabled warning via configuration restore",
+            )
+            .into());
+        }
+        if before.mcp.enabled
+            && after_mcp.enabled
+            && match (
+                before.mcp.enabled_at_unix_secs,
+                after_mcp.enabled_at_unix_secs,
+            ) {
+                (Some(before_ts), Some(after_ts)) => after_ts > before_ts,
+                (Some(_), None) => true,
+                (None, _) => false,
+            }
+        {
+            return Err(crate::backup::ServiceError::forbidden(
+                "Bearer credentials cannot reset the MCP enabled timestamp via configuration restore",
+            )
+            .into());
+        }
+        if (!before.mcp.allow_writes && after_mcp.allow_writes)
+            || (!before.mcp.allow_camera_device_writes && after_mcp.allow_camera_device_writes)
+            || (!before.mcp.allow_snapshots && after_mcp.allow_snapshots)
+            || (!before.mcp.allow_camera_debugging && after_mcp.allow_camera_debugging)
+        {
+            return Err(crate::backup::ServiceError::forbidden(
+                "Bearer credentials cannot escalate [mcp] write or snapshot permissions via configuration restore",
+            )
+            .into());
+        }
+        if before.access != after.access
+            || before.external_auth != after.external_auth
+            || crate::access::identities::Directory::from_root(&before.source)?
+                != crate::access::identities::Directory::from_root(&after.source)?
+        {
+            return Err(crate::backup::ServiceError::forbidden(
+                "Bearer credentials cannot modify [access], [external_auth], or [external_identities] trust policy via configuration restore",
+            )
+            .into());
+        }
+    }
     crate::server::storage_archive::validate_saved_binding_change(
         state,
         before.storage.archive.as_ref(),

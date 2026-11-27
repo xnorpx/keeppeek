@@ -1263,7 +1263,7 @@ pub(super) fn execute(
         router_tx,
         principal,
         classification,
-        state.mcp.config(),
+        &state.mcp.config(),
         deadline,
         args,
     );

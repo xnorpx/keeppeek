@@ -52,7 +52,12 @@ All MCP server settings live in the existing `config.toml` under `[mcp]`. Every 
 opens network access, mutates configuration, writes on-camera hardware settings, or captures camera
 frames defaults to `false`.
 
-Stop KeepPeek before editing `config.toml` manually, add `[mcp]`, and restart the server:
+A **human Administrator** can enable or disable MCP access live without restarting KeepPeek from
+**Settings > Integrations > MCP server** (trusted local network access or an interactive
+OIDC/identity-proxy browser session; explicit confirmation is required to enable — remote browser
+sessions authenticated with a Bearer access key cannot enable MCP or silence warnings). To change
+policy limits (`allow_writes`, `allow_snapshots`, `allow_camera_device_writes`, or payload/rate
+caps), stop KeepPeek before editing `config.toml` manually, add `[mcp]`, and restart the server:
 
 ```toml
 [mcp]
@@ -68,18 +73,49 @@ max_snapshot_dimension = 1280
 snapshot_min_interval_seconds = 5
 ```
 
-| Field                           | Type    | Default  | Allowed range     | Meaning                                                                                               |
-| ------------------------------- | ------- | -------- | ----------------- | ----------------------------------------------------------------------------------------------------- |
-| `enabled`                       | `bool`  | `false`  | `true`/`false`    | Enable the embedded Streamable HTTP endpoint at `POST /mcp` (and loopback `/mcp/secret-entry`).       |
-| `allow_writes`                  | `bool`  | `false`  | `true`/`false`    | Permit Administrator KeepPeek configuration write tools after explicit approval.                      |
-| `allow_snapshots`               | `bool`  | `false`  | `true`/`false`    | Permit privacy-gated single-frame snapshots via `get_camera_snapshot`.                                |
-| `allow_camera_device_writes`    | `bool`  | `false`  | `true`/`false`    | Permit live on-camera hardware writes via `update_camera_device_settings` (`dry_run: false`).         |
-| `max_concurrent_requests`       | `usize` | `4`      | `1..=32`          | Maximum simultaneous in-flight MCP requests.                                                          |
-| `max_response_bytes`            | `usize` | `65536`  | `4096..=262144`   | Maximum serialized JSON-RPC response size in bytes (`get_camera_snapshot` uses `max_snapshot_bytes`). |
-| `request_timeout_seconds`       | `u64`   | `15`     | `1..=60`          | Server-side deadline per MCP request, in seconds.                                                     |
-| `max_snapshot_bytes`            | `usize` | `262144` | `16384..=1048576` | Maximum encoded JPEG size for `get_camera_snapshot`, in bytes (base64 + metadata overhead is added).  |
-| `max_snapshot_dimension`        | `u32`   | `1280`   | `160..=1920`      | Maximum width or height of returned snapshot frames, in pixels.                                       |
-| `snapshot_min_interval_seconds` | `u64`   | `5`      | `1..=300`         | Minimum interval between snapshot captures per camera, in seconds.                                    |
+| Field                           | Type           | Default  | Allowed range     | Meaning                                                                                                                                  |
+| ------------------------------- | -------------- | -------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`                       | `bool`         | `false`  | `true`/`false`    | Enable the embedded Streamable HTTP endpoint at `POST /mcp` (and loopback `/mcp/secret-entry`). Live via Web UI or `disable_mcp_access`. |
+| `enabled_at_unix_secs`          | Optional `u64` | Absent   | Unix epoch secs   | Server-managed timestamp recorded when `enabled` becomes `true`; used for the 7-day enabled warning and cleared when disabled.           |
+| `long_enabled_warning_silenced` | `bool`         | `false`  | `true`/`false`    | Human Administrator acknowledgement silencing the 7-day enabled warning for the current enabled stretch; cleared when disabled.          |
+| `allow_writes`                  | `bool`         | `false`  | `true`/`false`    | Permit Administrator KeepPeek configuration write tools after explicit approval.                                                         |
+| `allow_snapshots`               | `bool`         | `false`  | `true`/`false`    | Permit privacy-gated single-frame snapshots via `get_camera_snapshot`.                                                                   |
+| `allow_camera_device_writes`    | `bool`         | `false`  | `true`/`false`    | Permit live on-camera hardware writes via `update_camera_device_settings` (`dry_run: false`).                                            |
+| `max_concurrent_requests`       | `usize`        | `4`      | `1..=32`          | Maximum simultaneous in-flight MCP requests.                                                                                             |
+| `max_response_bytes`            | `usize`        | `65536`  | `4096..=262144`   | Maximum serialized JSON-RPC response size in bytes (`get_camera_snapshot` uses `max_snapshot_bytes`).                                    |
+| `request_timeout_seconds`       | `u64`          | `15`     | `1..=60`          | Server-side deadline per MCP request, in seconds.                                                                                        |
+| `max_snapshot_bytes`            | `usize`        | `262144` | `16384..=1048576` | Maximum encoded JPEG size for `get_camera_snapshot`, in bytes (base64 + metadata overhead is added).                                     |
+| `max_snapshot_dimension`        | `u32`          | `1280`   | `160..=1920`      | Maximum width or height of returned snapshot frames, in pixels.                                                                          |
+| `snapshot_min_interval_seconds` | `u64`          | `5`      | `1..=300`         | Minimum interval between snapshot captures per camera, in seconds.                                                                       |
+
+### Human-only enable, agent self-disable, and 7-day warning
+
+MCP access is designed as a temporary maintenance surface rather than an unmonitored permanent open
+door:
+
+- **Agent self-disable (`disable_mcp_access`):** An authenticated Administrator agent can turn off
+  MCP access itself when finished by calling `disable_mcp_access` with `{ "confirm": true }` (and an
+  optional `reason`). This works even when `[mcp].allow_writes = false` (though it is blocked under
+  `--read-only` / `X-KeepPeek-MCP-Read-Only: true`), persists `[mcp].enabled = false` in
+  `config.toml` (and fails safe by still turning MCP off live if `config.toml` persistence fails),
+  drops any pending `/mcp/secret-entry` handoffs, and immediately switches new `/mcp` and
+  `/mcp/secret-entry` requests to `404` without a restart (already in-flight `/mcp` calls finish
+  within `request_timeout_seconds`).
+- **Human-only enable and warning silence:** No MCP tool can enable MCP or silence the 7-day
+  warning. Enabling MCP or silencing the warning over the WebRTC control plane
+  (`keeppeek.mcp-access.v1`) requires a **human Administrator** (trusted local network or
+  interactive OIDC/identity-proxy browser session) and rejects Bearer access-key credentials with
+  `403` (including remote browser sessions signed in with an access key). Bearer-authenticated
+  configuration restores (`POST /config/apply`) are also rejected with `403` if they attempt to
+  enable `[mcp]`, silence the warning, advance or omit `enabled_at_unix_secs`, escalate `[mcp]`
+  write/snapshot flags, or alter `[access]`, `[external_auth]`, or `[external_identities]` trust
+  policy.
+- **7-day enabled warning:** When `[mcp].enabled` stays `true` for 7 days or longer (`>= 604,800`
+  seconds) without being silenced, KeepPeek logs a startup warning, adds an Administrator-only
+  warning to server health (`scope: "mcp"`), and displays an Administrator warning banner in the Web
+  UI with direct **Disable MCP** and **Silence warning** actions. Silencing persists
+  `long_enabled_warning_silenced = true` for the current enabled stretch; disabling MCP and later
+  re-enabling it resets the timer and clears the silence flag.
 
 See [Configuration reference](./configuration-reference.md#mcp-server) for validation rules and
 file ownership details.
@@ -239,7 +275,7 @@ http://127.0.0.1:<port>/mcp/secret-entry?token=<256-bit-single-use-token>
 - Form responses enforce `Cache-Control: no-store`, `Referrer-Policy: same-origin`,
   `X-Frame-Options: DENY`, and a strict Content Security Policy.
 
-## Available MCP tools (27 total)
+## Available MCP tools (28 total)
 
 ### Read-only, dry-run, onboarding, and secret-handoff tools (18)
 
@@ -305,6 +341,16 @@ application (`dry_run: false`) requires all three conditions:
 | Tool                  | Minimum role | Purpose                                                                                                      |
 | --------------------- | ------------ | ------------------------------------------------------------------------------------------------------------ |
 | `get_camera_snapshot` | User         | Capture one privacy-gated, downscaled JPEG frame for a permitted camera when `[mcp].allow_snapshots = true`. |
+
+### Self-disable governance tool (1)
+
+`disable_mcp_access` is available to authenticated **Administrator** callers even when
+`[mcp].allow_writes = false`, unless `--read-only` or `X-KeepPeek-MCP-Read-Only: true` is active.
+Re-enabling MCP always requires a human Administrator.
+
+| Tool                 | Minimum role  | Purpose                                                                                                                            |
+| -------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `disable_mcp_access` | Administrator | Requires `confirm: true` (optional `reason`). Persists `[mcp].enabled = false`, clears pending handoffs, and disables `/mcp` live. |
 
 ## Multi-candidate stream probing and on-camera hardware support
 
@@ -440,16 +486,16 @@ automated assistant cannot starve camera ingest, recording, or live playback.
 
 ## Troubleshooting
 
-| Symptom                                          | Check                                                                                                                           |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /mcp` or `/mcp/secret-entry` returns `404` | Confirm `[mcp].enabled = true` in `config.toml` and restart KeepPeek.                                                           |
-| `POST /mcp` returns `403`                        | Check whether `Origin` is missing from `[direct_card].allowed_origins`, `Host` is non-local for local trust, or role is User.   |
-| `/mcp/secret-entry` returns `403` or `410`       | Open the link directly from loopback without a reverse proxy, and verify the single-use token has not expired or been consumed. |
-| `POST /mcp` returns `426`                        | Remote plain HTTP is blocked by `[access].require_secure_remote = true`. Use HTTPS via a trusted proxy or a private VPN.        |
-| Configuration write tool is denied               | Confirm `[mcp].allow_writes = true`, an Administrator credential, and that `--read-only` is not set.                            |
-| On-camera hardware write is denied (`403`)       | Confirm `[mcp].allow_camera_device_writes = true`, `--read-only` is not set, and no excluded security field was requested.      |
-| `probe_camera_streams` rejects input             | Replace any raw password or inline RTSP credentials with `{secret:KEY}` refs and keep `credential_candidates` to at most 5.     |
-| `get_camera_snapshot` is denied                  | Confirm `[mcp].allow_snapshots = true`, camera view permission, inactive privacy mode, and the per-camera interval limit.       |
-| Request returns `429` or `503` or times out      | Too many simultaneous MCP calls (`max_concurrent_requests`), camera rate-limit/lockout, or slow probe exceeding timeout.        |
-| `apply_configuration_plan` fails conflict        | Configuration changed after the plan was created. Call `get_configuration` and generate a fresh plan.                           |
-| `keeppeek mcp` fails to connect remotely         | Confirm `KEEPPEEK_ACCESS_KEY` or `--credential-file` is set and readable, and verify `--server` points to the HTTPS origin.     |
+| Symptom                                          | Check                                                                                                                                  |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /mcp` or `/mcp/secret-entry` returns `404` | Confirm MCP is enabled by a human Administrator in **Settings > Integrations** (or `[mcp].enabled = true` in `config.toml` + restart). |
+| `POST /mcp` returns `403`                        | Check whether `Origin` is missing from `[direct_card].allowed_origins`, `Host` is non-local for local trust, or role is User.          |
+| `/mcp/secret-entry` returns `403` or `410`       | Open the link directly from loopback without a reverse proxy, and verify the single-use token has not expired or been consumed.        |
+| `POST /mcp` returns `426`                        | Remote plain HTTP is blocked by `[access].require_secure_remote = true`. Use HTTPS via a trusted proxy or a private VPN.               |
+| Configuration write tool is denied               | Confirm `[mcp].allow_writes = true`, an Administrator credential, and that `--read-only` is not set.                                   |
+| On-camera hardware write is denied (`403`)       | Confirm `[mcp].allow_camera_device_writes = true`, `--read-only` is not set, and no excluded security field was requested.             |
+| `probe_camera_streams` rejects input             | Replace any raw password or inline RTSP credentials with `{secret:KEY}` refs and keep `credential_candidates` to at most 5.            |
+| `get_camera_snapshot` is denied                  | Confirm `[mcp].allow_snapshots = true`, camera view permission, inactive privacy mode, and the per-camera interval limit.              |
+| Request returns `429` or `503` or times out      | Too many simultaneous MCP calls (`max_concurrent_requests`), camera rate-limit/lockout, or slow probe exceeding timeout.               |
+| `apply_configuration_plan` fails conflict        | Configuration changed after the plan was created. Call `get_configuration` and generate a fresh plan.                                  |
+| `keeppeek mcp` fails to connect remotely         | Confirm `KEEPPEEK_ACCESS_KEY` or `--credential-file` is set and readable, and verify `--server` points to the HTTPS origin.            |

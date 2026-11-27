@@ -138,6 +138,7 @@ mod stored_encoding;
 mod stored_playback;
 mod stored_read;
 use stored_read::StoredReadRange;
+mod mcp_access;
 mod runtime_configuration;
 mod saved_searches;
 mod session_lifecycle;
@@ -568,6 +569,7 @@ const fn access_operation(command: Option<&control_request::Command>) -> &'stati
         Some(control_request::Command::ShareCommand(_)) => "sharing",
         Some(control_request::Command::ActivityAnalyticsCommand(_)) => "activity_analytics",
         Some(control_request::Command::UsageReportingCommand(_)) => "usage_reporting",
+        Some(control_request::Command::McpAccessCommand(_)) => "mcp_access",
         Some(control_request::Command::EventSearchCommand(_)) => "event_search",
         Some(control_request::Command::EventWorkflowCommand(_)) => "event_workflow",
         Some(control_request::Command::RecordingMaintenanceCommand(_)) => "recording_maintenance",
@@ -717,6 +719,9 @@ fn sensitive_administrator_operation(
         Some(control_request::Command::ShareCommand(command)) => sharing::audit_operation(command),
         Some(control_request::Command::UsageReportingCommand(command)) => {
             usage_reporting::audit_operation(command)
+        }
+        Some(control_request::Command::McpAccessCommand(command)) => {
+            mcp_access::audit_operation(command)
         }
         Some(control_request::Command::CloudNotificationCommand(command)) => {
             cloud_notifications::audit_operation(command)
@@ -926,6 +931,9 @@ impl ControlRequestHandler for ServerControlHandler {
                     Some(control_request::Command::UsageReportingCommand(command)) => {
                         usage_reporting::dispatch(&self.state, &self.router_tx, &principal, command)
                             .map(Some)
+                    }
+                    Some(control_request::Command::McpAccessCommand(command)) => {
+                        mcp_access::dispatch(&self.state, &principal, command).map(Some)
                     }
                     Some(control_request::Command::EventWorkflowCommand(command)) => {
                         event_workflow::dispatch(&self.state, &principal, command).map(Some)
@@ -1531,6 +1539,7 @@ fn server_capability_ids(state: &ServerState) -> Vec<String> {
         capability_ids.push(sharing::CAPABILITY_ID.to_owned());
         capability_ids.push(sharing::RANGE_CAPABILITY_ID.to_owned());
         capability_ids.push(usage_reporting::CAPABILITY_ID.to_owned());
+        capability_ids.push(mcp_access::CAPABILITY_ID.to_owned());
         capability_ids.push(peek_layouts::CAPABILITY_ID.to_owned());
         capability_ids.push(CONFIGURATION_CAPABILITY_ID.to_owned());
         capability_ids.push("keeppeek.recording.pre-roll.v1".to_owned());
@@ -9267,7 +9276,7 @@ pub struct ServerState {
 }
 
 impl ServerState {
-    pub(crate) const fn mcp_enabled(&self) -> bool {
+    pub(crate) fn mcp_enabled(&self) -> bool {
         self.mcp.enabled()
     }
 
@@ -12498,8 +12507,9 @@ fn collect_server_health(
     );
     let storage = collect_storage_health(state, history_mode, recording.storage, &mut issues);
     let webrtc = state.webrtc.health_snapshot();
-    append_server_health_issues(&system, &storage, &webrtc, &mut issues);
-    if let Some(issue) = crate::health::mcp_camera_debugging_health_issue(state.mcp.config()) {
+    let mcp_config = state.mcp.config();
+    append_server_health_issues(&system, &storage, &webrtc, &mcp_config, &mut issues);
+    if let Some(issue) = crate::health::mcp_camera_debugging_health_issue(&mcp_config) {
         issues.push(issue);
     }
     let status = server_health_status(&issues);
@@ -12740,6 +12750,7 @@ fn append_server_health_issues(
     system: &crate::health::SystemHealth,
     storage: &StorageHealth,
     webrtc: &crate::webrtc::WebRtcHealth,
+    mcp_config: &crate::config::mcp::McpConfig,
     issues: &mut Vec<HealthIssue>,
 ) {
     if storage.safety.recording_state.as_str() == "paused" {
@@ -12792,6 +12803,20 @@ fn append_server_health_issues(
                 webrtc.queue_drops,
                 webrtc.queue_discarded_frames,
                 webrtc.queue_recovery_drops
+            ),
+            operational_event_id: None,
+            timeline_start_ms: None,
+            timeline_end_ms: None,
+        });
+    }
+    let now_unix_secs = unix_time_ms() / 1_000;
+    if mcp_config.long_enabled_warning_active(now_unix_secs) {
+        let days = mcp_config.enabled_duration_secs(now_unix_secs) / 86_400;
+        issues.push(HealthIssue {
+            severity: "warning".to_owned(),
+            scope: "mcp".to_owned(),
+            message: format!(
+                "MCP server access has been enabled for {days} days. Disable MCP when no longer needed or silence this warning in Settings -> Integrations."
             ),
             operational_event_id: None,
             timeline_start_ms: None,
