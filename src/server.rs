@@ -116,6 +116,8 @@ mod guest_review;
 mod health_snapshot;
 mod logging;
 mod mcp;
+mod mcp_diagnostics;
+mod mcp_snapshot;
 mod mqtt_integration;
 mod native_events;
 pub(super) mod peek_layouts;
