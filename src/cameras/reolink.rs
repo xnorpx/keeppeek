@@ -603,7 +603,15 @@ impl ReolinkClient {
     }
 
     pub fn new_with_http_port(ip: IpAddr, port: Option<u16>) -> Self {
-        let client = http_agent(Duration::from_secs(10));
+        Self::new_with_http_port_and_timeout(ip, port, Duration::from_secs(10))
+    }
+
+    pub fn new_with_http_port_and_timeout(
+        ip: IpAddr,
+        port: Option<u16>,
+        timeout: Duration,
+    ) -> Self {
+        let client = http_agent(timeout);
         let host = match ip {
             IpAddr::V4(ip) => ip.to_string(),
             IpAddr::V6(ip) => format!("[{ip}]"),

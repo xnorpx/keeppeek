@@ -28,6 +28,8 @@ struct Cli {
 enum Command {
     /// Export or apply configuration and secrets through the HTTP API.
     Config(keeppeek_backup::BackupArgs),
+    /// Run the KeepPeek MCP stdio bridge or export the bundled MCP agent skill.
+    Mcp(keeppeek::mcp::stdio::McpArgs),
 }
 
 fn main() -> std::process::ExitCode {
@@ -65,8 +67,14 @@ impl std::fmt::Display for MainError {
 
 fn run() -> Result<(), MainError> {
     let cli = Cli::parse();
-    if let Some(Command::Config(args)) = cli.command {
-        return keeppeek_backup::run(args).map_err(MainError::Backup);
+    match cli.command {
+        Some(Command::Config(args)) => {
+            return keeppeek_backup::run(args).map_err(MainError::Backup);
+        }
+        Some(Command::Mcp(args)) => {
+            return keeppeek::mcp::stdio::run(args).map_err(MainError::Server);
+        }
+        None => {}
     }
     let _ = cli.config;
     run_server(cli.tui).map_err(MainError::Server)
@@ -143,5 +151,31 @@ mod tests {
         assert!(Cli::try_parse_from(["keeppeek", "config", "export"]).is_err());
         assert!(Cli::try_parse_from(["keeppeek", "backup", "list"]).is_err());
         assert!(Cli::try_parse_from(["keeppeek", "config", "create"]).is_err());
+    }
+
+    #[test]
+    fn mcp_cli_accepts_bridge_flags_and_skill_subcommand() {
+        assert!(
+            Cli::try_parse_from([
+                "keeppeek",
+                "mcp",
+                "--server",
+                "https://keeppeek.example.com",
+                "--credential-file",
+                "token.txt",
+                "--read-only",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "keeppeek",
+                "mcp",
+                "skill",
+                "--output",
+                "skills/keeppeek-mcp"
+            ])
+            .is_ok()
+        );
     }
 }

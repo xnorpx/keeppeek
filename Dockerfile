@@ -23,6 +23,7 @@ FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57
 ENV XDG_CONFIG_HOME=/config
 
 COPY --from=builder /app/target/release/keeppeek /keeppeek
+COPY --from=builder --chmod=0644 /app/skills/keeppeek-mcp/SKILL.md /usr/local/share/keeppeek/skills/keeppeek-mcp/SKILL.md
 COPY --from=builder --chown=65532:65532 /container-config/keeppeek /config/keeppeek
 
 VOLUME ["/config"]

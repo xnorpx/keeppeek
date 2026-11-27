@@ -12,6 +12,7 @@ Use [visual configuration](./configuration-management.md) for routine UI adminis
 | `[access]`                                  | `AccessConfig`                           | Network trust, rate limits, session bounds         | Operator                             | Restart                                 | [Access policy](#access-policy)                                                 |
 | `[direct_card]`                             | `DirectCardConfig`                       | Exact browser-origin allowlist                     | Operator                             | Restart                                 | [Direct card origins](#direct-card-origins)                                     |
 | `[desktop]`                                 | `DesktopConfig`                          | Default server URL for KeepPeek Desktop            | Operator                             | Desktop launch                          | [Desktop client settings](#desktop-client-settings)                             |
+| `[mcp]`                                     | `McpConfig`                              | Opt-in MCP server, write, and snapshot policy      | Operator                             | Restart                                 | [MCP server](#mcp-server)                                                       |
 | `[sharing]`                                 | `sharing::SharingConfig`                 | Isolated guest review deployment policy            | Operator (server revision)           | Live (UI/API) / Restart (file)          | [Guest review deployment policy](#guest-review-deployment-policy)               |
 | `[external_auth]`                           | `access::external::Config`               | OIDC and identity-proxy login policy               | Operator                             | Live (plan/apply) / Restart (file)      | [External authentication configuration](#external-authentication-configuration) |
 | `[external_identities]`                     | `access::identities::Directory`          | Provisioned external user records                  | Server-managed                       | Live (runtime)                          | [Durable external identities](#durable-external-identities)                     |
@@ -48,7 +49,7 @@ Use [visual configuration](./configuration-management.md) for routine UI adminis
 
 **Namespace and parsing rules:**
 
-- Every top-level table **not** listed among the 27 reserved keys above (`access`, `sharing`, `reporting`, `usage_reporting`, `cloud_notifications`, `external_auth`, `external_identities`, `access_credentials`, `storage`, `battery_wake`, `direct_card`, `desktop`, `homekit`, `logging`, `operational_events`, `analytics`, `event_forwarder`, `notifications`, `peek_layouts`, `saved_event_searches`, `configuration_templates`, `runtime_profiles`, `isapi_callbacks`, `camera_defaults`, `privacy`, `state_store`, `storage_migration`) is parsed as a **camera namespace** (`cameras` is conventional, not required). Do not use `homekit` as a camera namespace. A typo in a reserved section name is therefore parsed as a camera namespace.
+- Every top-level table **not** listed among the 28 reserved keys above (`access`, `sharing`, `reporting`, `usage_reporting`, `cloud_notifications`, `external_auth`, `external_identities`, `access_credentials`, `storage`, `battery_wake`, `direct_card`, `desktop`, `mcp`, `homekit`, `logging`, `operational_events`, `analytics`, `event_forwarder`, `notifications`, `peek_layouts`, `saved_event_searches`, `configuration_templates`, `runtime_profiles`, `isapi_callbacks`, `camera_defaults`, `privacy`, `state_store`, `storage_migration`) is parsed as a **camera namespace** (`cameras` is conventional, not required). Do not use `homekit` as a camera namespace. A typo in a reserved section name is therefore parsed as a camera namespace.
 - Some structs ignore unknown fields while strict sections (`#[serde(deny_unknown_fields)]`, noted per section) reject them. Successful TOML parsing alone does not prove an unrecognized key has an effect.
 - `Config.source` and `Config.secrets_snapshot` are in-memory `#[serde(skip)]` fields; neither is a writable file key.
 - Sources: [src/config.rs](https://github.com/xnorpx/keeppeek/blob/main/src/config.rs), [src/cameras/mod.rs](https://github.com/xnorpx/keeppeek/blob/main/src/cameras/mod.rs), and the subsystem sources linked in each section.
@@ -687,6 +688,26 @@ Controls site defaults and derived rollup bounds for bounded event activity summ
 | `retry_max_ms`  | `u64`              | `30000`                   | `<= 3600000` ms (1 hour).                                                                                    |
 
 Outbox and deduplication state live in memory and reset on restart; the retired `mqtt-forwarder.db` is deleted at startup without replay. See [Notifications and integrations](./notifications-and-integrations.md).
+
+## MCP server
+
+**Type:** `McpConfig` | **Section:** `[mcp]` | **Ownership:** Operator | **Apply:** Restart | **Sources:** [src/config/mcp.rs](https://github.com/xnorpx/keeppeek/blob/main/src/config/mcp.rs), [src/server/mcp.rs](https://github.com/xnorpx/keeppeek/blob/main/src/server/mcp.rs)
+
+The embedded Streamable HTTP endpoint (`POST /mcp`), configuration writes, and single-frame camera snapshots default to disabled. The canonical writer omits `[mcp]` when all fields stay at defaults.
+
+| Field                           | Type    | Default  | Limits and notes                                                                                           |
+| ------------------------------- | ------- | -------- | ---------------------------------------------------------------------------------------------------------- |
+| `enabled`                       | `bool`  | `false`  | Enable `POST /mcp`; returns `404` when `false`.                                                            |
+| `allow_writes`                  | `bool`  | `false`  | Enable opt-in Administrator configuration mutation tools unless overridden by a read-only client.          |
+| `allow_snapshots`               | `bool`  | `false`  | Enable opt-in privacy-gated single-frame snapshots via `get_camera_snapshot` (camera hardware masks only). |
+| `max_concurrent_requests`       | `usize` | `4`      | `1..=32` concurrent in-flight MCP requests.                                                                |
+| `max_response_bytes`            | `usize` | `65536`  | `4096..=262144` bytes serialized JSON-RPC payload (`get_camera_snapshot` uses `max_snapshot_bytes`).       |
+| `request_timeout_seconds`       | `u64`   | `15`     | `1..=60` seconds server deadline per request.                                                              |
+| `max_snapshot_bytes`            | `usize` | `262144` | `16384..=1048576` bytes encoded JPEG snapshot size (response adds base64 and metadata envelope overhead).  |
+| `max_snapshot_dimension`        | `u32`   | `1280`   | `160..=1920` px maximum snapshot width or height.                                                          |
+| `snapshot_min_interval_seconds` | `u64`   | `5`      | `1..=300` seconds minimum interval between snapshots per camera.                                           |
+
+Out-of-range values fail startup and configuration-planning validation. `POST /mcp` enforces `[access]` policy, Bearer header authentication, `localhost`/IP `Host` checks for unauthenticated local requests, `[direct_card].allowed_origins` plus mandatory Bearer auth for browser `Origin` headers, serialization-layer secret redaction, and fail-closed camera privacy schedules for snapshots. See [MCP server and LLM configuration](./mcp.md).
 
 ## Credential records
 

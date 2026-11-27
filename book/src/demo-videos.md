@@ -34,7 +34,7 @@ for the source commit, generation timestamp, content hashes, and scenario metada
 
 Pure reference, policy, architecture, CLI-only, and native-installer chapters (`desktop-app.md`,
 `configuration-reference.md`, `upgrades-and-migrations.md`, `recording-archive-recovery.md`,
-`external-analysis.md`, `groups.md`, `how-it-works.md`, `users-and-design-choices.md`,
+`external-analysis.md`, `mcp.md`, `groups.md`, `how-it-works.md`, `users-and-design-choices.md`,
 `release-readiness.md`, `open-source-and-licensing.md`, and `contributing.md`) intentionally omit
 embedded UI walkthroughs.
 

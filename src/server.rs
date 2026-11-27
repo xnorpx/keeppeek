@@ -115,6 +115,10 @@ mod export_storage_tests;
 mod guest_review;
 mod health_snapshot;
 mod logging;
+mod mcp;
+mod mcp_diagnostics;
+mod mcp_schemas;
+mod mcp_snapshot;
 mod mqtt_integration;
 mod native_events;
 pub(super) mod peek_layouts;
@@ -9248,6 +9252,7 @@ pub struct ServerState {
     catalog: Option<RecordingCatalogHandle>,
     backup_manager: Option<Arc<BackupManager>>,
     logging: Option<LoggingService>,
+    mcp: mcp::Runtime,
     reporting: reporting::Runtime,
     analytics: analytics::Runtime,
     usage_reporting: usage_reporting::Runtime,
@@ -9258,6 +9263,16 @@ pub struct ServerState {
 }
 
 impl ServerState {
+    pub(crate) const fn mcp_enabled(&self) -> bool {
+        self.mcp.enabled()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_mcp_config(mut self, mcp: crate::config::mcp::McpConfig) -> Self {
+        self.mcp = mcp::Runtime::new(mcp, crate::config::Secrets::default());
+        self
+    }
+
     pub(crate) fn privacy_registry(&self) -> Arc<PrivacyRegistry> {
         self.privacy.clone()
     }
@@ -9448,6 +9463,7 @@ impl ServerState {
             catalog: None,
             backup_manager: None,
             logging: None,
+            mcp: mcp::Runtime::new(config.mcp.clone(), config.secrets_snapshot.clone()),
             reporting: reporting::Runtime::new(config.reporting.clone()),
             analytics: analytics::Runtime::new(config.analytics.clone()),
             usage_reporting: usage_reporting::Runtime::new(config.usage_reporting.clone()),
@@ -10836,6 +10852,9 @@ fn handle_request(
     if let Some(response) = authentication::handle(request, state) {
         return response;
     }
+    if request_path == "/mcp" && !matches!(request.method(), "POST" | "OPTIONS") {
+        return mcp::handle_unsupported_method(state);
+    }
     if request_path == "/api/backups" || request_path.starts_with("/api/backups/") {
         return service_error(404, "not found");
     }
@@ -10912,6 +10931,12 @@ fn handle_request(
             authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
                 reporting::record_audit(request, state, &identity)
             })
+        },
+        (POST) (/mcp) => {
+            mcp::handle_http(request, router_tx, state)
+        },
+        (OPTIONS) (/mcp) => {
+            mcp::handle_options(request, state)
         },
         _ => serve_ui(request)
     )

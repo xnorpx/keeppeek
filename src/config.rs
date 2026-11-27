@@ -1,5 +1,6 @@
 pub use crate::access::AccessKey;
 pub mod cloud_notifications;
+pub mod mcp;
 pub(crate) mod metadata;
 #[cfg(test)]
 mod recorded_audio_tests;
@@ -70,6 +71,18 @@ const DEFAULT_SECRETS_TEMPLATE: &str = r#"# Keep this file private. KeepPeek cre
 pub struct Secrets(BTreeMap<String, String>);
 
 impl Secrets {
+    /// Creates a secrets container from a flat key-value map.
+    #[must_use]
+    pub const fn from_map(values: BTreeMap<String, String>) -> Self {
+        Self(values)
+    }
+
+    /// Returns the sorted secret key names without exposing any values.
+    #[must_use]
+    pub fn keys(&self) -> Vec<String> {
+        self.0.keys().cloned().collect()
+    }
+
     pub(crate) fn redaction_values(&self) -> Vec<String> {
         self.0
             .iter()
@@ -143,6 +156,9 @@ pub struct Config {
 
     #[serde(default, skip_serializing_if = "DesktopConfig::is_empty")]
     pub desktop: DesktopConfig,
+
+    #[serde(default, skip_serializing_if = "mcp::McpConfig::is_default")]
+    pub mcp: mcp::McpConfig,
 
     #[serde(default)]
     pub storage: StorageToml,
@@ -1177,6 +1193,7 @@ impl Default for Config {
             external_auth: None,
             direct_card: DirectCardConfig::default(),
             desktop: DesktopConfig::default(),
+            mcp: mcp::McpConfig::default(),
             storage: StorageToml::default(),
             battery_wake: BatteryWakeConfig::default(),
             logging: LoggingConfig::default(),
@@ -1596,6 +1613,7 @@ fn load_from_path(path: PathBuf) -> anyhow::Result<(Config, PathBuf)> {
     cfg.access.validate()?;
     cfg.direct_card.validate()?;
     cfg.desktop.validate()?;
+    cfg.mcp.validate()?;
     cfg.operational_events.validate()?;
     cfg.analytics.validate()?;
     cfg.privacy.validate()?;
@@ -2046,6 +2064,7 @@ fn validated_configuration_table_with_secrets(
     crate::access::validate_configuration(root)?;
     config.direct_card.validate()?;
     config.desktop.validate()?;
+    config.mcp.validate()?;
     config.battery_wake.validate()?;
     config.operational_events.validate()?;
     config.analytics.validate()?;
@@ -2115,6 +2134,7 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
     let mut config: Config = resolved.try_into()?;
     config.reporting = reporting;
     config.usage_reporting.validate()?;
+    config.mcp.validate()?;
     config.cloud_notifications = cloud_notifications;
     config.runtime_profiles.validate()?;
     config.sharing.validate()?;
@@ -2132,6 +2152,11 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
     config.source = root.clone();
     config.secrets_snapshot = secrets.clone();
     Ok(config)
+}
+
+#[cfg(test)]
+pub(crate) fn config_from_table_for_test(root: &toml::Table) -> anyhow::Result<Config> {
+    config_from_table(root, &Secrets::default())
 }
 
 fn validate_storage_configuration(storage: &StorageToml) -> anyhow::Result<()> {
@@ -2676,6 +2701,7 @@ pub(crate) fn is_reserved_section(namespace: &str) -> bool {
             | "battery_wake"
             | "direct_card"
             | "desktop"
+            | "mcp"
             | "homekit"
             | "logging"
             | "operational_events"
