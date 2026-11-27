@@ -8,8 +8,8 @@
 use super::{
     AuthenticatedApiRequest, ControlCommandError, ServerState, api_status,
     authenticated_api_request, camera_access, configuration, current_config, get_logging_settings,
-    logging, record_access_audit, request_origin, runtime_configuration, server_health,
-    service_error, state_store, unix_time_ms,
+    logging, mcp_diagnostics, mcp_snapshot, record_access_audit, request_origin,
+    runtime_configuration, server_health, service_error, state_store, unix_time_ms,
 };
 use crate::{
     access::AccessRole,
@@ -22,8 +22,8 @@ use crate::{
             ERROR_BUSY, ERROR_FORBIDDEN, ERROR_INTERNAL, ERROR_INVALID_PARAMS,
             ERROR_METHOD_NOT_FOUND, ERROR_RESPONSE_TOO_LARGE, ERROR_TIMEOUT, InitializeResult,
             JsonRpcError, JsonRpcRequest, JsonRpcResponse, MAX_REQUEST_BODY_BYTES,
-            READ_ONLY_HEADER, ToolAnnotations, ToolCallParams, ToolCallResult, ToolDefinition,
-            parse_bounded_request,
+            READ_ONLY_HEADER, ToolAnnotations, ToolCallParams, ToolCallResult, ToolContent,
+            ToolDefinition, parse_bounded_request,
         },
         redaction::SecretRedactor,
     },
@@ -310,13 +310,21 @@ fn handle_authenticated_post(
             Value::Null,
             JsonRpcError::new(ERROR_BUSY, "MCP concurrency limit reached"),
         );
-        return json_rpc_http_response(state, 429, &busy)
+        return json_rpc_http_response(state, 429, &busy, state.mcp.config().max_response_bytes)
             .with_additional_header("Retry-After", "1");
     };
     let parsed = match parse_bounded_request(&body, MAX_REQUEST_BODY_BYTES) {
         Ok(parsed) => parsed,
-        Err(error_response) => return json_rpc_http_response(state, 200, error_response.as_ref()),
+        Err(error_response) => {
+            return json_rpc_http_response(
+                state,
+                200,
+                error_response.as_ref(),
+                state.mcp.config().max_response_bytes,
+            );
+        }
     };
+    let response_limit = response_byte_limit(state.mcp.config(), &parsed);
     let ctx = McpContext {
         state,
         router_tx,
@@ -330,8 +338,26 @@ fn handle_authenticated_post(
                 .with_status_code(202)
                 .with_additional_header("Cache-Control", "no-store")
         },
-        |rpc_response| json_rpc_http_response(state, 200, &rpc_response),
+        |rpc_response| json_rpc_http_response(state, 200, &rpc_response, response_limit),
     )
+}
+
+fn response_byte_limit(config: &McpConfig, request: &JsonRpcRequest) -> usize {
+    let is_snapshot = request.method == "tools/call"
+        && request
+            .params
+            .as_ref()
+            .and_then(|params| params.get("name"))
+            .and_then(Value::as_str)
+            == Some("get_camera_snapshot");
+    if is_snapshot {
+        let base64_bytes = config.max_snapshot_bytes.div_ceil(3).saturating_mul(4);
+        config
+            .max_response_bytes
+            .max(base64_bytes.saturating_add(4_096))
+    } else {
+        config.max_response_bytes
+    }
 }
 
 fn validate_host_and_origin(request: &Request) -> Result<Option<String>, Response> {
@@ -450,9 +476,9 @@ fn json_rpc_http_response(
     state: &ServerState,
     status: u16,
     response: &JsonRpcResponse,
+    max_bytes: usize,
 ) -> Response {
     let redactor = build_redactor(state);
-    let max_bytes = state.mcp.config().max_response_bytes;
     let mut value = serde_json::to_value(response).unwrap_or_else(|_| {
         json!({
             "jsonrpc": "2.0",
@@ -537,18 +563,124 @@ fn handle_tools_call(ctx: &McpContext<'_>, params: Option<Value>) -> Result<Valu
 }
 
 fn tool_definitions(ctx: &McpContext<'_>) -> Vec<ToolDefinition> {
-    let mut tools = vec![tool_def(
-        "get_server_health",
-        "Read canonical KeepPeek server and camera health (filtered to permitted cameras for User role).",
-        json!({ "type": "object", "properties": {}, "additionalProperties": false }),
-        ToolAnnotations::read_only(),
-    )];
+    let mut tools = user_tool_definitions();
     if !ctx.is_admin() {
         return tools;
     }
     tools.extend(admin_read_tool_definitions());
+    tools.extend(admin_diagnostics_tool_definitions());
     tools.extend(admin_write_tool_definitions());
     tools
+}
+
+fn user_tool_definitions() -> Vec<ToolDefinition> {
+    vec![
+        tool_def(
+            "get_server_health",
+            "Read canonical KeepPeek server and camera health (filtered to permitted cameras for User role).",
+            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+            ToolAnnotations::read_only(),
+        ),
+        tool_def(
+            "search_events",
+            "Search stored timeline events across permitted cameras with bounded result limits.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "camera_id": { "type": "string" },
+                    "camera_ids": { "type": "array", "items": { "type": "string" } },
+                    "event_types": { "type": "array", "items": { "type": "string" } },
+                    "query": { "type": "string" },
+                    "stream_id": { "type": "string", "enum": ["main", "sub"] },
+                    "start_ms": { "type": "integer" },
+                    "end_ms": { "type": "integer" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+                    "page_token": { "type": "string" }
+                },
+                "additionalProperties": false
+            }),
+            ToolAnnotations::read_only(),
+        ),
+        tool_def(
+            "get_recording_coverage",
+            "Inspect recorded intervals and coverage gaps for permitted cameras over a bounded time window.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "camera_id": { "type": "string" },
+                    "start_ms": { "type": "integer", "minimum": 0 },
+                    "end_ms": { "type": "integer", "minimum": 0 },
+                    "page_size": { "type": "integer", "minimum": 1, "maximum": 50 },
+                    "max_segments": { "type": "integer", "minimum": 1, "maximum": 256 },
+                    "page_token": { "type": "string" }
+                },
+                "additionalProperties": false
+            }),
+            ToolAnnotations::read_only(),
+        ),
+        tool_def(
+            "get_camera_snapshot",
+            "Capture one privacy-masked, downscaled JPEG snapshot for a permitted camera when [mcp].allow_snapshots is true.",
+            json!({
+                "type": "object",
+                "required": ["camera_id"],
+                "properties": {
+                    "camera_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+                    "source_preference": {
+                        "type": "string",
+                        "enum": ["auto", "live", "isapi", "onvif", "reolink", "latest_event"]
+                    }
+                },
+                "additionalProperties": false
+            }),
+            ToolAnnotations::read_only(),
+        ),
+    ]
+}
+
+fn admin_diagnostics_tool_definitions() -> Vec<ToolDefinition> {
+    vec![
+        tool_def(
+            "get_storage_status",
+            "Inspect storage configuration, disk pressure, named volumes, archive status, and recording maintenance state.",
+            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+            ToolAnnotations::read_only(),
+        ),
+        tool_def(
+            "get_notification_status",
+            "Summarize notification rules, cloud push status, and MQTT delivery health without exposing secrets.",
+            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+            ToolAnnotations::read_only(),
+        ),
+        tool_def(
+            "discover_cameras",
+            "Run a bounded camera discovery probe across private IPv4 subnets or list discoverable networks.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "list_networks_only": { "type": "boolean" },
+                    "networks": { "type": "array", "items": { "type": "string" } },
+                    "subnets": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 255 } },
+                    "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 10 },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+                },
+                "additionalProperties": false
+            }),
+            ToolAnnotations::read_only(),
+        ),
+        tool_def(
+            "get_runtime_configuration",
+            "Read runtime storage, retention, and listener settings and revision.",
+            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+            ToolAnnotations::read_only(),
+        ),
+        tool_def(
+            "list_runtime_profiles",
+            "List saved runtime camera profiles and active profile selection.",
+            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+            ToolAnnotations::read_only(),
+        ),
+    ]
 }
 
 fn admin_read_tool_definitions() -> Vec<ToolDefinition> {
@@ -728,11 +860,54 @@ fn dispatch_tool(
 ) -> Result<ToolCallResult, ToolError> {
     match name {
         "get_server_health" => tool_get_server_health(ctx),
+        "search_events" => dispatch_diagnostic(
+            ctx,
+            "mcp_search_events",
+            mcp_diagnostics::search_events,
+            &args,
+        ),
+        "get_recording_coverage" => dispatch_diagnostic(
+            ctx,
+            "mcp_get_recording_coverage",
+            mcp_diagnostics::get_recording_coverage,
+            &args,
+        ),
+        "get_camera_snapshot" => tool_get_camera_snapshot(ctx, args),
         "search_logs" => tool_search_logs(ctx, args),
         "get_logging_settings" => tool_get_logging_settings(ctx),
         "get_configuration" => tool_get_configuration(ctx, args),
         "list_secret_keys" => tool_list_secret_keys(ctx),
         "plan_configuration_change" => tool_plan_configuration_change(ctx, args),
+        "get_storage_status" => dispatch_diagnostic(
+            ctx,
+            "mcp_get_storage_status",
+            mcp_diagnostics::get_storage_status,
+            &args,
+        ),
+        "get_notification_status" => dispatch_diagnostic(
+            ctx,
+            "mcp_get_notification_status",
+            mcp_diagnostics::get_notification_status,
+            &args,
+        ),
+        "discover_cameras" => dispatch_diagnostic(
+            ctx,
+            "mcp_discover_cameras",
+            mcp_diagnostics::discover_cameras,
+            &args,
+        ),
+        "get_runtime_configuration" => dispatch_diagnostic(
+            ctx,
+            "mcp_get_runtime_configuration",
+            mcp_diagnostics::get_runtime_configuration,
+            &args,
+        ),
+        "list_runtime_profiles" => dispatch_diagnostic(
+            ctx,
+            "mcp_list_runtime_profiles",
+            mcp_diagnostics::list_runtime_profiles,
+            &args,
+        ),
         "apply_configuration_plan" => tool_apply_configuration_plan(ctx, args),
         "update_runtime_configuration" => tool_update_runtime_configuration(ctx, args),
         "manage_configuration_template" => tool_manage_configuration_template(ctx, args),
@@ -744,6 +919,84 @@ fn dispatch_tool(
             data: None,
         }),
     }
+}
+
+fn dispatch_diagnostic(
+    ctx: &McpContext<'_>,
+    audit_action: &str,
+    handler: fn(
+        &ServerState,
+        &FacadeSender<RouterMessage>,
+        &super::ApiPrincipal,
+        &Value,
+    ) -> Result<Value, ControlCommandError>,
+    args: &Value,
+) -> Result<ToolCallResult, ToolError> {
+    match handler(ctx.state, ctx.router_tx, &ctx.identity.principal, args) {
+        Ok(value) => {
+            if ctx.is_admin() {
+                ctx.audit(audit_action, None, "success");
+            }
+            Ok(ToolCallResult::json(value))
+        }
+        Err(error) => {
+            if ctx.is_admin() {
+                ctx.audit(audit_action, None, "failed");
+            }
+            Err(ToolError::from_control(error))
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GetCameraSnapshotArgs {
+    camera_id: String,
+    source_preference: Option<String>,
+}
+
+fn tool_get_camera_snapshot(
+    ctx: &McpContext<'_>,
+    args: Value,
+) -> Result<ToolCallResult, ToolError> {
+    let args: GetCameraSnapshotArgs = serde_json::from_value(args).map_err(|error| {
+        ToolError::invalid_params(format!("invalid get_camera_snapshot params: {error}"))
+    })?;
+    let cfg = ctx.state.mcp.config();
+    let policy = mcp_snapshot::McpSnapshotPolicy {
+        allow_snapshots: cfg.allow_snapshots,
+        max_bytes: cfg.max_snapshot_bytes,
+        max_dimension: cfg.max_snapshot_dimension,
+        min_interval_secs: cfg.snapshot_min_interval_seconds,
+    };
+    let mut payload = mcp_snapshot::capture_camera_snapshot(
+        ctx.state,
+        ctx.router_tx,
+        &ctx.identity.principal,
+        &args.camera_id,
+        args.source_preference.as_deref(),
+        &policy,
+    )
+    .map_err(ToolError::from_control)?;
+    let data = payload
+        .as_object_mut()
+        .and_then(|map| map.remove("data_base64"))
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .unwrap_or_default();
+    let mime_type = payload
+        .get("mime_type")
+        .and_then(Value::as_str)
+        .unwrap_or("image/jpeg")
+        .to_owned();
+    let summary_text = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_owned());
+    Ok(ToolCallResult {
+        content: vec![
+            ToolContent::Image { data, mime_type },
+            ToolContent::Text { text: summary_text },
+        ],
+        structured_content: Some(payload),
+        is_error: false,
+    })
 }
 
 fn tool_get_server_health(ctx: &McpContext<'_>) -> Result<ToolCallResult, ToolError> {
@@ -2560,7 +2813,15 @@ display_name = "Front Door"
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect::<Vec<_>>();
-        assert_eq!(names, vec!["get_server_health"]);
+        assert_eq!(
+            names,
+            vec![
+                "get_server_health",
+                "search_events",
+                "get_recording_coverage",
+                "get_camera_snapshot",
+            ]
+        );
 
         let health_resp = super::super::handle_request(
             &mcp_post_request(
@@ -2914,5 +3175,287 @@ display_name = "Front Door"
         let body = read_response_json(resp);
         assert_eq!(body["error"]["code"], ERROR_RESPONSE_TOO_LARGE);
         let _ = std::fs::remove_dir_all(&filter_dir);
+    }
+
+    #[test]
+    fn stdio_bridge_e2e_lists_19_tools_calls_diagnostics_and_handles_errors() {
+        let sentinel = "E2E-STDIO-SENTINEL-778899";
+        let (dir, state, router_tx) = temp_config_fixture(
+            McpConfig {
+                enabled: true,
+                allow_writes: false,
+                allow_snapshots: false,
+                ..McpConfig::default()
+            },
+            sentinel,
+        );
+        let server = rouille::Server::new("127.0.0.1:0", move |request| {
+            super::super::handle_request(request, &router_tx, &state)
+        })
+        .unwrap();
+        let addr = server.server_addr();
+        let (handle, shutdown) = server.stoppable();
+
+        let client = crate::mcp::stdio::McpHttpClient::new(
+            &format!("http://{addr}"),
+            Some("550e8400-e29b-41d4-a716-446655440000".to_owned()),
+            false,
+        )
+        .unwrap();
+        let input = concat!(
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\"}}\n",
+            "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n",
+            "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n",
+            "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"get_runtime_configuration\",\"arguments\":{}}}\n",
+            "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"list_runtime_profiles\",\"arguments\":{}}}\n",
+            "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"get_storage_status\",\"arguments\":{}}}\n",
+            "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":\"get_notification_status\",\"arguments\":{}}}\n",
+            "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"get_camera_snapshot\",\"arguments\":{\"camera_id\":\"192.0.2.10\"}}}\n"
+        );
+        let mut stdout = Vec::new();
+        crate::mcp::stdio::serve_stdio_loop(
+            std::io::Cursor::new(input.as_bytes()),
+            &mut stdout,
+            |line| client.forward(line),
+        )
+        .unwrap();
+        shutdown.send(()).ok();
+        handle.join().ok();
+
+        let output_text = String::from_utf8(stdout).unwrap();
+        assert!(!output_text.contains(sentinel));
+        let lines: Vec<Value> = output_text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 7);
+        assert_eq!(lines[0]["id"], 1);
+        assert_eq!(lines[0]["result"]["protocolVersion"], "2025-03-26");
+
+        let tools = lines[1]["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 19);
+        let tool_names: Vec<&str> = tools
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        for expected in [
+            "get_server_health",
+            "search_events",
+            "get_recording_coverage",
+            "get_camera_snapshot",
+            "search_logs",
+            "get_logging_settings",
+            "get_configuration",
+            "list_secret_keys",
+            "plan_configuration_change",
+            "get_storage_status",
+            "get_notification_status",
+            "discover_cameras",
+            "get_runtime_configuration",
+            "list_runtime_profiles",
+            "apply_configuration_plan",
+            "update_runtime_configuration",
+            "manage_configuration_template",
+            "set_runtime_profile",
+            "set_logging_filter",
+        ] {
+            assert!(
+                tool_names.contains(&expected),
+                "missing MCP tool in tools/list: {expected}"
+            );
+        }
+
+        assert!(lines[2]["result"]["structuredContent"]["host"].is_string());
+        assert!(lines[3]["result"]["structuredContent"].is_object());
+        assert!(lines[4]["result"]["structuredContent"]["configuration"].is_object());
+        assert!(lines[5]["result"]["structuredContent"]["rules"].is_object());
+        assert_eq!(lines[6]["error"]["code"], ERROR_FORBIDDEN);
+
+        // Verify unreachable server yields a clean JSON-RPC error frame without panicking.
+        let closed_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let unused_addr = closed_listener.local_addr().unwrap();
+        drop(closed_listener);
+        let dead_client =
+            crate::mcp::stdio::McpHttpClient::new(&format!("http://{unused_addr}"), None, true)
+                .unwrap();
+        let mut err_out = Vec::new();
+        crate::mcp::stdio::serve_stdio_loop(
+            std::io::Cursor::new(b"{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"ping\"}\n"),
+            &mut err_out,
+            |line| dead_client.forward(line),
+        )
+        .unwrap();
+        let err_json: Value =
+            serde_json::from_str(std::str::from_utf8(&err_out).unwrap().trim()).unwrap();
+        assert_eq!(err_json["id"], 99);
+        assert_eq!(err_json["error"]["code"], ERROR_INTERNAL);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mcp_snapshot_fails_closed_when_privacy_mode_is_active_and_records_audit() {
+        let (dir, state, router_tx) = temp_config_fixture(
+            McpConfig {
+                enabled: true,
+                allow_snapshots: true,
+                ..McpConfig::default()
+            },
+            "SNAPSHOT-PRIVACY-SECRET-111",
+        );
+        state
+            .privacy
+            .replace_profile_overrides(BTreeMap::from([("192.0.2.10".to_owned(), true)]))
+            .unwrap();
+
+        let resp = super::super::handle_request(
+            &mcp_post_request(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 77,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "get_camera_snapshot",
+                        "arguments": { "camera_id": "192.0.2.10" }
+                    }
+                }),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(resp.status_code, 200);
+        let body = read_response_json(resp);
+        assert_eq!(body["error"]["code"], ERROR_FORBIDDEN);
+        let audits = state.access_manager.list_audit(32);
+        assert!(
+            audits
+                .iter()
+                .any(|event| event.action == "mcp_camera_snapshot"
+                    && event.result == "denied_privacy")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mcp_ac8_ingest_isolation_and_latency_benchmark() {
+        use std::sync::atomic::AtomicBool;
+        use std::thread;
+
+        let (dir, state, router_tx) = temp_config_fixture(
+            McpConfig {
+                enabled: true,
+                allow_writes: false,
+                max_concurrent_requests: 4,
+                max_response_bytes: 65_536,
+                ..McpConfig::default()
+            },
+            "BENCH-SECRET-SENTINEL-424242",
+        );
+        let (logging_service, dispatch) =
+            LoggingService::for_test(LogFilterFile::new(dir.join("log-filter")), "info");
+        let state = state.with_logging(logging_service);
+        tracing::dispatcher::with_default(&dispatch, || {
+            for index in 0..25 {
+                tracing::info!(target: "keeppeek::ingest", camera = "192.0.2.10", "frame ok {index}");
+            }
+        });
+
+        let stop_ingest = Arc::new(AtomicBool::new(false));
+        let baseline_frames = Arc::new(AtomicUsize::new(0));
+        let load_frames = Arc::new(AtomicUsize::new(0));
+        let dropped_frames = Arc::new(AtomicUsize::new(0));
+        let under_load = Arc::new(AtomicBool::new(false));
+
+        let ingest_stop = stop_ingest.clone();
+        let ingest_base = baseline_frames.clone();
+        let ingest_load = load_frames.clone();
+        let ingest_drop = dropped_frames.clone();
+        let ingest_flag = under_load.clone();
+        let ingest_thread = thread::spawn(move || {
+            let interval = Duration::from_millis(20);
+            let mut next_tick = Instant::now() + interval;
+            while !ingest_stop.load(Ordering::Acquire) {
+                let now = Instant::now();
+                if now < next_tick {
+                    thread::sleep(next_tick - now);
+                } else if now.saturating_duration_since(next_tick) > Duration::from_millis(500) {
+                    ingest_drop.fetch_add(1, Ordering::Relaxed);
+                    next_tick = now;
+                }
+                if ingest_flag.load(Ordering::Acquire) {
+                    ingest_load.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    ingest_base.fetch_add(1, Ordering::Relaxed);
+                }
+                next_tick += interval;
+            }
+        });
+
+        // Phase 1: baseline ingest without MCP calls.
+        thread::sleep(Duration::from_millis(300));
+        under_load.store(true, Ordering::Release);
+
+        // Phase 2: 36 concurrent MCP calls (health, logs, configuration) across 3 worker threads.
+        let mut handles = Vec::new();
+        for worker in 0..3_u64 {
+            let worker_state = state.clone();
+            let worker_router = router_tx.clone();
+            handles.push(thread::spawn(move || {
+                let mut latencies_us = Vec::new();
+                let mut max_bytes = 0usize;
+                let requests = [
+                    json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_server_health","arguments":{}}}),
+                    json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_logs","arguments":{"limit":20}}}),
+                    json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_configuration","arguments":{"page_size":10}}}),
+                ];
+                for iter in 0..12 {
+                    let payload = &requests[(usize::try_from(worker).unwrap_or(0) + iter) % 3];
+                    let req = mcp_post_request(payload, Vec::new(), "127.0.0.1:50000");
+                    let started = Instant::now();
+                    let resp = super::super::handle_request(&req, &worker_router, &worker_state);
+                    let elapsed_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+                    assert_eq!(resp.status_code, 200);
+                    let (mut reader, _) = resp.data.into_reader_and_size();
+                    let mut raw = Vec::new();
+                    reader.read_to_end(&mut raw).unwrap();
+                    assert!(raw.len() <= worker_state.mcp.config().max_response_bytes);
+                    max_bytes = max_bytes.max(raw.len());
+                    latencies_us.push(elapsed_us);
+                }
+                (latencies_us, max_bytes)
+            }));
+        }
+
+        let mut all_latencies_us = Vec::new();
+        let mut max_response_bytes = 0usize;
+        for handle in handles {
+            let (latencies, max_bytes) = handle.join().unwrap();
+            all_latencies_us.extend(latencies);
+            max_response_bytes = max_response_bytes.max(max_bytes);
+        }
+        stop_ingest.store(true, Ordering::Release);
+        ingest_thread.join().unwrap();
+
+        all_latencies_us.sort_unstable();
+        let count = all_latencies_us.len();
+        let p50_us = all_latencies_us[count / 2];
+        let p95_us = all_latencies_us[(count * 95) / 100];
+        let max_us = *all_latencies_us.last().unwrap();
+        let drops = dropped_frames.load(Ordering::Relaxed);
+        eprintln!(
+            "AC-8 METRICS: calls={count} p50_ms={:.3} p95_ms={:.3} max_ms={:.3} max_response_bytes={max_response_bytes} baseline_frames={} load_frames={} dropped_frames={drops}",
+            p50_us as f64 / 1000.0,
+            p95_us as f64 / 1000.0,
+            max_us as f64 / 1000.0,
+            baseline_frames.load(Ordering::Relaxed),
+            load_frames.load(Ordering::Relaxed),
+        );
+        assert_eq!(count, 36);
+        assert_eq!(drops, 0);
+        assert!(max_response_bytes <= state.mcp.config().max_response_bytes);
+        assert!(load_frames.load(Ordering::Relaxed) > 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

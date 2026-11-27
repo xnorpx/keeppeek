@@ -3,11 +3,6 @@
 //! Each handler validates caller authorization, enforces strict input and
 //! output bounds, and strips credentials or secret values from responses.
 
-#![allow(
-    dead_code,
-    reason = "MCP dispatch wiring lands with mcp-core integration; covered by unit tests meanwhile"
-)]
-
 use super::{
     ApiPrincipal, ControlCommandError, DiscoveredCameraSettings, ServerState, camera_access,
     camera_discovery, current_config, event_search_catalog, peek_layouts,

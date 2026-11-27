@@ -4,11 +4,6 @@
 //! decoding, software privacy masking before downscaling, size ceilings, and
 //! non-sensitive audit logging.
 
-#![allow(
-    dead_code,
-    reason = "MCP dispatch wiring lands with mcp-core integration; covered by unit tests meanwhile"
-)]
-
 use super::{
     ApiPrincipal, CameraEntry, ControlCommandError, ReolinkClient, ServerState, camera_access,
     record_access_audit, unix_time_ms,
