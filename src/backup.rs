@@ -77,6 +77,16 @@ impl ServiceError {
         }
     }
 
+    pub(crate) const fn forbidden(message: &'static str) -> Self {
+        Self {
+            status: 403,
+            code: backup_proto::BackupErrorCode::Permission,
+            message,
+            field: "",
+            retryable: false,
+        }
+    }
+
     pub(crate) const fn conflict(message: &'static str) -> Self {
         Self {
             status: 409,

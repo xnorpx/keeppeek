@@ -111,8 +111,21 @@ impl HandoffStore {
         Self::default()
     }
 
+    /// Invalidates and clears all pending secret-entry handoffs when MCP access is disabled.
+    pub(super) fn clear_all(&self) {
+        let mut records = self
+            .records
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for record in records.iter_mut() {
+            record.token_digest.fill(0);
+        }
+        records.clear();
+    }
+
     fn create(
         &self,
+        mcp_enabled: &std::sync::atomic::AtomicBool,
         principal_id: String,
         requested_keys: Vec<RequestedSecretKey>,
         ttl_seconds: u64,
@@ -122,6 +135,13 @@ impl HandoffStore {
             .records
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !mcp_enabled.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::Rejected,
+                404,
+                "MCP access is disabled",
+            ));
+        }
         expire_stale_records(&mut records, now_ms);
         let active_pending = records
             .iter()
@@ -318,11 +338,13 @@ pub(super) fn request_secret_entry(
     }
     let requested_keys = validate_requested_keys(parsed.keys)?;
     let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
-    let (handoff_id, token, expires_at_ms) =
-        state
-            .mcp
-            .handoffs()
-            .create(principal.id(), requested_keys.clone(), ttl_seconds, now_ms)?;
+    let (handoff_id, token, expires_at_ms) = state.mcp.handoffs().create(
+        state.mcp.enabled_flag(),
+        principal.id(),
+        requested_keys.clone(),
+        ttl_seconds,
+        now_ms,
+    )?;
     let port = if state.port != 0 {
         state.port
     } else {
@@ -867,8 +889,17 @@ mod tests {
     #[test]
     fn handoff_store_enforces_expiry_single_use_and_pending_cap() {
         let store = HandoffStore::new();
+        let enabled = std::sync::atomic::AtomicBool::new(true);
+        let disabled = std::sync::atomic::AtomicBool::new(false);
+        assert_eq!(
+            store
+                .create(&disabled, "admin:test".to_owned(), sample_keys(), 60, 1_000)
+                .unwrap_err()
+                ._http_status,
+            404
+        );
         let (handoff_id, token, expires_at_ms) = store
-            .create("admin:test".to_owned(), sample_keys(), 60, 1_000)
+            .create(&enabled, "admin:test".to_owned(), sample_keys(), 60, 1_000)
             .expect("create handoff");
         assert_eq!(expires_at_ms, 61_000);
         assert_eq!(
@@ -887,12 +918,24 @@ mod tests {
         let mut tokens = Vec::new();
         for _ in 0..MAX_PENDING_HANDOFFS {
             let (_, raw_token, _) = store
-                .create("admin:test".to_owned(), sample_keys(), 120, 70_000)
+                .create(
+                    &enabled,
+                    "admin:test".to_owned(),
+                    sample_keys(),
+                    120,
+                    70_000,
+                )
                 .expect("pending slot available");
             tokens.push(raw_token);
         }
         let overflow = store
-            .create("admin:test".to_owned(), sample_keys(), 120, 70_000)
+            .create(
+                &enabled,
+                "admin:test".to_owned(),
+                sample_keys(),
+                120,
+                70_000,
+            )
             .expect_err("17th pending handoff must be rejected");
         assert_eq!(overflow._http_status, 429);
 
@@ -917,8 +960,9 @@ mod tests {
     #[test]
     fn handoff_store_concurrent_double_claim_allows_only_one_winner() {
         let store = HandoffStore::new();
+        let enabled = std::sync::atomic::AtomicBool::new(true);
         let (_, token, _) = store
-            .create("admin:test".to_owned(), sample_keys(), 120, 1_000)
+            .create(&enabled, "admin:test".to_owned(), sample_keys(), 120, 1_000)
             .expect("create handoff");
         let barrier = std::sync::Barrier::new(2);
         let results: Vec<bool> = std::thread::scope(|scope| {

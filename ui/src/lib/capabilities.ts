@@ -162,6 +162,16 @@ export const serverCapabilityCatalog = {
 		failureGuarantee:
 			'Disabled installs stay silent; failed sends or deletions remain truthful and never affect recording'
 	},
+	'keeppeek.mcp-access.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'Human-only live MCP enablement (trusted local or interactive OIDC/identity-proxy session), 7-day enabled timer and warning silencing, fail-safe live disable, and pending secret-entry handoff cleanup',
+		unlocks:
+			'Live MCP access governance controls in Settings and the 7-day Administrator warning banner',
+		whenMissing: 'Live MCP governance controls stay hidden; edit [mcp] in config.toml directly',
+		failureGuarantee:
+			'Bearer access-key credentials cannot enable MCP, silence the 7-day warning, or escalate trust policy via backup restore; disabling cuts off new /mcp requests live'
+	},
 	'stored-media-keyframe-preview.v1': {
 		delivery: 'ships',
 		serverOwns:
