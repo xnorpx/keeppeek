@@ -51,14 +51,6 @@ Call the Administrator-only `camera_debugging` MCP tool in sequence:
        "muxed_mp4",
        "protocol_transcript"
      ],
-     "protocols": [
-       "rtsp",
-       "audio",
-       "onvif",
-       "isapi",
-       "reolink_http",
-       "reo_proto"
-     ],
      "duration_seconds": 10,
      "max_bytes": 67108864,
      "include_raw_auth": true,
@@ -67,11 +59,13 @@ Call the Administrator-only `camera_debugging` MCP tool in sequence:
    ```
 
    - `stream` accepts `"main"`, `"sub"`, or `"both"`.
+   - Omit `protocols` to auto-select the camera's primary protocol, or pass a subset of `["rtsp", "audio", "onvif", "isapi", "reolink_http", "reo_proto"]` supported by that camera (listed protocols run sequentially and `capture` fails if any requested protocol is unsupported).
    - `duration_seconds` is bounded to `1..=60`; `max_bytes` is bounded to `65536..=268435456`.
-   - KeepPeek writes artifacts atomically under `<config-dir>/camera-debug/<capture-id>/` and returns the `capture_id`, saved file paths, and automated bitstream anomaly counts (missing SPS/PPS/VPS/IDR, FU-A fragmentation errors, RTP sequence gaps, DTS/PTS regressions, and A/V drift).
+   - `include_raw_auth` defaults to `true` on `capture` and `compare_transports` (pass `false` to redact); `inspect_pipeline` defaults `include_raw_auth` to `false`.
+   - KeepPeek stores media files and atomically written `capture.json` metadata under `<config-dir>/camera-debug/<capture-id>/` (including `rtp_packets.bin` when raw RTP dump is enabled; failed capture directories are deleted), returning the `capture_id`, saved paths, and automated bitstream anomaly counts (missing SPS/PPS/VPS/IDR, FU-A fragmentation errors, RTP sequence gaps, DTS/PTS regressions, and A/V drift).
 
 3. **Compare transports (`compare_transports`):**
-   Compare media transports (`mode: "media_transports"`, such as RTSP TCP vs UDP or Reolink `reo_proto` vs Retina) or event channels (`mode: "event_channels"`):
+   Compare TCP vs UDP on the camera's resolved primary media protocol (`mode: "media_transports"`) or compare event channels (`mode: "event_channels"`). To compare Reolink `reo_proto` against `rtsp`, run separate `capture` calls:
 
    ```json
    {
@@ -83,7 +77,7 @@ Call the Administrator-only `camera_debugging` MCP tool in sequence:
    ```
 
 4. **List existing captures (`list_captures`):**
-   Inspect retained captures, sizes, and expiry timestamps (24-hour TTL and FIFO eviction under `max_debug_storage_bytes`).
+   Inspect retained captures, byte sizes, and `created_at_unix_secs` timestamps (expired 24-hour TTL entries are pruned on list, and oldest captures are evicted FIFO under `max_debug_storage_bytes`).
 
 Note: `capture`, `compare_transports`, and `delete_capture` reject `--read-only` sessions (`X-KeepPeek-MCP-Read-Only: true`).
 
@@ -138,7 +132,7 @@ ffmpeg -v error -i video.h264 -f null -
    - Or run the standalone replay server interactively against a local KeepPeek test instance:
 
      ```sh
-     cargo run --bin keeppeek-camera -- replay --fixture /path/to/repro.json
+     cargo run --bin keeppeek-camera -- replay --fixture /path/to/repro.json --bind 127.0.0.1:0 --loop
      cargo run --bin keeppeek -- --config /path/to/test-config.toml
      ```
 

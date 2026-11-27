@@ -532,29 +532,25 @@ mod tests {
         assert_eq!(third.result, Some(json!({})));
     }
 
-    #[test]
-    fn skill_cli_command_supports_default_list_alias_output_and_rejects_conflicts() {
-        use clap::Parser;
-
-        #[derive(Parser)]
-        struct TestCli {
-            #[command(flatten)]
-            mcp: McpArgs,
-        }
-
-        // Default invocation prints keeppeek-mcp verbatim.
-        let mut default_out = Vec::new();
-        execute_skill_command(None, false, None, &mut default_out).unwrap();
-        let canonical_mcp = std::fs::read_to_string(
+    fn canonical_skill_markdown(dir_name: &str) -> String {
+        std::fs::read_to_string(
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("skills")
-                .join("keeppeek-mcp")
+                .join(dir_name)
                 .join(skill::SKILL_FILE_NAME),
         )
-        .unwrap();
-        assert_eq!(String::from_utf8(default_out).unwrap(), canonical_mcp);
+        .unwrap()
+    }
 
-        // --list outputs both bundled skills with single-line descriptions.
+    #[test]
+    fn skill_cli_command_renders_default_list_and_named_output() {
+        let mut default_out = Vec::new();
+        execute_skill_command(None, false, None, &mut default_out).unwrap();
+        assert_eq!(
+            String::from_utf8(default_out).unwrap(),
+            canonical_skill_markdown("keeppeek-mcp")
+        );
+
         let mut list_out = Vec::new();
         execute_skill_command(None, true, None, &mut list_out).unwrap();
         let list_text = String::from_utf8(list_out).unwrap();
@@ -562,19 +558,11 @@ mod tests {
         assert!(list_text.contains("keeppeek-camera-debug\t"));
         assert_eq!(list_text.lines().count(), 2);
 
-        // camera-debug alias prints keeppeek-camera-debug verbatim.
+        let canonical_debug = canonical_skill_markdown("keeppeek-camera-debug");
         let mut debug_out = Vec::new();
         execute_skill_command(Some("camera-debug"), false, None, &mut debug_out).unwrap();
-        let canonical_debug = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("skills")
-                .join("keeppeek-camera-debug")
-                .join(skill::SKILL_FILE_NAME),
-        )
-        .unwrap();
         assert_eq!(String::from_utf8(debug_out).unwrap(), canonical_debug);
 
-        // Named output writes SKILL.md cleanly.
         let temp_dir =
             std::env::temp_dir().join(format!("keeppeek-stdio-skill-{}", uuid::Uuid::new_v4()));
         let mut write_out = Vec::new();
@@ -590,8 +578,18 @@ mod tests {
             canonical_debug
         );
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 
-        // Reject conflicting flags and unknown skill names both via helper and clap.
+    #[test]
+    fn skill_cli_command_rejects_conflicts_and_unknown_names() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct TestCli {
+            #[command(flatten)]
+            mcp: McpArgs,
+        }
+
         let mut conflict_out = Vec::new();
         assert!(
             execute_skill_command(None, true, Some(Path::new("out")), &mut conflict_out).is_err()
