@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-856bdc02.js";
+            window.path_to_searchindex_js = "searchindex-f90754fd.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-515efa10.js"></script>
@@ -364,6 +364,8 @@ password = "{secret:MQTT_PASSWORD}"
 </thead>
 <tbody>
 <tr><td><code>server_url</code></td><td>Optional <code>String</code></td><td>Absent</td><td>Canonical exact HTTP(S) origin (<code>1..=512</code> UTF-8 bytes, e.g., <code>"http://127.0.0.1:8081"</code>, <code>"https://nvr.example"</code>). Rejects credentials, path, query, fragment, trailing slash, control chars, port <code>0</code>, and unspecified bind addresses (<code>0.0.0.0</code>, <code>::</code>).</td></tr>
+<tr><td><code>manage_local_server</code></td><td><code>bool</code></td><td><code>false</code></td><td>Opt-in flag enabling <code>keeppeek-desktop</code> to embed <code>keeppeek-supervisor</code> and manage a local loopback <code>keeppeek</code> child process. Omitted from <code>config.toml</code> when <code>false</code> to preserve compatibility with older <code>keeppeek</code> servers.</td></tr>
+<tr><td><code>supervisor_root</code></td><td>Optional <code>String</code></td><td>Absent</td><td>Optional directory override (<code>1..=1,024</code> UTF-8 bytes, non-blank, no control chars) for the desktop supervisor’s <code>supervisor-state.json</code> and A/B slots. Defaults to <code>&lt;config_dir&gt;/supervisor</code>.</td></tr>
 </tbody>
 </table>
 </div>

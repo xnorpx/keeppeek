@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-856bdc02.js";
+            window.path_to_searchindex_js = "searchindex-f90754fd.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-515efa10.js"></script>
@@ -218,8 +218,15 @@ sc.exe stop KeepPeekService
 sc.exe start KeepPeekService
 </code></pre>
 <p>Resolve any failure to stop the old service before retrying the installer. Service logs default to <code>keeppeek-service.log</code> beside the service account’s <code>config.toml</code>; <code>[logging] service = "event_log"</code> writes to the Windows Application event log once the source is registered. See the <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/windows-service.md">Windows service guide</a>.</p>
-<h3 id="standalone-binary"><a class="header" href="#standalone-binary">Standalone binary</a></h3>
+<h3 id="standalone-binary-and-slim-supervisor"><a class="header" href="#standalone-binary-and-slim-supervisor">Standalone binary and slim supervisor</a></h3>
 <p>Stop the running process, replace the executable, and start it with the same <code>--config &lt;path&gt;</code> flag and environment. <code>--config</code> selects both the TOML file and sibling <code>secrets.toml</code>. A fresh config initializes named storage beside itself; an existing metadata binding keeps its recorded owner.</p>
+<p>For bare-metal deployments preparing for offline staged A/B binary swaps and automatic rollback, KeepPeek also provides the offline <code>keeppeek-supervisor</code> crate and three slim parent hosts (<code>keeppeek-supervisor</code> CLI, <code>keeppeek-service.exe</code> on Windows, and opt-in managed local server mode in <code>keeppeek-desktop</code>). The supervisor stores immutable executables under <code>&lt;supervisor_root&gt;/versions/&lt;version&gt;/keeppeek[.exe]</code> (and optional independent <code>&lt;supervisor_root&gt;/vision/&lt;version&gt;/keeppeek-vision[.exe]</code>) alongside an atomic <code>supervisor-state.json</code> journal:</p>
+<pre><code class="language-sh">keeppeek-supervisor stage --root &lt;dir&gt; --manifest manifest.json --binary keeppeek --key-id &lt;id&gt; --public-key-hex &lt;64-hex&gt;
+keeppeek-supervisor status --root &lt;dir&gt;
+keeppeek-supervisor run --root &lt;dir&gt; --config &lt;path/to/config.toml&gt;
+keeppeek-supervisor rollback --root &lt;dir&gt; --component core
+</code></pre>
+<p>Online release polling and automatic background downloading remain intentionally disabled; <code>stage</code> verifies offline Ed25519 manifest signatures, SHA-256 digests, anti-downgrade version floors, and <code>expand_contract</code> vs. <code>breaking</code> schema compatibility before publishing a pending slot. On Linux <code>systemd</code> deployments, retain the default <code>KillMode=control-group</code> so hard supervisor termination also cleans up supervised child processes.</p>
 <h2 id="what-startup-migrates"><a class="header" href="#what-startup-migrates">What startup migrates</a></h2>
 <p>Startup automatically imports supported legacy sidecar files into <code>config.toml</code> when the corresponding current section is absent, writes <code>config.toml</code> atomically, and removes the retired input on success. Keep an offline pre-upgrade copy if you need original inputs.</p>
 <div class="table-wrapper">
