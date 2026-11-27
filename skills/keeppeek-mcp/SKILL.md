@@ -5,7 +5,7 @@ description: Set up the KeepPeek MCP server, inspect live recorder health and lo
 
 # KeepPeek MCP
 
-Use this skill to connect an AI assistant or MCP client to KeepPeek, inspect recorder health and logs, and make validated configuration changes without exposing credentials.
+Use this skill to connect an AI assistant or MCP client to KeepPeek, onboard and tune cameras with zero plaintext credentials, inspect recorder health and logs, and make validated configuration changes safely.
 
 ## 1. Locate KeepPeek and Configuration
 
@@ -55,7 +55,7 @@ keeppeek mcp [--server <URL>] [--config <PATH>] [--credential-file <PATH>] [--re
 ```
 
 - `stdout` carries strict newline-delimited JSON-RPC frames. Warnings and diagnostic output go to `stderr`.
-- Pass `--read-only` to enforce read-only inspection even when the server allows MCP writes. The bridge sends `X-KeepPeek-MCP-Read-Only: true`.
+- Pass `--read-only` to enforce read-only inspection even when the server allows MCP writes or camera device writes. The bridge sends `X-KeepPeek-MCP-Read-Only: true`.
 - Authenticate with the `KEEPPEEK_ACCESS_KEY` environment variable or `--credential-file <PATH>`. On loopback, the server allows unauthenticated access only when its `[access].local_networks` policy permits local trust.
 
 ### Embedded Streamable HTTP (`POST /mcp`, opt-in)
@@ -67,6 +67,7 @@ The embedded `POST /mcp` endpoint is disabled by default and returns `404` until
 enabled = true
 allow_writes = false
 allow_snapshots = false
+allow_camera_device_writes = false
 max_concurrent_requests = 4
 max_response_bytes = 65536
 request_timeout_seconds = 15
@@ -75,45 +76,142 @@ max_snapshot_dimension = 1280
 snapshot_min_interval_seconds = 5
 ```
 
-- Keep `allow_writes = false` and `allow_snapshots = false` until the operator explicitly requests write operations or snapshots.
+- Keep `allow_writes = false`, `allow_snapshots = false`, and `allow_camera_device_writes = false` until the operator explicitly requests those capabilities.
 - For remote access, keep `[access].require_secure_remote = true` and place KeepPeek behind a trusted HTTPS reverse proxy (`[access].trusted_proxies`) or a private VPN.
 - Authenticate HTTP requests with `Authorization: Bearer <key>`. Never place access keys in query parameters.
 - Browser `Origin` headers are rejected unless explicitly listed in `[direct_card].allowed_origins`, and any request carrying an `Origin` header requires `Authorization: Bearer <key>` even on local networks. Non-browser clients omit `Origin`, and unauthenticated local requests must use `localhost` or an IP literal `Host` header to block DNS rebinding.
 
-## 3. Handle Credentials and Secrets Safely
+## 3. Handle Credentials and Secrets Safely (Zero-Plaintext Policy)
 
 1. Ask the operator to create a dedicated named credential in **Settings > Access & roles** for the MCP client:
    - Use the **User** role with scoped camera access for read-only event, coverage, and health monitoring.
-   - Use the **Administrator** role only when the task requires server logs, storage or notification diagnostics, camera discovery, or configuration changes.
+   - Use the **Administrator** role only when the task requires server logs, storage or notification diagnostics, camera onboarding, hardware tuning, or configuration changes.
 2. Store the MCP client access key in the `KEEPPEEK_ACCESS_KEY` environment variable or an owner-only credential file (`chmod 600` on Unix) passed via `--credential-file <PATH>`. Never pass raw access keys on the command line or paste them into chat.
-3. Call `list_secret_keys` before referencing secrets in camera, MQTT, or notification settings. This tool returns sorted key names from `secrets.toml` and never returns values.
-4. Store camera passwords, webhook URLs, and integration credentials in `secrets.toml` (keys matching `[A-Z_][A-Z0-9_]*`, or override via `KEEPPEEK_SECRET_<KEY>` in the server environment).
-5. Reference secrets in `config.toml` and MCP write tools using:
-   - `{secret:KEY}` for direct string fields such as camera `username`, camera `password`, camera `uid`, MQTT `password`, or notification action `destination`.
+3. Call `list_secret_keys` before referencing secrets in camera, probe, MQTT, or notification settings. This tool returns sorted key names from `secrets.toml` and never returns values.
+4. When a required secret key is missing, NEVER ask the operator to paste the raw password into chat. Use one of these zero-plaintext paths instead:
+   - **Loopback secret-entry handoff (browser UI):** Call `request_secret_entry` with the needed key names and purposes. Give the operator the returned `local_ui_url` (`http://127.0.0.1:<port>/mcp/secret-entry?token=<token>`), which is strictly loopback-only, single-use, and time-limited (`60..=300` seconds). Poll `get_secret_entry_status` until `status` is `"completed"`.
+   - **Local CLI (`keeppeek secret`):** Ask the operator to store the secret out-of-band using a hidden TTY prompt or `--stdin` (secret values are never accepted in CLI arguments):
+     ```sh
+     keeppeek secret set CAMERA_PASSWORD
+     printf '%s' "$SECRET_VALUE" | keeppeek secret set CAMERA_PASSWORD --stdin
+     keeppeek secret list
+     keeppeek secret remove OLD_CAMERA_PASSWORD
+     ```
+   - KeepPeek writes `secrets.toml` atomically with owner-only permissions (`0600` on Unix / owner-only DACL on Windows) and reloads updated secrets live without requiring a server restart.
+5. Reference secrets in `config.toml` and MCP tools using:
+   - `{secret:KEY}` for direct string fields such as camera `username`, camera `password`, camera `uid`, `username_secret_reference`, `password_secret_reference`, `uid_secret_reference`, MQTT `password`, or notification action `destination`.
    - `{secret:KEY|url}` for credentials embedded in a URL component such as `main_rtsp_url` or `sub_rtsp_url`.
-   - Raw credentials passed to `manage_camera`, `manage_notification_rule`, `plan_configuration_change`, or `manage_configuration_template` are rejected.
-6. If a required secret key does not exist yet, ask the operator to add the key locally to `secrets.toml` outside chat, then call `list_secret_keys` again to verify that the key name is available.
+   - Raw credentials passed to `probe_camera_streams`, `manage_camera`, `manage_notification_rule`, `plan_configuration_change`, or `manage_configuration_template` are rejected.
 
-## 4. Configure KeepPeek Safely (Plan -> Review -> Approve -> Apply)
+## 4. Zero-Plaintext Camera Onboarding and Hardware Tuning
 
-Follow this exact sequence for any configuration change:
+Follow this exact end-to-end sequence when adding or tuning cameras:
+
+1. **Discover devices and look up catalog hints:**
+   - Call `discover_cameras` to run a bounded LAN probe.
+   - Call `search_camera_catalog` with the brand/model `query` and optional `ip` to get credential-free RTSP `stream_hints`.
+2. **Verify or collect secrets out-of-band:**
+   - Call `list_secret_keys` to check which `secrets.toml` keys already exist.
+   - If keys are missing, call `request_secret_entry` (loopback `GET`/`POST /mcp/secret-entry`) and wait via `get_secret_entry_status`, or ask the operator to run `keeppeek secret set <KEY>` (`--stdin` or hidden TTY prompt).
+3. **Probe streams without raw credentials:**
+   - Call `probe_camera_streams` using either single `{secret:KEY}` references (`username_secret_reference` + `password_secret_reference`, optional `uid_secret_reference`) or pre-populated `credential_candidates` (up to **5** pairs).
+   - KeepPeek stops immediately on the first authentication match or on camera lockout, HTTP `429`, or an unreachable target.
+   - Use the returned `matched_credentials` (`{secret:KEY}` references only), `recommended_backend`, and verified stream URLs for camera registration.
+4. **Configure KeepPeek (Plan -> Review -> Approve -> Apply):**
+   - Call `get_configuration` to read the current `configuration_revision`.
+   - For a new camera, show the operator the proposed `manage_camera` (`action: "upsert"`) payload with `{secret:KEY}` references and wait for explicit approval before calling `manage_camera`.
+   - For existing cameras, defaults, or templates, call `plan_configuration_change` (works even when `allow_writes = false`), show the redacted diff and live-vs-restart summary, wait for explicit approval, then call `apply_configuration_plan`.
+5. **Inspect and tune on-camera hardware settings (optional):**
+   - Call `get_camera_device_settings` to inspect live hardware sections (`encoder`, `imaging`, `lighting`, `motion`, `osd`, `time`, `ptz`), `supported_sections`, and `unsupported_sections` for the camera's protocol (`reolink`, `isapi`, `onvif`, or `rtsp_only`).
+   - Call `update_camera_device_settings` with `dry_run: true` (the default; works even when `allow_camera_device_writes = false`) to validate ranges and produce a redacted `diff`.
+   - Show the operator the `before`/`after` diff and `unsupported` list, and wait for explicit approval.
+   - Only when `[mcp].allow_camera_device_writes = true`, the credential is **Administrator**, and `--read-only` is not set, call `update_camera_device_settings` with `dry_run: false`. Inspect `verified_settings` and `restart_or_reconnect_expected` from read-back verification.
+   - Never request excluded security operations (firmware update, factory reset, reboot, password/user changes, or IP/network/port reassignment); KeepPeek always rejects them with `403`.
+6. **Verify live operation:**
+   - Call `get_server_health` and `search_logs` (and optionally `get_camera_snapshot` if `[mcp].allow_snapshots = true`) to confirm the camera connects and records cleanly.
+
+## 5. General KeepPeek Configuration Workflow
+
+For storage, templates, profiles, notifications, and logging changes:
 
 1. **Inspect current state:** Call `get_configuration`, `get_runtime_configuration`, `list_runtime_profiles`, `manage_notification_rule` (`action: "list"`), and `list_secret_keys`.
-2. **Discover devices (when adding cameras):** Call `discover_cameras` to run a read-only bounded LAN probe.
-3. **Create a dry-run plan (for existing cameras, defaults, or templates):** Call `plan_configuration_change` with the proposed change. Dry-run planning works even when `[mcp].allow_writes = false` or `--read-only` is active.
-4. **Present the plan or proposed mutation to the operator:** Show the returned `plan_id` (if applicable), expected revision, validation errors (if any), redacted diff, affected cameras or rules, and which changes apply live versus require a server restart.
-5. **Obtain explicit operator approval:** Wait for the operator to confirm the exact change before calling any write tool.
-6. **Apply the approved change:** Only when `[mcp].allow_writes = true`, the credential has the **Administrator** role, and the client is not in `--read-only` mode:
-   - Call `apply_configuration_plan` with the approved `plan_id` and revision for camera, default, and template plans.
-   - Use `manage_camera` (`action: "upsert"` or `"remove"`) to add, update, or remove a camera by IP address (credentials must use `{secret:KEY}` or `{secret:KEY|url}` references only).
-   - Use `update_runtime_configuration` for runtime storage, retention, or listener settings (always supply `expected_configuration_revision`).
-   - Use `manage_configuration_template` to save, duplicate, or delete camera templates (use `{secret:KEY}` references only; never inline credentials).
-   - Use `manage_notification_rule` (`list`, `save_draft`, `activate`, `delete`) to manage notification rules; `push`, `webhook`, and `forwarder` destinations must use `{secret:KEY}` references or preserve `destination_configured: true` with `destination_ref`.
-   - Use `set_runtime_profile` to switch or manage runtime profiles.
-   - Use `set_logging_filter` to change the live diagnostic tracing filter.
-7. **Verify activation:** Call `get_server_health`, `get_configuration`, and `search_logs` after applying changes. If the plan reported that a restart is required, tell the operator to restart KeepPeek before expecting runtime activation.
+2. **Preview and confirm:** Call `plan_configuration_change` for camera/default/template changes, or show the exact payload for runtime, notification, profile, or log-filter updates. Show the operator the expected revision, validation results, redacted diff, and live-vs-restart impact.
+3. **Obtain explicit operator approval** before calling any write tool.
+4. **Apply the approved change** (requires `[mcp].allow_writes = true`, **Administrator** role, and no `--read-only`):
+   - `apply_configuration_plan`: apply a reviewed `plan_id` and expected revision.
+   - `manage_camera`: add, update, or remove a camera by IP address using `{secret:KEY}` / `{secret:KEY|url}` references only.
+   - `update_runtime_configuration`: update runtime storage, retention, or listener settings (always supply `expected_configuration_revision`).
+   - `manage_configuration_template`: save, duplicate, or delete reusable camera templates (`{secret:KEY}` references only).
+   - `manage_notification_rule`: `list`, `save_draft`, `activate`, or `delete` notification rules (`push`, `webhook`, and `forwarder` destinations require `{secret:KEY}` or preserved `destination_configured: true` with `destination_ref`).
+   - `set_runtime_profile`: switch or update runtime profiles.
+   - `set_logging_filter`: change the live diagnostic tracing filter.
+5. **Verify activation:** Call `get_server_health`, `get_configuration`, and `search_logs`. If a restart is required, tell the operator clearly rather than claiming live activation succeeded.
 
 ### Example Tool Payloads
+
+Search the camera catalog with IP stream hints (`search_camera_catalog`):
+
+```json
+{
+  "query": "Reolink RLC-810A",
+  "ip": "192.0.2.50",
+  "limit": 5
+}
+```
+
+Request loopback secret entry for missing credentials (`request_secret_entry`), then poll `get_secret_entry_status`:
+
+```json
+{
+  "keys": [
+    { "key": "FRONT_CAM_USER", "purpose": "Front door camera username" },
+    { "key": "FRONT_CAM_PASS", "purpose": "Front door camera password" }
+  ],
+  "ttl_seconds": 180
+}
+```
+
+```json
+{
+  "handoff_id": "<handoff-id-from-request_secret_entry>"
+}
+```
+
+Probe a camera against up to 5 pre-populated secret candidates (`probe_camera_streams`):
+
+```json
+{
+  "ip": "192.0.2.50",
+  "onvif_port": 8000,
+  "transport": "tcp",
+  "query_onvif": true,
+  "timeout_seconds": 8,
+  "credential_candidates": [
+    {
+      "username_secret_reference": "{secret:FRONT_CAM_USER}",
+      "password_secret_reference": "{secret:FRONT_CAM_PASS}"
+    },
+    {
+      "username_secret_reference": "{secret:CAMERA_USERNAME}",
+      "password_secret_reference": "{secret:CAMERA_PASSWORD}"
+    }
+  ]
+}
+```
+
+Add a verified camera with secret references only (`manage_camera`):
+
+```json
+{
+  "action": "upsert",
+  "ip": "192.0.2.50",
+  "expected_configuration_revision": "<revision-from-get_configuration>",
+  "display_name": "Side Gate",
+  "username": "{secret:FRONT_CAM_USER}",
+  "password": "{secret:FRONT_CAM_PASS}",
+  "main_rtsp_url": "rtsp://192.0.2.50:554/h264Preview_01_main"
+}
+```
 
 Dry-run camera patch (`plan_configuration_change`), then apply with `apply_configuration_plan`:
 
@@ -131,17 +229,25 @@ Dry-run camera patch (`plan_configuration_change`), then apply with `apply_confi
 }
 ```
 
-Add a camera with secret references only (`manage_camera`):
+Inspect live on-camera hardware settings (`get_camera_device_settings`):
 
 ```json
 {
-  "action": "upsert",
-  "ip": "192.0.2.50",
-  "expected_configuration_revision": "<revision-from-get_configuration>",
-  "display_name": "Side Gate",
-  "username": "{secret:CAMERA_USER}",
-  "password": "{secret:CAMERA_PASSWORD}",
-  "main_rtsp_url": "rtsp://192.0.2.50:554/main"
+  "camera_id": "192.0.2.50"
+}
+```
+
+Preview and apply on-camera hardware settings (`update_camera_device_settings`, dry-run first, then `dry_run: false` after approval):
+
+```json
+{
+  "camera_id": "192.0.2.50",
+  "dry_run": true,
+  "settings": {
+    "imaging": { "brightness": 128, "contrast": 128 },
+    "lighting": { "ir_mode": "auto" },
+    "osd": { "channel_name": "Side Gate" }
+  }
 }
 ```
 
@@ -199,7 +305,7 @@ Save a webhook notification draft using a secret reference (`manage_notification
 }
 ```
 
-## 5. Troubleshoot a Running Recorder
+## 6. Troubleshoot a Running Recorder
 
 Use read-only diagnostic tools in order from broad health to specific evidence:
 
@@ -209,15 +315,17 @@ Use read-only diagnostic tools in order from broad health to specific evidence:
 4. Call `search_events` to query stored events with a bounded `limit` (default 25, max 100) across authorized cameras.
 5. Call `get_storage_status` (Administrator) to inspect storage paths, disk usage, named volumes, archive destinations, and recording maintenance status.
 6. Call `get_notification_status` and `manage_notification_rule` (`action: "list"`) (Administrator) to inspect notification rules, cloud push status, and MQTT delivery health without exposing secrets.
-7. Call `get_camera_snapshot` only when visual verification is needed and `[mcp].allow_snapshots = true`:
+7. Call `get_camera_device_settings` (Administrator) to verify on-camera encoder, imaging, lighting, motion, OSD, time, or PTZ configuration when stream quality or alerts look wrong.
+8. Call `get_camera_snapshot` only when visual verification is needed and `[mcp].allow_snapshots = true`:
    - Requires camera view permission and respects `snapshot_min_interval_seconds` per camera.
    - Privacy is fail-closed: KeepPeek refuses capture if a `[privacy]` schedule or runtime profile override is active or cannot be verified.
    - Frames are bounded-decoded, downscaled to `max_snapshot_dimension`, and JPEG-encoded within `max_snapshot_bytes`. KeepPeek does not apply server-side pixel masks; only camera-side (hardware) privacy masks already rendered by the camera appear in the frame.
 
-## 6. Strict Safety Rules
+## 7. Strict Safety Rules
 
-- **Never bypass security gates:** Do not try to work around `[mcp].allow_writes = false`, `--read-only`, `[mcp].allow_snapshots = false`, RBAC roles, camera grants, or fail-closed privacy checks.
+- **Never bypass security gates:** Do not try to work around `[mcp].allow_writes = false`, `[mcp].allow_camera_device_writes = false`, `--read-only`, `[mcp].allow_snapshots = false`, RBAC roles, camera grants, or fail-closed privacy checks.
+- **Never ask for or pass raw credentials:** Never ask the operator for raw passwords in chat, never pass raw secrets to MCP tools or `keeppeek secret set` CLI arguments, never echo secrets or access keys in responses or logs, and never write resolved secrets into `config.toml` or camera templates.
+- **Never attempt excluded device operations:** Never ask `update_camera_device_settings` to upload firmware, factory-reset, reboot, change passwords/users, or reassign camera IP/network/ports.
 - **Never overwrite on revision conflict:** If a write fails because the configuration revision changed, re-read the current configuration, generate a fresh `plan_configuration_change` preview, and ask the operator to approve the new plan.
 - **Never edit `config.toml` under a running server:** Use the MCP tools while KeepPeek is running. Stop KeepPeek before making manual file edits to `config.toml` (for example, to change `[mcp]` settings).
-- **Never expose raw credentials:** Never ask for raw passwords in chat, never echo secrets or access keys in responses or logs, and never write resolved secrets into `config.toml` or camera templates.
-- **Respect server resource limits:** Keep requests within `max_concurrent_requests`, `max_response_bytes`, `request_timeout_seconds`, and `snapshot_min_interval_seconds`. Narrow log, event, or coverage queries instead of retrying aggressively when responses are truncated or rate-limited.
+- **Respect server and camera limits:** Keep requests within `max_concurrent_requests`, `max_response_bytes`, `request_timeout_seconds`, `snapshot_min_interval_seconds`, and the 5-candidate cap on `probe_camera_streams`. Stop probing on lockout or HTTP `429` instead of retrying aggressively.

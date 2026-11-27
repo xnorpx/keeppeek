@@ -2,7 +2,8 @@
 
 KeepPeek includes built-in Model Context Protocol (MCP) support so AI assistants and MCP clients
 (such as Claude, Codex, Cursor, and Gemini) can inspect recorder health, logs, events, storage,
-and recording coverage, and preview or apply validated configuration changes.
+and recording coverage, onboard and tune cameras without exposing plaintext credentials, and
+preview or apply validated configuration changes.
 
 MCP is disabled by default for network access. You can connect locally through the `keeppeek mcp`
 `stdio` bridge or enable the embedded Streamable HTTP endpoint (`POST /mcp`) in `config.toml`.
@@ -13,13 +14,17 @@ flowchart LR
     B -->|Bearer auth over HTTP or HTTPS| K[KeepPeek POST /mcp]
     R[Remote MCP client] -->|HTTPS Bearer auth| P[Trusted reverse proxy or VPN]
     P --> K
+    U[Local operator browser] -->|Loopback single-use token| S[GET/POST /mcp/secret-entry]
+    S --> K
 ```
 
 ## Use the bundled agent skill
 
 KeepPeek ships a canonical agent skill (`skills/keeppeek-mcp/SKILL.md`) that teaches LLM
-assistants how to locate `config.toml` and `secrets.toml`, use `{secret:KEY}` references, run
-`plan_configuration_change` before requesting writes, and respect privacy and role boundaries.
+assistants how to locate `config.toml` and `secrets.toml`, collect missing secrets out-of-band via
+`request_secret_entry` or `keeppeek secret`, probe cameras with `{secret:KEY}` references, run
+`plan_configuration_change` or dry-run hardware previews before requesting writes, and respect
+privacy and role boundaries.
 
 Print the skill from any installed KeepPeek binary or export it to a directory:
 
@@ -44,7 +49,8 @@ KeepPeek.
 ## Enable and configure `[mcp]`
 
 All MCP server settings live in the existing `config.toml` under `[mcp]`. Every capability that
-opens network access, mutates configuration, or captures camera frames defaults to `false`.
+opens network access, mutates configuration, writes on-camera hardware settings, or captures camera
+frames defaults to `false`.
 
 Stop KeepPeek before editing `config.toml` manually, add `[mcp]`, and restart the server:
 
@@ -53,6 +59,7 @@ Stop KeepPeek before editing `config.toml` manually, add `[mcp]`, and restart th
 enabled = true
 allow_writes = false
 allow_snapshots = false
+allow_camera_device_writes = false
 max_concurrent_requests = 4
 max_response_bytes = 65536
 request_timeout_seconds = 15
@@ -63,9 +70,10 @@ snapshot_min_interval_seconds = 5
 
 | Field                           | Type    | Default  | Allowed range     | Meaning                                                                                               |
 | ------------------------------- | ------- | -------- | ----------------- | ----------------------------------------------------------------------------------------------------- |
-| `enabled`                       | `bool`  | `false`  | `true`/`false`    | Enable the embedded Streamable HTTP endpoint at `POST /mcp`.                                          |
-| `allow_writes`                  | `bool`  | `false`  | `true`/`false`    | Permit Administrator write tools after explicit plan approval.                                        |
+| `enabled`                       | `bool`  | `false`  | `true`/`false`    | Enable the embedded Streamable HTTP endpoint at `POST /mcp` (and loopback `/mcp/secret-entry`).       |
+| `allow_writes`                  | `bool`  | `false`  | `true`/`false`    | Permit Administrator KeepPeek configuration write tools after explicit approval.                      |
 | `allow_snapshots`               | `bool`  | `false`  | `true`/`false`    | Permit privacy-gated single-frame snapshots via `get_camera_snapshot`.                                |
+| `allow_camera_device_writes`    | `bool`  | `false`  | `true`/`false`    | Permit live on-camera hardware writes via `update_camera_device_settings` (`dry_run: false`).         |
 | `max_concurrent_requests`       | `usize` | `4`      | `1..=32`          | Maximum simultaneous in-flight MCP requests.                                                          |
 | `max_response_bytes`            | `usize` | `65536`  | `4096..=262144`   | Maximum serialized JSON-RPC response size in bytes (`get_camera_snapshot` uses `max_snapshot_bytes`). |
 | `request_timeout_seconds`       | `u64`   | `15`     | `1..=60`          | Server-side deadline per MCP request, in seconds.                                                     |
@@ -80,8 +88,9 @@ file ownership details.
 
 Create a dedicated named credential in **Settings > Access & roles** for each MCP client so its
 activity appears separately in audit records and can be rotated or revoked independently. Use the
-**User** role for camera-scoped read-only monitoring, or **Administrator** for full diagnostics and
-configuration management. See [Authentication and access control](./authentication.md).
+**User** role for camera-scoped read-only monitoring, or **Administrator** for full diagnostics,
+camera onboarding, hardware tuning, and configuration management. See
+[Authentication and access control](./authentication.md).
 
 ### Local `stdio` bridge
 
@@ -97,8 +106,9 @@ keeppeek mcp [--server <URL>] [--config <PATH>] [--credential-file <PATH>] [--re
 - `--config <PATH>` selects an alternate `config.toml` when resolving local server settings.
 - `--credential-file <PATH>` reads the Bearer access key from an owner-only file instead of an
   environment variable.
-- `--read-only` sends `X-KeepPeek-MCP-Read-Only: true`, blocking all write tools even if the server
-  has `[mcp].allow_writes = true`.
+- `--read-only` sends `X-KeepPeek-MCP-Read-Only: true`, blocking all configuration and on-camera
+  hardware write tools even if the server enables `[mcp].allow_writes` or
+  `[mcp].allow_camera_device_writes`.
 - `stdout` is reserved strictly for newline-delimited JSON-RPC messages; warnings and logs go to
   `stderr`.
 
@@ -141,7 +151,8 @@ inside the MCP client's JSON file:
 ```
 
 Remove `"--read-only"` only when you intentionally allow the assistant to apply approved changes
-against a server configured with `[mcp].allow_writes = true`.
+against a server configured with `[mcp].allow_writes = true` or
+`[mcp].allow_camera_device_writes = true`.
 
 ### Remote Streamable HTTP (`POST /mcp`)
 
@@ -173,38 +184,93 @@ Example remote MCP client configuration:
 ```
 
 Omit `X-KeepPeek-MCP-Read-Only` when the client needs to call approved write tools and the server
-enables `[mcp].allow_writes = true`.
+enables `[mcp].allow_writes = true` or `[mcp].allow_camera_device_writes = true`.
 
 When exposing `POST /mcp` beyond loopback, keep `[access].require_secure_remote = true` and
 terminate HTTPS at a trusted reverse proxy listed in `[access].trusted_proxies`, or reach KeepPeek
 over a private VPN. Direct plain HTTP from a remote-classified address is rejected with HTTP `426`.
 
-## Available MCP tools
+## Manage secrets without plaintext chat (`keeppeek secret` and loopback UI handoff)
 
-### Read-only and dry-run tools
+KeepPeek never accepts raw camera passwords or webhook secrets through MCP tool arguments, and
+assistants should never ask you to paste passwords into chat. Store secrets in `secrets.toml`
+out-of-band using either the local CLI or the loopback secret-entry handoff, then reference them as
+`{secret:KEY}` or `{secret:KEY|url}`.
 
-These tools do not modify persisted configuration or runtime settings. `plan_configuration_change`
-always runs as a dry-run preview and remains available even when `allow_writes = false`.
+### `keeppeek secret` CLI
 
-| Tool                        | Minimum role  | Purpose                                                                                             |
-| --------------------------- | ------------- | --------------------------------------------------------------------------------------------------- |
-| `get_server_health`         | User          | Recorder status, stream health, and disk pressure (filtered to permitted cameras for Users).        |
-| `search_events`             | User          | Search stored events across permitted cameras (bounded `limit`, default 25, max 100).               |
-| `get_recording_coverage`    | User          | Inspect recorded intervals and coverage gaps for permitted cameras over a bounded time window.      |
-| `search_logs`               | Administrator | Query redacted server logs filtered by level, target, camera, time, and limit.                      |
-| `get_logging_settings`      | Administrator | Inspect active logging destination and diagnostic filter settings.                                  |
-| `get_configuration`         | Administrator | Read current configuration with `{secret:KEY}` references preserved and raw secrets redacted.       |
-| `list_secret_keys`          | Administrator | Return sorted key names from `secrets.toml` without ever returning secret values.                   |
-| `plan_configuration_change` | Administrator | Validate a proposed configuration change and return `plan_id`, revision, redacted diff, and impact. |
-| `get_storage_status`        | Administrator | Inspect storage configuration, disk pressure, named volumes, archive status, and maintenance state. |
-| `get_notification_status`   | Administrator | Summarize notification rules, cloud push status, and MQTT delivery health without raw secrets.      |
-| `discover_cameras`          | Administrator | Run a bounded camera discovery and connection probe.                                                |
-| `get_runtime_configuration` | Administrator | Read runtime storage, retention, and listener settings and revision.                                |
-| `list_runtime_profiles`     | Administrator | List saved runtime profiles and active selection.                                                   |
+Manage `secrets.toml` entries directly from a local shell without ever placing secret values in
+command-line arguments:
 
-### Opt-in write tools
+```sh
+keeppeek secret set <KEY> [--config <PATH>] [--server <URL>] [--stdin]
+keeppeek secret list [--config <PATH>]
+keeppeek secret remove <KEY> [--config <PATH>]
+```
 
-Write tools require all three conditions:
+- Keys must match `^[A-Z_][A-Z0-9_]*$` (1–128 bytes); values must be non-empty, at most 4 KiB, and
+  contain no NUL bytes.
+- `keeppeek secret set` reads values only from a no-echo interactive terminal prompt or `--stdin`
+  (never from positional arguments or flags).
+- `keeppeek secret list` prints sorted key names only and never prints values.
+- Writes use owner-only file permissions (`0600` on Unix / owner-only DACL on Windows), atomic
+  replacement under the shared configuration lock, and zeroized temporary buffers.
+- A running KeepPeek server automatically detects `secrets.toml` updates so newly added keys work
+  immediately in `probe_camera_streams` and `manage_camera` without restarting.
+
+### Loopback-only secret-entry UI handoff (`GET` / `POST /mcp/secret-entry`)
+
+When an assistant discovers that a secret key is missing from `list_secret_keys`, it can call
+`request_secret_entry` to create a short-lived, single-use handoff (`60..=300` seconds, default 180,
+capped at 16 pending handoffs). KeepPeek returns a loopback URL:
+
+```text
+http://127.0.0.1:<port>/mcp/secret-entry?token=<256-bit-single-use-token>
+```
+
+- Open the link locally on the recorder host, enter the values in the self-contained HTML form, and
+  submit. KeepPeek writes `secrets.toml` atomically, reloads secrets live without a restart,
+  invalidates the token immediately, emits a value-free audit event, and never echoes secret values.
+- The assistant polls `get_secret_entry_status`, which returns only `status` (`"pending"`,
+  `"completed"`, `"expired"`, or `"cancelled"`), `configured_keys`, and `expires_at_ms`.
+- `/mcp/secret-entry` is strictly **loopback-only**: non-loopback connections, proxy-forwarded
+  requests, non-loopback `Host` headers, and cross-origin `POST` requests are rejected with `403`.
+  When `[mcp].enabled = false`, `/mcp/secret-entry` returns `404`.
+- Form responses enforce `Cache-Control: no-store`, `Referrer-Policy: no-referrer`,
+  `X-Frame-Options: DENY`, and a strict Content Security Policy.
+
+## Available MCP tools (27 total)
+
+### Read-only, dry-run, onboarding, and secret-handoff tools (18)
+
+These tools do not modify persisted KeepPeek configuration or on-camera hardware settings.
+`plan_configuration_change` always runs as a dry-run preview and remains available even when
+`allow_writes = false`.
+
+| Tool                         | Minimum role  | Purpose                                                                                                            |
+| ---------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `get_server_health`          | User          | Recorder status, stream health, and disk pressure (filtered to permitted cameras for Users).                       |
+| `search_events`              | User          | Search stored events across permitted cameras (bounded `limit`, default 25, max 100).                              |
+| `get_recording_coverage`     | User          | Inspect recorded intervals and coverage gaps for permitted cameras over a bounded time window.                     |
+| `search_logs`                | Administrator | Query redacted server logs filtered by level, target, camera, time, and limit.                                     |
+| `get_logging_settings`       | Administrator | Inspect active logging destination and diagnostic filter settings.                                                 |
+| `get_configuration`          | Administrator | Read current configuration with `{secret:KEY}` references preserved and raw secrets redacted.                      |
+| `list_secret_keys`           | Administrator | Return sorted key names from `secrets.toml` without ever returning secret values.                                  |
+| `plan_configuration_change`  | Administrator | Validate a proposed configuration change and return `plan_id`, revision, redacted diff, and impact.                |
+| `get_storage_status`         | Administrator | Inspect storage configuration, disk pressure, named volumes, archive status, and maintenance state.                |
+| `get_notification_status`    | Administrator | Summarize notification rules, cloud push status, and MQTT delivery health without raw secrets.                     |
+| `discover_cameras`           | Administrator | Run a bounded LAN camera discovery probe.                                                                          |
+| `search_camera_catalog`      | Administrator | Search KeepPeek's embedded camera catalog (`limit` `1..=25`) and attach credential-free RTSP `stream_hints` by IP. |
+| `probe_camera_streams`       | Administrator | Probe ONVIF/RTSP streams using single `{secret:KEY}` refs or `credential_candidates` (max 5); returns refs only.   |
+| `request_secret_entry`       | Administrator | Create a single-use loopback `/mcp/secret-entry` handoff URL and CLI instructions for missing secret keys.         |
+| `get_secret_entry_status`    | Administrator | Check whether a secret-entry handoff is `pending`, `completed`, `expired`, or `cancelled` (never returns values).  |
+| `get_camera_device_settings` | Administrator | Read live on-camera hardware settings and supported/unsupported sections for one configured camera.                |
+| `get_runtime_configuration`  | Administrator | Read runtime storage, retention, and listener settings and revision.                                               |
+| `list_runtime_profiles`      | Administrator | List saved runtime profiles and active selection.                                                                  |
+
+### Opt-in KeepPeek configuration write tools (7)
+
+Configuration write tools require all three conditions:
 
 1. `[mcp].allow_writes = true` in `config.toml`.
 2. An **Administrator** credential (or trusted-local Administrator access).
@@ -213,35 +279,87 @@ Write tools require all three conditions:
 | Tool                            | Minimum role  | Purpose                                                                                                                                          |
 | ------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `apply_configuration_plan`      | Administrator | Apply a previously reviewed `plan_configuration_change` plan with revision verification.                                                         |
-| `manage_camera`                 | Administrator | Add, update, or remove a camera by IP address using `{secret:KEY}` / `{secret:KEY                                                                | url}` references only. |
+| `manage_camera`                 | Administrator | Add, update, or remove a camera by IP address using `{secret:KEY}` or `{secret:KEY\|url}` references only.                                       |
 | `update_runtime_configuration`  | Administrator | Update runtime storage, retention, or listener settings (always requires `expected_configuration_revision`).                                     |
 | `manage_configuration_template` | Administrator | Save, duplicate, or delete reusable camera templates using `{secret:KEY}` references.                                                            |
 | `manage_notification_rule`      | Administrator | List (read-only), save draft, activate, or delete notification rules (`push`/`webhook`/`forwarder` require `{secret:KEY}` or `destination_ref`). |
 | `set_runtime_profile`           | Administrator | Activate or update runtime profile selection.                                                                                                    |
 | `set_logging_filter`            | Administrator | Update the live diagnostic log filter atomically.                                                                                                |
 
-### Opt-in snapshot tool
+### Opt-in on-camera hardware write tool (1)
+
+`update_camera_device_settings` defaults to `dry_run: true`, which validates camera bounds and
+returns a redacted before/after diff even when `[mcp].allow_camera_device_writes = false`. Live
+application (`dry_run: false`) requires all three conditions:
+
+1. `[mcp].allow_camera_device_writes = true` in `config.toml`.
+2. An **Administrator** credential (or trusted-local Administrator access).
+3. No `--read-only` flag and no `X-KeepPeek-MCP-Read-Only: true` header.
+
+| Tool                            | Minimum role  | Purpose                                                                                                                |
+| ------------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `update_camera_device_settings` | Administrator | Dry-run preview (`dry_run: true`) or apply (`dry_run: false`) on-camera hardware settings with read-back verification. |
+
+### Opt-in snapshot tool (1)
 
 | Tool                  | Minimum role | Purpose                                                                                                      |
 | --------------------- | ------------ | ------------------------------------------------------------------------------------------------------------ |
 | `get_camera_snapshot` | User         | Capture one privacy-gated, downscaled JPEG frame for a permitted camera when `[mcp].allow_snapshots = true`. |
 
+## Multi-candidate stream probing and on-camera hardware support
+
+### Pre-populated `secrets.toml` multi-candidate probing
+
+If a site uses a few known camera credential pairs already stored in `secrets.toml`, an assistant
+can pass up to **5** `{secret:KEY}` pairs in `probe_camera_streams.credential_candidates`:
+
+- Raw credential fields and inline RTSP userinfo or query-string credentials are rejected.
+- Targets are SSRF-bounded: unspecified, multicast, broadcast, link-local (`169.254.0.0/16`),
+  public IPs, unconfigured loopback addresses, and mismatched RTSP URL hosts are blocked.
+- Probing stops immediately on the first matching credential pair or if the camera reports lockout,
+  HTTP `429`, or becomes unreachable.
+- Responses return only `matched_credentials` (`{secret:KEY}` references), `failed_candidates`
+  indexes, `recommended_backend`, verified RTSP URLs, and redacted diagnostics.
+
+### Honest on-camera hardware capability matrix
+
+`get_camera_device_settings` and `update_camera_device_settings` normalize hardware controls into
+seven sections (`encoder`, `imaging`, `lighting`, `motion`, `osd`, `time`, `ptz`) and report
+unsupported sections honestly per protocol:
+
+| Camera protocol | Supported sections and capabilities                                                                                                                                                                                                         |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Reolink         | `encoder` (read), `imaging` (brightness, contrast, saturation, sharpness, day/night, HDR), `lighting` (IR mode, white LED), `motion` (MD & AI sensitivity), `osd` (channel name, max 32 chars), `time` (clock/NTP), `ptz` (presets, guard). |
+| Hikvision ISAPI | `encoder` (stream resolution, bitrate, framerate), `motion` (motion + smart rules: `line`, `field`, `region_entrance`, `region_exit`), `time` (`manual`/`ntp`), `ptz` (`store_preset` 1–300).                                               |
+| ONVIF           | `encoder` (video encoder settings validated against camera `GetVideoEncoderConfigurationOptions`), `osd` (plain-text OSD up to 64 chars).                                                                                                   |
+| RTSP-only       | None (`supported_sections: []`, all 7 sections listed in `unsupported_sections`; live writes return `501`).                                                                                                                                 |
+
+**Hard security exclusions:** `update_camera_device_settings` permanently refuses firmware upload or
+flashing, factory reset or default restore, camera reboot, password/user/credential modifications,
+and IP/network/DHCP/gateway/DNS/port reassignment with HTTP `403`, even when `dry_run: true`.
+
 ## Safe configuration workflow
 
-KeepPeek enforces plan-before-apply so an assistant never modifies cameras or storage blindly:
+KeepPeek enforces plan-before-apply so an assistant never modifies cameras, hardware settings, or
+storage blindly:
 
 1. Inspect the current configuration (`get_configuration`) and available secret key names
    (`list_secret_keys`).
-2. Add any new camera or integration passwords directly to `secrets.toml` on the server (or via
-   `KEEPPEEK_SECRET_<KEY>` in the server environment) and reference them as `{secret:KEY}` or
-   `{secret:KEY|url}`. Never paste raw passwords into an LLM prompt.
-3. Run `discover_cameras` (read-only LAN probe) if adding new devices, then call
-   `plan_configuration_change` (or preview a `manage_camera` / `manage_notification_rule` payload).
+2. Add missing camera or integration passwords out-of-band via `keeppeek secret set <KEY>` or the
+   loopback `request_secret_entry` UI handoff (or `KEEPPEEK_SECRET_<KEY>` in the server
+   environment), and reference them as `{secret:KEY}` or `{secret:KEY|url}`. Never paste raw
+   passwords into an LLM prompt.
+3. Run `discover_cameras` and `search_camera_catalog` for new devices, verify streams with
+   `probe_camera_streams`, then call `plan_configuration_change` (or preview a `manage_camera` /
+   `manage_notification_rule` payload).
 4. Review the returned redacted diff, validation errors, revision, and live-apply versus restart
    summary.
 5. Approve the plan explicitly, then allow the assistant to call `apply_configuration_plan` (or the
    approved `manage_camera` / `manage_notification_rule` write action).
-6. Check `get_server_health` and `search_logs` to confirm activation, or restart KeepPeek when the
+6. If tuning on-camera settings, inspect with `get_camera_device_settings`, preview with
+   `update_camera_device_settings` (`dry_run: true`), approve explicitly, and apply with
+   `dry_run: false` (requires `[mcp].allow_camera_device_writes = true`).
+7. Check `get_server_health` and `search_logs` to confirm activation, or restart KeepPeek when the
    plan reports that a restart is required.
 
 See [Visual configuration management](./configuration-management.md) for revision conflicts,
@@ -258,10 +376,12 @@ inheritance, and template rules.
 - **User** credentials can call only `get_server_health`, `search_events`,
   `get_recording_coverage`, and (when enabled) `get_camera_snapshot`, strictly scoped to their
   granted cameras.
-- **Administrator** credentials are required for logs, configuration, secret key listing, discovery,
-  storage, notifications, profiles, and write tools.
-- Privileged reads, configuration mutations, and snapshot requests record bounded entries in
-  KeepPeek's security audit without logging raw credentials or image bytes.
+- **Administrator** credentials are required for logs, configuration, secret key listing, secret
+  entry handoffs, catalog search, stream probing, discovery, storage, notifications, profiles,
+  hardware settings, and write tools.
+- Privileged reads, configuration mutations, secret-entry submissions (key names only), on-camera
+  hardware updates, and snapshot requests record bounded entries in KeepPeek's security audit
+  without logging raw credentials or image bytes.
 
 Remember that KeepPeek's `[access].local_networks` policy grants Administrator access to trusted
 local addresses. Narrow `local_networks` if a local MCP client must be restricted to a **User**
@@ -269,8 +389,8 @@ credential.
 
 ### Secret redaction
 
-Every MCP response, configuration snapshot, dry-run diff, log search result, and error passes
-through serialization-layer secret redaction before leaving KeepPeek:
+Every MCP response, configuration snapshot, dry-run diff, probe diagnostic, log search result, and
+error passes through serialization-layer secret redaction before leaving KeepPeek:
 
 - Raw values loaded from `secrets.toml` (including URL percent-encoded variants) are scrubbed.
 - Fields with credential-like names (`password`, `secret`, `token`, `access_key`, `verifier`,
@@ -290,8 +410,10 @@ through serialization-layer secret redaction before leaving KeepPeek:
 - Requests carrying a browser `Origin` header are rejected with `403` unless the exact origin is
   listed in `[direct_card].allowed_origins`, and require `Authorization: Bearer <key>` even on local
   networks (returning `401` if unauthenticated).
-- Unsupported HTTP methods on `/mcp` return `405 Method Not Allowed`, and a disabled MCP server
-  returns `404 Not Found`.
+- `/mcp/secret-entry` is stricter still: it allows loopback peers only, rejects proxy-forwarded
+  headers, and requires an exact same-origin loopback `Origin` on `POST`.
+- Unsupported HTTP methods on `/mcp` or `/mcp/secret-entry` return `405 Method Not Allowed`, and a
+  disabled MCP server returns `404 Not Found`.
 
 ### Fail-closed privacy and snapshot limits
 
@@ -318,13 +440,16 @@ automated assistant cannot starve camera ingest, recording, or live playback.
 
 ## Troubleshooting
 
-| Symptom                                     | Check                                                                                                                         |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `POST /mcp` returns `404`                   | Confirm `[mcp].enabled = true` in `config.toml` and restart KeepPeek.                                                         |
-| `POST /mcp` returns `403`                   | Check whether `Origin` is missing from `[direct_card].allowed_origins`, `Host` is non-local for local trust, or role is User. |
-| `POST /mcp` returns `426`                   | Remote plain HTTP is blocked by `[access].require_secure_remote = true`. Use HTTPS via a trusted proxy or a private VPN.      |
-| Write tool is denied                        | Confirm `[mcp].allow_writes = true`, an Administrator credential, and that `--read-only` is not set.                          |
-| `get_camera_snapshot` is denied             | Confirm `[mcp].allow_snapshots = true`, camera view permission, inactive privacy mode, and the per-camera interval limit.     |
-| Request returns `429` or `503` or times out | Too many simultaneous MCP calls (`max_concurrent_requests`) or slow probe exceeding `request_timeout_seconds`.                |
-| `apply_configuration_plan` fails conflict   | Configuration changed after the plan was created. Call `get_configuration` and generate a fresh plan.                         |
-| `keeppeek mcp` fails to connect remotely    | Confirm `KEEPPEEK_ACCESS_KEY` or `--credential-file` is set and readable, and verify `--server` points to the HTTPS origin.   |
+| Symptom                                          | Check                                                                                                                           |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /mcp` or `/mcp/secret-entry` returns `404` | Confirm `[mcp].enabled = true` in `config.toml` and restart KeepPeek.                                                           |
+| `POST /mcp` returns `403`                        | Check whether `Origin` is missing from `[direct_card].allowed_origins`, `Host` is non-local for local trust, or role is User.   |
+| `/mcp/secret-entry` returns `403` or `410`       | Open the link directly from loopback without a reverse proxy, and verify the single-use token has not expired or been consumed. |
+| `POST /mcp` returns `426`                        | Remote plain HTTP is blocked by `[access].require_secure_remote = true`. Use HTTPS via a trusted proxy or a private VPN.        |
+| Configuration write tool is denied               | Confirm `[mcp].allow_writes = true`, an Administrator credential, and that `--read-only` is not set.                            |
+| On-camera hardware write is denied (`403`)       | Confirm `[mcp].allow_camera_device_writes = true`, `--read-only` is not set, and no excluded security field was requested.      |
+| `probe_camera_streams` rejects input             | Replace any raw password or inline RTSP credentials with `{secret:KEY}` refs and keep `credential_candidates` to at most 5.     |
+| `get_camera_snapshot` is denied                  | Confirm `[mcp].allow_snapshots = true`, camera view permission, inactive privacy mode, and the per-camera interval limit.       |
+| Request returns `429` or `503` or times out      | Too many simultaneous MCP calls (`max_concurrent_requests`), camera rate-limit/lockout, or slow probe exceeding timeout.        |
+| `apply_configuration_plan` fails conflict        | Configuration changed after the plan was created. Call `get_configuration` and generate a fresh plan.                           |
+| `keeppeek mcp` fails to connect remotely         | Confirm `KEEPPEEK_ACCESS_KEY` or `--credential-file` is set and readable, and verify `--server` points to the HTTPS origin.     |

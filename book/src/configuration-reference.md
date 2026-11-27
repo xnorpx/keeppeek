@@ -1011,14 +1011,15 @@ not replayed. See [Notifications and integrations](./notifications-and-integrati
 ## MCP server
 
 Type: `McpConfig`, optional section `[mcp]`. The embedded Streamable HTTP endpoint (`POST /mcp`),
-configuration writes, and single-frame camera snapshots are all disabled by default. When all
-fields remain at their default values, the canonical writer omits the section.
+configuration writes, on-camera hardware writes, and single-frame camera snapshots are all disabled
+by default. When all fields remain at their default values, the canonical writer omits the section.
 
 | Field                           | Type    | Default  | Validation and meaning                                                                                                      |
 | ------------------------------- | ------- | -------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `enabled`                       | `bool`  | `false`  | Enable the embedded Streamable HTTP endpoint at `POST /mcp`; returns `404` when false.                                      |
+| `enabled`                       | `bool`  | `false`  | Enable the embedded Streamable HTTP endpoint at `POST /mcp` (and loopback `/mcp/secret-entry`); returns `404` when false.   |
 | `allow_writes`                  | `bool`  | `false`  | Enable opt-in Administrator configuration mutation tools when not overridden by a read-only client.                         |
 | `allow_snapshots`               | `bool`  | `false`  | Enable opt-in privacy-gated single-frame snapshots via `get_camera_snapshot` (camera hardware masks only).                  |
+| `allow_camera_device_writes`    | `bool`  | `false`  | Enable opt-in live on-camera hardware writes via `update_camera_device_settings` (`dry_run: false`) when not read-only.     |
 | `max_concurrent_requests`       | `usize` | `4`      | Maximum concurrent in-flight MCP requests, from `1` through `32`.                                                           |
 | `max_response_bytes`            | `usize` | `65536`  | Maximum serialized JSON-RPC response payload in bytes (`4096..=262144`); `get_camera_snapshot` uses `max_snapshot_bytes`.   |
 | `request_timeout_seconds`       | `u64`   | `15`     | Maximum execution time per MCP request in seconds, from `1` through `60`.                                                   |
