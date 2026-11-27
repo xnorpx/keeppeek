@@ -392,3 +392,146 @@ fn restore_upload_rejects_cross_session_access_and_expires_owner_upload() {
             .is_empty()
     );
 }
+
+fn bundle_with_mcp_section(base_config_path: &Path, mcp_section: &str) -> Vec<u8> {
+    let dir = std::env::temp_dir().join(format!("keeppeek-mcp-bundle-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    #[cfg(not(windows))]
+    let dir = dir.canonicalize().unwrap();
+    let candidate_config = dir.join("config.toml");
+    let mut text = std::fs::read_to_string(base_config_path).unwrap();
+    text.push('\n');
+    text.push_str(mcp_section);
+    std::fs::write(&candidate_config, text).unwrap();
+    crate::config::write_private_file(&crate::config::secrets_path(&candidate_config), b"")
+        .unwrap();
+    let (archive, _) = crate::backup::create_bundle(
+        std::io::Cursor::new(Vec::new()),
+        crate::backup::CreateBundleOptions {
+            config_path: &candidate_config,
+            sections: &[],
+            created_at_unix_ms: crate::server::unix_time_ms(),
+        },
+    )
+    .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    archive.into_inner()
+}
+
+fn apply_archive_as(
+    fixture: &Fixture,
+    principal: ApiPrincipal,
+    archive: &[u8],
+) -> rouille::Response {
+    crate::server::config_apply(
+        &rouille::Request::fake_https_from(
+            "203.0.113.1:443".parse().unwrap(),
+            "POST",
+            "/config/apply",
+            vec![
+                ("Content-Type".into(), "application/zip".into()),
+                ("Content-Length".into(), archive.len().to_string()),
+            ],
+            archive.to_vec(),
+        ),
+        &fixture.state,
+        &crate::server::AuthenticatedApiRequest {
+            principal,
+            classification: crate::access::ClientClassification {
+                peer_address: "203.0.113.1".parse().unwrap(),
+                effective_address: "203.0.113.1".parse().unwrap(),
+                local: false,
+                reason: crate::access::ClientClassificationReason::DirectRemote,
+            },
+        },
+    )
+}
+
+#[test]
+fn bearer_config_apply_cannot_enable_mcp_silence_warning_or_reset_timestamp() {
+    let (fixture, _) = fixture();
+    let path = fixture.directory.join("config.toml");
+    crate::config::write_private_file(&crate::config::secrets_path(&path), b"").unwrap();
+    let bearer_admin = ApiPrincipal {
+        identity: ApiPrincipalIdentity::Credential {
+            id: Uuid::new_v4(),
+            revision: 1,
+        },
+        display_name: "Agent".to_owned(),
+        role: AccessRole::Administrator,
+        credential_expires_at_ms: None,
+    };
+
+    // 1. Bearer cannot flip [mcp].enabled from false to true.
+    let enable_archive = bundle_with_mcp_section(
+        &path,
+        "[mcp]\nenabled = true\nenabled_at_unix_secs = 1700000000\n",
+    );
+    assert_eq!(
+        apply_archive_as(&fixture, bearer_admin.clone(), &enable_archive).status_code,
+        403
+    );
+
+    // 2. Human browser Administrator CAN apply an archive enabling [mcp].
+    assert_eq!(
+        apply_archive_as(&fixture, fixture.owner.clone(), &enable_archive).status_code,
+        202
+    );
+    // Recover staged restore so live config.toml now has [mcp].enabled = true.
+    crate::backup::recover_pending_restore(&path, crate::server::unix_time_ms()).unwrap();
+    assert!(config::load_config(&path).unwrap().mcp.enabled);
+
+    // 3. Bearer cannot silence the 7-day warning via archive restore.
+    let base_without_mcp = std::fs::read_to_string(&path)
+        .unwrap()
+        .split("[mcp]")
+        .next()
+        .unwrap()
+        .to_owned();
+    let tmp_base = fixture.directory.join("base-no-mcp.toml");
+    std::fs::write(&tmp_base, &base_without_mcp).unwrap();
+
+    let silence_zip = bundle_with_mcp_section(
+        &tmp_base,
+        "[mcp]\nenabled = true\nenabled_at_unix_secs = 1700000000\nlong_enabled_warning_silenced = true\n",
+    );
+    assert_eq!(
+        apply_archive_as(&fixture, bearer_admin.clone(), &silence_zip).status_code,
+        403
+    );
+
+    // 4. Bearer cannot advance or omit enabled_at_unix_secs while keeping MCP enabled.
+    let reset_forward_zip = bundle_with_mcp_section(
+        &tmp_base,
+        "[mcp]\nenabled = true\nenabled_at_unix_secs = 1900000000\n",
+    );
+    assert_eq!(
+        apply_archive_as(&fixture, bearer_admin.clone(), &reset_forward_zip).status_code,
+        403
+    );
+    let omit_ts_zip = bundle_with_mcp_section(&tmp_base, "[mcp]\nenabled = true\n");
+    assert_eq!(
+        apply_archive_as(&fixture, bearer_admin.clone(), &omit_ts_zip).status_code,
+        403
+    );
+
+    // 5. Bearer cannot escalate [mcp].allow_* permissions via archive restore.
+    let escalate_writes_zip = bundle_with_mcp_section(
+        &tmp_base,
+        "[mcp]\nenabled = true\nenabled_at_unix_secs = 1700000000\nallow_writes = true\n",
+    );
+    assert_eq!(
+        apply_archive_as(&fixture, bearer_admin.clone(), &escalate_writes_zip).status_code,
+        403
+    );
+
+    // 6. Bearer cannot widen [access].local_networks to promote itself to a local human caller.
+    let widen_local_zip = bundle_with_mcp_section(
+        &tmp_base,
+        "[access]\nlocal_networks = [\"0.0.0.0/0\"]\n\n[mcp]\nenabled = true\nenabled_at_unix_secs = 1700000000\n",
+    );
+    assert_eq!(
+        apply_archive_as(&fixture, bearer_admin, &widen_local_zip).status_code,
+        403
+    );
+}

@@ -32,6 +32,13 @@ lazy sample delivery over `reliable-data`. Silent timelapse MP4 generation addit
 `keeppeek.timelapse-export.v1` and pairs each output with a SHA-256-verified provenance manifest.
 See [bounded timelapse review and export](webrtc.md#bounded-timelapse-review-and-export).
 
+Human-only MCP enablement, agent self-disable, and 7-day enabled warnings negotiate
+`keeppeek.mcp-access.v1` over WebRTC control (`McpAccessCommand` / `McpAccessResult`). Enabling MCP
+or silencing the 7-day warning requires a human Administrator (trusted local network or interactive
+OIDC/identity-proxy browser session) and rejects Bearer access-key credentials; an authenticated
+Administrator agent can turn off MCP live via the `disable_mcp_access` MCP tool. See
+[MCP access governance](webrtc.md#mcp-access-governance).
+
 ## Privacy-retired viewer sessions
 
 A viewer may send the decimal ID of its retired session in the

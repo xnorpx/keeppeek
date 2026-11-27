@@ -576,7 +576,7 @@
 			{/if}
 
 			<div class={mobileSectionClass('integrations')}>
-				<IntegrationsSection />
+				<IntegrationsSection {administrator} />
 			</div>
 
 			<div class={mobileSectionClass('notifications')}>

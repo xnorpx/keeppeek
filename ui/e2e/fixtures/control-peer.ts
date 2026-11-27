@@ -25,7 +25,9 @@ import {
 	TimelapseSampleSchema,
 	type PlanTimelapse,
 	type UsageReportingCommand,
-	type UsageReportingResult
+	type UsageReportingResult,
+	type McpAccessCommand,
+	type McpAccessResult
 } from '../../src/lib/proto/webrtc_pb';
 import {
 	create,
@@ -527,6 +529,7 @@ export type MockControlPeerOptions = {
 	onUsageReportingCommand?: (
 		command: UsageReportingCommand
 	) => UsageReportingResult | Promise<UsageReportingResult>;
+	onMcpAccessCommand?: (command: McpAccessCommand) => McpAccessResult | Promise<McpAccessResult>;
 	timelapsePlan?: (request: PlanTimelapse) => {
 		samples: Array<{
 			index: number;
@@ -1326,6 +1329,23 @@ export async function mockControlPeer(
 				return encodedError(
 					request.requestId,
 					cause instanceof Error ? cause.message : 'usage reporting command failed'
+				);
+			}
+		}
+		if (request.command.case === 'mcpAccessCommand') {
+			if (!options.onMcpAccessCommand) {
+				return encodedError(request.requestId, 'MCP access handler is not configured');
+			}
+			try {
+				const value = await options.onMcpAccessCommand(request.command.value);
+				return encodedOk(request.requestId, {
+					case: 'mcpAccessResult',
+					value
+				});
+			} catch (cause) {
+				return encodedError(
+					request.requestId,
+					cause instanceof Error ? cause.message : 'MCP access command failed'
 				);
 			}
 		}

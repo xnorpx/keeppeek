@@ -60,7 +60,7 @@ keeppeek mcp [--server <URL>] [--config <PATH>] [--credential-file <PATH>] [--re
 
 ### Embedded Streamable HTTP (`POST /mcp`, opt-in)
 
-The embedded `POST /mcp` endpoint is disabled by default and returns `404` until enabled. To enable it, stop KeepPeek, add `[mcp]` to `config.toml`, and start KeepPeek again:
+The embedded `POST /mcp` endpoint is disabled by default and returns `404` until enabled by a human Administrator — either live in **Settings > Integrations > MCP server** (trusted local network or interactive OIDC/identity-proxy browser session, with explicit confirmation; not a Bearer access key) or by stopping KeepPeek, adding `[mcp]` to `config.toml`, and starting KeepPeek again:
 
 ```toml
 [mcp]
@@ -324,6 +324,7 @@ Use read-only diagnostic tools in order from broad health to specific evidence:
 ## 7. Strict Safety Rules
 
 - **Never bypass security gates:** Do not try to work around `[mcp].allow_writes = false`, `[mcp].allow_camera_device_writes = false`, `--read-only`, `[mcp].allow_snapshots = false`, RBAC roles, camera grants, or fail-closed privacy checks.
+- **Turn off MCP when finished if requested (`disable_mcp_access`):** When an Administrator task is complete (or the operator asks to lock down MCP), call `disable_mcp_access` with `{ "confirm": true, "reason": "..." }`. This works even when `[mcp].allow_writes = false` (blocked only under `--read-only`), persists `[mcp].enabled = false`, and immediately rejects new `/mcp` and `/mcp/secret-entry` requests with `404` live (already in-flight `/mcp` calls complete within `request_timeout_seconds`). Never assume you can re-enable MCP or silence the 7-day enabled warning yourself — both strictly require a human Administrator.
 - **Never ask for or pass raw credentials:** Never ask the operator for raw passwords in chat, never pass raw secrets to MCP tools or `keeppeek secret set` CLI arguments, never echo secrets or access keys in responses or logs, and never write resolved secrets into `config.toml` or camera templates.
 - **Never attempt excluded device operations:** Never ask `update_camera_device_settings` to upload firmware, factory-reset, reboot, change passwords/users, or reassign camera IP/network/ports.
 - **Never overwrite on revision conflict:** If a write fails because the configuration revision changed, re-read the current configuration, generate a fresh `plan_configuration_change` preview, and ask the operator to approve the new plan.

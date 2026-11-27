@@ -55,6 +55,7 @@ message Request {
     ActivityAnalyticsCommand activity_analytics_command = 32;
     UsageReportingCommand usage_reporting_command = 33;
     CloudNotificationCommand cloud_notification_command = 34;
+    McpAccessCommand mcp_access_command = 35;
   }
   reserved 19, 20;
   reserved "recording_command", "live_session_command";
@@ -3181,6 +3182,7 @@ message Ok {
     ActivityAnalyticsResult activity_analytics_result = 50;
     UsageReportingResult usage_reporting_result = 51;
     CloudNotificationResult cloud_notification_result = 52;
+    McpAccessResult mcp_access_result = 53;
   }
   reserved 17, 18;
   reserved "recording_activity_result", "live_session_result";
@@ -5483,4 +5485,50 @@ message TimelapseSampleEnd {
   uint32 delivered_count = 2;
   bool cancelled = 3;
   optional string error = 4;
+}
+
+// Administrator-only MCP access lifecycle controls. Clients must require keeppeek.mcp-access.v1.
+// Enabling MCP or silencing the 7-day warning requires a human Administrator browser session
+// (local trust or browser session cookie); Bearer credentials are rejected with 403.
+message McpAccessCommand {
+  oneof action {
+    GetMcpAccess get = 1;
+    SetMcpAccess set_enabled = 2;
+    SilenceMcpLongEnabledWarning silence_long_enabled_warning = 3;
+  }
+}
+
+message GetMcpAccess {}
+
+message SetMcpAccess {
+  string expected_configuration_revision = 1;
+  bool enabled = 2;
+  // Must be true when enabled = true to confirm interactive human consent.
+  bool confirm = 3;
+}
+
+message SilenceMcpLongEnabledWarning {
+  string expected_configuration_revision = 1;
+}
+
+message McpAccessState {
+  string configuration_revision = 1;
+  bool enabled = 2;
+  optional uint64 enabled_at_unix_secs = 3;
+  uint64 enabled_duration_secs = 4;
+  uint64 long_enabled_warning_threshold_secs = 5;
+  bool long_enabled_warning_active = 6;
+  bool long_enabled_warning_silenced = 7;
+  bool allow_writes = 8;
+  bool allow_camera_device_writes = 9;
+  bool allow_snapshots = 10;
+  // True when the current caller session is authorized to enable MCP and silence warnings
+  // (false for Bearer-authenticated sessions).
+  bool human_control_allowed = 11;
+}
+
+message McpAccessResult {
+  oneof result {
+    McpAccessState state = 1;
+  }
 }
