@@ -3,8 +3,10 @@
 const form = document.getElementById('connect-form');
 const serverUrlInput = document.getElementById('server-url');
 const saveDefaultCheckbox = document.getElementById('save-default');
+const manageLocalCheckbox = document.getElementById('manage-local-server');
 const connectButton = document.getElementById('connect-button');
 const retryButton = document.getElementById('retry-button');
+const restartLocalButton = document.getElementById('restart-local-button');
 const statusMessage = document.getElementById('status-message');
 const errorMessage = document.getElementById('error-message');
 const configMeta = document.getElementById('config-meta');
@@ -33,8 +35,10 @@ function setBusy(nextBusy, message = '') {
 	form.setAttribute('aria-busy', String(nextBusy));
 	serverUrlInput.disabled = nextBusy;
 	saveDefaultCheckbox.disabled = nextBusy;
+	manageLocalCheckbox.disabled = nextBusy;
 	connectButton.disabled = nextBusy;
 	retryButton.disabled = nextBusy;
+	restartLocalButton.disabled = nextBusy;
 	connectButton.textContent = nextBusy ? 'Connecting...' : 'Connect';
 	if (message) {
 		statusMessage.textContent = message;
@@ -43,6 +47,11 @@ function setBusy(nextBusy, message = '') {
 		statusMessage.hidden = true;
 		statusMessage.textContent = '';
 	}
+}
+
+function syncManagedServerControls(state) {
+	manageLocalCheckbox.checked = Boolean(state.manage_local_server);
+	restartLocalButton.hidden = !state.managed_server;
 }
 
 function showError(message) {
@@ -100,7 +109,9 @@ async function initializeLauncher() {
 	try {
 		const state = await invokeCommand('get_desktop_state');
 		serverUrlInput.value = state.server_url;
-		configMeta.textContent = `Configuration file: ${state.config_path} (${state.os}/${state.arch})`;
+		syncManagedServerControls(state);
+		const modeLabel = state.manage_local_server ? 'managed local' : 'connect-only';
+		configMeta.textContent = `Configuration file: ${state.config_path} (${state.os}/${state.arch}, ${modeLabel})`;
 		if (state.last_error) {
 			showError(state.last_error);
 		}
@@ -114,6 +125,35 @@ async function initializeLauncher() {
 		showError(`KeepPeek Desktop could not initialize: ${message}`);
 	}
 }
+
+manageLocalCheckbox.addEventListener('change', async () => {
+	if (busy) return;
+	showError('');
+	try {
+		const nextState = await invokeCommand('set_manage_local_server', {
+			enabled: manageLocalCheckbox.checked
+		});
+		syncManagedServerControls(nextState);
+	} catch (failure) {
+		manageLocalCheckbox.checked = !manageLocalCheckbox.checked;
+		const message = failure instanceof Error ? failure.message : String(failure);
+		showError(message);
+	}
+});
+
+restartLocalButton.addEventListener('click', async () => {
+	if (busy) return;
+	showError('');
+	setBusy(true, 'Restarting managed local KeepPeek server...');
+	try {
+		await invokeCommand('restart_managed_server');
+		await attemptConnect(false, false);
+	} catch (failure) {
+		setBusy(false);
+		const message = failure instanceof Error ? failure.message : String(failure);
+		showError(message);
+	}
+});
 
 form.addEventListener('submit', (event) => {
 	event.preventDefault();

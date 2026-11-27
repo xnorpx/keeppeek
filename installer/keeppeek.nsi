@@ -119,6 +119,7 @@ SectionEnd
 Section /o "KeepPeek Windows Service" SecService
   Call StopAndRemoveService
   SetOutPath "$INSTDIR"
+  File /oname=keeppeek.exe "${BUILD_DIR}\keeppeek.exe"
   File /oname=keeppeek-service.exe "${BUILD_DIR}\keeppeek-service.exe"
   Call InstallService
 SectionEnd
@@ -335,6 +336,15 @@ Function InstallService
     MessageBox MB_ICONSTOP "KeepPeek was installed, but ${SERVICE_NAME} could not be created. Install it manually with sc.exe."
 create_failed:
     Return
+  ${EndIf}
+
+  ExecWait '"$SYSDIR\sc.exe" failure "${SERVICE_NAME}" reset= 86400 actions= restart/5000/restart/15000/restart/30000' $0
+  ${If} $0 != 0
+    DetailPrint "Warning: could not configure ${SERVICE_NAME} failure recovery actions (exit $0)"
+  ${EndIf}
+  ExecWait '"$SYSDIR\sc.exe" failureflag "${SERVICE_NAME}" 1' $0
+  ${If} $0 != 0
+    DetailPrint "Warning: could not enable ${SERVICE_NAME} non-crash failure recovery flag (exit $0)"
   ${EndIf}
 
   ExecWait '"$SYSDIR\sc.exe" start "${SERVICE_NAME}"' $0

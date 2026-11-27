@@ -1,0 +1,44 @@
+[package]
+name = "keeppeek-supervisor"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+authors = ["xnorpx <xnorpx@outlook.com>"]
+description = "Offline multi-executable A/B supervisor for KeepPeek and KeepPeek Vision"
+repository = "https://github.com/xnorpx/keeppeek"
+homepage = "https://xnorpx.github.io/keeppeek/"
+documentation = "https://xnorpx.github.io/keeppeek/"
+
+[[bin]]
+name = "keeppeek-supervisor"
+path = "src/bin/keeppeek-supervisor.rs"
+
+[dependencies]
+aws-lc-rs = { workspace = true }
+clap = { version = "4.6.6", default-features = false, features = [
+  "std",
+  "derive",
+  "help",
+  "usage",
+] }
+ctrlc = { version = "3.5.2", features = ["termination"] }
+mimalloc = { version = "0.1.52" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = "0.11"
+tracing = { version = "0.1.44" }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "=1.1.6", features = ["process"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }
+
+[lints]
+workspace = true

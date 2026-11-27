@@ -23,7 +23,10 @@ const APP_NAME: &str = "keeppeek";
 const DEFAULT_CONFIG_NAME: &str = "config.toml";
 const DESKTOP_SECTION: &str = "desktop";
 const SERVER_URL_KEY: &str = "server_url";
+const MANAGE_LOCAL_SERVER_KEY: &str = "manage_local_server";
+const SUPERVISOR_ROOT_KEY: &str = "supervisor_root";
 const MAX_CONFIG_FILE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_SUPERVISOR_ROOT_BYTES: usize = 1024;
 const DEFAULT_SERVER_PORT: u16 = 8081;
 const MAX_TEMP_FILE_ATTEMPTS: usize = 64;
 
@@ -57,6 +60,17 @@ pub struct ResolvedTarget {
     pub config_path: PathBuf,
     /// Value currently persisted under `[desktop].server_url`, if any.
     pub saved_server_url: Option<ServerOrigin>,
+    /// Whether opt-in managed local server supervision is enabled.
+    pub manage_local_server: bool,
+    /// Effective supervisor root directory when managed local server mode is used.
+    pub supervisor_root: PathBuf,
+}
+
+#[derive(Debug, Default)]
+struct PersistedDesktopSettings {
+    server_url: Option<ServerOrigin>,
+    manage_local_server: bool,
+    supervisor_root: Option<PathBuf>,
 }
 
 /// Errors produced when reading or updating `[desktop]` in `config.toml`.
@@ -148,6 +162,16 @@ fn default_config_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// Returns the default supervisor root directory beside `config_path`.
+#[must_use]
+pub fn default_supervisor_root(config_path: &Path) -> PathBuf {
+    config_path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .join("supervisor")
+}
+
 /// Resolves the target server origin using CLI, environment, and `config.toml`.
 ///
 /// Precedence is:
@@ -167,54 +191,54 @@ pub fn resolve_target(
     cli_override: Option<&str>,
     env_override: Option<&str>,
 ) -> Result<ResolvedTarget, ConfigStoreError> {
+    resolve_target_with_options(config_path, cli_override, env_override, false, None)
+}
+
+/// Resolves target server and opt-in managed local server settings with CLI overrides.
+///
+/// # Errors
+///
+/// Returns a [`ConfigStoreError`] when an explicit override or persisted
+/// `[desktop]` section is invalid or unreadable.
+pub fn resolve_target_with_options(
+    config_path: &Path,
+    cli_override: Option<&str>,
+    env_override: Option<&str>,
+    cli_manage_local_server: bool,
+    cli_supervisor_root: Option<&Path>,
+) -> Result<ResolvedTarget, ConfigStoreError> {
     let table = read_existing_table(config_path)?;
-    let saved_server_url = extract_desktop_server_url(&table)?;
+    let persisted = extract_desktop_settings(&table)?;
+    let manage_local_server = cli_manage_local_server || persisted.manage_local_server;
+    let supervisor_root = cli_supervisor_root
+        .map(Path::to_path_buf)
+        .or(persisted.supervisor_root)
+        .unwrap_or_else(|| default_supervisor_root(config_path));
+    let saved_server_url = persisted.server_url;
 
-    if let Some(raw) = cli_override {
+    let (origin, source) = if let Some(raw) = cli_override {
         let origin =
             ServerOrigin::parse_user_input(raw).map_err(ConfigStoreError::InvalidServerUrl)?;
-        return Ok(ResolvedTarget {
-            origin,
-            source: TargetSource::CliArgument,
-            config_path: config_path.to_path_buf(),
-            saved_server_url,
-        });
-    }
-
-    if let Some(raw) = env_override.filter(|value| !value.trim().is_empty()) {
+        (origin, TargetSource::CliArgument)
+    } else if let Some(raw) = env_override.filter(|value| !value.trim().is_empty()) {
         let origin =
             ServerOrigin::parse_user_input(raw).map_err(ConfigStoreError::InvalidServerUrl)?;
-        return Ok(ResolvedTarget {
-            origin,
-            source: TargetSource::Environment,
-            config_path: config_path.to_path_buf(),
-            saved_server_url,
-        });
-    }
-
-    if let Some(origin) = saved_server_url.clone() {
-        return Ok(ResolvedTarget {
-            origin,
-            source: TargetSource::ConfigDesktop,
-            config_path: config_path.to_path_buf(),
-            saved_server_url,
-        });
-    }
-
-    if let Some(origin) = extract_server_bind_origin(&table) {
-        return Ok(ResolvedTarget {
-            origin,
-            source: TargetSource::ConfigServerBind,
-            config_path: config_path.to_path_buf(),
-            saved_server_url,
-        });
-    }
+        (origin, TargetSource::Environment)
+    } else if let Some(origin) = saved_server_url.clone() {
+        (origin, TargetSource::ConfigDesktop)
+    } else if let Some(origin) = extract_server_bind_origin(&table) {
+        (origin, TargetSource::ConfigServerBind)
+    } else {
+        (ServerOrigin::default_local(), TargetSource::DefaultLocal)
+    };
 
     Ok(ResolvedTarget {
-        origin: ServerOrigin::default_local(),
-        source: TargetSource::DefaultLocal,
+        origin,
+        source,
         config_path: config_path.to_path_buf(),
         saved_server_url,
+        manage_local_server,
+        supervisor_root,
     })
 }
 
@@ -228,6 +252,55 @@ pub fn resolve_target(
 /// Returns a [`ConfigStoreError`] when reading, serializing, or atomically
 /// writing `config_path` fails.
 pub fn save_server_url(config_path: &Path, origin: &ServerOrigin) -> Result<(), ConfigStoreError> {
+    update_desktop_table(config_path, |desktop_table| {
+        desktop_table.insert(
+            SERVER_URL_KEY.to_owned(),
+            toml::Value::String(origin.as_str().to_owned()),
+        );
+    })?;
+    let verified = read_existing_table(config_path)?;
+    let persisted = extract_desktop_settings(&verified)?;
+    if persisted.server_url.as_ref() != Some(origin) {
+        return Err(ConfigStoreError::VerificationMismatch {
+            path: config_path.to_path_buf(),
+        });
+    }
+    Ok(())
+}
+
+/// Persists the opt-in `[desktop].manage_local_server` flag in `config_path`.
+///
+/// When `enabled` is `false`, the key is omitted so default configs remain clean.
+///
+/// # Errors
+///
+/// Returns a [`ConfigStoreError`] when reading, serializing, or atomically
+/// writing `config_path` fails.
+pub fn save_manage_local_server(config_path: &Path, enabled: bool) -> Result<(), ConfigStoreError> {
+    update_desktop_table(config_path, |desktop_table| {
+        if enabled {
+            desktop_table.insert(
+                MANAGE_LOCAL_SERVER_KEY.to_owned(),
+                toml::Value::Boolean(true),
+            );
+        } else {
+            desktop_table.remove(MANAGE_LOCAL_SERVER_KEY);
+        }
+    })?;
+    let verified = read_existing_table(config_path)?;
+    let persisted = extract_desktop_settings(&verified)?;
+    if persisted.manage_local_server != enabled {
+        return Err(ConfigStoreError::VerificationMismatch {
+            path: config_path.to_path_buf(),
+        });
+    }
+    Ok(())
+}
+
+fn update_desktop_table(
+    config_path: &Path,
+    mutate: impl FnOnce(&mut toml::Table),
+) -> Result<(), ConfigStoreError> {
     let _guard = SAVE_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -240,26 +313,17 @@ pub fn save_server_url(config_path: &Path, origin: &ServerOrigin) -> Result<(), 
             "expected [desktop] to be a TOML table".to_owned(),
         ));
     };
-    desktop_table.insert(
-        SERVER_URL_KEY.to_owned(),
-        toml::Value::String(origin.as_str().to_owned()),
-    );
+    mutate(desktop_table);
+    if desktop_table.is_empty() {
+        root.remove(DESKTOP_SECTION);
+    }
 
     let serialized =
         toml::to_string_pretty(&root).map_err(|error| ConfigStoreError::ParseToml {
             path: config_path.to_path_buf(),
             detail: error.to_string(),
         })?;
-    write_private_atomically(config_path, serialized.as_bytes())?;
-
-    let verified = read_existing_table(config_path)?;
-    let persisted = extract_desktop_server_url(&verified)?;
-    if persisted.as_ref() != Some(origin) {
-        return Err(ConfigStoreError::VerificationMismatch {
-            path: config_path.to_path_buf(),
-        });
-    }
-    Ok(())
+    write_private_atomically(config_path, serialized.as_bytes())
 }
 
 fn read_existing_table(config_path: &Path) -> Result<toml::Table, ConfigStoreError> {
@@ -289,11 +353,11 @@ fn read_existing_table(config_path: &Path) -> Result<toml::Table, ConfigStoreErr
     })
 }
 
-fn extract_desktop_server_url(
+fn extract_desktop_settings(
     table: &toml::Table,
-) -> Result<Option<ServerOrigin>, ConfigStoreError> {
+) -> Result<PersistedDesktopSettings, ConfigStoreError> {
     let Some(section) = table.get(DESKTOP_SECTION) else {
-        return Ok(None);
+        return Ok(PersistedDesktopSettings::default());
     };
     let Some(desktop) = section.as_table() else {
         return Err(ConfigStoreError::InvalidDesktopSection(
@@ -301,22 +365,58 @@ fn extract_desktop_server_url(
         ));
     };
     for key in desktop.keys() {
-        if key != SERVER_URL_KEY {
+        if !matches!(
+            key.as_str(),
+            SERVER_URL_KEY | MANAGE_LOCAL_SERVER_KEY | SUPERVISOR_ROOT_KEY
+        ) {
             return Err(ConfigStoreError::InvalidDesktopSection(format!(
                 "unknown field `{key}`"
             )));
         }
     }
-    let Some(raw_value) = desktop.get(SERVER_URL_KEY) else {
-        return Ok(None);
+    let server_url = match desktop.get(SERVER_URL_KEY) {
+        None => None,
+        Some(value) => {
+            let raw = value.as_str().ok_or_else(|| {
+                ConfigStoreError::InvalidDesktopSection("server_url must be a string".to_owned())
+            })?;
+            Some(ServerOrigin::parse_canonical(raw).map_err(ConfigStoreError::InvalidServerUrl)?)
+        }
     };
-    let Some(raw) = raw_value.as_str() else {
-        return Err(ConfigStoreError::InvalidDesktopSection(
-            "server_url must be a string".to_owned(),
-        ));
+    let manage_local_server = match desktop.get(MANAGE_LOCAL_SERVER_KEY) {
+        None => false,
+        Some(value) => value.as_bool().ok_or_else(|| {
+            ConfigStoreError::InvalidDesktopSection(
+                "manage_local_server must be a boolean".to_owned(),
+            )
+        })?,
     };
-    let origin = ServerOrigin::parse_canonical(raw).map_err(ConfigStoreError::InvalidServerUrl)?;
-    Ok(Some(origin))
+    let supervisor_root = match desktop.get(SUPERVISOR_ROOT_KEY) {
+        None => None,
+        Some(value) => {
+            let raw = value.as_str().ok_or_else(|| {
+                ConfigStoreError::InvalidDesktopSection(
+                    "supervisor_root must be a string".to_owned(),
+                )
+            })?;
+            let trimmed = raw.trim();
+            if trimmed.is_empty()
+                || raw.len() > MAX_SUPERVISOR_ROOT_BYTES
+                || raw.bytes().any(|byte| byte < 0x20 || byte == 0x7f)
+            {
+                return Err(ConfigStoreError::InvalidDesktopSection(
+                    "supervisor_root must be a non-empty path up to 1024 bytes without control characters"
+                        .to_owned(),
+                ));
+            }
+            Some(PathBuf::from(raw))
+        }
+    };
+    Ok(PersistedDesktopSettings {
+        server_url,
+        manage_local_server,
+        supervisor_root,
+    })
 }
 
 fn extract_server_bind_origin(table: &toml::Table) -> Option<ServerOrigin> {

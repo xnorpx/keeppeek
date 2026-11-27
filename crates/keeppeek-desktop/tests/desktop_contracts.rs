@@ -6,6 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use keeppeek_desktop::{
     config_store::{self, ConfigStoreError, TargetSource},
+    managed_server,
     navigation::{self, NavigationDecision},
     probe::{self, ProbeError, ProbeOptions},
     server_url::{DEFAULT_SERVER_ORIGIN, MAX_SERVER_ORIGIN_BYTES, ServerOrigin, ServerOriginError},
@@ -440,4 +441,84 @@ fn tauri_security_configuration_and_capabilities_enforce_least_privilege() {
         !launcher_html.contains("<script>") && !launcher_html.contains("<style>"),
         "launcher HTML must not contain inline scripts or styles under strict CSP"
     );
+}
+
+#[test]
+fn managed_local_server_is_opt_in_and_preserves_config_and_secrets() {
+    let dir = temp_dir("managed-local");
+    let config_path = dir.join("config.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+host = "127.0.0.1"
+port = 8089
+access_key = "{secret:KEEPPEEK_ACCESS_KEY}"
+"#,
+    )
+    .unwrap();
+
+    let default_target = config_store::resolve_target(&config_path, None, None).unwrap();
+    assert!(!default_target.manage_local_server);
+    assert_eq!(
+        default_target.supervisor_root,
+        config_store::default_supervisor_root(&config_path)
+    );
+
+    config_store::save_manage_local_server(&config_path, true).unwrap();
+    let opted_in = config_store::resolve_target(&config_path, None, None).unwrap();
+    assert!(opted_in.manage_local_server);
+    let raw_enabled = std::fs::read_to_string(&config_path).unwrap();
+    assert!(raw_enabled.contains("{secret:KEEPPEEK_ACCESS_KEY}"));
+    assert!(raw_enabled.contains("manage_local_server = true"));
+
+    config_store::save_manage_local_server(&config_path, false).unwrap();
+    let disabled = config_store::resolve_target(&config_path, None, None).unwrap();
+    assert!(!disabled.manage_local_server);
+    let raw_disabled = std::fs::read_to_string(&config_path).unwrap();
+    assert!(!raw_disabled.contains("manage_local_server"));
+    assert!(raw_disabled.contains("{secret:KEEPPEEK_ACCESS_KEY}"));
+
+    let custom_root = dir.join("custom-supervisor");
+    let cli_override = config_store::resolve_target_with_options(
+        &config_path,
+        None,
+        None,
+        true,
+        Some(&custom_root),
+    )
+    .unwrap();
+    assert!(cli_override.manage_local_server);
+    assert_eq!(cli_override.supervisor_root, custom_root);
+
+    let fake_desktop = dir.join("keeppeek-desktop.exe");
+    let fake_server =
+        dir.join(keeppeek_supervisor::manifest::ComponentKind::Core.current_binary_file_name());
+    std::fs::write(&fake_server, b"stub").unwrap();
+    let sup_cfg = managed_server::build_desktop_supervisor_config(
+        &custom_root,
+        &config_path,
+        None,
+        Some(&fake_desktop),
+    );
+    assert_eq!(
+        sup_cfg.core.fallback_binary.as_deref(),
+        Some(fake_server.as_path())
+    );
+    assert!(sup_cfg.core.hide_console_window);
+
+    std::fs::write(
+        &config_path,
+        r#"
+[desktop]
+manage_local_server = true
+supervisor_root = "   "
+"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        config_store::resolve_target(&config_path, None, None),
+        Err(ConfigStoreError::InvalidDesktopSection(_))
+    ));
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

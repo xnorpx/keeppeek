@@ -1,13 +1,17 @@
 # Windows service
 
-`keeppeek-service.exe` runs KeepPeek through the Windows Service Control Manager. Its service name is `KeepPeekService`, so another Windows service or an orchestration tool can start and stop it through the standard SCM APIs.
+`keeppeek-service.exe` runs KeepPeek through the Windows Service Control Manager as a slim parent supervisor. Its service name is `KeepPeekService`, so another Windows service or an orchestration tool can start and stop it through the standard SCM APIs.
 
-The Windows installer includes both `keeppeek.exe` and `keeppeek-service.exe`. Select **Run KeepPeek as a Windows service** during installation to register and start the service; the installer stops, removes, and recreates an existing service during upgrades. Its uninstaller stops and removes the service.
+At runtime, `keeppeek-service.exe` embeds `crates/keeppeek-supervisor` to launch `keeppeek.exe` as a separate child process inside a Win32 Job Object (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`). It resolves versioned A/B executable slots under `<config_dir>\supervisor\versions\<version>\keeppeek.exe` and falls back to the sibling `keeppeek.exe` installed alongside `keeppeek-service.exe` when no A/B version has been staged yet. If a staged `keeppeek-vision.exe` slot or sibling binary exists, the supervisor manages it as an independent child process without interrupting core recording.
+
+The Windows installer includes both `keeppeek.exe` and `keeppeek-service.exe` (selecting the service component also installs `keeppeek.exe`). Select **Run KeepPeek as a Windows service** during installation to register and start the service; the installer stops, removes, and recreates an existing service during installer-based upgrades. Its uninstaller stops and removes the service.
 
 Install it from an elevated prompt:
 
 ```powershell
 sc.exe create KeepPeekService binPath= "C:\path\to\keeppeek-service.exe" start= auto
+sc.exe failure KeepPeekService reset= 86400 actions= restart/5000/restart/15000/restart/30000
+sc.exe failureflag KeepPeekService 1
 sc.exe start KeepPeekService
 ```
 

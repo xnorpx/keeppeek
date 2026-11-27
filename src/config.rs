@@ -543,39 +543,64 @@ impl DirectCardConfig {
 }
 
 const MAX_DESKTOP_SERVER_URL_BYTES: usize = 512;
+const MAX_DESKTOP_SUPERVISOR_ROOT_BYTES: usize = 1024;
 
-/// Desktop client connection settings stored under `[desktop]` in `config.toml`.
+const fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// Desktop client connection and opt-in local supervisor settings under `[desktop]`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DesktopConfig {
     /// Canonical HTTP(S) origin of the KeepPeek server for `keeppeek-desktop`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_url: Option<String>,
+    /// Opt-in flag allowing `keeppeek-desktop` to supervise a local `keeppeek` child executable.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub manage_local_server: bool,
+    /// Optional supervisor root directory override when `manage_local_server` is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supervisor_root: Option<String>,
 }
 
 impl DesktopConfig {
     /// Returns true when no desktop client setting is configured.
     pub const fn is_empty(&self) -> bool {
-        self.server_url.is_none()
+        self.server_url.is_none() && !self.manage_local_server && self.supervisor_root.is_none()
     }
 
-    /// Validates that any configured desktop server URL is a canonical HTTP(S) origin.
+    /// Validates desktop server URL and optional supervisor root bounds.
     ///
     /// # Errors
     ///
-    /// Returns an error when `server_url` exceeds 512 bytes, contains control
-    /// characters, credentials, path, query, or fragment components, uses an
-    /// unspecified bind address or port zero, or is not a canonical HTTP(S) origin.
+    /// Returns an error when `server_url` fails canonical HTTP(S) origin
+    /// validation or when `supervisor_root` is blank, exceeds 1024 bytes, or
+    /// contains ASCII control characters.
     pub fn validate(&self) -> anyhow::Result<()> {
-        let Some(server_url) = self.server_url.as_deref() else {
-            return Ok(());
-        };
-        validate_canonical_http_origin(
-            server_url,
-            "desktop server_url",
-            Some(MAX_DESKTOP_SERVER_URL_BYTES),
-            true,
-        )
+        if let Some(server_url) = self.server_url.as_deref() {
+            validate_canonical_http_origin(
+                server_url,
+                "desktop server_url",
+                Some(MAX_DESKTOP_SERVER_URL_BYTES),
+                true,
+            )?;
+        }
+        if let Some(supervisor_root) = self.supervisor_root.as_deref() {
+            let trimmed = supervisor_root.trim();
+            if trimmed.is_empty() || supervisor_root.len() > MAX_DESKTOP_SUPERVISOR_ROOT_BYTES {
+                anyhow::bail!(
+                    "desktop supervisor_root must be non-empty and at most {MAX_DESKTOP_SUPERVISOR_ROOT_BYTES} bytes"
+                );
+            }
+            if supervisor_root
+                .bytes()
+                .any(|byte| byte < 0x20 || byte == 0x7f)
+            {
+                anyhow::bail!("desktop supervisor_root must not contain ASCII control characters");
+            }
+        }
+        Ok(())
     }
 }
 
@@ -5726,14 +5751,30 @@ mod tests {
         DesktopConfig::default().validate().unwrap();
         DesktopConfig {
             server_url: Some("http://127.0.0.1:8081".to_owned()),
+            manage_local_server: false,
+            supervisor_root: None,
         }
         .validate()
         .unwrap();
         DesktopConfig {
             server_url: Some("https://nvr.example.com".to_owned()),
+            manage_local_server: true,
+            supervisor_root: Some("/var/lib/keeppeek/supervisor".to_owned()),
         }
         .validate()
         .unwrap();
+
+        for invalid_root in ["", "   ", "bad\npath", &"a".repeat(1025)] {
+            let config = DesktopConfig {
+                server_url: None,
+                manage_local_server: true,
+                supervisor_root: Some(invalid_root.to_owned()),
+            };
+            assert!(
+                config.validate().is_err(),
+                "expected invalid desktop supervisor_root to fail: {invalid_root:?}"
+            );
+        }
 
         for invalid in [
             "",
@@ -5752,6 +5793,8 @@ mod tests {
         ] {
             let config = DesktopConfig {
                 server_url: Some(invalid.to_owned()),
+                manage_local_server: false,
+                supervisor_root: None,
             };
             assert!(
                 config.validate().is_err(),

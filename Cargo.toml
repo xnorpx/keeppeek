@@ -4,6 +4,7 @@ members = [
   "crates/chunked-transfer",
   "crates/isapi",
   "crates/keeppeek-desktop",
+  "crates/keeppeek-supervisor",
   "crates/mp4",
   "crates/onvif/onvif",
   "crates/onvif/schema",
@@ -43,6 +44,7 @@ chrono = { package = "sad-chrono", version = "0.5.1", default-features = false, 
   "std",
 ] }
 isapi = { path = "crates/isapi", version = "0.1.0" }
+keeppeek-supervisor = { path = "crates/keeppeek-supervisor", version = "0.1.0" }
 digest_auth = { version = "0.3.1", default-features = false }
 encoding_rs = { version = "0.8.35", default-features = false, features = [
   "alloc",
@@ -184,7 +186,7 @@ clap = { version = "4.6.6", default-features = false, features = [
 ] }
 csv = { version = "1.4.0" }
 crossbeam-channel = "0.5.16"
-ctrlc = { version = "3.5.2" }
+ctrlc = { version = "3.5.2", features = ["termination"] }
 flate2 = "1"
 fs4 = { version = "1.1.0", default-features = false }
 h264-reader = "0.9.0"
@@ -193,6 +195,7 @@ hmac = "0.13.0"
 image = { version = "0.25.9", default-features = false, features = ["jpeg"] }
 include_dir = "0.7.4"
 isapi = { workspace = true }
+keeppeek-supervisor = { workspace = true }
 mimalloc = { version = "0.1.52" }
 mp4 = { path = "crates/mp4" }
 ipnet = { version = "2.12.1", features = ["serde"] }
