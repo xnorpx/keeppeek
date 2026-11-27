@@ -1,8 +1,9 @@
-//! Offline Ed25519 release manifest verification and streaming SHA-256 hashing.
+//! Ed25519 release manifest v2 verification, channel key isolation, and streaming SHA-256 hashing.
 //!
-//! Release manifests bind a component, version, platform, schema compatibility
-//! policy, binary filename, byte length, SHA-256 digest, and validity window
-//! under a domain-separated Ed25519 signature verified with `aws-lc-rs`.
+//! Manifests bind channel, component, version, CI build sequence, commit SHA,
+//! storage schema revision, platform, binary filename, byte length, SHA-256
+//! digest, and validity window under a v2 domain-separated Ed25519 signature
+//! verified with `aws-lc-rs`.
 
 use std::fmt;
 use std::fs::File;
@@ -13,12 +14,18 @@ use aws_lc_rs::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::version::ReleaseVersion;
+use crate::version::{ReleaseVersion, UpdateChannel};
 
 /// Supported schema version for signed release manifests.
-pub const MANIFEST_SCHEMA_VERSION_V1: u32 = 1;
+pub const MANIFEST_SCHEMA_VERSION_V2: u32 = 2;
 
-/// Maximum serialized manifest file size accepted from disk.
+/// Supported schema version for unsigned slot metadata (`local` and opt-in unsigned `main`).
+pub const LOCAL_SLOT_META_SCHEMA_V1: u32 = 1;
+
+/// Default storage schema revision when not explicitly overridden.
+pub const DEFAULT_STORAGE_SCHEMA: u32 = 1;
+
+/// Maximum serialized manifest or slot metadata file size accepted from disk.
 pub const MAX_MANIFEST_FILE_BYTES: u64 = 64 * 1024;
 
 /// Maximum executable binary size accepted for staging (512 MiB).
@@ -36,6 +43,10 @@ const MAX_PLATFORM_BYTES: usize = 64;
 /// Maximum accepted length of an executable file name.
 const MAX_BINARY_NAME_BYTES: usize = 128;
 
+/// Minimum and maximum lowercase hexadecimal commit SHA lengths.
+const MIN_COMMIT_SHA_BYTES: usize = 7;
+const MAX_COMMIT_SHA_BYTES: usize = 40;
+
 /// Maximum clock skew tolerated when checking `issued_at_unix_secs` (5 minutes).
 pub const MAX_CLOCK_SKEW_SECS: u64 = 300;
 
@@ -43,7 +54,16 @@ pub const MAX_CLOCK_SKEW_SECS: u64 = 300;
 pub const MAX_MANIFEST_VALIDITY_SECS: u64 = 365 * 24 * 60 * 60;
 
 /// Fixed domain separator prepended before Ed25519 signing and verification.
-pub const MANIFEST_DOMAIN_SEPARATOR: &[u8] = b"keeppeek.release-manifest.v1\0";
+pub const MANIFEST_DOMAIN_SEPARATOR: &[u8] = b"keeppeek.release-manifest.v2\0";
+
+/// Compiled-in offline release Ed25519 verification keys.
+///
+/// Empty until release signing keys are provisioned; default `release` verification
+/// fails closed when no trusted key matches `payload.signing_key_id`.
+pub const PINNED_RELEASE_KEYS: &[StaticTrustedSigningKey] = &[];
+
+/// Compiled-in CI `main` channel Ed25519 verification keys, strictly isolated from `release`.
+pub const PINNED_MAIN_KEYS: &[StaticTrustedSigningKey] = &[];
 
 const _: () = {
     assert!(MANIFEST_DOMAIN_SEPARATOR.len() == 29);
@@ -52,6 +72,41 @@ const _: () = {
     assert!(MAX_BINARY_SIZE_BYTES > 0);
     assert!(MAX_MANIFEST_VALIDITY_SECS > MAX_CLOCK_SKEW_SECS);
 };
+
+/// Compile-time pinned Ed25519 public verification key bound to a key identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StaticTrustedSigningKey {
+    /// Key identifier matched against `payload.signing_key_id`.
+    pub key_id: &'static str,
+    /// Raw 32-byte Ed25519 public key.
+    pub public_key_bytes: [u8; 32],
+}
+
+impl StaticTrustedSigningKey {
+    /// Converts a compiled-in key into an owned [`TrustedSigningKey`].
+    #[must_use]
+    pub fn to_owned_key(self) -> TrustedSigningKey {
+        TrustedSigningKey {
+            key_id: self.key_id.to_owned(),
+            public_key_bytes: self.public_key_bytes,
+        }
+    }
+}
+
+/// Returns the compiled-in trusted signing keys for `channel`.
+#[must_use]
+pub fn pinned_keys_for_channel(channel: UpdateChannel) -> Vec<TrustedSigningKey> {
+    let slice = match channel {
+        UpdateChannel::Release => PINNED_RELEASE_KEYS,
+        UpdateChannel::Main => PINNED_MAIN_KEYS,
+        UpdateChannel::Local => &[],
+    };
+    slice
+        .iter()
+        .copied()
+        .map(StaticTrustedSigningKey::to_owned_key)
+        .collect()
+}
 
 /// Identifies a supervised KeepPeek executable component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -127,16 +182,24 @@ impl SchemaCompatibility {
     }
 }
 
-/// Unsigned metadata covered by the manifest Ed25519 signature.
+/// Unsigned metadata covered by the Manifest v2 Ed25519 signature.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReleaseManifestPayload {
-    /// Manifest format version (must be [`MANIFEST_SCHEMA_VERSION_V1`]).
+    /// Manifest format version (must be [`MANIFEST_SCHEMA_VERSION_V2`]).
     pub schema_version: u32,
+    /// Release channel bound to this signature (`release` or `main`, never `local`).
+    pub channel: UpdateChannel,
     /// Supervised component targeted by this release.
     pub component: ComponentKind,
     /// Canonical semantic release version.
     pub version: ReleaseVersion,
+    /// Monotonic CI build sequence (`0` for `release`, positive `run_number` for `main`).
+    pub build_seq: u64,
+    /// Git commit SHA (7..=40 lowercase hex characters) built into this artifact.
+    pub commit_sha: String,
+    /// Monotonic storage schema revision; increases are treated as breaking for rollback.
+    pub storage_schema: u32,
     /// Target `<os>-<arch>` platform string (for example `windows-x86_64`).
     pub platform: String,
     /// Executable filename expected inside the immutable version directory.
@@ -149,23 +212,48 @@ pub struct ReleaseManifestPayload {
     pub schema_compatibility: SchemaCompatibility,
     /// Whole-second Unix timestamp when the manifest was signed.
     pub issued_at_unix_secs: u64,
-    /// Whole-second Unix timestamp after which the manifest must be rejected.
+    /// Whole-second Unix timestamp after which the manifest must be rejected at staging.
     pub expires_at_unix_secs: u64,
-    /// Identifier selecting the trusted offline Ed25519 verification key.
+    /// Identifier selecting the trusted offline or CI Ed25519 verification key.
     pub signing_key_id: String,
 }
 
-/// Signed release manifest distributed alongside a release binary.
+/// Signed release manifest distributed alongside a release or `main` binary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SignedReleaseManifest {
     /// Signed release metadata.
     pub payload: ReleaseManifestPayload,
-    /// Lowercase 128-character hexadecimal Ed25519 signature over canonical transcript bytes.
+    /// Lowercase 128-character hexadecimal Ed25519 signature over canonical v2 transcript bytes.
     pub signature_hex: String,
 }
 
-/// Trusted offline Ed25519 verification key bound to a key identifier.
+/// On-disk metadata recorded for unsigned slots (`local` and explicit opt-in unsigned `main`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnsignedSlotMetadata {
+    /// Metadata schema version (must be [`LOCAL_SLOT_META_SCHEMA_V1`]).
+    pub schema_version: u32,
+    /// Channel (`local` or `main`, never `release`).
+    pub channel: UpdateChannel,
+    /// Supervised component stored in this slot.
+    pub component: ComponentKind,
+    /// Package semantic version of the staged executable.
+    pub version: ReleaseVersion,
+    /// Optional CI build sequence (`Some` for unsigned `main`, `None` for `local`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_seq: Option<u64>,
+    /// Executable filename inside the slot directory.
+    pub binary_name: String,
+    /// Lowercase 64-character hexadecimal SHA-256 digest of the executable.
+    pub sha256_hex: String,
+    /// Exact byte length of the executable binary.
+    pub size_bytes: u64,
+    /// Whole-second Unix timestamp when the slot was staged.
+    pub staged_at_unix_secs: u64,
+}
+
+/// Trusted Ed25519 verification key bound to a key identifier.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrustedSigningKey {
     /// Key identifier matched against `payload.signing_key_id`.
@@ -179,9 +267,14 @@ pub struct TrustedSigningKey {
 pub enum ManifestError {
     /// Manifest schema version is unsupported.
     UnsupportedSchemaVersion(u32),
-    /// A string field was empty, oversized, or contained unsafe characters.
+    /// A string or semantic field failed validation.
     InvalidField { field: &'static str, detail: String },
-    /// Manifest timestamps are inverted or expired relative to the verification clock.
+    /// Manifest channel did not match the expected channel (prevents cross-channel replay).
+    ChannelMismatch {
+        expected: UpdateChannel,
+        actual: UpdateChannel,
+    },
+    /// Manifest timestamps are inverted, future-dated, over-long, or expired at staging time.
     ExpiredOrInvalidWindow {
         issued_at_unix_secs: u64,
         expires_at_unix_secs: u64,
@@ -195,7 +288,7 @@ pub enum ManifestError {
     InvalidBinarySize { size_bytes: u64 },
     /// No trusted signing key matched `signing_key_id`.
     UnknownSigningKey(String),
-    /// Hex encoding for key, digest, or signature was malformed.
+    /// Hex encoding for key, seed, digest, or signature was malformed.
     InvalidHex { field: &'static str },
     /// Ed25519 signing seed was rejected by `aws-lc-rs`.
     InvalidSigningSeed,
@@ -208,7 +301,7 @@ pub enum ManifestError {
     },
     /// Staged binary SHA-256 digest did not match the signed manifest.
     DigestMismatch { expected: String, actual: String },
-    /// Manifest file exceeded [`MAX_MANIFEST_FILE_BYTES`].
+    /// Manifest or metadata file exceeded [`MAX_MANIFEST_FILE_BYTES`].
     ManifestTooLarge { size_bytes: u64 },
     /// Manifest JSON parsing failed.
     ParseJson(serde_json::Error),
@@ -228,6 +321,10 @@ impl fmt::Display for ManifestError {
             Self::InvalidField { field, detail } => {
                 write!(formatter, "invalid manifest field `{field}`: {detail}")
             }
+            Self::ChannelMismatch { expected, actual } => write!(
+                formatter,
+                "release manifest channel `{actual}` does not match expected `{expected}`"
+            ),
             Self::ExpiredOrInvalidWindow {
                 issued_at_unix_secs,
                 expires_at_unix_secs,
@@ -300,7 +397,7 @@ pub fn public_key_from_seed(seed: &[u8; 32]) -> Result<[u8; 32], ManifestError> 
         .map_err(|_| ManifestError::InvalidSigningSeed)
 }
 
-/// Signs `payload` with the provided 32-byte Ed25519 seed.
+/// Signs `payload` with the provided 32-byte Ed25519 seed using the Manifest v2 transcript.
 ///
 /// # Errors
 ///
@@ -327,34 +424,61 @@ pub fn sign_manifest(
 ///
 /// Returns [`ManifestError`] on I/O failure, oversized files, or invalid JSON.
 pub fn read_manifest_file(path: &Path) -> Result<SignedReleaseManifest, ManifestError> {
-    let file = File::open(path).map_err(ManifestError::Io)?;
-    let mut bytes = Vec::new();
-    file.take(MAX_MANIFEST_FILE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(ManifestError::Io)?;
-    let read_len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-    if read_len > MAX_MANIFEST_FILE_BYTES {
-        return Err(ManifestError::ManifestTooLarge {
-            size_bytes: read_len,
-        });
-    }
+    let bytes = read_bounded_json_file(path)?;
     serde_json::from_slice(&bytes).map_err(ManifestError::ParseJson)
 }
 
-/// Verifies manifest structure, platform, expiry window, and Ed25519 signature.
+/// Reads and parses [`UnsignedSlotMetadata`] from disk with an explicit size bound.
 ///
 /// # Errors
 ///
-/// Returns [`ManifestError`] when any structural, temporal, platform, key, or
-/// cryptographic invariant fails.
-pub fn verify_manifest(
+/// Returns [`ManifestError`] on I/O failure, oversized files, invalid JSON, or invalid fields.
+pub fn read_unsigned_slot_metadata(path: &Path) -> Result<UnsignedSlotMetadata, ManifestError> {
+    let bytes = read_bounded_json_file(path)?;
+    let meta: UnsignedSlotMetadata =
+        serde_json::from_slice(&bytes).map_err(ManifestError::ParseJson)?;
+    if meta.schema_version != LOCAL_SLOT_META_SCHEMA_V1 {
+        return Err(ManifestError::UnsupportedSchemaVersion(meta.schema_version));
+    }
+    if meta.channel == UpdateChannel::Release {
+        return Err(ManifestError::InvalidField {
+            field: "channel",
+            detail: "release channel cannot use unsigned slot metadata".to_owned(),
+        });
+    }
+    validate_safe_file_name(&meta.binary_name)?;
+    validate_sha256_hex(&meta.sha256_hex)?;
+    if meta.size_bytes == 0 || meta.size_bytes > MAX_BINARY_SIZE_BYTES {
+        return Err(ManifestError::InvalidBinarySize {
+            size_bytes: meta.size_bytes,
+        });
+    }
+    Ok(meta)
+}
+
+/// Verifies manifest structure, channel, platform, and Ed25519 signature without checking expiry.
+///
+/// Used at child launch time so an already-installed active slot continues to
+/// boot after its 365-day staging window expires while still enforcing cryptographic
+/// authenticity against pinned channel keys.
+///
+/// # Errors
+///
+/// Returns [`ManifestError`] when structure, channel, platform, key, or signature fails.
+pub fn verify_manifest_signature(
     manifest: &SignedReleaseManifest,
     trusted_keys: &[TrustedSigningKey],
+    expected_channel: UpdateChannel,
     expected_platform: &str,
-    now_unix_secs: u64,
 ) -> Result<(), ManifestError> {
     let payload = &manifest.payload;
     validate_payload_structure(payload)?;
+    if payload.channel != expected_channel {
+        return Err(ManifestError::ChannelMismatch {
+            expected: expected_channel,
+            actual: payload.channel,
+        });
+    }
     if payload.platform != expected_platform {
         return Err(ManifestError::PlatformMismatch {
             expected: expected_platform.to_owned(),
@@ -369,6 +493,28 @@ pub fn verify_manifest(
             actual: payload.binary_name.clone(),
         });
     }
+    let trusted = trusted_keys
+        .iter()
+        .find(|key| key.key_id == payload.signing_key_id)
+        .ok_or_else(|| ManifestError::UnknownSigningKey(payload.signing_key_id.clone()))?;
+    let sig_bytes = decode_hex_fixed::<64>(&manifest.signature_hex, "signature_hex")?;
+    let transcript = canonical_transcript(payload);
+    let verifier = UnparsedPublicKey::new(&ED25519, &trusted.public_key_bytes);
+    verifier
+        .verify(&transcript, &sig_bytes)
+        .map_err(|_| ManifestError::InvalidSignature)
+}
+
+/// Verifies manifest issuance skew, validity span, and expiration relative to `now_unix_secs`.
+///
+/// # Errors
+///
+/// Returns [`ManifestError::ExpiredOrInvalidWindow`] when timestamps are invalid or expired.
+pub const fn verify_manifest_window(
+    manifest: &SignedReleaseManifest,
+    now_unix_secs: u64,
+) -> Result<(), ManifestError> {
+    let payload = &manifest.payload;
     let max_issued = now_unix_secs.saturating_add(MAX_CLOCK_SKEW_SECS);
     let validity_span = payload
         .expires_at_unix_secs
@@ -384,16 +530,24 @@ pub fn verify_manifest(
             now_unix_secs,
         });
     }
-    let trusted = trusted_keys
-        .iter()
-        .find(|key| key.key_id == payload.signing_key_id)
-        .ok_or_else(|| ManifestError::UnknownSigningKey(payload.signing_key_id.clone()))?;
-    let sig_bytes = decode_hex_fixed::<64>(&manifest.signature_hex, "signature_hex")?;
-    let transcript = canonical_transcript(payload);
-    let verifier = UnparsedPublicKey::new(&ED25519, &trusted.public_key_bytes);
-    verifier
-        .verify(&transcript, &sig_bytes)
-        .map_err(|_| ManifestError::InvalidSignature)
+    Ok(())
+}
+
+/// Verifies manifest structure, channel, platform, expiry window, and Ed25519 signature.
+///
+/// # Errors
+///
+/// Returns [`ManifestError`] when any structural, temporal, channel, platform,
+/// key, or cryptographic invariant fails.
+pub fn verify_manifest(
+    manifest: &SignedReleaseManifest,
+    trusted_keys: &[TrustedSigningKey],
+    expected_channel: UpdateChannel,
+    expected_platform: &str,
+    now_unix_secs: u64,
+) -> Result<(), ManifestError> {
+    verify_manifest_signature(manifest, trusted_keys, expected_channel, expected_platform)?;
+    verify_manifest_window(manifest, now_unix_secs)
 }
 
 /// Computes the byte length and lowercase SHA-256 hex digest of `path` using streaming I/O.
@@ -442,10 +596,17 @@ pub fn verify_manifest_and_file(
     manifest: &SignedReleaseManifest,
     binary_path: &Path,
     trusted_keys: &[TrustedSigningKey],
+    expected_channel: UpdateChannel,
     expected_platform: &str,
     now_unix_secs: u64,
 ) -> Result<(), ManifestError> {
-    verify_manifest(manifest, trusted_keys, expected_platform, now_unix_secs)?;
+    verify_manifest(
+        manifest,
+        trusted_keys,
+        expected_channel,
+        expected_platform,
+        now_unix_secs,
+    )?;
     let (actual_bytes, actual_hex) = hash_binary_file(binary_path)?;
     if actual_bytes != manifest.payload.size_bytes {
         return Err(ManifestError::SizeMismatch {
@@ -471,6 +632,15 @@ pub fn decode_public_key_hex(hex_str: &str) -> Result<[u8; 32], ManifestError> {
     decode_hex_fixed::<32>(hex_str.trim(), "public_key_hex")
 }
 
+/// Decodes a 64-character hex Ed25519 private signing seed into a 32-byte array.
+///
+/// # Errors
+///
+/// Returns [`ManifestError::InvalidHex`] if the input is not 64 hex characters.
+pub fn decode_seed_hex(hex_str: &str) -> Result<[u8; 32], ManifestError> {
+    decode_hex_fixed::<32>(hex_str.trim(), "signing_seed_hex")
+}
+
 /// Encodes `bytes` as lowercase hexadecimal text.
 #[must_use]
 pub fn encode_hex(bytes: &[u8]) -> String {
@@ -483,11 +653,45 @@ pub fn encode_hex(bytes: &[u8]) -> String {
     output
 }
 
+fn read_bounded_json_file(path: &Path) -> Result<Vec<u8>, ManifestError> {
+    let file = File::open(path).map_err(ManifestError::Io)?;
+    let mut bytes = Vec::new();
+    file.take(MAX_MANIFEST_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(ManifestError::Io)?;
+    let read_len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    if read_len > MAX_MANIFEST_FILE_BYTES {
+        return Err(ManifestError::ManifestTooLarge {
+            size_bytes: read_len,
+        });
+    }
+    Ok(bytes)
+}
+
 fn validate_payload_structure(payload: &ReleaseManifestPayload) -> Result<(), ManifestError> {
-    if payload.schema_version != MANIFEST_SCHEMA_VERSION_V1 {
+    if payload.schema_version != MANIFEST_SCHEMA_VERSION_V2 {
         return Err(ManifestError::UnsupportedSchemaVersion(
             payload.schema_version,
         ));
+    }
+    if payload.channel == UpdateChannel::Local {
+        return Err(ManifestError::InvalidField {
+            field: "channel",
+            detail: "signed manifests must target `release` or `main`".to_owned(),
+        });
+    }
+    if payload.channel == UpdateChannel::Main && payload.build_seq == 0 {
+        return Err(ManifestError::InvalidField {
+            field: "build_seq",
+            detail: "`main` channel manifests require a positive build_seq".to_owned(),
+        });
+    }
+    validate_commit_sha(&payload.commit_sha)?;
+    if payload.storage_schema == 0 {
+        return Err(ManifestError::InvalidField {
+            field: "storage_schema",
+            detail: "must be >= 1".to_owned(),
+        });
     }
     validate_identifier("platform", &payload.platform, MAX_PLATFORM_BYTES)?;
     validate_safe_file_name(&payload.binary_name)?;
@@ -497,12 +701,26 @@ fn validate_payload_structure(payload: &ReleaseManifestPayload) -> Result<(), Ma
             size_bytes: payload.size_bytes,
         });
     }
-    let _ = decode_hex_fixed::<32>(&payload.sha256_hex, "sha256_hex")?;
-    if payload
-        .sha256_hex
-        .bytes()
-        .any(|byte| byte.is_ascii_uppercase())
+    validate_sha256_hex(&payload.sha256_hex)
+}
+
+fn validate_commit_sha(commit_sha: &str) -> Result<(), ManifestError> {
+    if !(MIN_COMMIT_SHA_BYTES..=MAX_COMMIT_SHA_BYTES).contains(&commit_sha.len())
+        || !commit_sha
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
     {
+        return Err(ManifestError::InvalidField {
+            field: "commit_sha",
+            detail: "must be 7..=40 lowercase hexadecimal characters".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_sha256_hex(hex: &str) -> Result<(), ManifestError> {
+    let _ = decode_hex_fixed::<32>(hex, "sha256_hex")?;
+    if hex.bytes().any(|byte| byte.is_ascii_uppercase()) {
         return Err(ManifestError::InvalidField {
             field: "sha256_hex",
             detail: "digest must use lowercase hex".to_owned(),
@@ -551,11 +769,15 @@ fn validate_safe_file_name(name: &str) -> Result<(), ManifestError> {
 }
 
 fn canonical_transcript(payload: &ReleaseManifestPayload) -> Vec<u8> {
-    let mut transcript = Vec::with_capacity(256);
+    let mut transcript = Vec::with_capacity(320);
     transcript.extend_from_slice(MANIFEST_DOMAIN_SEPARATOR);
     push_field(&mut transcript, &payload.schema_version.to_string());
+    push_field(&mut transcript, payload.channel.as_str());
     push_field(&mut transcript, payload.component.as_str());
     push_field(&mut transcript, &payload.version.to_string());
+    push_field(&mut transcript, &payload.build_seq.to_string());
+    push_field(&mut transcript, &payload.commit_sha);
+    push_field(&mut transcript, &payload.storage_schema.to_string());
     push_field(&mut transcript, &payload.platform);
     push_field(&mut transcript, &payload.binary_name);
     push_field(&mut transcript, &payload.sha256_hex);

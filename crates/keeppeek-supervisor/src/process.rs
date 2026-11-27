@@ -2,8 +2,10 @@
 //!
 //! On Windows, every spawned child is assigned to a Win32 Job Object with
 //! `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` so children cannot outlive the parent
-//! supervisor. On Unix, each child runs in its own process group so graceful
-//! `SIGTERM` and forced `SIGKILL` signals cover the entire child subtree.
+//! supervisor, and transient Defender/linker sharing violations are retried
+//! with a strict bound before counting as a probation boot failure. On Unix,
+//! each child runs in its own process group so graceful `SIGTERM` and forced
+//! `SIGKILL` signals cover the entire child subtree.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -18,15 +20,18 @@ use std::time::{Duration, Instant};
 
 use tracing::warn;
 
+use crate::acl::create_private_dir_all;
 use crate::manifest::ComponentKind;
-use crate::version::ReleaseVersion;
+use crate::version::{ReleaseVersion, SlotId};
 use crate::{
-    ENV_ACTIVE_VERSION, ENV_COMPONENT, ENV_READY_FILE, ENV_STOP_FILE, ENV_SUPERVISED,
-    EXIT_CODE_RESTART_REQUESTED, ReadyMarker,
+    ENV_ACTIVE_SLOT, ENV_ACTIVE_VERSION, ENV_COMPONENT, ENV_READY_FILE, ENV_STOP_FILE,
+    ENV_SUPERVISED, EXIT_CODE_RESTART_REQUESTED, ReadyMarker,
 };
 
 const MAX_READY_FILE_BYTES: u64 = 4096;
 const STOP_POLL_INTERVAL_MS: u64 = 25;
+const WINDOWS_TRANSIENT_SPAWN_RETRIES: usize = 6;
+const WINDOWS_TRANSIENT_SPAWN_BACKOFF_MS: u64 = 150;
 static RUN_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Parameters describing how to spawn one supervised child executable.
@@ -36,7 +41,9 @@ pub struct ChildSpawnSpec {
     pub component: ComponentKind,
     /// Executable path to spawn.
     pub binary_path: PathBuf,
-    /// Managed slot version if launched from an immutable A/B slot.
+    /// Content-addressed slot identifier if launched from a managed A/B slot.
+    pub slot_id: Option<SlotId>,
+    /// Managed slot semantic version if launched from a managed A/B slot.
     pub version: Option<ReleaseVersion>,
     /// Command-line arguments passed to the child executable.
     pub args: Vec<OsString>,
@@ -150,7 +157,7 @@ impl ManagedChild {
     /// Returns [`ProcessError`] when creating runtime directories, spawning the
     /// executable, or attaching OS cleanup guards fails.
     pub fn spawn(spec: &ChildSpawnSpec) -> Result<Self, ProcessError> {
-        fs::create_dir_all(&spec.runtime_dir).map_err(|source| ProcessError::Spawn {
+        create_private_dir_all(&spec.runtime_dir).map_err(|source| ProcessError::Spawn {
             path: spec.runtime_dir.clone(),
             source,
         })?;
@@ -165,26 +172,7 @@ impl ManagedChild {
         let _ = fs::remove_file(&ready_file);
         let _ = fs::remove_file(&stop_file);
 
-        let mut command = Command::new(&spec.binary_path);
-        command.args(&spec.args);
-        command.env(ENV_SUPERVISED, "1");
-        command.env(ENV_COMPONENT, spec.component.as_str());
-        command.env(ENV_READY_FILE, &ready_file);
-        command.env(ENV_STOP_FILE, &stop_file);
-        if let Some(version) = spec.version {
-            command.env(ENV_ACTIVE_VERSION, version.to_string());
-        } else {
-            command.env_remove(ENV_ACTIVE_VERSION);
-        }
-        for (key, value) in &spec.extra_env {
-            command.env(key, value);
-        }
-        configure_platform_command(&mut command, spec.hide_console_window);
-
-        let child = command.spawn().map_err(|source| ProcessError::Spawn {
-            path: spec.binary_path.clone(),
-            source,
-        })?;
+        let child = spawn_with_transient_retries(spec, &ready_file, &stop_file)?;
         let pid = child.id();
 
         #[cfg(windows)]
@@ -323,6 +311,85 @@ impl Drop for ManagedChild {
         } else {
             self.cleanup_after_exit();
         }
+    }
+}
+
+fn spawn_with_transient_retries(
+    spec: &ChildSpawnSpec,
+    ready_file: &Path,
+    stop_file: &Path,
+) -> Result<Child, ProcessError> {
+    let mut last_error: Option<std::io::Error> = None;
+    for attempt in 0..WINDOWS_TRANSIENT_SPAWN_RETRIES {
+        let mut command = build_child_command(spec, ready_file, stop_file);
+        match command.spawn() {
+            Ok(child) => return Ok(child),
+            Err(error)
+                if is_transient_spawn_error(&error)
+                    && attempt + 1 < WINDOWS_TRANSIENT_SPAWN_RETRIES =>
+            {
+                warn!(
+                    path = %spec.binary_path.display(),
+                    attempt = attempt + 1,
+                    %error,
+                    "transient child spawn lock (antivirus/linker); retrying before probation failure"
+                );
+                last_error = Some(error);
+                thread::sleep(Duration::from_millis(WINDOWS_TRANSIENT_SPAWN_BACKOFF_MS));
+            }
+            Err(source) => {
+                return Err(ProcessError::Spawn {
+                    path: spec.binary_path.clone(),
+                    source,
+                });
+            }
+        }
+    }
+    Err(ProcessError::Spawn {
+        path: spec.binary_path.clone(),
+        source: last_error.unwrap_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "child executable remained locked during spawn retries",
+            )
+        }),
+    })
+}
+
+fn build_child_command(spec: &ChildSpawnSpec, ready_file: &Path, stop_file: &Path) -> Command {
+    let mut command = Command::new(&spec.binary_path);
+    command.args(&spec.args);
+    command.env(ENV_SUPERVISED, "1");
+    command.env(ENV_COMPONENT, spec.component.as_str());
+    command.env(ENV_READY_FILE, ready_file);
+    command.env(ENV_STOP_FILE, stop_file);
+    if let Some(version) = spec.version {
+        command.env(ENV_ACTIVE_VERSION, version.to_string());
+    } else {
+        command.env_remove(ENV_ACTIVE_VERSION);
+    }
+    if let Some(slot_id) = spec.slot_id.as_ref() {
+        command.env(ENV_ACTIVE_SLOT, slot_id.as_str());
+    } else {
+        command.env_remove(ENV_ACTIVE_SLOT);
+    }
+    for (key, value) in &spec.extra_env {
+        command.env(key, value);
+    }
+    configure_platform_command(&mut command, spec.hide_console_window);
+    command
+}
+
+fn is_transient_spawn_error(error: &std::io::Error) -> bool {
+    #[cfg(windows)]
+    {
+        // ERROR_SHARING_VIOLATION (32) or ERROR_LOCK_VIOLATION (33) during Defender scan of a fresh exe.
+        matches!(error.raw_os_error(), Some(32 | 33))
+    }
+    #[cfg(not(windows))]
+    {
+        // ETXTBSY (26) right after writing an executable on some Unix filesystems.
+        error.raw_os_error() == Some(26)
     }
 }
 

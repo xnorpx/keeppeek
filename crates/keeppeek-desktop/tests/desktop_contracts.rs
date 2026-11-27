@@ -499,12 +499,24 @@ access_key = "{secret:KEEPPEEK_ACCESS_KEY}"
         &config_path,
         None,
         Some(&fake_desktop),
+        false,
     );
     assert_eq!(
         sup_cfg.core.fallback_binary.as_deref(),
         Some(fake_server.as_path())
     );
     assert!(sup_cfg.core.hide_console_window);
+    assert!(!sup_cfg.launch_policy.allow_local);
+
+    let local_cfg = managed_server::build_desktop_supervisor_config(
+        &custom_root,
+        &config_path,
+        None,
+        Some(&fake_desktop),
+        true,
+    );
+    assert!(local_cfg.launch_policy.allow_local);
+    assert!(local_cfg.enforce_root_acl);
 
     std::fs::write(
         &config_path,

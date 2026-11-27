@@ -58,16 +58,36 @@ Resolve any failure to stop the old service before retrying the installer. Servi
 
 Stop the running process, replace the executable, and start it with the same `--config <path>` flag and environment. `--config` selects both the TOML file and sibling `secrets.toml`. A fresh config initializes named storage beside itself; an existing metadata binding keeps its recorded owner.
 
-For bare-metal deployments preparing for offline staged A/B binary swaps and automatic rollback, KeepPeek also provides the offline `keeppeek-supervisor` crate and three slim parent hosts (`keeppeek-supervisor` CLI, `keeppeek-service.exe` on Windows, and opt-in managed local server mode in `keeppeek-desktop`). The supervisor stores immutable executables under `<supervisor_root>/versions/<version>/keeppeek[.exe]` (and optional independent `<supervisor_root>/vision/<version>/keeppeek-vision[.exe]`) alongside an atomic `supervisor-state.json` journal:
+KeepPeek also provides the `keeppeek-supervisor` crate and three slim parent hosts (`keeppeek-supervisor` CLI, `keeppeek-service.exe` on Windows, and opt-in managed local server mode in `keeppeek-desktop`). The supervisor stores immutable content-addressed executables under `<supervisor_root>/versions/<slot_id>/keeppeek[.exe]` (and optional independent `<supervisor_root>/vision/<slot_id>/keeppeek-vision[.exe]`) alongside an atomic `supervisor-state.json` journal and `<supervisor_root>/runtime/` live control files (`supervisor.lock`, `supervisor-status.json`, `control-<component>.json`):
+
+- **Three explicit update channels:**
+  - `release`: latest compatible SemVer release on GitHub Releases (`xnorpx/keeppeek`). Enforces Ed25519 Manifest v2 signatures pinned to the release channel key set.
+  - `main`: rolling `main` branch builds published under the `master` prerelease tag. Uses Manifest v2 signatures pinned to a separate `main`-channel key set (or explicit dev-only `--allow-unsigned-sha256` + `--allow-unsigned-main` opt-in).
+  - `local`: local developer builds staged directly from disk (`target/debug/keeppeek[.exe]` or `target/release/keeppeek[.exe]`). Requires explicit runtime opt-in (`--allow-local`) and is never persisted in `config.toml`.
+- **SemVer major-version fresh-install policy:**
+  - Pre-1.0 (`0.x.y`): breaking API/schema changes may land within `0.x.y`, and in-place updates are allowed across `0.x.y`.
+  - Post-1.0 (`>= 1.0.0`): minor and patch updates are additive and allowed in place on the same major line.
+  - Any major version increment (`0.x -> 1.0`, `1.x -> 2.0`, etc.): blocked in place (`MajorUpgradeRequiresFreshInstall`) because the supervisor executable itself must be updated via a fresh install. `keeppeek-supervisor check` surfaces both the latest compatible in-place version and any newer major version requiring a fresh install.
+- **Security and lifecycle guarantees:** Every supervisor launch validates owner-only ACLs on `<supervisor_root>` (when `--enforce-root-acl` or `--allow-local` is active, and unconditionally in `keeppeek-service.exe`), re-verifies Manifest v2 Ed25519 signatures and binary digests at launch time (without expiry bricking), automatically rolls back across probation failures, and garbage-collects unreferenced slots down to the 2 most recent.
 
 ```sh
-keeppeek-supervisor stage --root <dir> --manifest manifest.json --binary keeppeek --key-id <id> --public-key-hex <64-hex>
-keeppeek-supervisor status --root <dir>
-keeppeek-supervisor run --root <dir> --config <path/to/config.toml>
-keeppeek-supervisor rollback --root <dir> --component core
+# Check for compatible updates (and surface newer major versions requiring fresh install)
+keeppeek-supervisor check --root <dir> --channel release --json
+
+# Stage and live-apply a signed release or main update into a running supervisor
+keeppeek-supervisor update --root <dir> --channel release --apply --wait --json
+keeppeek-supervisor update --root <dir> --channel main --apply --wait --json
+
+# Fast local developer build hot-swap loop (requires --allow-local on the running supervisor)
+keeppeek-supervisor run --root <dir> --config <path/to/config.toml> --allow-local --probation-ms 500
+keeppeek-supervisor update --root <dir> --channel local --binary target/debug/keeppeek --apply --wait --json
+
+# Inspect persisted + live state, or manually roll back
+keeppeek-supervisor status --root <dir> --json
+keeppeek-supervisor rollback --root <dir> --component core --apply --wait
 ```
 
-Online release polling and automatic background downloading remain intentionally disabled; `stage` verifies offline Ed25519 manifest signatures, SHA-256 digests, anti-downgrade version floors, and `expand_contract` vs. `breaking` schema compatibility before publishing a pending slot. On Linux `systemd` deployments, retain the default `KillMode=control-group` so hard supervisor termination also cleans up supervised child processes.
+Background auto-polling remains disabled by default (`[updates].mode = "notify"`). On Linux `systemd` deployments, retain the default `KillMode=control-group` so hard supervisor termination also cleans up supervised child processes.
 
 ## What startup migrates
 

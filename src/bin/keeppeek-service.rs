@@ -100,12 +100,20 @@ mod service {
             };
 
         let current_exe = std::env::current_exe().ok();
-        let supervisor_config =
-            build_service_supervisor_config(&config_path, current_exe.as_deref());
+        let allow_local = std::env::args_os().any(|arg| arg == "--allow-local");
+        let allow_unsigned_main = std::env::args_os().any(|arg| arg == "--allow-unsigned-main");
+        let supervisor_config = build_service_supervisor_config(
+            &config_path,
+            current_exe.as_deref(),
+            allow_local,
+            allow_unsigned_main,
+        );
         info!(
             root = %supervisor_config.root.display(),
             fallback = ?supervisor_config.core.fallback_binary,
             vision_enabled = supervisor_config.vision.is_some(),
+            allow_local,
+            allow_unsigned_main,
             "starting KeepPeek thin SCM supervisor"
         );
         let mut supervisor = match SupervisorHandle::start(supervisor_config) {
@@ -215,6 +223,8 @@ mod service {
     fn build_service_supervisor_config(
         config_path: &Path,
         service_exe: Option<&Path>,
+        allow_local: bool,
+        allow_unsigned_main: bool,
     ) -> SupervisorConfig {
         let root = config_path
             .parent()
@@ -222,12 +232,15 @@ mod service {
             .unwrap_or_else(|| Path::new("."))
             .join("supervisor");
         let mut supervisor = SupervisorConfig::new(&root);
+        supervisor.launch_policy.allow_local = allow_local;
+        supervisor.launch_policy.allow_unsigned_main = allow_unsigned_main;
+        supervisor.enforce_root_acl = true;
         supervisor.core.fallback_binary = resolve_sibling_binary(service_exe, ComponentKind::Core);
         supervisor.core.args = vec![
             OsString::from("--config"),
             config_path.as_os_str().to_os_string(),
             OsString::from("--tui"),
-            OsString::from("off"),
+            OsString::from("never"),
         ];
         supervisor.core.hide_console_window = true;
 

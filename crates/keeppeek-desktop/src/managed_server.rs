@@ -39,14 +39,17 @@ pub fn build_desktop_supervisor_config(
     config_path: &Path,
     server_binary_override: Option<&Path>,
     desktop_exe: Option<&Path>,
+    allow_local: bool,
 ) -> SupervisorConfig {
     let mut config = SupervisorConfig::new(supervisor_root);
+    config.launch_policy.allow_local = allow_local;
+    config.enforce_root_acl = allow_local;
     config.core.fallback_binary = resolve_local_server_binary(server_binary_override, desktop_exe);
     config.core.args = vec![
         OsString::from("--config"),
         config_path.as_os_str().to_os_string(),
         OsString::from("--tui"),
-        OsString::from("off"),
+        OsString::from("never"),
     ];
     config.core.hide_console_window = true;
 

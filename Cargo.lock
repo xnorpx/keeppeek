@@ -3462,6 +3462,8 @@ dependencies = [
  "sha2 0.11.0",
  "tracing",
  "tracing-subscriber",
+ "ureq",
+ "url",
  "windows 0.62.2",
 ]
 
