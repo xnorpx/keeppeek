@@ -24,6 +24,7 @@ ENV XDG_CONFIG_HOME=/config
 
 COPY --from=builder /app/target/release/keeppeek /keeppeek
 COPY --from=builder --chmod=0644 /app/skills/keeppeek-mcp/SKILL.md /usr/local/share/keeppeek/skills/keeppeek-mcp/SKILL.md
+COPY --from=builder --chmod=0644 /app/skills/keeppeek-camera-debug/SKILL.md /usr/local/share/keeppeek/skills/keeppeek-camera-debug/SKILL.md
 COPY --from=builder --chown=65532:65532 /container-config/keeppeek /config/keeppeek
 
 VOLUME ["/config"]

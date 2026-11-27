@@ -28,7 +28,7 @@ struct Cli {
 enum Command {
     /// Export or apply configuration and secrets through the HTTP API.
     Config(keeppeek_backup::BackupArgs),
-    /// Run the KeepPeek MCP stdio bridge or export the bundled MCP agent skill.
+    /// Run the KeepPeek MCP stdio bridge or export bundled agent skills.
     Mcp(keeppeek::mcp::stdio::McpArgs),
     /// Manage private entries in secrets.toml without passing secret values on the command line.
     Secret(keeppeek::mcp::secret_cli::SecretArgs),
@@ -205,6 +205,21 @@ mod tests {
                 "skills/keeppeek-mcp"
             ])
             .is_ok()
+        );
+        assert!(Cli::try_parse_from(["keeppeek", "mcp", "skill", "--list"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "keeppeek",
+                "mcp",
+                "skill",
+                "camera-debug",
+                "--output",
+                "skills/keeppeek-camera-debug"
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["keeppeek", "mcp", "skill", "--list", "--output", "out"]).is_err()
         );
     }
 }

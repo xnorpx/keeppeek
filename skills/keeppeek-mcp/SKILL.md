@@ -24,11 +24,13 @@ Common binary and bundled skill locations:
 | Windows     | `keeppeek.exe` in the extracted archive or install directory | `<archive>\skills\keeppeek-mcp\SKILL.md`                                     |
 | Container   | `/keeppeek`                                                  | `/usr/local/share/keeppeek/skills/keeppeek-mcp/SKILL.md`                     |
 
-To print or export this skill directly from any KeepPeek binary:
+To print, list, or export bundled skills directly from any KeepPeek binary:
 
 ```sh
 keeppeek mcp skill
+keeppeek mcp skill --list
 keeppeek mcp skill --output ./skills/keeppeek-mcp
+keeppeek mcp skill camera-debug --output ./skills/keeppeek-camera-debug
 ```
 
 Locate the single application configuration file (`config.toml`) and its companion `secrets.toml` in the same directory:
@@ -320,6 +322,7 @@ Use read-only diagnostic tools in order from broad health to specific evidence:
    - Requires camera view permission and respects `snapshot_min_interval_seconds` per camera.
    - Privacy is fail-closed: KeepPeek refuses capture if a `[privacy]` schedule or runtime profile override is active or cannot be verified.
    - Frames are bounded-decoded, downscaled to `max_snapshot_dimension`, and JPEG-encoded within `max_snapshot_bytes`. KeepPeek does not apply server-side pixel masks; only camera-side (hardware) privacy masks already rendered by the camera appear in the frame.
+9. For deep protocol or bitstream debugging (decrypted PCAPNG captures, raw H.264/H.265/audio elementary streams, transport comparisons, and sanitized offline `ReplayCameraServer` fixtures via `camera_debugging`), switch to the bundled [`keeppeek-camera-debug`](../keeppeek-camera-debug/SKILL.md) skill (`keeppeek mcp skill camera-debug`). It requires explicit `[mcp].allow_camera_debugging = true` opt-in.
 
 ## 7. Strict Safety Rules
 

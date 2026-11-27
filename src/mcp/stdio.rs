@@ -52,8 +52,14 @@ pub struct McpArgs {
 /// Subcommands available under `keeppeek mcp`.
 #[derive(Debug, Clone, Subcommand)]
 pub enum McpCommand {
-    /// Print or install the bundled KeepPeek MCP agent skill.
+    /// Print, list, or install bundled KeepPeek agent skills.
     Skill {
+        /// Optional bundled skill name or alias (defaults to `keeppeek-mcp`).
+        #[arg(value_name = "SKILL")]
+        name: Option<String>,
+        /// List available bundled skills with one-line descriptions.
+        #[arg(long, conflicts_with_all = ["output", "name"])]
+        list: bool,
         /// Directory where `SKILL.md` should be written instead of `stdout`.
         #[arg(long, value_name = "DIR")]
         output: Option<PathBuf>,
@@ -174,8 +180,9 @@ impl McpHttpClient {
 /// Returns an error when configuration, credential loading, skill writing, or
 /// stdio framing fails.
 pub fn run(args: McpArgs) -> anyhow::Result<()> {
-    if let Some(McpCommand::Skill { output }) = args.command {
-        return run_skill_command(output.as_deref());
+    if let Some(McpCommand::Skill { name, list, output }) = args.command {
+        let mut stdout = io::stdout().lock();
+        return execute_skill_command(name.as_deref(), list, output.as_deref(), &mut stdout);
     }
     let server_url = resolve_server_url(args.server.as_deref(), args.config.as_deref())?;
     let credential = resolve_credential(args.credential_file.as_deref())?;
@@ -342,16 +349,39 @@ fn read_bounded_line<R: BufRead>(
     }
 }
 
-fn run_skill_command(output_dir: Option<&Path>) -> anyhow::Result<()> {
-    if let Some(dir) = output_dir {
-        let destination = skill::write_skill_to_dir(dir)?;
-        let mut stdout = io::stdout().lock();
-        writeln!(stdout, "{}", destination.display())?;
+fn execute_skill_command<W: Write>(
+    skill_name: Option<&str>,
+    list: bool,
+    output_dir: Option<&Path>,
+    writer: &mut W,
+) -> anyhow::Result<()> {
+    if list {
+        anyhow::ensure!(
+            output_dir.is_none(),
+            "--list cannot be combined with --output"
+        );
+        anyhow::ensure!(
+            skill_name.is_none(),
+            "--list cannot be combined with a skill name"
+        );
+        for entry in skill::list_skills() {
+            writeln!(writer, "{}\t{}", entry.name(), entry.description())?;
+        }
+        writer.flush()?;
         return Ok(());
     }
-    let mut stdout = io::stdout().lock();
-    stdout.write_all(skill::render_skill_markdown().as_bytes())?;
-    stdout.flush()?;
+    let resolved = match skill_name {
+        Some(name) => skill::resolve_skill(name)?,
+        None => skill::BundledSkill::KeeppeekMcp,
+    };
+    if let Some(dir) = output_dir {
+        let destination = skill::write_named_skill_to_dir(resolved, dir)?;
+        writeln!(writer, "{}", destination.display())?;
+        writer.flush()?;
+        return Ok(());
+    }
+    writer.write_all(skill::render_named_skill_markdown(resolved).as_bytes())?;
+    writer.flush()?;
     Ok(())
 }
 
@@ -500,5 +530,95 @@ mod tests {
         let third: JsonRpcResponse = serde_json::from_str(lines[2]).unwrap();
         assert_eq!(third.id, json!(2));
         assert_eq!(third.result, Some(json!({})));
+    }
+
+    fn canonical_skill_markdown(dir_name: &str) -> String {
+        std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("skills")
+                .join(dir_name)
+                .join(skill::SKILL_FILE_NAME),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn skill_cli_command_renders_default_list_and_named_output() {
+        let mut default_out = Vec::new();
+        execute_skill_command(None, false, None, &mut default_out).unwrap();
+        assert_eq!(
+            String::from_utf8(default_out).unwrap(),
+            canonical_skill_markdown("keeppeek-mcp")
+        );
+
+        let mut list_out = Vec::new();
+        execute_skill_command(None, true, None, &mut list_out).unwrap();
+        let list_text = String::from_utf8(list_out).unwrap();
+        assert!(list_text.contains("keeppeek-mcp\t"));
+        assert!(list_text.contains("keeppeek-camera-debug\t"));
+        assert_eq!(list_text.lines().count(), 2);
+
+        let canonical_debug = canonical_skill_markdown("keeppeek-camera-debug");
+        let mut debug_out = Vec::new();
+        execute_skill_command(Some("camera-debug"), false, None, &mut debug_out).unwrap();
+        assert_eq!(String::from_utf8(debug_out).unwrap(), canonical_debug);
+
+        let temp_dir =
+            std::env::temp_dir().join(format!("keeppeek-stdio-skill-{}", uuid::Uuid::new_v4()));
+        let mut write_out = Vec::new();
+        execute_skill_command(
+            Some("keeppeek-camera-debug"),
+            false,
+            Some(&temp_dir),
+            &mut write_out,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(temp_dir.join(skill::SKILL_FILE_NAME)).unwrap(),
+            canonical_debug
+        );
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn skill_cli_command_rejects_conflicts_and_unknown_names() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct TestCli {
+            #[command(flatten)]
+            mcp: McpArgs,
+        }
+
+        let mut conflict_out = Vec::new();
+        assert!(
+            execute_skill_command(None, true, Some(Path::new("out")), &mut conflict_out).is_err()
+        );
+        assert!(
+            execute_skill_command(Some("camera-debug"), true, None, &mut conflict_out).is_err()
+        );
+        assert!(
+            execute_skill_command(Some("nonexistent"), false, None, &mut conflict_out).is_err()
+        );
+
+        assert!(TestCli::try_parse_from(["keeppeek-mcp", "skill", "--list"]).is_ok());
+        assert!(TestCli::try_parse_from(["keeppeek-mcp", "skill", "camera-debug"]).is_ok());
+        assert!(
+            TestCli::try_parse_from([
+                "keeppeek-mcp",
+                "skill",
+                "keeppeek-camera-debug",
+                "--output",
+                "skills/keeppeek-camera-debug"
+            ])
+            .is_ok()
+        );
+        assert!(
+            TestCli::try_parse_from(["keeppeek-mcp", "skill", "--list", "--output", "out"])
+                .is_err()
+        );
+        assert!(
+            TestCli::try_parse_from(["keeppeek-mcp", "skill", "--list", "camera-debug"]).is_err()
+        );
     }
 }
