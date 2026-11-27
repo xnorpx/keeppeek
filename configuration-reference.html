@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-f3bc00c1.js";
+            window.path_to_searchindex_js = "searchindex-856bdc02.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-515efa10.js"></script>
@@ -961,16 +961,17 @@ maximum_attempts = 3
 <p>Outbox and deduplication state live in memory and reset on restart; the retired <code>mqtt-forwarder.db</code> is deleted at startup without replay. See <a href="./notifications-and-integrations.html">Notifications and integrations</a>.</p>
 <h2 id="mcp-server"><a class="header" href="#mcp-server">MCP server</a></h2>
 <p><strong>Type:</strong> <code>McpConfig</code> | <strong>Section:</strong> <code>[mcp]</code> | <strong>Ownership:</strong> Operator | <strong>Apply:</strong> Restart | <strong>Sources:</strong> <a href="https://github.com/xnorpx/keeppeek/blob/main/src/config/mcp.rs">src/config/mcp.rs</a>, <a href="https://github.com/xnorpx/keeppeek/blob/main/src/server/mcp.rs">src/server/mcp.rs</a></p>
-<p>The embedded Streamable HTTP endpoint (<code>POST /mcp</code>), configuration writes, and single-frame camera snapshots default to disabled. The canonical writer omits <code>[mcp]</code> when all fields stay at defaults.</p>
+<p>The embedded Streamable HTTP endpoint (<code>POST /mcp</code>), configuration writes, on-camera hardware writes, and single-frame camera snapshots default to disabled. The canonical writer omits <code>[mcp]</code> when all fields stay at defaults.</p>
 <div class="table-wrapper">
 <table>
 <thead>
 <tr><th>Field</th><th>Type</th><th>Default</th><th>Limits and notes</th></tr>
 </thead>
 <tbody>
-<tr><td><code>enabled</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable <code>POST /mcp</code>; returns <code>404</code> when <code>false</code>.</td></tr>
+<tr><td><code>enabled</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable <code>POST /mcp</code> (and loopback <code>/mcp/secret-entry</code>); returns <code>404</code> when <code>false</code>.</td></tr>
 <tr><td><code>allow_writes</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable opt-in Administrator configuration mutation tools unless overridden by a read-only client.</td></tr>
 <tr><td><code>allow_snapshots</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable opt-in privacy-gated single-frame snapshots via <code>get_camera_snapshot</code> (camera hardware masks only).</td></tr>
+<tr><td><code>allow_camera_device_writes</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable opt-in live on-camera hardware writes via <code>update_camera_device_settings</code> (<code>dry_run: false</code>) when writable.</td></tr>
 <tr><td><code>max_concurrent_requests</code></td><td><code>usize</code></td><td><code>4</code></td><td><code>1..=32</code> concurrent in-flight MCP requests.</td></tr>
 <tr><td><code>max_response_bytes</code></td><td><code>usize</code></td><td><code>65536</code></td><td><code>4096..=262144</code> bytes serialized JSON-RPC payload (<code>get_camera_snapshot</code> uses <code>max_snapshot_bytes</code>).</td></tr>
 <tr><td><code>request_timeout_seconds</code></td><td><code>u64</code></td><td><code>15</code></td><td><code>1..=60</code> seconds server deadline per request.</td></tr>

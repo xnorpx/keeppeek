@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-f3bc00c1.js";
+            window.path_to_searchindex_js = "searchindex-856bdc02.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-515efa10.js"></script>
@@ -2786,16 +2786,17 @@ maximum_attempts = 3
 <p>Outbox and deduplication state live in memory and reset on restart; the retired <code>mqtt-forwarder.db</code> is deleted at startup without replay. See <a href="#notifications-and-integrations">Notifications and integrations</a>.</p>
 <h2 id="mcp-server"><a class="header" href="#mcp-server">MCP server</a></h2>
 <p><strong>Type:</strong> <code>McpConfig</code> | <strong>Section:</strong> <code>[mcp]</code> | <strong>Ownership:</strong> Operator | <strong>Apply:</strong> Restart | <strong>Sources:</strong> <a href="https://github.com/xnorpx/keeppeek/blob/main/src/config/mcp.rs">src/config/mcp.rs</a>, <a href="https://github.com/xnorpx/keeppeek/blob/main/src/server/mcp.rs">src/server/mcp.rs</a></p>
-<p>The embedded Streamable HTTP endpoint (<code>POST /mcp</code>), configuration writes, and single-frame camera snapshots default to disabled. The canonical writer omits <code>[mcp]</code> when all fields stay at defaults.</p>
+<p>The embedded Streamable HTTP endpoint (<code>POST /mcp</code>), configuration writes, on-camera hardware writes, and single-frame camera snapshots default to disabled. The canonical writer omits <code>[mcp]</code> when all fields stay at defaults.</p>
 <div class="table-wrapper">
 <table>
 <thead>
 <tr><th>Field</th><th>Type</th><th>Default</th><th>Limits and notes</th></tr>
 </thead>
 <tbody>
-<tr><td><code>enabled</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable <code>POST /mcp</code>; returns <code>404</code> when <code>false</code>.</td></tr>
+<tr><td><code>enabled</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable <code>POST /mcp</code> (and loopback <code>/mcp/secret-entry</code>); returns <code>404</code> when <code>false</code>.</td></tr>
 <tr><td><code>allow_writes</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable opt-in Administrator configuration mutation tools unless overridden by a read-only client.</td></tr>
 <tr><td><code>allow_snapshots</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable opt-in privacy-gated single-frame snapshots via <code>get_camera_snapshot</code> (camera hardware masks only).</td></tr>
+<tr><td><code>allow_camera_device_writes</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable opt-in live on-camera hardware writes via <code>update_camera_device_settings</code> (<code>dry_run: false</code>) when writable.</td></tr>
 <tr><td><code>max_concurrent_requests</code></td><td><code>usize</code></td><td><code>4</code></td><td><code>1..=32</code> concurrent in-flight MCP requests.</td></tr>
 <tr><td><code>max_response_bytes</code></td><td><code>usize</code></td><td><code>65536</code></td><td><code>4096..=262144</code> bytes serialized JSON-RPC payload (<code>get_camera_snapshot</code> uses <code>max_snapshot_bytes</code>).</td></tr>
 <tr><td><code>request_timeout_seconds</code></td><td><code>u64</code></td><td><code>15</code></td><td><code>1..=60</code> seconds server deadline per request.</td></tr>
@@ -4097,7 +4098,8 @@ show_name: true
 <h1 id="mcp-server-and-llm-configuration"><a class="header" href="#mcp-server-and-llm-configuration">MCP server and LLM configuration</a></h1>
 <p>KeepPeek includes built-in Model Context Protocol (MCP) support so AI assistants and MCP clients
 (such as Claude, Codex, Cursor, and Gemini) can inspect recorder health, logs, events, storage,
-and recording coverage, and preview or apply validated configuration changes.</p>
+and recording coverage, onboard and tune cameras without exposing plaintext credentials, and
+preview or apply validated configuration changes.</p>
 <p>MCP is disabled by default for network access. You can connect locally through the <code>keeppeek mcp</code>
 <code>stdio</code> bridge or enable the embedded Streamable HTTP endpoint (<code>POST /mcp</code>) in <code>config.toml</code>.</p>
 <pre class="mermaid">flowchart LR
@@ -4105,12 +4107,16 @@ and recording coverage, and preview or apply validated configuration changes.</p
     B --&gt;|Bearer auth over HTTP or HTTPS| K[KeepPeek POST /mcp]
     R[Remote MCP client] --&gt;|HTTPS Bearer auth| P[Trusted reverse proxy or VPN]
     P --&gt; K
+    U[Local operator browser] --&gt;|Loopback single-use token| S[GET/POST /mcp/secret-entry]
+    S --&gt; K
 </pre>
 
 <h2 id="use-the-bundled-agent-skill"><a class="header" href="#use-the-bundled-agent-skill">Use the bundled agent skill</a></h2>
 <p>KeepPeek ships a canonical agent skill (<code>skills/keeppeek-mcp/SKILL.md</code>) that teaches LLM
-assistants how to locate <code>config.toml</code> and <code>secrets.toml</code>, use <code>{secret:KEY}</code> references, run
-<code>plan_configuration_change</code> before requesting writes, and respect privacy and role boundaries.</p>
+assistants how to locate <code>config.toml</code> and <code>secrets.toml</code>, collect missing secrets out-of-band via
+<code>request_secret_entry</code> or <code>keeppeek secret</code>, probe cameras with <code>{secret:KEY}</code> references, run
+<code>plan_configuration_change</code> or dry-run hardware previews before requesting writes, and respect
+privacy and role boundaries.</p>
 <p>Print the skill from any installed KeepPeek binary or export it to a directory:</p>
 <pre><code class="language-sh">keeppeek mcp skill
 keeppeek mcp skill --output ./skills/keeppeek-mcp
@@ -4134,12 +4140,14 @@ skills folder or point the assistant at the exported file before asking it to in
 KeepPeek.</p>
 <h2 id="enable-and-configure-mcp"><a class="header" href="#enable-and-configure-mcp">Enable and configure <code>[mcp]</code></a></h2>
 <p>All MCP server settings live in the existing <code>config.toml</code> under <code>[mcp]</code>. Every capability that
-opens network access, mutates configuration, or captures camera frames defaults to <code>false</code>.</p>
+opens network access, mutates configuration, writes on-camera hardware settings, or captures camera
+frames defaults to <code>false</code>.</p>
 <p>Stop KeepPeek before editing <code>config.toml</code> manually, add <code>[mcp]</code>, and restart the server:</p>
 <pre><code class="language-toml">[mcp]
 enabled = true
 allow_writes = false
 allow_snapshots = false
+allow_camera_device_writes = false
 max_concurrent_requests = 4
 max_response_bytes = 65536
 request_timeout_seconds = 15
@@ -4153,9 +4161,10 @@ snapshot_min_interval_seconds = 5
 <tr><th>Field</th><th>Type</th><th>Default</th><th>Allowed range</th><th>Meaning</th></tr>
 </thead>
 <tbody>
-<tr><td><code>enabled</code></td><td><code>bool</code></td><td><code>false</code></td><td><code>true</code>/<code>false</code></td><td>Enable the embedded Streamable HTTP endpoint at <code>POST /mcp</code>.</td></tr>
-<tr><td><code>allow_writes</code></td><td><code>bool</code></td><td><code>false</code></td><td><code>true</code>/<code>false</code></td><td>Permit Administrator write tools after explicit plan approval.</td></tr>
+<tr><td><code>enabled</code></td><td><code>bool</code></td><td><code>false</code></td><td><code>true</code>/<code>false</code></td><td>Enable the embedded Streamable HTTP endpoint at <code>POST /mcp</code> (and loopback <code>/mcp/secret-entry</code>).</td></tr>
+<tr><td><code>allow_writes</code></td><td><code>bool</code></td><td><code>false</code></td><td><code>true</code>/<code>false</code></td><td>Permit Administrator KeepPeek configuration write tools after explicit approval.</td></tr>
 <tr><td><code>allow_snapshots</code></td><td><code>bool</code></td><td><code>false</code></td><td><code>true</code>/<code>false</code></td><td>Permit privacy-gated single-frame snapshots via <code>get_camera_snapshot</code>.</td></tr>
+<tr><td><code>allow_camera_device_writes</code></td><td><code>bool</code></td><td><code>false</code></td><td><code>true</code>/<code>false</code></td><td>Permit live on-camera hardware writes via <code>update_camera_device_settings</code> (<code>dry_run: false</code>).</td></tr>
 <tr><td><code>max_concurrent_requests</code></td><td><code>usize</code></td><td><code>4</code></td><td><code>1..=32</code></td><td>Maximum simultaneous in-flight MCP requests.</td></tr>
 <tr><td><code>max_response_bytes</code></td><td><code>usize</code></td><td><code>65536</code></td><td><code>4096..=262144</code></td><td>Maximum serialized JSON-RPC response size in bytes (<code>get_camera_snapshot</code> uses <code>max_snapshot_bytes</code>).</td></tr>
 <tr><td><code>request_timeout_seconds</code></td><td><code>u64</code></td><td><code>15</code></td><td><code>1..=60</code></td><td>Server-side deadline per MCP request, in seconds.</td></tr>
@@ -4170,8 +4179,9 @@ file ownership details.</p>
 <h2 id="connect-an-mcp-client"><a class="header" href="#connect-an-mcp-client">Connect an MCP client</a></h2>
 <p>Create a dedicated named credential in <strong>Settings &gt; Access &amp; roles</strong> for each MCP client so its
 activity appears separately in audit records and can be rotated or revoked independently. Use the
-<strong>User</strong> role for camera-scoped read-only monitoring, or <strong>Administrator</strong> for full diagnostics and
-configuration management. See <a href="#authentication-and-access-control">Authentication and access control</a>.</p>
+<strong>User</strong> role for camera-scoped read-only monitoring, or <strong>Administrator</strong> for full diagnostics,
+camera onboarding, hardware tuning, and configuration management. See
+<a href="#authentication-and-access-control">Authentication and access control</a>.</p>
 <h3 id="local-stdio-bridge"><a class="header" href="#local-stdio-bridge">Local <code>stdio</code> bridge</a></h3>
 <p>Most desktop AI assistants launch MCP servers over <code>stdio</code>. KeepPeek provides a built-in <code>stdio</code>
 JSON-RPC bridge that talks to your KeepPeek server over <code>POST /mcp</code> (with <code>[mcp].enabled = true</code>):</p>
@@ -4183,8 +4193,9 @@ or <code>https://keeppeek.example.net</code>).</li>
 <li><code>--config &lt;PATH&gt;</code> selects an alternate <code>config.toml</code> when resolving local server settings.</li>
 <li><code>--credential-file &lt;PATH&gt;</code> reads the Bearer access key from an owner-only file instead of an
 environment variable.</li>
-<li><code>--read-only</code> sends <code>X-KeepPeek-MCP-Read-Only: true</code>, blocking all write tools even if the server
-has <code>[mcp].allow_writes = true</code>.</li>
+<li><code>--read-only</code> sends <code>X-KeepPeek-MCP-Read-Only: true</code>, blocking all configuration and on-camera
+hardware write tools even if the server enables <code>[mcp].allow_writes</code> or
+<code>[mcp].allow_camera_device_writes</code>.</li>
 <li><code>stdout</code> is reserved strictly for newline-delimited JSON-RPC messages; warnings and logs go to
 <code>stderr</code>.</li>
 </ul>
@@ -4221,7 +4232,8 @@ inside the MCP client’s JSON file:</p>
 }
 </code></pre>
 <p>Remove <code>"--read-only"</code> only when you intentionally allow the assistant to apply approved changes
-against a server configured with <code>[mcp].allow_writes = true</code>.</p>
+against a server configured with <code>[mcp].allow_writes = true</code> or
+<code>[mcp].allow_camera_device_writes = true</code>.</p>
 <h3 id="remote-streamable-http-post-mcp"><a class="header" href="#remote-streamable-http-post-mcp">Remote Streamable HTTP (<code>POST /mcp</code>)</a></h3>
 <p>Clients that support MCP Streamable HTTP directly can send JSON-RPC requests to <code>POST /mcp</code> once
 <code>[mcp].enabled = true</code> is configured and KeepPeek has restarted:</p>
@@ -4245,14 +4257,56 @@ X-KeepPeek-MCP-Read-Only: true
 }
 </code></pre>
 <p>Omit <code>X-KeepPeek-MCP-Read-Only</code> when the client needs to call approved write tools and the server
-enables <code>[mcp].allow_writes = true</code>.</p>
+enables <code>[mcp].allow_writes = true</code> or <code>[mcp].allow_camera_device_writes = true</code>.</p>
 <p>When exposing <code>POST /mcp</code> beyond loopback, keep <code>[access].require_secure_remote = true</code> and
 terminate HTTPS at a trusted reverse proxy listed in <code>[access].trusted_proxies</code>, or reach KeepPeek
 over a private VPN. Direct plain HTTP from a remote-classified address is rejected with HTTP <code>426</code>.</p>
-<h2 id="available-mcp-tools"><a class="header" href="#available-mcp-tools">Available MCP tools</a></h2>
-<h3 id="read-only-and-dry-run-tools"><a class="header" href="#read-only-and-dry-run-tools">Read-only and dry-run tools</a></h3>
-<p>These tools do not modify persisted configuration or runtime settings. <code>plan_configuration_change</code>
-always runs as a dry-run preview and remains available even when <code>allow_writes = false</code>.</p>
+<h2 id="manage-secrets-without-plaintext-chat-keeppeek-secret-and-loopback-ui-handoff"><a class="header" href="#manage-secrets-without-plaintext-chat-keeppeek-secret-and-loopback-ui-handoff">Manage secrets without plaintext chat (<code>keeppeek secret</code> and loopback UI handoff)</a></h2>
+<p>KeepPeek never accepts raw camera passwords or webhook secrets through MCP tool arguments, and
+assistants should never ask you to paste passwords into chat. Store secrets in <code>secrets.toml</code>
+out-of-band using either the local CLI or the loopback secret-entry handoff, then reference them as
+<code>{secret:KEY}</code> or <code>{secret:KEY|url}</code>.</p>
+<h3 id="keeppeek-secret-cli"><a class="header" href="#keeppeek-secret-cli"><code>keeppeek secret</code> CLI</a></h3>
+<p>Manage <code>secrets.toml</code> entries directly from a local shell without ever placing secret values in
+command-line arguments:</p>
+<pre><code class="language-sh">keeppeek secret set &lt;KEY&gt; [--config &lt;PATH&gt;] [--server &lt;URL&gt;] [--stdin]
+keeppeek secret list [--config &lt;PATH&gt;]
+keeppeek secret remove &lt;KEY&gt; [--config &lt;PATH&gt;]
+</code></pre>
+<ul>
+<li>Keys must match <code>^[A-Z_][A-Z0-9_]*$</code> (1–128 bytes); values must be non-empty, at most 4 KiB, and
+contain no NUL bytes.</li>
+<li><code>keeppeek secret set</code> reads values only from a no-echo interactive terminal prompt or <code>--stdin</code>
+(never from positional arguments or flags).</li>
+<li><code>keeppeek secret list</code> prints sorted key names only and never prints values.</li>
+<li>Writes use owner-only file permissions (<code>0600</code> on Unix / owner-only DACL on Windows), atomic
+replacement under the shared configuration lock, and zeroized temporary buffers.</li>
+<li>A running KeepPeek server automatically detects <code>secrets.toml</code> updates so newly added keys work
+immediately in <code>probe_camera_streams</code> and <code>manage_camera</code> without restarting.</li>
+</ul>
+<h3 id="loopback-only-secret-entry-ui-handoff-get--post-mcpsecret-entry"><a class="header" href="#loopback-only-secret-entry-ui-handoff-get--post-mcpsecret-entry">Loopback-only secret-entry UI handoff (<code>GET</code> / <code>POST /mcp/secret-entry</code>)</a></h3>
+<p>When an assistant discovers that a secret key is missing from <code>list_secret_keys</code>, it can call
+<code>request_secret_entry</code> to create a short-lived, single-use handoff (<code>60..=300</code> seconds, default 180,
+capped at 16 pending handoffs). KeepPeek returns a loopback URL:</p>
+<pre><code class="language-text">http://127.0.0.1:&lt;port&gt;/mcp/secret-entry?token=&lt;256-bit-single-use-token&gt;
+</code></pre>
+<ul>
+<li>Open the link locally on the recorder host, enter the values in the self-contained HTML form, and
+submit. KeepPeek writes <code>secrets.toml</code> atomically, reloads secrets live without a restart,
+invalidates the token immediately, emits a value-free audit event, and never echoes secret values.</li>
+<li>The assistant polls <code>get_secret_entry_status</code>, which returns only <code>status</code> (<code>"pending"</code>,
+<code>"completed"</code>, <code>"expired"</code>, or <code>"failed"</code>), <code>configured_keys</code>, and <code>expires_at_ms</code>.</li>
+<li><code>/mcp/secret-entry</code> is strictly <strong>loopback-only</strong>: non-loopback connections, proxy-forwarded
+requests, non-loopback <code>Host</code> headers, and cross-origin <code>POST</code> requests are rejected with <code>403</code>.
+When <code>[mcp].enabled = false</code>, <code>/mcp/secret-entry</code> returns <code>404</code>.</li>
+<li>Form responses enforce <code>Cache-Control: no-store</code>, <code>Referrer-Policy: same-origin</code>,
+<code>X-Frame-Options: DENY</code>, and a strict Content Security Policy.</li>
+</ul>
+<h2 id="available-mcp-tools-27-total"><a class="header" href="#available-mcp-tools-27-total">Available MCP tools (27 total)</a></h2>
+<h3 id="read-only-dry-run-onboarding-and-secret-handoff-tools-18"><a class="header" href="#read-only-dry-run-onboarding-and-secret-handoff-tools-18">Read-only, dry-run, onboarding, and secret-handoff tools (18)</a></h3>
+<p>These tools do not modify persisted KeepPeek configuration or on-camera hardware settings.
+<code>plan_configuration_change</code> always runs as a dry-run preview and remains available even when
+<code>allow_writes = false</code>.</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -4269,14 +4323,19 @@ always runs as a dry-run preview and remains available even when <code>allow_wri
 <tr><td><code>plan_configuration_change</code></td><td>Administrator</td><td>Validate a proposed configuration change and return <code>plan_id</code>, revision, redacted diff, and impact.</td></tr>
 <tr><td><code>get_storage_status</code></td><td>Administrator</td><td>Inspect storage configuration, disk pressure, named volumes, archive status, and maintenance state.</td></tr>
 <tr><td><code>get_notification_status</code></td><td>Administrator</td><td>Summarize notification rules, cloud push status, and MQTT delivery health without raw secrets.</td></tr>
-<tr><td><code>discover_cameras</code></td><td>Administrator</td><td>Run a bounded camera discovery and connection probe.</td></tr>
+<tr><td><code>discover_cameras</code></td><td>Administrator</td><td>Run a bounded LAN camera discovery probe.</td></tr>
+<tr><td><code>search_camera_catalog</code></td><td>Administrator</td><td>Search KeepPeek’s embedded camera catalog (<code>limit</code> <code>1..=25</code>) and attach credential-free RTSP <code>stream_hints</code> by IP.</td></tr>
+<tr><td><code>probe_camera_streams</code></td><td>Administrator</td><td>Probe ONVIF/RTSP streams using single <code>{secret:KEY}</code> refs or <code>credential_candidates</code> (max 5); returns refs only.</td></tr>
+<tr><td><code>request_secret_entry</code></td><td>Administrator</td><td>Create a single-use loopback <code>/mcp/secret-entry</code> handoff URL and CLI instructions for missing secret keys.</td></tr>
+<tr><td><code>get_secret_entry_status</code></td><td>Administrator</td><td>Check whether a secret-entry handoff is <code>pending</code>, <code>completed</code>, <code>expired</code>, or <code>failed</code> (never returns values).</td></tr>
+<tr><td><code>get_camera_device_settings</code></td><td>Administrator</td><td>Read live on-camera hardware settings and supported/unsupported sections for one configured camera.</td></tr>
 <tr><td><code>get_runtime_configuration</code></td><td>Administrator</td><td>Read runtime storage, retention, and listener settings and revision.</td></tr>
 <tr><td><code>list_runtime_profiles</code></td><td>Administrator</td><td>List saved runtime profiles and active selection.</td></tr>
 </tbody>
 </table>
 </div>
-<h3 id="opt-in-write-tools"><a class="header" href="#opt-in-write-tools">Opt-in write tools</a></h3>
-<p>Write tools require all three conditions:</p>
+<h3 id="opt-in-keeppeek-configuration-write-tools-7"><a class="header" href="#opt-in-keeppeek-configuration-write-tools-7">Opt-in KeepPeek configuration write tools (7)</a></h3>
+<p>Configuration write tools require all three conditions:</p>
 <ol>
 <li><code>[mcp].allow_writes = true</code> in <code>config.toml</code>.</li>
 <li>An <strong>Administrator</strong> credential (or trusted-local Administrator access).</li>
@@ -4289,7 +4348,7 @@ always runs as a dry-run preview and remains available even when <code>allow_wri
 </thead>
 <tbody>
 <tr><td><code>apply_configuration_plan</code></td><td>Administrator</td><td>Apply a previously reviewed <code>plan_configuration_change</code> plan with revision verification.</td></tr>
-<tr><td><code>manage_camera</code></td><td>Administrator</td><td>Add, update, or remove a camera by IP address using <code>{secret:KEY}</code> / `{secret:KEY</td></tr>
+<tr><td><code>manage_camera</code></td><td>Administrator</td><td>Add, update, or remove a camera by IP address using <code>{secret:KEY}</code> or <code>{secret:KEY|url}</code> references only.</td></tr>
 <tr><td><code>update_runtime_configuration</code></td><td>Administrator</td><td>Update runtime storage, retention, or listener settings (always requires <code>expected_configuration_revision</code>).</td></tr>
 <tr><td><code>manage_configuration_template</code></td><td>Administrator</td><td>Save, duplicate, or delete reusable camera templates using <code>{secret:KEY}</code> references.</td></tr>
 <tr><td><code>manage_notification_rule</code></td><td>Administrator</td><td>List (read-only), save draft, activate, or delete notification rules (<code>push</code>/<code>webhook</code>/<code>forwarder</code> require <code>{secret:KEY}</code> or <code>destination_ref</code>).</td></tr>
@@ -4298,7 +4357,26 @@ always runs as a dry-run preview and remains available even when <code>allow_wri
 </tbody>
 </table>
 </div>
-<h3 id="opt-in-snapshot-tool"><a class="header" href="#opt-in-snapshot-tool">Opt-in snapshot tool</a></h3>
+<h3 id="opt-in-on-camera-hardware-write-tool-1"><a class="header" href="#opt-in-on-camera-hardware-write-tool-1">Opt-in on-camera hardware write tool (1)</a></h3>
+<p><code>update_camera_device_settings</code> defaults to <code>dry_run: true</code>, which validates camera bounds and
+returns a redacted before/after diff even when <code>[mcp].allow_camera_device_writes = false</code>. Live
+application (<code>dry_run: false</code>) requires all three conditions:</p>
+<ol>
+<li><code>[mcp].allow_camera_device_writes = true</code> in <code>config.toml</code>.</li>
+<li>An <strong>Administrator</strong> credential (or trusted-local Administrator access).</li>
+<li>No <code>--read-only</code> flag and no <code>X-KeepPeek-MCP-Read-Only: true</code> header.</li>
+</ol>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Tool</th><th>Minimum role</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>update_camera_device_settings</code></td><td>Administrator</td><td>Dry-run preview (<code>dry_run: true</code>) or apply (<code>dry_run: false</code>) on-camera hardware settings with read-back verification.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="opt-in-snapshot-tool-1"><a class="header" href="#opt-in-snapshot-tool-1">Opt-in snapshot tool (1)</a></h3>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -4309,20 +4387,59 @@ always runs as a dry-run preview and remains available even when <code>allow_wri
 </tbody>
 </table>
 </div>
+<h2 id="multi-candidate-stream-probing-and-on-camera-hardware-support"><a class="header" href="#multi-candidate-stream-probing-and-on-camera-hardware-support">Multi-candidate stream probing and on-camera hardware support</a></h2>
+<h3 id="pre-populated-secretstoml-multi-candidate-probing"><a class="header" href="#pre-populated-secretstoml-multi-candidate-probing">Pre-populated <code>secrets.toml</code> multi-candidate probing</a></h3>
+<p>If a site uses a few known camera credential pairs already stored in <code>secrets.toml</code>, an assistant
+can pass up to <strong>5</strong> <code>{secret:KEY}</code> pairs in <code>probe_camera_streams.credential_candidates</code>:</p>
+<ul>
+<li>Raw credential fields and inline RTSP userinfo or query-string credentials are rejected.</li>
+<li>Targets are SSRF-bounded: unspecified, multicast, broadcast, link-local (<code>169.254.0.0/16</code>),
+public IPs, unconfigured loopback addresses, and mismatched RTSP URL hosts are blocked.</li>
+<li>Probing stops immediately on the first matching credential pair or if the camera reports lockout,
+HTTP <code>429</code>, or becomes unreachable.</li>
+<li>Responses return only <code>matched_credentials</code> (<code>{secret:KEY}</code> references), <code>failed_candidates</code>
+indexes, <code>recommended_backend</code>, verified RTSP URLs, and redacted diagnostics.</li>
+</ul>
+<h3 id="honest-on-camera-hardware-capability-matrix"><a class="header" href="#honest-on-camera-hardware-capability-matrix">Honest on-camera hardware capability matrix</a></h3>
+<p><code>get_camera_device_settings</code> and <code>update_camera_device_settings</code> normalize hardware controls into
+seven sections (<code>encoder</code>, <code>imaging</code>, <code>lighting</code>, <code>motion</code>, <code>osd</code>, <code>time</code>, <code>ptz</code>) and report
+unsupported sections honestly per protocol:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Camera protocol</th><th>Supported sections and capabilities</th></tr>
+</thead>
+<tbody>
+<tr><td>Reolink</td><td><code>encoder</code> (read), <code>imaging</code> (brightness, contrast, saturation, sharpness, day/night, HDR), <code>lighting</code> (IR mode, white LED), <code>motion</code> (MD &amp; AI sensitivity), <code>osd</code> (channel name, max 32 chars), <code>time</code> (clock/NTP), <code>ptz</code> (presets, guard).</td></tr>
+<tr><td>Hikvision ISAPI</td><td><code>encoder</code> (stream resolution, bitrate, framerate), <code>motion</code> (motion + smart rules: <code>line</code>, <code>field</code>, <code>region_entrance</code>, <code>region_exit</code>), <code>time</code> (<code>manual</code>/<code>ntp</code>), <code>ptz</code> (<code>store_preset</code> 1–300).</td></tr>
+<tr><td>ONVIF</td><td><code>encoder</code> (video encoder settings validated against camera <code>GetVideoEncoderConfigurationOptions</code>), <code>osd</code> (plain-text OSD up to 64 chars).</td></tr>
+<tr><td>RTSP-only</td><td>None (<code>supported_sections: []</code>, all 7 sections listed in <code>unsupported_sections</code>; live writes return <code>501</code>).</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Hard security exclusions:</strong> <code>update_camera_device_settings</code> permanently refuses firmware upload or
+flashing, factory reset or default restore, camera reboot, password/user/credential modifications,
+and IP/network/DHCP/gateway/DNS/port reassignment with HTTP <code>403</code>, even when <code>dry_run: true</code>.</p>
 <h2 id="safe-configuration-workflow"><a class="header" href="#safe-configuration-workflow">Safe configuration workflow</a></h2>
-<p>KeepPeek enforces plan-before-apply so an assistant never modifies cameras or storage blindly:</p>
+<p>KeepPeek enforces plan-before-apply so an assistant never modifies cameras, hardware settings, or
+storage blindly:</p>
 <ol>
 <li>Inspect the current configuration (<code>get_configuration</code>) and available secret key names
 (<code>list_secret_keys</code>).</li>
-<li>Add any new camera or integration passwords directly to <code>secrets.toml</code> on the server (or via
-<code>KEEPPEEK_SECRET_&lt;KEY&gt;</code> in the server environment) and reference them as <code>{secret:KEY}</code> or
-<code>{secret:KEY|url}</code>. Never paste raw passwords into an LLM prompt.</li>
-<li>Run <code>discover_cameras</code> (read-only LAN probe) if adding new devices, then call
-<code>plan_configuration_change</code> (or preview a <code>manage_camera</code> / <code>manage_notification_rule</code> payload).</li>
+<li>Add missing camera or integration passwords out-of-band via <code>keeppeek secret set &lt;KEY&gt;</code> or the
+loopback <code>request_secret_entry</code> UI handoff (or <code>KEEPPEEK_SECRET_&lt;KEY&gt;</code> in the server
+environment), and reference them as <code>{secret:KEY}</code> or <code>{secret:KEY|url}</code>. Never paste raw
+passwords into an LLM prompt.</li>
+<li>Run <code>discover_cameras</code> and <code>search_camera_catalog</code> for new devices, verify streams with
+<code>probe_camera_streams</code>, then call <code>plan_configuration_change</code> (or preview a <code>manage_camera</code> /
+<code>manage_notification_rule</code> payload).</li>
 <li>Review the returned redacted diff, validation errors, revision, and live-apply versus restart
 summary.</li>
 <li>Approve the plan explicitly, then allow the assistant to call <code>apply_configuration_plan</code> (or the
 approved <code>manage_camera</code> / <code>manage_notification_rule</code> write action).</li>
+<li>If tuning on-camera settings, inspect with <code>get_camera_device_settings</code>, preview with
+<code>update_camera_device_settings</code> (<code>dry_run: true</code>), approve explicitly, and apply with
+<code>dry_run: false</code> (requires <code>[mcp].allow_camera_device_writes = true</code>).</li>
 <li>Check <code>get_server_health</code> and <code>search_logs</code> to confirm activation, or restart KeepPeek when the
 plan reports that a restart is required.</li>
 </ol>
@@ -4337,17 +4454,19 @@ tokens are rejected, and failed authentication rate limits apply.</li>
 <li><strong>User</strong> credentials can call only <code>get_server_health</code>, <code>search_events</code>,
 <code>get_recording_coverage</code>, and (when enabled) <code>get_camera_snapshot</code>, strictly scoped to their
 granted cameras.</li>
-<li><strong>Administrator</strong> credentials are required for logs, configuration, secret key listing, discovery,
-storage, notifications, profiles, and write tools.</li>
-<li>Privileged reads, configuration mutations, and snapshot requests record bounded entries in
-KeepPeek’s security audit without logging raw credentials or image bytes.</li>
+<li><strong>Administrator</strong> credentials are required for logs, configuration, secret key listing, secret
+entry handoffs, catalog search, stream probing, discovery, storage, notifications, profiles,
+hardware settings, and write tools.</li>
+<li>Privileged reads, configuration mutations, secret-entry submissions (key names only), on-camera
+hardware updates, and snapshot requests record bounded entries in KeepPeek’s security audit
+without logging raw credentials or image bytes.</li>
 </ul>
 <p>Remember that KeepPeek’s <code>[access].local_networks</code> policy grants Administrator access to trusted
 local addresses. Narrow <code>local_networks</code> if a local MCP client must be restricted to a <strong>User</strong>
 credential.</p>
 <h3 id="secret-redaction"><a class="header" href="#secret-redaction">Secret redaction</a></h3>
-<p>Every MCP response, configuration snapshot, dry-run diff, log search result, and error passes
-through serialization-layer secret redaction before leaving KeepPeek:</p>
+<p>Every MCP response, configuration snapshot, dry-run diff, probe diagnostic, log search result, and
+error passes through serialization-layer secret redaction before leaving KeepPeek:</p>
 <ul>
 <li>Raw values loaded from <code>secrets.toml</code> (including URL percent-encoded variants) are scrubbed.</li>
 <li>Fields with credential-like names (<code>password</code>, <code>secret</code>, <code>token</code>, <code>access_key</code>, <code>verifier</code>,
@@ -4366,8 +4485,10 @@ rejected with <code>403</code>.</li>
 <li>Requests carrying a browser <code>Origin</code> header are rejected with <code>403</code> unless the exact origin is
 listed in <code>[direct_card].allowed_origins</code>, and require <code>Authorization: Bearer &lt;key&gt;</code> even on local
 networks (returning <code>401</code> if unauthenticated).</li>
-<li>Unsupported HTTP methods on <code>/mcp</code> return <code>405 Method Not Allowed</code>, and a disabled MCP server
-returns <code>404 Not Found</code>.</li>
+<li><code>/mcp/secret-entry</code> is stricter still: it allows loopback peers only, rejects proxy-forwarded
+headers, and requires an exact same-origin loopback <code>Origin</code> on <code>POST</code>.</li>
+<li>Unsupported HTTP methods on <code>/mcp</code> or <code>/mcp/secret-entry</code> return <code>405 Method Not Allowed</code>, and a
+disabled MCP server returns <code>404 Not Found</code>.</li>
 </ul>
 <h3 id="fail-closed-privacy-and-snapshot-limits"><a class="header" href="#fail-closed-privacy-and-snapshot-limits">Fail-closed privacy and snapshot limits</a></h3>
 <p><code>get_camera_snapshot</code> enforces four sequential gates before returning any image bytes:</p>
@@ -4395,12 +4516,15 @@ automated assistant cannot starve camera ingest, recording, or live playback.</p
 <tr><th>Symptom</th><th>Check</th></tr>
 </thead>
 <tbody>
-<tr><td><code>POST /mcp</code> returns <code>404</code></td><td>Confirm <code>[mcp].enabled = true</code> in <code>config.toml</code> and restart KeepPeek.</td></tr>
+<tr><td><code>POST /mcp</code> or <code>/mcp/secret-entry</code> returns <code>404</code></td><td>Confirm <code>[mcp].enabled = true</code> in <code>config.toml</code> and restart KeepPeek.</td></tr>
 <tr><td><code>POST /mcp</code> returns <code>403</code></td><td>Check whether <code>Origin</code> is missing from <code>[direct_card].allowed_origins</code>, <code>Host</code> is non-local for local trust, or role is User.</td></tr>
+<tr><td><code>/mcp/secret-entry</code> returns <code>403</code> or <code>410</code></td><td>Open the link directly from loopback without a reverse proxy, and verify the single-use token has not expired or been consumed.</td></tr>
 <tr><td><code>POST /mcp</code> returns <code>426</code></td><td>Remote plain HTTP is blocked by <code>[access].require_secure_remote = true</code>. Use HTTPS via a trusted proxy or a private VPN.</td></tr>
-<tr><td>Write tool is denied</td><td>Confirm <code>[mcp].allow_writes = true</code>, an Administrator credential, and that <code>--read-only</code> is not set.</td></tr>
+<tr><td>Configuration write tool is denied</td><td>Confirm <code>[mcp].allow_writes = true</code>, an Administrator credential, and that <code>--read-only</code> is not set.</td></tr>
+<tr><td>On-camera hardware write is denied (<code>403</code>)</td><td>Confirm <code>[mcp].allow_camera_device_writes = true</code>, <code>--read-only</code> is not set, and no excluded security field was requested.</td></tr>
+<tr><td><code>probe_camera_streams</code> rejects input</td><td>Replace any raw password or inline RTSP credentials with <code>{secret:KEY}</code> refs and keep <code>credential_candidates</code> to at most 5.</td></tr>
 <tr><td><code>get_camera_snapshot</code> is denied</td><td>Confirm <code>[mcp].allow_snapshots = true</code>, camera view permission, inactive privacy mode, and the per-camera interval limit.</td></tr>
-<tr><td>Request returns <code>429</code> or <code>503</code> or times out</td><td>Too many simultaneous MCP calls (<code>max_concurrent_requests</code>) or slow probe exceeding <code>request_timeout_seconds</code>.</td></tr>
+<tr><td>Request returns <code>429</code> or <code>503</code> or times out</td><td>Too many simultaneous MCP calls (<code>max_concurrent_requests</code>), camera rate-limit/lockout, or slow probe exceeding timeout.</td></tr>
 <tr><td><code>apply_configuration_plan</code> fails conflict</td><td>Configuration changed after the plan was created. Call <code>get_configuration</code> and generate a fresh plan.</td></tr>
 <tr><td><code>keeppeek mcp</code> fails to connect remotely</td><td>Confirm <code>KEEPPEEK_ACCESS_KEY</code> or <code>--credential-file</code> is set and readable, and verify <code>--server</code> points to the HTTPS origin.</td></tr>
 </tbody>
