@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9681fb04.js";
+            window.path_to_searchindex_js = "searchindex-f3bc00c1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-515efa10.js"></script>
@@ -175,83 +175,83 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="digital-zoom-and-pan"><a class="header" href="#digital-zoom-and-pan">Digital zoom and pan</a></h1>
-<p>Digital zoom enlarges the media already decoded by your browser. It is available in the focused
-Peek Viewer, Keep recorded playback, and event detail images. It does not move the camera, request
-a different stream, or increase the source resolution.</p>
-<p>Compact Dashboard tiles and the camera filmstrip do not capture inspection gestures. Open a camera
-in Viewer before using digital zoom.</p>
-<h2 id="inspect-a-frame"><a class="header" href="#inspect-a-frame">Inspect a frame</a></h2>
-<p>The <strong>Digital</strong> controls sit at the top-left above the image without covering the picture.
-In Peek, they share one row and height with Live/History, quality, and camera information. The
-row scrolls horizontally when needed rather than wrapping. They show the current magnification.
-The minimum is <strong>1.0x</strong>, which fits the complete image, and the maximum is <strong>8.0x</strong>.
-The image keeps its original aspect ratio. Panning is bounded to the fitted image area, so a drag
-cannot move the image out of view.</p>
+<p>This page covers browser-side digital zoom and pan (<code>1.0x</code>–<code>8.0x</code>) on already-decoded media in Viewer (<code>/viewer</code>), Keep recorded playback (<code>/keep</code>), and Events detail images (<code>/events</code>). Digital zoom enlarges local pixels only—it never moves a camera, switches streams, changes source resolution, or modifies recordings and exports.</p>
+<h2 id="video-walkthrough"><a class="header" href="#video-walkthrough">Video walkthrough</a></h2>
+<p>Watch <code>1.0x</code>–<code>8.0x</code> browser-side <strong>Digital</strong> zoom, bounded drag and keyboard panning, and instant reset—independent of physical PTZ:</p>
+<video controls="" crossorigin="anonymous" preload="metadata" playsinline="" style="width: 100%; height: auto">
+  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/viewer.desktop.digital-zoom.mp4" type="video/mp4">
+  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/viewer.desktop.digital-zoom.vtt" kind="captions" srclang="en" label="English">
+  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/viewer.desktop.digital-zoom.mp4">Download the digital zoom and pan demo</a>.
+</video>
+<h2 id="supported-surfaces"><a class="header" href="#supported-surfaces">Supported surfaces</a></h2>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Input</th><th>Result</th></tr>
+<tr><th>Surface</th><th>Route</th><th>Digital zoom supported</th><th>Notes</th></tr>
 </thead>
 <tbody>
-<tr><td>Zoom-in icon</td><td>Double the magnification, up to 8.0x.</td></tr>
-<tr><td>Zoom-out icon</td><td>Halve the magnification, down to 1.0x.</td></tr>
-<tr><td>Reset icon</td><td>Return to the complete, centered frame.</td></tr>
-<tr><td>Two-finger pinch inside the image</td><td>Zoom around the midpoint between the fingers; moving that midpoint also pans.</td></tr>
-<tr><td>Mouse, pen, or one-finger drag</td><td>Pan while magnification is above 1.0x.</td></tr>
-<tr><td>Alt + wheel or trackpad scroll</td><td>Zoom around the pointer. Use Option on macOS keyboards.</td></tr>
-<tr><td>Double-click or double-tap</td><td>Switch between 1.0x and 2.0x around the pointer or tap.</td></tr>
-<tr><td><code>+</code> or <code>=</code></td><td>Zoom in when the inspection surface has focus.</td></tr>
-<tr><td><code>-</code></td><td>Zoom out when the inspection surface has focus.</td></tr>
-<tr><td><code>0</code></td><td>Reset when the inspection surface has focus.</td></tr>
-<tr><td>Arrow keys</td><td>Pan while zoomed and focused.</td></tr>
-<tr><td>Escape</td><td>Reset digital zoom before the normal Viewer or event-detail exit action.</td></tr>
+<tr><td><strong>Viewer</strong></td><td><code>/viewer</code></td><td>Yes</td><td>Shares one top control row with Live/History, quality, and camera info.</td></tr>
+<tr><td><strong>Keep player</strong></td><td><code>/keep</code></td><td>Yes</td><td>Playback controls, timeline, and fullscreen chrome stay outside zoom.</td></tr>
+<tr><td><strong>Event detail image</strong></td><td><code>/events</code></td><td>Yes</td><td>Event bounding boxes scale and pan with the canonical image.</td></tr>
+<tr><td><strong>Dashboard tiles</strong></td><td><code>/</code></td><td>No</td><td>Compact wall tiles do not capture inspection gestures; open <code>/viewer</code>.</td></tr>
+<tr><td><strong>Camera filmstrip</strong></td><td><code>/viewer</code></td><td>No</td><td>Select a camera into the focused viewport first.</td></tr>
 </tbody>
 </table>
 </div>
-<p>Tab reaches the named zoom buttons. Activating a zoom button focuses the inspection surface, where
-the keyboard commands work. Peek’s desktop control groups are 32 pixels high. Touch input uses
-at least 44-pixel button targets. All buttons have visible focus indicators and disabled states at
-the limits. The zoom value is also available to assistive technology.</p>
-<p>Ordinary wheel scrolling does not change magnification. Control/Command zoom shortcuts still
-belong to the browser. Touch gestures are captured only inside the focused image; scrolling and
-browser gestures remain available elsewhere on the page. Zoom and reset do not require animated
-transitions.</p>
-<h2 id="keep-playback-controls"><a class="header" href="#keep-playback-controls">Keep playback controls</a></h2>
-<p>Keep’s play/pause, skip, position, volume, mute, speed, and fullscreen controls remain outside the
-transformed video. Timeline scrubbing still selects recording time, not an image crop. Arrow keys
-pan when the zoomed image has focus. At full-frame view, or outside the inspection surface, pause the
-recording and use Left or Right to select the previous or next recorded frame. The same buttons
-are available below the player when the recorder and browser support exact stepping. With an older
-recorder or an unsupported browser, the arrow shortcuts use the camera’s configured frame rate
-for approximate seeking when that rate is available.</p>
-<p>On a portrait phone, the Digital strip remains above the image while <strong>Playback options</strong> opens
-volume, speed and quality in a separate sheet. Opening that sheet does not replace the recording
-or move its playhead. Its quality choice can request different available media; the Digital strip
-only enlarges pixels already decoded. Close the sheet to inspect the horizontal recording history.</p>
-<p>The fullscreen button expands the whole recorded player, including its controls. Zoom bounds
-update when entering or leaving fullscreen. Browser-native Escape handling can leave fullscreen
-before the page receives the key. A disabled fullscreen button indicates that the browser does not
-offer the Fullscreen API in that context; digital zoom remains available without fullscreen.</p>
-<h2 id="reset-and-evidence"><a class="header" href="#reset-and-evidence">Reset and evidence</a></h2>
-<p>Changing the camera, recording, or canonical event image resets digital zoom. Play/pause and
-ordinary progress within the same selected media preserve the inspection position. Resizing the
-window, rotating the device, or changing decoded dimensions recomputes the bounds. Reset always
-returns to the complete frame at the current size.</p>
-<p>Event bounding boxes use the canonical image’s coordinate space and move with that image. Player
-controls, camera information, and diagnostics do not scale. Live camera information reports digital
-magnification separately from decoded resolution.</p>
-<p>The inspection crop exists only in the current browser view. It is not saved into configuration,
-recording metadata, bookmarks, copied moment links, or exported evidence. Exports still contain the
-original recorded frame. See <a href="./recording-and-evidence.html">Recording and evidence</a>.</p>
-<h2 id="digital-zoom-is-not-ptz"><a class="header" href="#digital-zoom-is-not-ptz">Digital zoom is not PTZ</a></h2>
-<p>Digital zoom is labelled <strong>Digital</strong> and works for any media you can already view, including
-recordings and offline-camera event images. It does not require PTZ permission or a PTZ-capable
-camera. Physical pan, tilt, and optical zoom remain separate camera commands with their existing
-capability and permission checks.</p>
-<p>See <a href="./camera-controls.html">Camera controls</a> for physical PTZ, detector configuration and the
-requirements of browser Talk.</p>
-<p>Magnifying a low-resolution stream does not reveal detail that the camera did not send. Choose a
-higher available stream quality separately when you need more decoded pixels.</p>
+<h2 id="controls-gestures-and-shortcuts"><a class="header" href="#controls-gestures-and-shortcuts">Controls, gestures, and shortcuts</a></h2>
+<p>The <strong>Digital</strong> toolbar sits at the top-left above the media frame without obstructing the image (scrolling horizontally in Viewer rather than wrapping). Magnification spans <code>1.0x</code> (full fitted frame) through <code>8.0x</code>, preserves aspect ratio, and clamps panning to the fitted image rectangle so the media cannot be dragged out of view.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Input</th><th>Behavior</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Digital zoom in</strong> button</td><td>Doubles magnification around center, up to <code>8.0x</code>.</td></tr>
+<tr><td><strong>Digital zoom out</strong> button</td><td>Halves magnification around center, down to <code>1.0x</code>.</td></tr>
+<tr><td><strong>Reset digital zoom</strong> button</td><td>Returns immediately to <code>1.0x</code>, centered.</td></tr>
+<tr><td>Two-finger pinch inside image</td><td>Zooms around finger midpoint; moving the midpoint pans simultaneously.</td></tr>
+<tr><td>Mouse, pen, or one-finger drag</td><td>Pans while magnification is above <code>1.0x</code>.</td></tr>
+<tr><td><code>Alt</code> + wheel/trackpad (<code>Option</code> Mac)</td><td>Zooms around pointer position.</td></tr>
+<tr><td>Double-click or double-tap</td><td>Toggles between <code>1.0x</code> and <code>2.0x</code> around pointer or tap point.</td></tr>
+<tr><td><code>+</code> or <code>=</code></td><td>Zooms in when the inspection viewport has focus.</td></tr>
+<tr><td><code>-</code></td><td>Zooms out when the inspection viewport has focus.</td></tr>
+<tr><td><code>0</code></td><td>Resets to <code>1.0x</code> when focused.</td></tr>
+<tr><td>Arrow keys</td><td>Pans by <code>40 px</code> per press while zoomed (<code>&gt; 1.0x</code>) and focused.</td></tr>
+<tr><td><code>Escape</code></td><td>Resets digital zoom first, before normal Viewer or event-detail close behavior.</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Browser and accessibility behavior:</strong></p>
+<ul>
+<li>Ordinary wheel scrolling and <code>Ctrl</code>/<code>Cmd</code> zoom shortcuts remain browser-owned; touch gestures are captured only inside the focused image viewport.</li>
+<li><code>Tab</code> reaches the named <strong>Digital</strong> buttons; activating any button focuses the inspection surface for keyboard controls.</li>
+<li>Peek desktop control groups are <code>32 px</code> high; touch targets are at least <code>44 px</code>. Buttons expose visible focus rings and disabled states at <code>1.0x</code> / <code>8.0x</code>, and magnification is announced via <code>role="meter"</code>. Zoom and reset do not depend on animated transitions.</li>
+</ul>
+<h2 id="keep-playback-and-fullscreen-interaction"><a class="header" href="#keep-playback-and-fullscreen-interaction">Keep playback and fullscreen interaction</a></h2>
+<ul>
+<li><strong>Unscaled transport chrome:</strong> Keep’s play/pause, skip, scrubber, volume, mute, speed, and fullscreen controls stay outside the transformed video layer. Scrubbing the timeline always changes recording time, never the crop.</li>
+<li><strong>Arrow-key precedence:</strong> When the zoomed image (<code>&gt; 1.0x</code>) has focus, arrow keys pan. At <code>1.0x</code>, or when focus is outside the viewport, pause the recording and use <code>Left</code>/<code>Right</code> to step recorded frames (or approximate frame intervals on older recorders/unsupported browsers).</li>
+<li><strong>Portrait phone layout:</strong> The <strong>Digital</strong> bar stays above the image while <strong>Playback options</strong> opens volume, speed, and stream quality in a separate sheet without replacing the recording or moving the playhead. Changing stream quality requests different media; <strong>Digital</strong> enlarges only already-decoded pixels.</li>
+<li><strong>Fullscreen:</strong> Expands the full recorded player including controls and recomputes pan/zoom bounds on entry and exit. Browser-native <code>Escape</code> can exit fullscreen before the page sees the key. A disabled fullscreen button means the Fullscreen API is unavailable in that context; digital zoom still works.</li>
+</ul>
+<h2 id="reset-rules-and-evidence-boundaries"><a class="header" href="#reset-rules-and-evidence-boundaries">Reset rules and evidence boundaries</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Trigger</th><th>Effect on digital zoom</th></tr>
+</thead>
+<tbody>
+<tr><td>Switch camera, recording segment, or canonical image</td><td>Resets to <code>1.0x</code>, centered.</td></tr>
+<tr><td>Play, pause, or normal playback progress</td><td>Preserves current magnification and pan offset.</td></tr>
+<tr><td>Window resize, device rotation, decoded size change</td><td>Recomputes pan bounds for the current viewport size.</td></tr>
+<tr><td>Copy moment link, create bookmark, export MP4</td><td>Inspection crop is never saved; exports contain original media.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Event bounding boxes use the canonical image’s coordinate space and move with it. Controls, camera info, and diagnostics never scale, and live camera information reports digital magnification separately from decoded resolution.</p>
+<h2 id="digital-zoom-vs-physical-ptz"><a class="header" href="#digital-zoom-vs-physical-ptz">Digital zoom vs. physical PTZ</a></h2>
+<p>Digital zoom is always labelled <strong>Digital</strong>, requires no PTZ permission or PTZ hardware, and works on recordings and offline-camera event snapshots. Physical pan, tilt, and optical zoom remain separate camera commands subject to device capability and access grants. See <a href="./camera-controls.html">Camera controls</a>.</p>
+<p>Magnifying a low-resolution stream cannot recover detail absent from the encoded video—switch to a higher stream quality when you need more decoded pixels.</p>
 
                     </main>
 

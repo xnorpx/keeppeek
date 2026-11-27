@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9681fb04.js";
+            window.path_to_searchindex_js = "searchindex-f3bc00c1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-515efa10.js"></script>
@@ -175,16 +175,12 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="reporting-bugs"><a class="header" href="#reporting-bugs">Reporting bugs</a></h1>
-<p>GitHub Issues are for reproducible KeepPeek defects. The
-<a href="https://github.com/xnorpx/keeppeek/issues/new?template=bug.yml">bug report form</a> is the canonical
-submission path, and
-<a href="https://github.com/xnorpx/keeppeek/blob/main/.github/ISSUE_TEMPLATE/bug.yml"><code>.github/ISSUE_TEMPLATE/bug.yml</code></a>
-is the source of truth for its required fields.</p>
+<p>This chapter covers inspecting live logs, generating scrubbed diagnostics bundles, using Administrator in-app bug reporting, and filing reproducible defects through <a href="https://github.com/xnorpx/keeppeek/blob/main/.github/ISSUE_TEMPLATE/bug.yml"><code>.github/ISSUE_TEMPLATE/bug.yml</code></a>. GitHub Issues are strictly for reproducible KeepPeek defects; route setup help, feature proposals, and security vulnerabilities to the appropriate channels below.</p>
 <h2 id="choose-the-right-channel"><a class="header" href="#choose-the-right-channel">Choose the right channel</a></h2>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>What you need</th><th>Where to go</th></tr>
+<tr><th>Need</th><th>Destination</th></tr>
 </thead>
 <tbody>
 <tr><td>Existing KeepPeek behavior reproducibly fails</td><td><a href="https://github.com/xnorpx/keeppeek/issues/new?template=bug.yml">Bug report</a></td></tr>
@@ -194,168 +190,97 @@ is the source of truth for its required fields.</p>
 </tbody>
 </table>
 </div>
-<p>A support request is not yet a bug until the evidence shows existing KeepPeek behavior violating
-its contract. Feature requests belong in Suggestions even when they would solve a real problem.
-Search open and closed Issues before filing so evidence and discussion stay on one report.</p>
-<h2 id="before-submitting"><a class="header" href="#before-submitting">Before submitting</a></h2>
-<p>Confirm all of the following:</p>
-<ul>
-<li>The same defect is not already present in an open or closed Issue.</li>
-<li>The report describes a reproducible KeepPeek defect, not setup help or a feature proposal.</li>
-<li>The defect reproduces on the current release, or the exact affected build is known.</li>
-<li>Relevant Health, camera diagnosis, server log, and browser console evidence has been checked.</li>
-<li>Credentials, private addresses, tokens, cookies, private media, and sensitive data are removed.</li>
-<li>A KeepPeek diagnostics package is attached, or the report explains why it is unavailable.</li>
-</ul>
-<p>Reports that are duplicates, support requests, feature proposals, or missing the required
-reproduction and environment details may be closed or marked <code>needs more info</code>.</p>
-<h2 id="describe-one-observable-defect"><a class="header" href="#describe-one-observable-defect">Describe one observable defect</a></h2>
-<p>Keep one report focused on one failure. State what fails, when it fails, and the effect on
-recording, review, evidence, security, or operation. Include the affected camera, stream, time
-range, or workflow only in sanitized form.</p>
-<p>Select the primary affected area in the form:</p>
-<ul>
-<li>Recording and ingest</li>
-<li>Peek and live video</li>
-<li>Events, search, and previews</li>
-<li>Keep, timeline, and recorded playback</li>
-<li>Export</li>
-<li>Cameras, discovery, and configuration</li>
-<li>Camera controls and vendor integration</li>
-<li>Storage, retention, backup, and restore</li>
-<li>Authentication, authorization, and privacy</li>
-<li>Installation, upgrade, and service lifecycle</li>
-<li>API, WebRTC, and external integrations</li>
-<li>UI, mobile, and accessibility</li>
-<li>Other</li>
-</ul>
-<p>If several areas are involved, select the user-visible workflow that fails first and describe the
-secondary effects in the report.</p>
-<h2 id="provide-a-deterministic-reproduction"><a class="header" href="#provide-a-deterministic-reproduction">Provide a deterministic reproduction</a></h2>
-<p>Start from a known state and give the smallest sequence that reproduces the defect:</p>
-<pre><code class="language-text">Starting state: &lt;configuration, page, camera state, or recording state&gt;
-1. Configure or open ...
-2. Select ...
-3. Perform ...
-4. Observe ...
-
-Frequency: &lt;always, intermittent, or N of M attempts&gt;
-</code></pre>
-<p>Separate expected and actual behavior. Make the difference observable through a state, response,
-error, file, timing, resource measurement, or visible result. “It does not work” is not enough to
-reproduce or verify a fix.</p>
-<h2 id="record-regression-and-impact"><a class="header" href="#record-regression-and-impact">Record regression and impact</a></h2>
-<p>State whether the behavior previously worked. Include the last known good and first known bad
-versions when known, how frequently the defect occurs, its operational or data-loss risk, and any
-verified workaround.</p>
-<p>Use <code>unknown</code> when a relevant fact cannot be established. Do not guess a regression version or
-claim data loss without evidence.</p>
-<h2 id="describe-the-environment"><a class="header" href="#describe-the-environment">Describe the environment</a></h2>
-<p>Include every field relevant to reproduction, using <code>N/A</code> only when it genuinely does not apply:</p>
-<ul>
-<li>KeepPeek version, commit, and build profile</li>
-<li>operating system and architecture</li>
-<li>installation method: native package, Docker, service, or other</li>
-<li>browser or client and version</li>
-<li>camera make, model, and anonymized firmware version</li>
-<li>camera source: Reolink, ONVIF, RTSP, <code>test-camera</code>, or other</li>
-<li>stream codec, resolution, frame rate, and audio</li>
-<li>camera count and relevant catalog or date-range scale</li>
-<li>storage type and free space</li>
-</ul>
-<p>Hardware-specific and intermittent bugs are valid, but the report must distinguish direct evidence
-from a suspected cause and provide a bounded way to collect the next observation.</p>
-<h2 id="attach-sanitized-evidence"><a class="header" href="#attach-sanitized-evidence">Attach sanitized evidence</a></h2>
-<p>After reproducing the defect, open <strong>Settings &gt; Logs &amp; diagnostics &gt; Download diagnostics</strong>. Attach
-the generated <code>keeppeek-diagnostics-*.json.gz</code> file under <strong>Diagnostics package and sanitized
-evidence</strong> so the package contains the relevant retained server and browser logs.</p>
+<p>Search open and closed Issues before filing so evidence stays on one report. Duplicate, support, feature, or under-documented reports may be closed or marked <code>needs more info</code>.</p>
+<h2 id="inspect-logs-and-download-diagnostics-settingslogs"><a class="header" href="#inspect-logs-and-download-diagnostics-settingslogs">Inspect logs and download diagnostics (<code>/settings/logs</code>)</a></h2>
+<p>Open <strong>Settings &gt; Diagnostics &gt; View logs</strong> or <strong>Settings &gt; Logs &amp; diagnostics &gt; Open logs</strong> (<code>/settings/logs</code>) to inspect live <strong>Server</strong> (<code>GET /logs</code> SSE stream) and <strong>Browser / Svelte</strong> logs, update the <strong>Server capture filter</strong>, pause/clear the view, or export redacted JSONL.</p>
+<p>Immediately after reproducing a defect, select <strong>Download diagnostics</strong> (available in <strong>Settings &gt; Logs &amp; diagnostics</strong> and on <code>/settings/logs</code>). KeepPeek builds <code>keeppeek-diagnostics-*.json.gz</code> from <code>GET /logs/snapshot</code> (bounded retained server log buffer with a per-process <code>generation</code> epoch), current browser logs, health, runtime configuration, metrics, and collection metadata. The manifest marks <code>privacy: scrubbed</code>, but automated scrubbing can miss private data—always inspect the bundle before sharing. If a bundle cannot be generated, state the exact reason on the issue.</p>
 <h2 id="in-app-bug-reporting-administrators"><a class="header" href="#in-app-bug-reporting-administrators">In-app bug reporting (Administrators)</a></h2>
-<p>Administrators can also start a bounded report session from <strong>Settings</strong> or <strong>Settings &gt; Logs</strong> by
-selecting <strong>Report a bug</strong>:</p>
+<p>Administrators can start a bounded capture session from <strong>Settings</strong> (<code>/settings</code>) or <strong>Settings &gt; Logs</strong> (<code>/settings/logs</code>) by selecting <strong>Report a bug</strong>:</p>
 <ol>
-<li>Review what will be collected and choose <strong>Collect logs only</strong> or <strong>Record screen</strong>. Screen
-recording uses <code>getDisplayMedia({ video: true, audio: false })</code> and never requests a webcam,
-microphone, system audio, or tab audio.</li>
-<li>Reproduce the defect while navigating normally inside KeepPeek. A persistent indicator displays
-elapsed time, recorded bytes, <strong>Stop</strong>, and <strong>Cancel</strong>. Sessions stop automatically at 5 minutes
-or 100 MiB of screen media, and total uploads are capped at 128 MiB.</li>
-<li>Review the exact scrubbed issue text, browser and server log counts, UTC interval, evidence
-warnings (such as active filters, buffer eviction, stream gaps, or recorder restarts detected via
-<code>LogSnapshot.generation</code>), artifact sizes, retention window, and private screen preview. You can
-exclude or discard the screen recording before sharing.</li>
-<li>Confirm once more to submit when <code>[reporting]</code> is configured in <code>config.toml</code>, or download the
-scrubbed diagnostics package, optional screen recording, and report notes locally. Local
-downloads remain available whenever remote submission is unconfigured or fails.</li>
+<li>Review what will be collected and choose <strong>Collect logs only</strong> or <strong>Record screen</strong>. Screen capture calls <code>getDisplayMedia({ video: true, audio: false })</code> and never requests a webcam, microphone, system audio, or tab audio.</li>
+<li>Reproduce the defect normally inside KeepPeek. A persistent status bar displays elapsed time, recorded bytes, <strong>Stop</strong>, and <strong>Cancel</strong>. Capture stops automatically at <strong>5 minutes</strong> or <strong>100 MiB</strong> of screen media.</li>
+<li>Review the scrubbed issue text, server/browser log counts, UTC window, evidence warnings (active filters, buffer eviction, stream gaps, or recorder restarts detected via <code>LogSnapshot.generation</code>), artifact sizes, retention window, and private video preview. You can exclude or discard the screen recording before sharing.</li>
+<li>Confirm once more to submit when <code>[reporting]</code> is configured in <code>config.toml</code>, or download the scrubbed diagnostics package, optional screen recording, and notes locally. Local download stays available whenever remote submission is unconfigured or fails.</li>
 </ol>
+<h3 id="recorder-reporting-endpoints-and-bounds"><a class="header" href="#recorder-reporting-endpoints-and-bounds">Recorder reporting endpoints and bounds</a></h3>
+<p>When <code>[reporting]</code> is configured in <code>config.toml</code> (canonical HTTPS <code>origin</code>, optional <code>credential = "{secret:KEY}"</code> in <code>secrets.toml</code>, <code>retention_days</code> <code>1..=30</code>, default <code>7</code>), the recorder exposes three Administrator-only endpoints enforcing <code>Cache-Control: no-store</code> and the remote HTTPS policy (<code>426</code> on plaintext remote HTTP):</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Endpoint</th><th>Purpose &amp; bounds</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET /reporting/status</code></td><td>Returns <code>{ configured, origin?, retention_days? }</code> without credentials or secret references (<code>{ configured: false }</code> when <code>[reporting]</code> is omitted).</td></tr>
+<tr><td><code>POST /reporting/grants</code></td><td>Accepts <code>&lt;= 128 KiB</code> <code>{ idempotencyKey, manifest }</code>, validates the v1 manifest (<code>diagnostics &lt;= 28 MiB</code> gzip, optional <code>screen &lt;= 100 MiB</code> WebM/MP4, combined <code>&lt;= 128 MiB</code>, max 4 in-flight grants), resolves <code>{secret:KEY}</code> on the recorder, calls <code>POST {origin}/v1/reports</code> over verified HTTPS (no redirects, 10s timeout), registers the returned 5-minute single-report grant for log redaction, audits <code>bug_report_submit</code>, and returns <code>{ id, grant, expires }</code>.</td></tr>
+<tr><td><code>POST /reporting/audit</code></td><td>Accepts <code>&lt;= 512 B</code> closed-enum lifecycle events (<code>start</code>, <code>cancel</code>, <code>local_download</code>, <code>complete</code>, <code>failed</code>) with optional <code>mode</code> and opaque <code>report_id</code>; writes non-sensitive entries to the access audit log.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The browser uploads artifacts directly to the reporting service with the issued single-report bearer grant (<code>PUT /v1/reports/{id}/artifacts/{kind}</code>, <code>POST /v1/reports/{id}/finalize</code>, <code>GET</code>/<code>DELETE /v1/reports/{id}</code>). Recorder credentials never leave the recorder. See <a href="./configuration-reference.html">Configuration reference</a> and <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/reporting-service.md"><code>docs/reporting-service.md</code></a>.</p>
 <h3 id="browser-capability-matrix"><a class="header" href="#browser-capability-matrix">Browser capability matrix</a></h3>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Capability</th><th>Behavior when supported</th><th>Behavior when unavailable or denied</th></tr>
+<tr><th>Capability</th><th>When supported</th><th>When unavailable or denied</th></tr>
 </thead>
 <tbody>
-<tr><td><code>navigator.mediaDevices.getDisplayMedia</code></td><td>Offers <strong>Record screen</strong> after explicit consent (video-only).</td><td><strong>Record screen</strong> is disabled or permission denial falls back to logs-only collection.</td></tr>
-<tr><td><code>MediaRecorder</code> + supported VP8/WebM or MP4 codec</td><td>Encodes bounded chunks up to 5 minutes / 100 MiB.</td><td><strong>Record screen</strong> is disabled; logs-only reporting stays available.</td></tr>
-<tr><td><code>CompressionStream('gzip')</code></td><td>Produces gzip-compressed <code>keeppeek-diagnostics-*.json.gz</code>.</td><td>Discloses that the diagnostics package is unavailable and preserves report notes and any recording.</td></tr>
+<tr><td><code>navigator.mediaDevices.getDisplayMedia</code></td><td>Offers <strong>Record screen</strong> after explicit consent (video-only).</td><td><strong>Record screen</strong> disabled, or denial falls back to logs-only collection.</td></tr>
+<tr><td><code>MediaRecorder</code> + supported VP8/WebM or MP4 codec</td><td>Encodes bounded chunks up to 5 minutes / 100 MiB.</td><td><strong>Record screen</strong> disabled; logs-only reporting stays available.</td></tr>
+<tr><td><code>CompressionStream('gzip')</code></td><td>Produces gzip-compressed <code>keeppeek-diagnostics-*.json.gz</code>.</td><td>Discloses that the diagnostics package is unavailable while preserving report notes and recordings.</td></tr>
 </tbody>
 </table>
 </div>
-<h3 id="manual-real-browser-current-tab-capture-smoke-procedure"><a class="header" href="#manual-real-browser-current-tab-capture-smoke-procedure">Manual real-browser current-tab capture smoke procedure</a></h3>
-<p>Because browser permission pickers cannot be fully verified by DOM mocks, verify display capture in
-a real desktop browser when qualifying a release:</p>
+<h3 id="manual-real-browser-capture-smoke-check"><a class="header" href="#manual-real-browser-capture-smoke-check">Manual real-browser capture smoke check</a></h3>
+<p>When qualifying a release in a real desktop browser:</p>
 <ol>
-<li>Sign in as an Administrator over HTTPS or localhost, open <strong>Settings</strong>, and select <strong>Report a bug</strong>.</li>
-<li>Select <strong>Record screen</strong>, choose the current KeepPeek tab in the browser picker, and confirm no
-microphone, webcam, or audio permission prompt appears.</li>
-<li>Navigate to <strong>Settings &gt; Logs</strong>, confirm the persistent indicator stays visible with updating
-elapsed time and byte count, then end sharing from either the browser banner or <strong>Stop</strong>.</li>
-<li>Confirm the review dialog opens with a playable preview, download the recording, and inspect it
-with <code>ffprobe</code> to verify one video stream and zero audio streams.</li>
+<li>Sign in as an Administrator over HTTPS or <code>localhost</code>, open <strong>Settings</strong>, and click <strong>Report a bug</strong>.</li>
+<li>Choose <strong>Record screen</strong>, select the current KeepPeek tab in the browser picker, and confirm no microphone, webcam, or audio prompt appears.</li>
+<li>Navigate to <strong>Settings &gt; Logs</strong>, confirm the persistent bar stays visible with updating elapsed time and byte count, then end capture via <strong>Stop</strong> or the browser sharing banner.</li>
+<li>Confirm the review dialog opens with a playable preview, download the recording, and run <code>ffprobe</code> to verify <strong>one video stream and zero audio streams</strong>.</li>
 </ol>
-<p>If the package cannot be generated or attached, state the exact reason. Missing diagnostics do not
-block submission, but a report without enough evidence may be closed as <code>needs more info</code>.</p>
-<p>Add focused timestamps, screenshots, stack traces, protocol fixtures, or small log excerpts when
-they make the defect easier to reproduce. Never publish:</p>
+<h2 id="video-walkthrough"><a class="header" href="#video-walkthrough">Video walkthrough</a></h2>
+<p>This walkthrough covers the Appearance, System, and Logs viewer (<code>/settings/logs</code>), downloading a scrubbed diagnostics bundle, and the redacted Administrator <strong>Report a bug</strong> flow.</p>
+<video controls="" crossorigin="anonymous" preload="metadata" playsinline="" style="width: 100%; height: auto">
+  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/settings.desktop.logs-diagnostics.mp4" type="video/mp4">
+  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/settings.desktop.logs-diagnostics.vtt" kind="captions" srclang="en" label="English">
+  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/settings.desktop.logs-diagnostics.mp4">Download the logs and diagnostics bug-reporting demo</a>.
+</video>
+<h2 id="privacy-preserving-usage-reporting-separate-from-bug-reports"><a class="header" href="#privacy-preserving-usage-reporting-separate-from-bug-reports">Privacy-preserving usage reporting (separate from bug reports)</a></h2>
+<p>KeepPeek also provides optional, Administrator-controlled <strong>Usage reporting</strong> under <strong>Settings &gt; Usage reporting</strong> (<code>[usage_reporting]</code> in <code>config.toml</code>) to help prioritize OS, CPU, camera compatibility, and feature work. It is completely separate from bug reports and <strong>disabled by default</strong> on every fresh install and upgrade (never prompted during onboarding, generates no UUID, and sends zero requests unless enabled).</p>
+<ul>
+<li><strong>Hierarchical opt-in</strong>: <strong>Basic system data</strong> is required before enabling <strong>Camera compatibility data</strong> or <strong>Feature adoption data</strong>; disabled categories are omitted completely.</li>
+<li><strong>Privacy and payload bounds</strong>: Uses a dedicated pseudonymous UUID v4 + server-only proof token (separate from access keys), caps uncompressed payloads at <code>64 KiB</code> of strictly allowlisted fields (never camera names, IPs, URLs, credentials, firmware, events, logs, or media), and lets Administrators <strong>Preview exact JSON payload</strong> locally before opting in.</li>
+<li><strong>Schedule, retention, and deletion</strong>: Sends over HTTPS at most once every 24 hours after a <code>&gt;= 15</code> minute startup delay. Raw rows expire within 60 days, source IPs are not stored, and public aggregates enforce <code>k &gt;= 10</code> installations with complementary suppression. Disabling or selecting <strong>Reset installation ID</strong> sends bounded deletion (<code>DELETE /v1/installations/{installation_id}</code>), with <strong>Retry deletion</strong> if offline.</li>
+</ul>
+<p>See <a href="./configuration-reference.html">Configuration reference</a> and <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/usage-reporting.md"><code>docs/usage-reporting.md</code></a>.</p>
+<h2 id="redaction-rules"><a class="header" href="#redaction-rules">Redaction rules</a></h2>
+<p>Redact at the source before publishing any issue text, log excerpt, screenshot, or diagnostics package. Never publish:</p>
 <ul>
 <li>credentials, access keys, tokens, cookies, or authorization headers;</li>
-<li>camera IP addresses, hostnames, private filesystem prefixes, or stream and snapshot URLs;</li>
+<li>camera IP addresses, hostnames, private filesystem prefixes, or stream/snapshot URLs;</li>
 <li>faces, license plates, private recordings, notification text, or location details;</li>
-<li>unsanitized logs, screenshots, packet captures, or diagnostics bundles.</li>
+<li>unsanitized logs, screenshots, packet captures, or unreviewed diagnostics bundles.</li>
 </ul>
-<p>Redact at the source. Do not attach evidence that cannot be confidently sanitized.</p>
-<h2 id="define-fix-acceptance-criteria"><a class="header" href="#define-fix-acceptance-criteria">Define fix acceptance criteria</a></h2>
-<p>Describe the observable behavior that will make the bug fixed. Keep each criterion unchecked and
-name the test or procedure that will verify it:</p>
+<p>Do not attach evidence that cannot be confidently sanitized; describe how a maintainer can build an equivalent synthetic fixture instead.</p>
+<h2 id="complete-the-github-bug-form-bugyml"><a class="header" href="#complete-the-github-bug-form-bugyml">Complete the GitHub bug form (<code>bug.yml</code>)</a></h2>
+<p>Keep one issue focused on one observable defect and satisfy every required section of <code>.github/ISSUE_TEMPLATE/bug.yml</code>:</p>
+<ol>
+<li><strong>Before submitting</strong>: Confirm all 6 preflight checks truthfully (duplicate search, reproducible defect, current release or exact build, Health/diagnosis/log/console review, redaction, diagnostics package attached or unavailability explained).</li>
+<li><strong>Affected area</strong>: Select the primary failing user-visible workflow (one of: <code>Recording and ingest</code>, <code>Peek and live video</code>, <code>Events, search, and previews</code>, <code>Keep, timeline, and recorded playback</code>, <code>Export</code>, <code>Cameras, discovery, and configuration</code>, <code>Camera controls and vendor integration</code>, <code>Storage, retention, backup, and restore</code>, <code>Authentication, authorization, and privacy</code>, <code>Installation, upgrade, and service lifecycle</code>, <code>API, WebRTC, and external integrations</code>, <code>UI, mobile, and accessibility</code>, <code>Other</code>).</li>
+<li><strong>Bug description &amp; Reproduction steps</strong>: Give the smallest deterministic sequence from a known starting state plus frequency (<code>always</code>, <code>intermittent</code>, or <code>N of M attempts</code>).</li>
+<li><strong>Expected and actual behavior</strong>: State observable differences (state, HTTP/error code, file, timing, or resource value)—not “it does not work”.</li>
+<li><strong>Regression, frequency, and impact</strong>: Record prior working status (<code>yes</code>/<code>no</code>/<code>unknown</code>), last good / first bad builds if known, data-loss risk, and workarounds. Use <code>unknown</code> rather than guessing.</li>
+<li><strong>Environment</strong>: Fill all 9 fields (version/commit/build profile, OS/arch, install method, browser/client version, camera make/model/anonymized firmware, camera source, stream codec/resolution/FPS/audio, camera count &amp; catalog scale, storage type &amp; free space); use <code>N/A</code> only when inapplicable.</li>
+<li><strong>Diagnostics package and sanitized evidence</strong>: Drag in <code>keeppeek-diagnostics-*.json.gz</code> (or state why it is unavailable) plus correlated timestamps and focused excerpts.</li>
+<li><strong>Fix acceptance criteria and verification</strong>: Keep each criterion unchecked and pair one observable outcome with one concrete verification test or procedure:</li>
+</ol>
 <pre><code class="language-markdown">- [ ] AC-1: &lt;the reported reproduction produces the correct observable outcome&gt;
   - Expected outcome: &lt;exact state or result&gt;
   - Verification: &lt;regression test, command, or reproducible procedure&gt;
-
-- [ ] AC-2: &lt;the relevant failure or boundary case behaves correctly&gt;
-  - Expected outcome: &lt;exact state or result&gt;
-  - Verification: &lt;test name, command, or reproducible procedure&gt;
 </code></pre>
-<p>Acceptance criteria should describe corrected behavior, not prescribe an unverified implementation.</p>
-<h2 id="include-performance-evidence"><a class="header" href="#include-performance-evidence">Include performance evidence</a></h2>
-<p>When the defect affects runtime, build time, memory, storage, network traffic, or interaction
-latency, include:</p>
-<ul>
-<li>metric and unit;</li>
-<li>current or before value;</li>
-<li>expected budget or target;</li>
-<li>workload or dataset;</li>
-<li>hardware, operating system, browser, and build profile where relevant;</li>
-<li>exact command or harness;</li>
-<li>run count and statistic, such as median or p95.</li>
-</ul>
-<p>For a correctness-only bug, write <code>Performance: N/A</code> and explain which performance paths the change
-cannot affect. A statement such as “slow” or “no regression” is not performance evidence.</p>
-<h2 id="submit-and-follow-up"><a class="header" href="#submit-and-follow-up">Submit and follow up</a></h2>
-<p>Review the complete report once more for secrets and unsupported claims, then submit it through the
-<a href="https://github.com/xnorpx/keeppeek/issues/new?template=bug.yml">bug report form</a>. Respond to
-requests for focused evidence or clarification on the same Issue rather than opening duplicates.</p>
-<p>A strong report lets another person answer what failed, how to reproduce it, what should have
-happened, which build and environment are affected, what evidence proves it, and how the eventual
-fix will be verified.</p>
+<ol start="9">
+<li><strong>Performance evidence</strong>: For runtime, build, memory, storage, network, or latency defects, report metric + unit, baseline/current value, budget/target, workload/dataset, environment, exact command/harness, and run count + statistic (median/p95). For correctness-only defects, write <code>Performance: N/A</code> and state which performance paths cannot be affected.</li>
+</ol>
 
                     </main>
 

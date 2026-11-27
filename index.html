@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9681fb04.js";
+            window.path_to_searchindex_js = "searchindex-f3bc00c1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-515efa10.js"></script>
@@ -175,74 +175,78 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="keeppeek"><a class="header" href="#keeppeek">KeepPeek</a></h1>
-<blockquote>
-<p><strong>Status:</strong> KeepPeek is in Alpha qualification and is not yet production-ready.
-The active <a href="https://github.com/xnorpx/keeppeek/issues/145">Alpha gate</a> tracks promotion evidence.</p>
-</blockquote>
-<p>KeepPeek is a local-first network video recorder and WebRTC media gateway for IP cameras. It runs
-on Linux, macOS, and Windows and keeps camera media on hardware controlled by the user without
-requiring a vendor cloud relay.</p>
-<p>The core service has a deliberately focused job:</p>
+<p>This page introduces KeepPeek’s scope, architecture principles, and chapter map. KeepPeek is in <strong>Alpha qualification</strong> and is not yet production-ready; active promotion evidence is tracked in <a href="https://github.com/xnorpx/keeppeek/issues/145">Alpha gate #145</a>.</p>
+<p>KeepPeek is a local-first network video recorder (NVR) and WebRTC media gateway for IP cameras. It runs natively on Linux, macOS, and Windows and keeps camera media on hardware you control without requiring a vendor cloud relay or an AI runtime.</p>
+<h2 id="core-capabilities"><a class="header" href="#core-capabilities">Core capabilities</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Area</th><th>What KeepPeek provides</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Camera ingest and controls</strong></td><td>Discover and connect Reolink (<code>reo-proto</code>), ONVIF/RTSP (Retina), Hikvision/Annke (SADP/ISAPI), and manual RTSP cameras. Supports advertised PTZ controls and Administrator browser <strong>Talk</strong> on cameras with a confirmed speaker.</td></tr>
+<tr><td><strong>Zero-re-encode MP4 recording</strong></td><td>Write camera-native H.264/H.265 video and supported audio directly to fragmented ISO MP4 segments across named storage volumes and an optional fourth-tier local archive.</td></tr>
+<tr><td><strong>Live and recorded WebRTC</strong></td><td>Serve multi-camera live walls, kiosk display, focused single-camera viewing, UTC day timelines, synchronized multi-camera review, bounded timelapse review, bounded MP4 clip exports, and isolated guest review links (<code>/share</code>).</td></tr>
+<tr><td><strong>Events and analytics</strong></td><td>Store camera-native events (Reolink, Hikvision/Annke ISAPI, ONVIF PullPoint, RTSP metadata) and external WebRTC analytics; search with boolean expressions and hybrid semantic ranking (<code>/events</code>) and inspect bounded temporal summaries (<code>/activity</code>).</td></tr>
+<tr><td><strong>Alerts and integrations</strong></td><td>Evaluate server-owned notification rules (browser alerts, Pushover, webhooks, and opt-in bounded Keeppeek Service mobile push signaling), forward normalized events over MQTT 5, expose Prometheus <code>GET /metrics</code>, and embed cameras directly via the Home Assistant card.</td></tr>
+<tr><td><strong>Operations and health</strong></td><td>Track authoritative camera, stream, storage, and server health across the web UI, foreground terminal dashboard (TUI), and metrics; manage state in <code>config.toml</code> and <code>secrets.toml</code> with validated ZIP export/apply, backups, and recording maintenance.</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="video-walkthrough"><a class="header" href="#video-walkthrough">Video walkthrough</a></h2>
+<p>Watch nine real-time RTSP cameras configured on an empty KeepPeek server and streamed into the live wall with WebRTC health evidence; see <a href="./demo-videos.html">Demo videos</a> for all narrated workflow walkthroughs.</p>
+<video controls="" crossorigin="anonymous" preload="metadata" playsinline="" style="width: 100%; height: auto">
+  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.live-wall.mp4" type="video/mp4">
+  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.live-wall.vtt" kind="captions" srclang="en" label="English">
+  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.live-wall.mp4">Download the nine-camera live-wall demo</a>.
+</video>
+<p>The virtual-camera source is <em>Big Buck Bunny</em>, © 2008 Blender Foundation, <a href="https://creativecommons.org/licenses/by/3.0/">licensed under CC BY 3.0</a>.</p>
+<h2 id="architecture-and-development-principles"><a class="header" href="#architecture-and-development-principles">Architecture and development principles</a></h2>
 <ul>
-<li>discover and connect supported cameras;</li>
-<li>ingest and record their encoded media without re-encoding it;</li>
-<li>store recordings as standard MP4 files;</li>
-<li>provide live and recorded media through WebRTC;</li>
-<li>keep camera, stream, recording, and server health observable;</li>
-<li>accept and store events from supported cameras or independent services;</li>
-<li>locate, review, and export bounded evidence clips;</li>
-<li>deliver rule-driven notifications and forward normalized events to MQTT.</li>
+<li><strong>Compact native server, browser-decoded UI:</strong> The server is written in Rust for memory-safe, predictable concurrent media handling without bundling video codecs or a desktop browser runtime. The Svelte 5 web interface relies on the browser and OS media stack for decoding; an optional Tauri desktop app (<code>keeppeek-desktop</code>) wraps the same UI on Windows and macOS by connecting to an existing server.</li>
+<li><strong>Modular analytics and transcoding:</strong> Recording and playback do not depend on object detection, external AI services, or transcoders. Optional inference services, transcoders, and automation bridges connect through the open MIT-licensed API while the recorder remains independent.</li>
+<li><strong>Human-directed, AI-assisted engineering:</strong> KeepPeek uses AI tools for implementation, validation, documentation, and review; people remain accountable for architecture, security, and release decisions.</li>
 </ul>
-<p>KeepPeek does not require object detection or another AI service to record and review video.
-Camera-native analytics can publish events directly, while optional inference, transcoding, home
-automation, and commercial services connect through the open API. Recording remains useful when
-those services are absent or unavailable.</p>
-<p>The server is written in Rust for predictable, memory-safe concurrent media handling. The
-first-party interface uses Svelte and runs in the browser, relying on the browser and operating
-system for compatible video decoding. KeepPeek remains codec-aware without bundling a video codec
-pack into the core service.</p>
-<p>KeepPeek is developed with AI assistance through a human-directed process. AI is used as a tool for
-implementation, validation, documentation, and review; design decisions and accountability remain
-with people.</p>
-<p>KeepPeek aims to remain a compact native service. Optional services own their detector runtimes,
-models, and codec dependencies, so an installation can choose the extra work it needs.</p>
-<h2 id="reading-the-book"><a class="header" href="#reading-the-book">Reading the book</a></h2>
-<ul>
-<li><a href="./feature-guide.html">Feature guide and navigation</a> maps the current screens and settings to
-everyday tasks and distinguishes implemented features from unavailable controls.</li>
-<li><a href="./how-it-works.html">How KeepPeek works</a> connects media, recording, events, persistent state,
-clients, and integrations in one overview.</li>
-<li><a href="./users-and-design-choices.html">Users and design choices</a> explains who KeepPeek is for and why its
-product, protocol, platform, licensing, and integration boundaries exist.</li>
-<li><a href="./reporting-bugs.html">Reporting bugs</a> describes how to file a reproducible defect and where to
-take setup questions or feature proposals.</li>
-<li><a href="./get-started.html">Get started</a> covers installation, persistent data, secrets, and the first
-camera.</li>
-<li><a href="./authentication.html">Authentication</a> explains roles, credentials, and camera access;
-<a href="./camera-controls.html">Camera controls</a> covers discovery, setup, editing, and device operations.</li>
-<li><a href="./live-wall.html">Live wall</a> covers saved dashboards, layout sharing, kiosk display, and browser
-resource choices. <a href="./digital-zoom.html">Digital zoom</a> explains local inspection controls.</li>
-<li><a href="./camera-health.html">Camera and stream health</a> defines the authoritative health model and evidence
-used across the server, API, metrics, and interface.</li>
-<li><a href="./recording-and-evidence.html">Recording and evidence</a> explains recording policies, coverage,
-event presentation, and durable evidence exports.</li>
-<li><a href="./notifications-and-integrations.html">Notifications and integrations</a> covers server-owned rules,
-Pushover delivery, MQTT 5 forwarding, retries, and failure isolation.</li>
-<li><a href="./native-camera-events.html">Native camera events</a>, <a href="./external-analysis.html">External analysis</a>,
-and <a href="./home-assistant.html">Home Assistant</a> explain the independent integration paths.</li>
-<li><a href="./configuration-management.html">Visual configuration management</a> and the
-<a href="./configuration-reference.html">configuration reference</a> cover supported settings and safe edits.</li>
-<li><a href="./backup-and-restore.html">Backup and restore</a>, <a href="./upgrades-and-migrations.html">Upgrades</a>,
-<a href="./recording-maintenance.html">Recording maintenance</a>, and
-<a href="./recording-archive-recovery.html">Archive recovery</a> cover ongoing operation and recovery.</li>
-<li><a href="./release-readiness.html">Release readiness and known limitations</a> separates automated checks from
-the physical mixed-fleet, recovery, and soak evidence required for Alpha promotion.</li>
-<li><a href="./demo-videos.html">Demo videos</a> shows complete workflows against the real application.</li>
-<li><a href="./open-source-and-licensing.html">Open source and licensing</a> credits the projects KeepPeek builds
-on and explains the AGPL server and MIT API split.</li>
-<li><a href="./contributing.html">Contributing</a> explains scope review, interoperability contributions,
-AI-assisted work, pull requests, and validation.</li>
-</ul>
+<h2 id="book-map"><a class="header" href="#book-map">Book map</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Section</th><th>Chapter</th><th>Use it for</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Overview</strong></td><td><a href="./feature-guide.html">Feature guide and navigation</a></td><td>Map every route, Settings section, workflow, and unavailable control to its owning page.</td></tr>
+<tr><td><strong>Getting started</strong></td><td><a href="./get-started.html">Get started</a></td><td>Install on Linux/Docker, macOS, or Windows; complete <code>/setup</code>; run the foreground TUI; add a first camera.</td></tr>
+<tr><td></td><td><a href="./desktop-app.html">Desktop application</a></td><td>Install and connect <code>keeppeek-desktop</code> (Windows/macOS) to an existing KeepPeek server.</td></tr>
+<tr><td></td><td><a href="./authentication.html">Authentication and access control</a></td><td>Configure local trust, named credentials, OIDC, roles, camera grants, and session revocation.</td></tr>
+<tr><td></td><td><a href="./camera-controls.html">Camera controls</a></td><td>Run discovery, catalog matching, stream verification, PTZ, browser <strong>Talk</strong>, and runtime profiles.</td></tr>
+<tr><td></td><td><a href="./demo-videos.html">Demo videos</a></td><td>Watch end-to-end workflows recorded against the live application.</td></tr>
+<tr><td><strong>Watching &amp; investigating</strong></td><td><a href="./live-wall.html">Live wall and kiosk display</a></td><td>Manage saved dashboards, layout editing, audience sharing, kiosk mode, and browser decode limits.</td></tr>
+<tr><td></td><td><a href="./recording-and-evidence.html">Recording and evidence</a></td><td>Investigate UTC timelines, synchronized review, timelapse, event search, <code>/activity</code>, bookmarks, and exports.</td></tr>
+<tr><td></td><td><a href="./guest-review.html">Guest review links</a></td><td>Issue, scope, open, and revoke time-bounded external clip review links (<code>/share</code>).</td></tr>
+<tr><td></td><td><a href="./digital-zoom.html">Digital zoom and pan</a></td><td>Use browser-side digital zoom and pan without moving physical PTZ hardware.</td></tr>
+<tr><td></td><td><a href="./camera-health.html">Camera and stream health</a></td><td>Diagnose camera, stream, storage, and recorder states via web UI, TUI, and <code>/metrics</code>.</td></tr>
+<tr><td><strong>Administration &amp; recovery</strong></td><td><a href="./configuration-management.html">Visual configuration management</a></td><td>Edit settings safely in <code>/settings</code>, distinguish save vs. apply vs. restart, and manage profiles.</td></tr>
+<tr><td></td><td><a href="./configuration-reference.html">Configuration reference</a></td><td>Look up every <code>config.toml</code> section, field, default, bound, ownership rule, and <code>{secret:KEY}</code> pattern.</td></tr>
+<tr><td></td><td><a href="./configuration-export-import.html">Export and import configuration</a></td><td>Export and atomically apply two-file configuration ZIP bundles (<code>config.toml</code> + <code>secrets.toml</code>).</td></tr>
+<tr><td></td><td><a href="./backup-and-restore.html">Backup and restore</a></td><td>Create backups, plan restores, verify rollback, and check what survives a server restart.</td></tr>
+<tr><td></td><td><a href="./upgrades-and-migrations.html">Upgrades and migrations</a></td><td>Perform manual platform upgrades, rollbacks, startup migrations, and storage relocation.</td></tr>
+<tr><td></td><td><a href="./recording-maintenance.html">Recording maintenance</a></td><td>Inspect integrity (<code>/recordings</code>) and confirm destructive maintenance (<code>/recordings/maintenance</code>).</td></tr>
+<tr><td></td><td><a href="./recording-archive-recovery.html">Recording archive recovery</a></td><td>Recover offline or incomplete recording archives, catalogs, and guest share metadata.</td></tr>
+<tr><td><strong>Events &amp; integrations</strong></td><td><a href="./native-camera-events.html">Native camera events</a></td><td>Configure Reolink, Hikvision/Annke ISAPI, ONVIF PullPoint, and RTSP metadata event ingestion.</td></tr>
+<tr><td></td><td><a href="./external-analysis.html">External analysis</a></td><td>Subscribe to WebRTC media and publish normalized detections from an external inference service.</td></tr>
+<tr><td></td><td><a href="./notifications-and-integrations.html">Notifications and integrations</a></td><td>Configure rules, Pushover, webhooks, Keeppeek Service push signaling, and MQTT 5 forwarding.</td></tr>
+<tr><td></td><td><a href="./home-assistant.html">Home Assistant card</a></td><td>Embed direct browser WebRTC camera views in Home Assistant dashboards.</td></tr>
+<tr><td></td><td><a href="./mcp.html">MCP server and LLM configuration</a></td><td>Connect AI assistants via <code>keeppeek mcp</code> stdio bridge or opt-in <code>POST /mcp</code> with explicit write approval.</td></tr>
+<tr><td></td><td><a href="./groups.html">Groups and two-way audio: current status</a></td><td>Distinguish camera access labels, dashboard audiences, shipped <strong>Talk</strong>, and unavailable live groups.</td></tr>
+<tr><td><strong>Understanding &amp; contributing</strong></td><td><a href="./how-it-works.html">How KeepPeek works</a></td><td>Trace runtime media/event paths, persistence boundaries, HTTP/WebRTC surfaces, and code entry points.</td></tr>
+<tr><td></td><td><a href="./users-and-design-choices.html">Users and design choices</a></td><td>Review target users, brand/protocol support policy, architecture trade-offs, and product non-goals.</td></tr>
+<tr><td></td><td><a href="./release-readiness.html">Release readiness and known limitations</a></td><td>Check Alpha qualification criteria, supply-chain policy, soak checks, and known limitations.</td></tr>
+<tr><td></td><td><a href="./reporting-bugs.html">Reporting bugs</a></td><td>Capture logs (<code>/settings/logs</code>), diagnostics packages, bug-reporting grants, and issue evidence.</td></tr>
+<tr><td></td><td><a href="./open-source-and-licensing.html">Open source and licensing</a></td><td>Review third-party credits and the AGPL server vs. MIT API licensing split.</td></tr>
+<tr><td></td><td><a href="./contributing.html">Contributing</a></td><td>Follow repository checks, API contract rules, tooling policies, and pull request workflow.</td></tr>
+</tbody>
+</table>
+</div>
 
                     </main>
 

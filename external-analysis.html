@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9681fb04.js";
+            window.path_to_searchindex_js = "searchindex-f3bc00c1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-515efa10.js"></script>
@@ -175,81 +175,81 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="external-analysis"><a class="header" href="#external-analysis">External analysis</a></h1>
-<p>An external analysis service consumes KeepPeek camera video, runs its own detector or model, and
-publishes events back through the public API. KeepPeek stores accepted event revisions and
-attachments and makes them available in Events, Keep, notifications and integrations.</p>
-<p>KeepPeek does not install, host or select an inference product for you. Model execution, decoding,
-sampling, deployment and model licensing belong to the independent service. The repository’s
-Python object-detection example demonstrates the integration and supports CI; it is not a
-production detector product. Camera-native detections are covered separately in
-<a href="./native-camera-events.html">Native camera events</a>.</p>
-<h2 id="prepare-the-integration"><a class="header" href="#prepare-the-integration">Prepare the integration</a></h2>
+<p>This chapter explains how independent computer-vision and analytics services subscribe to KeepPeek WebRTC streams and publish durable event revisions back through the MIT-licensed public API (<code>keeppeek.event-publication.v1</code>). KeepPeek does not install, host, or select inference products—model execution, decoding, sampling, deployment, and model licensing belong to the external service—while camera-native detections are covered in <a href="./native-camera-events.html">Native camera events</a>.</p>
+<h2 id="system-boundary"><a class="header" href="#system-boundary">System boundary</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Responsibility</th><th>KeepPeek owns</th><th>External service owns</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Media</strong></td><td>Camera ingest, recording, WebRTC stream routing (<code>RTP</code> preferred, data-channel fallback).</td><td>Frame decoding (<code>ffmpeg</code> or native decoder), sampling rate, keyframe gating, bounded queues.</td></tr>
+<tr><td><strong>Analysis</strong></td><td>Source authorization, advertised event-type catalog, attachment limits.</td><td>Model weights, licensing, inference runtime, tracking, event lifecycle formation, JPEG encode.</td></tr>
+<tr><td><strong>Events</strong></td><td>Atomic catalog + attachment commit, revision conflict checks, live/notification/MQTT fanout.</td><td>Globally unique <code>event_id</code> generation, strictly increasing revisions, idempotent commit retry.</td></tr>
+<tr><td><strong>Config</strong></td><td>Named Administrator credentials and advertised <code>ServerCapabilities</code>.</td><td>Service-specific config files, env vars, and deployment lifecycle (no KeepPeek browser wizard).</td></tr>
+</tbody>
+</table>
+</div>
+<p>External services must publish strictly through the public API—never write KeepPeek’s SQLite catalog or attachment directories directly, and do not invent undocumented KeepPeek <code>config.toml</code> sections.</p>
+<h2 id="prepare-an-external-integration"><a class="header" href="#prepare-an-external-integration">Prepare an external integration</a></h2>
 <ol>
-<li>Verify that the camera is available in KeepPeek and that its configured stream can be decoded
-by the service. A low-resolution stream is usually sufficient for an initial interoperability
-check; choose it explicitly in the service.</li>
-<li>Obtain the camera’s stable source ID from its camera details. A display name, a current session
-ID or a Home Assistant entity ID is not a substitute.</li>
-<li>Provide a dedicated KeepPeek credential through the service’s supported secret mechanism.
-Event publication currently requires Administrator authority; a viewing-only User key cannot
-publish events. Apply the <a href="./authentication.html">access policy</a> appropriate to that service.</li>
-<li>Confirm the server advertises <code>keeppeek.event-publication.v1</code>, the intended source, a supported
-media variant and the event types the service will publish. An unadvertised event type is not
-accepted merely because a model can produce it.</li>
-<li>Start the service and verify one committed event before depending on its alerts or automation.</li>
+<li>Confirm the camera is online in KeepPeek and that its stream codec (<code>H.264</code> or <code>H.265</code>) can be decoded by the service. Select the low-resolution <code>sub</code> stream explicitly for continuous inference rather than continuously decoding <code>main</code>.</li>
+<li>Copy the camera’s stable <code>source_id</code> from camera details (<code>/camera</code>). Display names, transient <code>source_session_id</code> values, and Home Assistant entity IDs are not substitutes.</li>
+<li>Create a dedicated named <strong>Administrator</strong> credential in <strong>Settings &gt; Access</strong> (<a href="./authentication.html">Authentication and access control</a>). Event publication currently requires Administrator authority—a <strong>User</strong> key can read media but cannot publish events, and per-source/per-event-type scopes are not implemented. Use a separate credential per service so it can be revoked independently.</li>
+<li>Confirm <code>ServerCapabilities</code> advertises <code>keeppeek.event-publication.v1</code>, the target source (<code>source_id</code> and active <code>source_session_id</code>), a supported media variant, and every event type the service will emit. Unadvertised event types are rejected.</li>
+<li>Start the service and verify one committed event in <strong>Events</strong> (<code>/events</code>) before attaching alert rules or automations.</li>
 </ol>
-<p>The browser has no general model-installation or external-service deployment wizard. Configuration
-for a particular service belongs to that client; do not invent extra KeepPeek TOML sections from
-the conceptual computer-vision scenario.</p>
-<h2 id="try-the-reference-example"><a class="header" href="#try-the-reference-example">Try the reference example</a></h2>
-<p>The <a href="https://github.com/xnorpx/keeppeek/tree/main/examples/object_detection_service">object-detection example</a>
-includes the complete platform-specific setup and commands. It requires Python 3.12 or newer,
-FFmpeg on <code>PATH</code>, an active H.264 or H.265 source and a compatible KeepPeek server. Install its
-requirements into the selected interpreter directly; the repository does not use Python virtual
-environments. Generate its bindings from the checked-in protocol before running it.</p>
-<p>Use <code>KEEPPEEK_ACCESS_KEY_FILE</code> with an owner-only key file or the supported environment variable
-for authentication. Keep the key out of command arguments, endpoint URLs and committed files.
-The example accepts non-secret settings including <code>KEEPPEEK_URL</code>, <code>KEEPPEEK_SOURCE_ID</code>, stream,
-model, confidence, cooldown and inference-frame-rate choices.</p>
-<p>The default example loads Ultralytics <code>yolo11n.pt</code> after authentication and media subscription
-succeed. Missing weights may be downloaded by Ultralytics. Review that provider’s licensing and
-deployment requirements independently. KeepPeek does not distribute the model weights.</p>
-<h2 id="verify-the-result-in-keeppeek"><a class="header" href="#verify-the-result-in-keeppeek">Verify the result in KeepPeek</a></h2>
-<p>Open <strong>Events</strong> and select the source and UTC date. Inspect the event kind, confidence, text,
-revision and canonical image. A later model result may enrich or close the same event; it should
-not be interpreted as a new detection solely because its revision increased.</p>
-<p>Use <strong>Open at this moment</strong> to compare the event with recorded video, and <strong>Back to event</strong> to
-return to the investigation. Review state and shared bookmarks work the same way for external
-and native events. A JPEG, story or description is an event attachment; it does not prove that
-continuous video was retained. Check <a href="./recording-and-evidence.html">Recording and evidence</a>.</p>
-<p>An attachment upload becomes visible only after the publication commits. A failed or unfinished
-upload must not appear as a complete event. Consumers use stable source/event IDs and revisions
-to recognize updates and retries. The service must use the API rather than writing KeepPeek’s
-catalog or attachment directories directly.</p>
-<h2 id="failure-and-capacity-checks"><a class="header" href="#failure-and-capacity-checks">Failure and capacity checks</a></h2>
+<h2 id="publication-contract-and-limits"><a class="header" href="#publication-contract-and-limits">Publication contract and limits</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Aspect</th><th>Contract behavior</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Metadata-only events</strong></td><td>Use envelope-only <code>PublishEvent</code> when no attachments are included.</td></tr>
+<tr><td><strong>Attachment events</strong></td><td>Use the two-phase transaction (<code>StartEventPublication</code> → <code>EventAttachmentChunk</code> over <code>RELIABLE_DATA</code> → <code>CommitEventPublication</code>). Files become visible only after <code>COMMITTED</code>.</td></tr>
+<tr><td><strong>Failure &amp; reaping</strong></td><td>Abort unfinished work with <code>AbortEventPublication</code>; on process crash, KeepPeek expires and deletes staged bytes at <code>expires_at_ms</code> with no partial event visible.</td></tr>
+<tr><td><strong>Idempotency</strong></td><td>Reuse the same <code>publication_id</code>, <code>event_id</code>, and <code>revision</code> on retry. Identical metadata and attachment bytes return <code>COMMITTED</code> without duplicate fanout; differing content returns a revision conflict.</td></tr>
+<tr><td><strong>Session quotas</strong></td><td>Atomic publications are bounded to <strong>4 active</strong> and <strong>64 distinct IDs</strong> per API session (<strong>64 active</strong> / <strong>256 retained</strong> server-wide). Reconnect after exhausting per-session IDs.</td></tr>
+<tr><td><strong>Source restarts</strong></td><td>Restarts change <code>source_session_id</code>. Rediscover the active session and re-subscribe while preserving the stable <code>source_id</code> for event history.</td></tr>
+<tr><td><strong>Observability</strong></td><td>Prometheus <code>/metrics</code> exports fixed-cardinality <code>keeppeek_external_analysis_*</code> gauges, counters, and bounded 256-sample <code>p50</code>/<code>p95</code> durable publication latency (ms).</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="reference-python-example"><a class="header" href="#reference-python-example">Reference Python example</a></h2>
+<p><a href="https://github.com/xnorpx/keeppeek/tree/main/examples/object_detection_service"><code>examples/object_detection_service/</code></a> is a minimal Python reference service built for interoperability demonstration and CI. It is <strong>not</strong> a production detector product.</p>
+<ul>
+<li><strong>Prerequisites</strong>: Python <code>3.12+</code> (installed directly into the interpreter—do not use virtual environments), <code>ffmpeg</code> on <code>PATH</code>, an active H.264 or H.265 source, and a KeepPeek server advertising <code>keeppeek.event-publication.v1</code>.</li>
+<li><strong>Bindings</strong>: Run <code>generate_protos.py</code> to generate MIT-licensed bindings directly from <code>api/webrtc.proto</code>. Never copy wire types by hand.</li>
+<li><strong>Authentication</strong>: Supply the key via <code>KEEPPEEK_ACCESS_KEY_FILE</code> (owner-only file) or <code>KEEPPEEK_ACCESS_KEY</code> (takes precedence). Never pass keys in command arguments, URLs, or committed files.</li>
+<li><strong>Settings</strong>: Configure non-secret inputs via <code>KEEPPEEK_URL</code>, <code>KEEPPEEK_SOURCE_ID</code>, <code>KEEPPEEK_STREAM</code>, <code>KEEPPEEK_MODEL</code>, <code>KEEPPEEK_CONFIDENCE</code>, <code>KEEPPEEK_COOLDOWN_SECONDS</code> (5s default per class), and <code>KEEPPEEK_INFERENCE_FPS</code>.</li>
+<li><strong>Bounded queues</strong>: Caps memory by dropping oldest work first—encoded queue: 4 frames / 8 MiB; decoded queue: 1 frame / 24 MiB; publication queue: 16 events / 16 KiB; single frame: <code>&lt;= 8 MiB</code> and 256 fragments.</li>
+<li><strong>Model weights</strong>: Loads Ultralytics <code>yolo11n.pt</code> only after auth and media subscription succeed (Ultralytics may download missing weights under its own AGPL-3.0 / enterprise license; KeepPeek does not distribute weights). Use <code>--detector fake</code> for weight-free CI/local checks.</li>
+</ul>
+<h2 id="verify-results-in-keeppeek"><a class="header" href="#verify-results-in-keeppeek">Verify results in KeepPeek</a></h2>
+<ol>
+<li>Open <strong>Events</strong> (<code>/events</code>) and select the source and UTC date.</li>
+<li>Inspect event kind, confidence, text, revision, and canonical image. Higher revisions enrich or close the same logical event rather than creating a new detection.</li>
+<li>Select <strong>Open at this moment</strong> to compare the event against recorded footage in <strong>Keep</strong> (<code>/keep</code>), and <strong>Back to event</strong> to return.</li>
+</ol>
+<p>Review state and shared bookmarks behave identically for external and native events. An attached JPEG, story, or description is event evidence only—it does not prove continuous video was retained (<a href="./recording-and-evidence.html">Recording and evidence</a>).</p>
+<h2 id="troubleshooting"><a class="header" href="#troubleshooting">Troubleshooting</a></h2>
 <div class="table-wrapper">
 <table>
 <thead>
 <tr><th>Symptom</th><th>What to check</th></tr>
 </thead>
 <tbody>
-<tr><td>Subscription is rejected</td><td>Source visibility, advertised stream/codec and the service’s media capability checks.</td></tr>
-<tr><td>Publication is denied</td><td>Administrator authority, enabled credential, current source identity and advertised event type.</td></tr>
-<tr><td>Processing falls behind</td><td>Service decode/inference rate and bounded queues. Reduce sampling or use a suitable stream instead of accumulating old frames.</td></tr>
-<tr><td>Events appear without images</td><td>Publication/attachment completion and image limits; inspect the event’s explicit availability state.</td></tr>
-<tr><td>Recording continues while detections stop</td><td>Check the external process and its session. Inference failure does not imply recording failure.</td></tr>
-<tr><td>Reconnection produces duplicates</td><td>Preserve logical event identity and increment revisions correctly; inspect commit/retry handling in the service.</td></tr>
+<tr><td>Subscription rejected</td><td>Source visibility, active <code>source_session_id</code>, advertised <code>main</code>/<code>sub</code> H.264/H.265 variant, and client media capabilities.</td></tr>
+<tr><td>Publication denied</td><td>Administrator credential role, enabled/unexpired key, current source session, and advertised event type.</td></tr>
+<tr><td>Processing falls behind</td><td>Service decode/inference rate and bounded queues; lower <code>KEEPPEEK_INFERENCE_FPS</code> or subscribe to <code>sub</code> instead of queuing stale frames.</td></tr>
+<tr><td>Events appear without images</td><td>Two-phase upload/commit completion, descriptor count/byte limits, and explicit attachment availability state.</td></tr>
+<tr><td>Recording continues while detections stop</td><td>Inspect the external process and WebRTC session; inference failure never interrupts camera ingest or recording.</td></tr>
+<tr><td>Reconnect produces duplicates</td><td>Preserve logical <code>event_id</code>, increment <code>revision</code> strictly, and retry with the original <code>publication_id</code> on ambiguous commits.</td></tr>
 </tbody>
 </table>
 </div>
-<p>Source restarts change session identity. A service must rediscover the current source session and
-replace its media subscription, while preserving the stable source ID used for event history.
-The reference example’s checks demonstrate interoperability, not long-duration operation or
-certification of a third-party model deployment.</p>
-<p>Developers should start with the <a href="https://github.com/xnorpx/keeppeek/tree/main/api">public API</a>
-and the <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/computer-vision.md">computer-vision scenario</a>.
-The latter explains the wider service architecture; check advertised capabilities and current
-examples before treating a described workload as an installed KeepPeek feature.</p>
+<p>Start client development with the MIT-licensed <a href="https://github.com/xnorpx/keeppeek/tree/main/api">public API</a> and the <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/computer-vision.md">computer-vision scenario</a> (verify live <code>ServerCapabilities</code> before assuming a scenario workload is enabled on a given build).</p>
 
                     </main>
 

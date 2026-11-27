@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9681fb04.js";
+            window.path_to_searchindex_js = "searchindex-f3bc00c1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-515efa10.js"></script>
@@ -175,76 +175,86 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="native-camera-events"><a class="header" href="#native-camera-events">Native camera events</a></h1>
-<p>Native events are detections and status changes reported by the camera itself. KeepPeek consumes
-Reolink notifications, Hikvision/Annke ISAPI events, generic ONVIF PullPoint notifications and
-metadata carried by RTSP. These do not require an external inference service.</p>
-<p>Supported observations enter the same event catalog as other events and can appear in <strong>Events</strong>,
-Keep’s history, notification rules and MQTT. Event processing is independent of media ingest: an
-event-service failure does not restart healthy video or audio. Compare its status with
-<a href="./camera-health.html">camera and stream health</a> instead of treating them as one signal.</p>
+<p>This chapter covers ingesting detections and alarm transitions reported directly by cameras over Reolink Baichuan, Hikvision/Annke/HiWatch ISAPI, generic ONVIF PullPoint, and RTSP ONVIF metadata tracks without an external inference service. Native event processing runs independently of media ingest—an event failure never restarts healthy video or audio—and KeepPeek never modifies camera detection rules, regions, or schedules automatically.</p>
+<p>Supported detections enter the same catalog as external events and flow to <strong>Events</strong> (<code>/events</code>), <strong>Keep</strong> (<code>/keep</code>), notification rules, and MQTT. Compare native event status separately from <a href="./camera-health.html">Camera and stream health</a>.</p>
+<h2 id="supported-adapters-and-capabilities"><a class="header" href="#supported-adapters-and-capabilities">Supported adapters and capabilities</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Adapter</th><th>Transport &amp; auth</th><th>Recognized event kinds</th><th>Images &amp; channel scope</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Reolink (Baichuan / <code>reo-proto</code>)</strong></td><td>Native Baichuan alarm push (<code>StartMotionAlarm</code> / <code>AlarmEventList</code>) over the camera session.</td><td><code>person</code>, <code>vehicle</code>, <code>animal</code>, <code>doorbell_press</code> (point event from <code>visitor</code>), plus <code>motion</code> when <code>record_generic_motion_events = true</code>.</td><td>Scoped to the camera’s configured Baichuan channel. No automatic failover from a failing Baichuan media session.</td></tr>
+<tr><td><strong>Hikvision / Annke / HiWatch (ISAPI)</strong></td><td>Persistent <code>GET /ISAPI/Event/notification/alertStream</code> (multipart XML/JSON, HTTP Digest; no Basic downgrade) or opt-in <code>[isapi_callbacks]</code> HTTP push.</td><td><code>person</code>, <code>vehicle</code>, <code>line_crossing</code>, <code>intrusion</code>, <code>region_entry</code>, <code>region_exit</code>, <code>tamper</code>, <code>alarm</code>, ANPR, named target collections, plus opt-in <code>motion</code> (VMD).</td><td>Up to 16 explicitly correlated JPEGs per event. Channel derived from matching <code>101/102</code> (ch 1) or <code>201/202</code> (ch 2) URLs; conflicting URLs fail.</td></tr>
+<tr><td><strong>Generic ONVIF PullPoint</strong></td><td>ONVIF Event Service subscription (WS-Security UsernameToken + HTTP Digest challenge; no Basic/token-free downgrade; 90s lease, 1–30s backoff).</td><td>18 namespace-aware kinds: <code>motion</code>, <code>tamper</code>, <code>digital_input</code>, <code>audio_detected</code>, <code>video_loss</code>, <code>line_crossing</code>, <code>intrusion</code>, <code>region_entry</code>, <code>region_exit</code>, <code>loitering</code>, <code>person</code>, <code>vehicle</code>, <code>animal</code>, <code>face</code>, <code>license_plate</code>, <code>package</code>, <code>object_count</code>, <code>doorbell_press</code>.</td><td>0–1 optional JPEG snapshot (<code>&lt;= 1 MiB</code>, 2s budget). One subscription per device IP; narrow multi-channel devices with opaque <code>source_tokens</code>.</td></tr>
+<tr><td><strong>RTSP metadata (<code>rtsp-metadata</code>)</strong></td><td>ONVIF metadata tracks on existing RTSP workers (supports <code>vnd.onvif.metadata+gzip</code>; EXI unsupported). Does not contact an ONVIF Event Service.</td><td>Same namespace-aware ONVIF event and Profile T/M object mapping as PullPoint.</td><td>Uses one active main/sub metadata consumer with a 5-second inactivity handoff.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Unknown topics, arbitrary vendor namespaces, PTZ status, and heartbeats (<code>videoloss/inactive</code>, <code>heartBeat/active</code>) never become invented motion events. Hardware verification across non-fixture ONVIF models and smart-rule firmware dialects remains model- and firmware-dependent; fixture tests are not firmware certification.</p>
 <h2 id="enable-and-verify-events"><a class="header" href="#enable-and-verify-events">Enable and verify events</a></h2>
 <ol>
-<li>Add the camera and verify its video and recording independently.</li>
-<li>In the camera’s own interface, enable the intended detection rule, schedule, region and event
-notification linkage. KeepPeek discovery does not configure these on the device.</li>
-<li>Use the default native event mode, <code>auto</code>, unless there is a reason to select a specific path.</li>
-<li>If the camera reports only unclassified motion, enable <strong>Store generic motion events</strong> in its
-KeepPeek settings. The default is off; explicit person or vehicle detections remain distinct.</li>
-<li>Trigger one known event, then open <strong>Events</strong>, choose that camera and the correct UTC date, and
-inspect its kind, source, timestamp and available image. Verify the corresponding recording in
-Keep before enabling an alert rule.</li>
+<li>Add the camera and verify live video and recording independently in <a href="./camera-health.html">Camera and stream health</a>.</li>
+<li>In the camera’s own web or app interface, enable the detection rule, schedule, detection region, and notification linkage. KeepPeek discovery never writes camera detector settings.</li>
+<li>Keep the default <code>[cameras.&lt;name&gt;.events]</code> <code>mode = "auto"</code> unless forcing a specific transport.</li>
+<li>If the camera emits only unclassified motion/VMD, enable <strong>Store generic motion events</strong> (<code>record_generic_motion_events = true</code>, default <code>false</code>) in its KeepPeek camera settings. Explicit <code>person</code> or <code>vehicle</code> classifications remain distinct.</li>
+<li>Trigger one known event, open <strong>Events</strong> (<code>/events</code>), select the camera and UTC date, and inspect kind, source, timestamp, and image. Verify matching footage in <strong>Keep</strong> (<code>/keep</code>) before enabling alert rules.</li>
 </ol>
-<p>A detector-enabled switch is not an activity indicator. A camera reporting a motion rule with a
-human-only filter also does not prove that every notification contains a person classification.
-KeepPeek uses the explicit evidence in each notification.</p>
-<h2 id="select-the-event-transport"><a class="header" href="#select-the-event-transport">Select the event transport</a></h2>
-<p>The optional <code>[cameras.&lt;name&gt;.events]</code> table belongs in the existing <code>config.toml</code>. These transport
-fields are file-only; ordinary camera edits preserve them. Apply file changes through the existing
-configuration/restart workflow. For example, to force generic ONVIF for an existing camera:</p>
+<p>A detector-enabled switch on the camera is not an activity indicator, and a camera motion rule with a human-only filter does not guarantee notifications carry an explicit <code>person</code> label. KeepPeek classifies strictly from explicit payload evidence.</p>
+<h2 id="video-walkthrough"><a class="header" href="#video-walkthrough">Video walkthrough</a></h2>
+<p>This walkthrough demonstrates verifying camera-origin events in <strong>Events</strong> (<code>/events</code>) and <strong>Activity</strong> (<code>/activity</code>).</p>
+<video controls="" crossorigin="anonymous" preload="metadata" playsinline="" style="width: 100%; height: auto">
+  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/events.desktop.search-review.mp4" type="video/mp4">
+  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/events.desktop.search-review.vtt" kind="captions" srclang="en" label="English">
+  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/events.desktop.search-review.mp4">Download the Events and Activity review demo</a>.
+</video>
+<h2 id="transport-modes-and-file-only-configuration"><a class="header" href="#transport-modes-and-file-only-configuration">Transport modes and file-only configuration</a></h2>
+<p>Configure per-camera event overrides under <code>[cameras.&lt;name&gt;.events]</code> in <code>config.toml</code>. These fields are file-only—ordinary UI camera edits preserve them—and require the normal configuration apply/restart workflow. Replace <code>&lt;name&gt;</code> with the existing camera key; never duplicate a camera entry just to change its event path.</p>
 <pre><code class="language-toml">[cameras.front.events]
 mode = "onvif-pullpoint"
 metadata_stream = "auto"
 snapshots = true
 </code></pre>
-<p>Replace <code>front</code> with the existing camera entry’s name. Do not add a second entry for the same
-device merely to change its event path.</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Mode</th><th>Behavior</th></tr>
+<tr><th><code>mode</code></th><th>Behavior</th></tr>
 </thead>
 <tbody>
-<tr><td><code>auto</code></td><td>Prefer an eligible Reolink or ISAPI adapter; otherwise use generic ONVIF and permit RTSP metadata. Unsupported ISAPI HTTP 404/405 can hand over to generic ONVIF.</td></tr>
-<tr><td><code>vendor</code></td><td>Use the eligible vendor adapter without generic fallback.</td></tr>
-<tr><td><code>onvif-pullpoint</code></td><td>Use generic ONVIF independently of the video backend; metadata remains permitted unless disabled.</td></tr>
-<tr><td><code>rtsp-metadata</code></td><td>Consume metadata from the existing RTSP workers without contacting an ONVIF Event Service.</td></tr>
-<tr><td><code>disabled</code></td><td>Disable native events while leaving camera media independent.</td></tr>
+<tr><td><code>auto</code> (default)</td><td>Prefer an eligible Reolink or ISAPI adapter; otherwise use generic ONVIF PullPoint and permit RTSP metadata. Unsupported ISAPI HTTP <code>404</code>/<code>405</code> hands over to generic ONVIF after vendor cleanup.</td></tr>
+<tr><td><code>vendor</code></td><td>Use only the eligible vendor adapter without generic fallback.</td></tr>
+<tr><td><code>onvif-pullpoint</code></td><td>Force generic ONVIF PullPoint regardless of video backend; RTSP metadata remains permitted unless disabled.</td></tr>
+<tr><td><code>rtsp-metadata</code></td><td>Consume metadata from existing RTSP workers without contacting an ONVIF Event Service.</td></tr>
+<tr><td><code>disabled</code></td><td>Stop native event workers and exclude native event capabilities while leaving camera media running.</td></tr>
 </tbody>
 </table>
 </div>
-<p><code>metadata_stream</code> accepts <code>auto</code>, <code>enabled</code>, or <code>disabled</code>; it does not override <code>vendor</code> or
-<code>disabled</code> mode. Authentication failure is reported rather than bypassed through another
-authentication policy. The full field bounds and secret-reference rules are in the
-<a href="./configuration-reference.html">Configuration reference</a>.</p>
-<p>Multi-channel devices need exact channel evidence. ISAPI main/sub URLs ending in <code>101/102</code> select
-input 1; <code>201/202</code> select input 2. Both URLs must agree. Generic ONVIF <code>source_tokens</code> are opaque
-camera-supplied identifiers, not profile indexes. Topic filters use expanded XML names, with
-exclusions taking precedence. Use the detailed protocol guides when narrowing either field.</p>
-<h2 id="understand-event-times-and-images"><a class="header" href="#understand-event-times-and-images">Understand event times and images</a></h2>
-<p>Repeated active observations update a logical event instead of creating one event for each
-notification. An explicit clear closes the matching observation. Generic ONVIF initialization
-establishes a baseline without notifying the user; an already-active baseline must clear before
-opening a new interval. Matching PullPoint and metadata evidence is deduplicated.</p>
-<p>Timestamp rules depend on the source. Generic ONVIF uses valid camera UTC from the preceding five
-minutes; invalid, missing or future notification times use receipt time with an explanation in the
-event metadata. ISAPI’s recording timeline uses server receipt time and retains the original
-camera time as metadata. Correct the device clock when investigating inconsistent event timing.</p>
-<p>ISAPI disconnects or a 30-second active-observation timeout close an observed span at its last
-evidence. That is not proof of the instant physical motion stopped. Unknown topics and heartbeats
-do not become invented motion events.</p>
-<p>An event can be useful without an image. KeepPeek attaches explicitly associated snapshots and
-retains metadata when image capture is unavailable. Boxes are drawn only on their matching image;
-an unavailable canonical image is reported instead of replaced with unrelated footage.</p>
+<ul>
+<li><code>metadata_stream</code>: <code>auto</code> (default), <code>enabled</code>, or <code>disabled</code>. Does not override <code>vendor</code> or <code>disabled</code>.</li>
+<li><code>event_service_url</code>: optional HTTP(S) URL restricted to the exact configured camera IP with no credentials, query, or fragment.</li>
+<li><code>source_tokens</code>: up to 32 exact camera-supplied opaque identifiers (<code>&lt;= 256</code> bytes each); never guess profile indexes.</li>
+<li><code>include_topics</code> / <code>exclude_topics</code>: up to 32 combined namespace-expanded XML topic paths (<code>&lt;= 1,024</code> bytes each), such as <code>{http://www.onvif.org/ver10/topics}VideoSource/MotionAlarm</code>; exclusions take precedence.</li>
+<li><code>snapshots</code>: <code>true</code> by default; controls optional ONVIF snapshot fetches.</li>
+<li><code>[isapi_callbacks]</code>: optional camera-to-server HTTP Digest callback listener in <code>config.toml</code> for eligible non-Reolink cameras. Configuring callbacks suppresses that camera’s pull worker to prevent duplicate events; store callback passwords in <code>secrets.toml</code> via <code>{secret:KEY}</code>.</li>
+</ul>
+<p>Authentication failures are reported as terminal errors rather than downgraded or retried across policies. See <a href="./configuration-reference.html#native-camera-events">Configuration reference</a> for complete field limits and secret-reference rules.</p>
+<h2 id="event-lifecycle-timestamps-and-images"><a class="header" href="#event-lifecycle-timestamps-and-images">Event lifecycle, timestamps, and images</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Behavior</th><th>Rule</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Coalescing</strong></td><td>Repeated active observations update one logical event; an explicit clear closes it. Matching ONVIF PullPoint and RTSP metadata observations deduplicate into one event.</td></tr>
+<tr><td><strong>ONVIF baselines</strong></td><td><code>Initialized</code> notifications establish a baseline without alerting; an already-active baseline must clear before opening a new interval.</td></tr>
+<tr><td><strong>Timestamps (ONVIF)</strong></td><td>Valid camera UTC from the preceding 5 minutes supplies event time; future, stale, missing, or invalid times fall back to receipt time with <code>timestamp_source</code> and <code>timestamp_reason</code> metadata.</td></tr>
+<tr><td><strong>Timestamps (ISAPI)</strong></td><td>Recording timeline uses server receipt time; the camera’s original <code>dateTime</code> is retained as <code>camera_time</code> metadata. Sync device clocks when investigating drift.</td></tr>
+<tr><td><strong>Inferred endings</strong></td><td>ISAPI disconnects or a 30-second active-observation timeout (ONVIF: 30s properties, 5s objects) close the span at its last evidence—not proof of physical motion stop.</td></tr>
+<tr><td><strong>Snapshots &amp; boxes</strong></td><td>Missing or failed snapshots never discard event metadata. Bounding boxes draw only on their explicitly matched image; unrelated footage is never substituted.</td></tr>
+<tr><td><strong>Observability</strong></td><td><code>/metrics</code> exports fixed-cardinality <code>keeppeek_camera_events_*</code> counters and gauges; topics, URLs, tokens, and raw XML are never metric labels.</td></tr>
+</tbody>
+</table>
+</div>
 <h2 id="troubleshooting"><a class="header" href="#troubleshooting">Troubleshooting</a></h2>
 <div class="table-wrapper">
 <table>
@@ -252,19 +262,16 @@ an unavailable canonical image is reported instead of replaced with unrelated fo
 <tr><th>Symptom</th><th>What to check</th></tr>
 </thead>
 <tbody>
-<tr><td>Video works, events do not</td><td>Native event status, the device event service, credentials, rule schedule and channel selection. Video and event protocols are separate.</td></tr>
-<tr><td>Only heartbeats arrive</td><td>Enable the desired camera rule and notification linkage. Check generic-motion retention for unclassified VMD.</td></tr>
-<tr><td>Generic service is unsupported</td><td>Confirm the camera exposes ONVIF events or RTSP metadata; an ONVIF video profile alone is insufficient.</td></tr>
-<tr><td>Repeated authentication failure</td><td>Correct the saved credentials and device permissions. Do not weaken authentication or repeatedly guess passwords.</td></tr>
-<tr><td>Events have no thumbnail</td><td>Inspect the attachment state and snapshot support; metadata delivery can succeed independently.</td></tr>
-<tr><td>Duplicate-looking cards</td><td>Compare source, event ID, rule, object and revision. Similar text can describe independent observations.</td></tr>
+<tr><td>Video works, events do not</td><td>Native event status, device event service, credentials, rule schedule, and channel selection (<code>101/102</code> vs <code>201/202</code> or <code>source_tokens</code>).</td></tr>
+<tr><td>Only heartbeats arrive</td><td>Enable the camera’s rule and notification linkage; enable <strong>Store generic motion events</strong> for unclassified VMD.</td></tr>
+<tr><td>Generic service is unsupported</td><td>Confirm the device exposes ONVIF Event Service or RTSP metadata; an ONVIF video profile alone is insufficient.</td></tr>
+<tr><td>Repeated authentication failure</td><td>Fix saved credentials and device permissions; KeepPeek does not downgrade Digest/WS-Security or repeatedly guess passwords.</td></tr>
+<tr><td>Events have no thumbnail</td><td>Check snapshot support and attachment state; metadata delivery succeeds independently of image capture.</td></tr>
+<tr><td>Duplicate-looking cards</td><td>Compare source, event ID, rule, object, and revision; similar text can represent distinct observations.</td></tr>
 </tbody>
 </table>
 </div>
-<p>For protocol details, see <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/onvif-events.md">ONVIF events</a>
-and <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/hikvision-isapi.md">Hikvision ISAPI</a>.
-For model-generated detections, see <a href="./external-analysis.html">External analysis</a>. For delivery,
-see <a href="./notifications-and-integrations.html">Notifications and integrations</a>.</p>
+<p>For wire-level protocol limits and hardware diagnostics, see <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/onvif-events.md">ONVIF events</a> and <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/hikvision-isapi.md">Hikvision ISAPI</a>. For model-based detections, see <a href="./external-analysis.html">External analysis</a>; for alerting and MQTT, see <a href="./notifications-and-integrations.html">Notifications and integrations</a>.</p>
 
                     </main>
 

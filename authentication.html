@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9681fb04.js";
+            window.path_to_searchindex_js = "searchindex-f3bc00c1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-515efa10.js"></script>
@@ -175,181 +175,156 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="authentication-and-access-control"><a class="header" href="#authentication-and-access-control">Authentication and access control</a></h1>
-<p>KeepPeek is local-first: cameras and recordings stay on the recorder, and KeepPeek does not expose
-itself through a cloud relay. Access depends on two decisions:</p>
+<p>This chapter explains KeepPeek’s local-first trust model, trusted-local vs remote classification, Administrator and User roles, per-camera/group grants, HTTP authentication endpoints, bearer and external sign-in (OIDC and identity-aware proxy), session revocation, reverse-proxy HTTPS rules, and audit/metrics boundaries. Configuring access requires <strong>Administrator</strong> privileges; external authentication is opt-in and never disables trusted-local recovery.</p>
+<h2 id="access-model"><a class="header" href="#access-model">Access model</a></h2>
+<p>KeepPeek evaluates every request in two steps:</p>
 <ol>
-<li>Is the client on a trusted local network?</li>
-<li>If not, which remote credential and role does the client have?</li>
+<li><strong>Network classification:</strong> Is the client’s effective IP address inside <code>access.local_networks</code>?</li>
+<li><strong>Remote identity:</strong> If not local, does the client present a valid named bearer credential or an active opt-in external authentication session (OIDC or identity-aware proxy)?</li>
 </ol>
-<p>Local clients use KeepPeek as <strong>Administrator</strong> without signing in. Remote clients must sign in
-with a named bearer credential or an explicitly configured OIDC/identity-proxy method,
-assigned either the <strong>Administrator</strong> or <strong>User</strong> role. External methods are opt-in;
-they do not change the trusted-local policy.</p>
-<blockquote>
-<p>Treat local network configuration as an authentication boundary. Any device in a configured
-local range receives Administrator access.</p>
-</blockquote>
-<h2 id="first-run"><a class="header" href="#first-run">First run</a></h2>
-<p>On first start, KeepPeek creates a cryptographically random <strong>Initial Administrator</strong> credential.
-Open the setup page from a local client and select <strong>Retrieve initial key</strong>. The key is displayed
-only for that operation.</p>
-<p>Save it immediately using <strong>Copy</strong> or <strong>Download</strong>, then choose <strong>Hide permanently</strong>. KeepPeek does
-not log the key and cannot display it again. If it is lost, a local Administrator can rotate the
-Initial Administrator credential from <strong>Settings &gt; Access &amp; roles</strong>.</p>
-<p>KeepPeek does not report remote access as ready until the initial key has been retrieved. Local
-camera setup remains available while remote access is pending.</p>
-<h2 id="local-and-remote-clients"><a class="header" href="#local-and-remote-clients">Local and remote clients</a></h2>
-<p>KeepPeek classifies the effective client address before checking a credential.</p>
-<ul>
-<li><strong>Local:</strong> the address is in <code>access.local_networks</code>. The client becomes Administrator without a
-sign-in screen.</li>
-<li><strong>Remote:</strong> every other address. The client must provide an active, unexpired bearer credential
-or use an explicitly configured external authentication method.</li>
-<li><strong>Unknown or malformed:</strong> treated as remote and denied without a valid credential.</li>
-</ul>
-<p>The default local networks include IPv4 and IPv6 loopback, RFC 1918 private networks, IPv4 and IPv6
-link-local networks, and IPv6 unique-local networks. IPv4-mapped IPv6 addresses are normalized
-before matching.</p>
-<p>Container bridge networks commonly fall within <code>172.16.0.0/12</code>, which is local by default. Narrow
-the list if other containers on the host must not receive Administrator access.</p>
-<p>Configure the policy in <code>config.toml</code>:</p>
-<pre><code class="language-toml">[access]
-local_networks = ["127.0.0.0/8", "192.168.50.0/24", "::1/128"]
-trusted_proxies = []
-require_secure_remote = true
-failed_authentication_limit = 5
-failed_authentication_window_secs = 60
-session_idle_timeout_secs = 1800
-session_absolute_timeout_secs = 86400
-max_sessions_per_principal = 64
-max_sessions_per_address = 128
-</code></pre>
-<p>Setting <code>local_networks</code> replaces the defaults. Include the loopback ranges explicitly when you
-customize it.</p>
-<p>A VPN can use either policy:</p>
-<ul>
-<li>Add its client range to <code>local_networks</code> when every VPN client should be Administrator.</li>
-<li>Leave it out when each VPN client should sign in with an individual credential and role.</li>
-</ul>
-<p>Restart KeepPeek after changing the network policy.</p>
-<h2 id="external-sign-in"><a class="header" href="#external-sign-in">External sign-in</a></h2>
-<p>Administrators configure providers, exact origins, explicit role/camera mappings,
-identities, and browser-session revocation under <strong>Settings → Access</strong>. Browser
-cookies are secure, HTTP-only, host-only, and bound to one allowed origin. Provider
-tokens never reach the application UI. Sign-out revokes dependent connections;
-restart invalidates all external browser sessions.</p>
-<p>Provider secrets remain references into <code>secrets.toml</code>. Changing the last usable
-remote Administrator path requires fresh proof against the exact proposed
-configuration and explicit confirmation on the original control connection.
-The same protection applies to configuration ZIP restore. An unavailable provider,
-stale proof, or failed write cannot activate the candidate.</p>
-<p>See the <a href="configuration-reference.html#external-authentication-configuration">field reference</a>
-and <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/external-authentication-operations.md">deployment and recovery guide</a>
-for TLS, reverse-proxy header sanitation, mixed-mode deadlines, and troubleshooting.</p>
-<h2 id="roles"><a class="header" href="#roles">Roles</a></h2>
-<p>KeepPeek has two fixed roles.</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Operation</th><th style="text-align: center">Administrator</th><th style="text-align: center">User</th></tr>
+<tr><th>Classification</th><th>Source address rule</th><th>Resulting access</th></tr>
 </thead>
 <tbody>
-<tr><td>View live and recorded media and events</td><td style="text-align: center">Yes</td><td style="text-align: center">Yes</td></tr>
-<tr><td>Operate PTZ and presets</td><td style="text-align: center">Yes</td><td style="text-align: center">Yes</td></tr>
-<tr><td>Use personal notification and review state</td><td style="text-align: center">Yes</td><td style="text-align: center">Yes</td></tr>
-<tr><td>Configure cameras, storage, recording, and integrations</td><td style="text-align: center">Yes</td><td style="text-align: center">No</td></tr>
-<tr><td>Export, delete, or change retention</td><td style="text-align: center">Yes</td><td style="text-align: center">No</td></tr>
-<tr><td>View logs, health diagnostics, and security audit</td><td style="text-align: center">Yes</td><td style="text-align: center">No</td></tr>
-<tr><td>Manage credentials and sessions</td><td style="text-align: center">Yes</td><td style="text-align: center">No</td></tr>
+<tr><td>Local</td><td>Inside <code>access.local_networks</code></td><td><strong>Administrator</strong> automatically, no sign-in prompt</td></tr>
+<tr><td>Remote</td><td>Outside <code>access.local_networks</code></td><td>Must authenticate with bearer key or configured external method</td></tr>
+<tr><td>Unknown / malformed</td><td>Missing or invalid forwarded IP / peer</td><td>Treated as remote; denied without a valid credential</td></tr>
 </tbody>
 </table>
 </div>
-<p>The server enforces this policy for HTTP and every WebRTC control operation. Hidden navigation and
-controls make the User interface clearer, but they are not the security boundary.</p>
-<p>The User operations above are limited to that credential’s allowed cameras. Custom roles are not
-currently available.</p>
+<blockquote>
+<p><strong>Security boundary:</strong> Treat <code>access.local_networks</code> as an authentication boundary. Every device in a configured local range receives full <strong>Administrator</strong> access without signing in.</p>
+</blockquote>
+<h2 id="first-run"><a class="header" href="#first-run">First run</a></h2>
+<p>On first startup, KeepPeek generates a cryptographically random <strong>Initial Administrator</strong> key (UUID).</p>
+<ol>
+<li>From a trusted-local browser, open <code>/setup</code> (or <strong>Settings → Access</strong>).</li>
+<li>Select <strong>Retrieve initial key</strong>. The key is shown only for this operation and is never logged.</li>
+<li>Save it immediately using <strong>Copy</strong> or <strong>Download</strong> (<code>keeppeek-initial-administrator-key.txt</code>), then select <strong>Hide permanently</strong>.</li>
+</ol>
+<p>KeepPeek reports remote access as unready until the initial key is retrieved, while local camera setup remains available. If the key is lost, a local Administrator can rotate the <strong>Initial Administrator</strong> credential in <strong>Settings → Access</strong>.</p>
+<h2 id="local-networks-and-reverse-proxy-classification"><a class="header" href="#local-networks-and-reverse-proxy-classification">Local networks and reverse-proxy classification</a></h2>
+<p>Default <code>access.local_networks</code> covers IPv4/IPv6 loopback, RFC 1918 private ranges, IPv4/IPv6 link-local ranges, and IPv6 unique-local ranges. IPv4-mapped IPv6 addresses are normalized before matching.</p>
+<ul>
+<li><strong>Docker caution:</strong> Container bridge ranges commonly fall inside <code>172.16.0.0/12</code> (local by default). Narrow <code>local_networks</code> if sibling containers must not get Administrator access.</li>
+<li><strong>Replacement semantics:</strong> Setting <code>local_networks</code> in <code>config.toml</code> replaces all defaults; include <code>127.0.0.0/8</code> and <code>::1/128</code> explicitly when customizing.</li>
+<li><strong>VPN policy:</strong> Include the VPN client CIDR in <code>local_networks</code> to grant all VPN clients Administrator access, or omit it to require individual credentials and roles.</li>
+<li><strong>Apply change:</strong> Restart KeepPeek after editing <code>[access]</code> network settings.</li>
+</ul>
+<p>See <a href="./configuration-reference.html#access-policy">Access policy</a> for every <code>[access]</code> key, default, and bound.</p>
+<h2 id="roles"><a class="header" href="#roles">Roles</a></h2>
+<p>KeepPeek enforces two fixed roles across every HTTP endpoint and WebRTC control command. Hidden UI controls improve clarity for Users but are never the security boundary. Custom roles are not supported.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Capability</th><th style="text-align: center">Administrator</th><th style="text-align: center">User</th></tr>
+</thead>
+<tbody>
+<tr><td>View live media, recordings (<strong>Keep</strong>), and events</td><td style="text-align: center">Yes</td><td style="text-align: center">Granted cameras</td></tr>
+<tr><td>Operate PTZ, recall presets, play supported quick replies/chimes</td><td style="text-align: center">Yes</td><td style="text-align: center">Granted cameras</td></tr>
+<tr><td>Use personal notification and event-review state</td><td style="text-align: center">Yes</td><td style="text-align: center">Granted cameras</td></tr>
+<tr><td>Use browser <strong>Talk</strong> and <strong>Broadcast talkback</strong></td><td style="text-align: center">Yes</td><td style="text-align: center">No</td></tr>
+<tr><td>Add/configure cameras, storage, recording, runtime profiles, MQTT</td><td style="text-align: center">Yes</td><td style="text-align: center">No</td></tr>
+<tr><td>Export evidence, delete recordings, change retention or backups</td><td style="text-align: center">Yes</td><td style="text-align: center">No</td></tr>
+<tr><td>View logs, health diagnostics, <code>GET /metrics</code>, and security audit</td><td style="text-align: center">Yes</td><td style="text-align: center">No</td></tr>
+<tr><td>Manage credentials, camera grants, external auth, and sessions</td><td style="text-align: center">Yes</td><td style="text-align: center">No</td></tr>
+</tbody>
+</table>
+</div>
 <h2 id="camera-and-dashboard-access"><a class="header" href="#camera-and-dashboard-access">Camera and dashboard access</a></h2>
-<p>In <strong>Settings &gt; Access &amp; roles</strong>, choose the person icon beside a User credential to set <strong>User
-access</strong>. The default is <strong>Everything</strong>, including current and future groups and cameras. To
-restrict that user, choose <strong>Selected groups and cameras</strong>. Select camera groups, individual cameras,
-or both: either a matching group or an explicit camera selection grants access. Selecting neither
-grants no cameras. Existing explicit restrictions remain unchanged.</p>
-<p>Camera groups use configuration namespaces. For example, <code>[outdoor.front_door]</code> puts the camera in
-the <code>outdoor</code> group. These groups are separate from saved dashboards and live-sharing rooms.</p>
-<p>Camera grants are enforced by the server for live and recorded media, event previews, notification
-inbox/history, recording coverage, and camera controls. A grant does not permit Administrator-only
-operations such as export or camera configuration. Saving permissions closes that User’s existing
-sessions; they sign in again with the same key. Stale saves return a conflict without discarding the
-draft.</p>
-<p>Use the dashboard’s access controls to select its viewers separately. Sharing a dashboard does not
-grant its cameras. A User sees only allowed camera tiles and can select visible dashboards, but
-cannot modify or share the server-owned layouts. The complete layout remains intact for its
-Administrator even when a User’s view has fewer tiles.</p>
-<p>Both settings live in the existing configuration: camera grants in each
-<code>access_credentials.credentials[].camera_access</code> record and dashboards in <code>peek_layouts</code>. See the
-<a href="./configuration-reference.html#credential-records">configuration reference</a> for field names and limits.</p>
-<p>Trusted-local clients still receive Administrator access. To restrict someone on your LAN or VPN,
-ensure their address is not in <code>access.local_networks</code> and have them sign in with a User credential.</p>
-<h2 id="remote-sign-in"><a class="header" href="#remote-sign-in">Remote sign-in</a></h2>
-<p>Open the recorder through HTTPS and enter the issued UUID in the <strong>Remote sign-in</strong> form. The
-browser keeps the key only in memory for the current page session. It is not placed in the URL,
-rendered as hidden text, logged, or written to <code>localStorage</code> or <code>sessionStorage</code>.</p>
-<p>Reloading or closing the page discards the key and requires sign-in again. Expired or revoked
-sessions cannot retrieve protected resources. The browser normally returns to sign-in; if a
-session change during page initialization leaves an expired-session error visible, reload and
-sign in again. See <a href="#session-expired-after-a-permission-change">Session expired after a permission change</a>.</p>
-<p>API clients send the same credential in the HTTP header:</p>
-<pre><code class="language-http">Authorization: Bearer 550e8400-e29b-41d4-a716-446655440000
-</code></pre>
-<p>KeepPeek never accepts credentials in query parameters. Do not put a key in a copied recording
-link, guest link, SDP document, or command line that may be retained in shell history.</p>
-<h2 id="managing-credentials"><a class="header" href="#managing-credentials">Managing credentials</a></h2>
-<p>Open <strong>Settings &gt; Access &amp; roles</strong> as an Administrator. The credential table shows each identity’s
-name, description, role, status, last use, expiry, and revision without revealing its key.</p>
-<h3 id="create"><a class="header" href="#create">Create</a></h3>
-<p>Choose <strong>New credential</strong>, enter a descriptive name, select Administrator or User, and optionally
-set an expiry. The new key is shown once. Store it before hiding the result.</p>
-<p>Use a separate named credential for each person, browser installation, service, or integration.
-This makes audit records useful and allows one client to be revoked without affecting the others.</p>
-<h3 id="rotate"><a class="header" href="#rotate">Rotate</a></h3>
-<p>Rotate a credential when its key may have been copied or exposed. Rotation returns a replacement
-key once, invalidates the previous revision, and closes work authenticated with the old key.</p>
-<h3 id="disable-and-enable"><a class="header" href="#disable-and-enable">Disable and enable</a></h3>
-<p>Disable a credential to suspend it without deleting its identity or history. Disabling closes its
-active sessions. Enabling it increments the revision; clients must establish new sessions.</p>
-<h3 id="revoke"><a class="header" href="#revoke">Revoke</a></h3>
-<p>Revocation is permanent. It closes active sessions and prevents reconnecting with that credential.
-A revoked credential cannot be enabled or rotated; create a replacement identity instead.</p>
-<p>Credential metadata, camera grants, and SHA-256 verifiers are stored under <code>[access_credentials]</code>
-in <code>config.toml</code>. Raw keys are not stored there. The compatibility Initial Administrator key remains
-protected in owner-only <code>secrets.toml</code>.</p>
-<h2 id="sessions-and-revocation"><a class="header" href="#sessions-and-revocation">Sessions and revocation</a></h2>
-<p>Each WebRTC session has a random opaque ID and is bound to its principal, role, effective client
-address, network classification, credential revision, and expiry. A session ID does not authorize a
-request by itself.</p>
-<p>By default, sessions expire after 30 minutes without control activity or after 24 hours absolute,
-whichever comes first. Credential expiry can shorten that lifetime. KeepPeek allows up to 64 active
-sessions per principal and 128 per effective address.</p>
-<p>Administrators can list and revoke sessions from <strong>Settings &gt; Access &amp; roles</strong>. A client can delete
-only its own session. Repeating deletion for an already closed session is safe.</p>
-<p>Credential rotation, disable, revoke, or expiry closes matching WebRTC and authenticated log
-streams. KeepPeek checks expiration every 100 ms. WebRTC gets up to one second for graceful close,
-after which KeepPeek reports a warning. Normal cleanup releases PTZ movement, stored-media cursors,
-searches, discovery, and queued transfers owned by the session.</p>
+<ol>
+<li>Open <strong>Settings → Access</strong> (<code>/settings#access</code>) as an Administrator.</li>
+<li>In <strong>Access credentials</strong>, select the person icon (<strong>User access</strong>) beside a <strong>User</strong> credential.</li>
+<li>Choose <strong>Everything</strong> (default; includes current and future groups and cameras) or <strong>Selected groups and cameras</strong>.</li>
+<li>When restricted, select camera groups, individual cameras, or both. Matching <strong>either</strong> an allowed group or an explicit camera ID grants access; selecting neither grants zero cameras.</li>
+<li>Save. Saving camera grants immediately closes that User’s active sessions so they sign in again with updated scope. Stale concurrent saves return a revision conflict without discarding your draft.</li>
+</ol>
+<p>Key boundaries:</p>
+<ul>
+<li><strong>Camera groups</strong> come from configuration namespaces (for example, <code>[outdoor.front_door]</code> belongs to <code>outdoor</code>). Each credential supports up to 128 <code>group_ids</code> and 128 <code>camera_ids</code>, and cannot combine <code>all_cameras = true</code> with explicit IDs.</li>
+<li><strong>Server-wide enforcement</strong> covers live and recorded streams, event thumbnails/previews, notification inbox/history, recording coverage, and PTZ/motion-read APIs. Grants never unlock Administrator-only operations such as export or camera configuration.</li>
+<li><strong>Dashboard audiences are separate.</strong> Sharing a dashboard layout (<code>peek_layouts</code>) controls who can see that layout; it never grants access to denied cameras. A User sees only permitted camera tiles and cannot modify or share server-owned layouts, while the Administrator’s full layout stays intact.</li>
+<li><strong>Trusted-local precedence.</strong> To restrict someone on your LAN or VPN, exclude their address from <code>access.local_networks</code> so they authenticate as a remote <strong>User</strong>.</li>
+</ul>
+<p>Camera grants persist in <code>access_credentials.credentials[].camera_access</code> and dashboards in <code>peek_layouts</code>; see <a href="./configuration-reference.html#credential-records">Credential records</a> for exact fields and limits.</p>
+<h2 id="http-authentication-endpoints"><a class="header" href="#http-authentication-endpoints">HTTP authentication endpoints</a></h2>
+<p>All <code>/auth/*</code> responses include <code>Cache-Control: no-store</code> and <code>Referrer-Policy: no-referrer</code>. Browser auth endpoints enforce HTTPS (or a configured trusted proxy) and same-origin <code>Sec-Fetch-Site</code> checks. Credentials are never accepted in URL query parameters.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method &amp; path</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET /auth/session</code></td><td>Reports <code>local</code>, <code>bearer_enabled</code>, configured external <code>methods</code>, active <code>identity</code>, and CSRF token; bootstraps proxy sessions and clears invalid cookies</td></tr>
+<tr><td><code>POST /auth/login</code></td><td>Starts an OIDC authorization-code + PKCE S256 login flow for a configured provider</td></tr>
+<tr><td><code>GET /auth/callback</code></td><td>Completes the OIDC callback, validates tokens/claims, and issues the host-only session cookie</td></tr>
+<tr><td><code>POST /auth/logout</code></td><td>Revokes the active browser session cookie and dependent WebRTC/control connections</td></tr>
+<tr><td><code>POST /create</code></td><td>Creates a WebRTC session (<code>Authorization: Bearer &lt;UUID&gt;</code> or valid external session cookie)</td></tr>
+<tr><td><code>POST /delete</code></td><td>Closes a WebRTC session (a client may delete only its own session; idempotent)</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="bearer-credentials-and-remote-sign-in"><a class="header" href="#bearer-credentials-and-remote-sign-in">Bearer credentials and remote sign-in</a></h2>
+<h3 id="browser-and-api-sign-in"><a class="header" href="#browser-and-api-sign-in">Browser and API sign-in</a></h3>
+<ul>
+<li><strong>Browser:</strong> Open KeepPeek over HTTPS and enter the UUID in <strong>Remote sign-in</strong>. The browser keeps the key in memory only—never in the URL, logs, <code>localStorage</code>, or <code>sessionStorage</code>. Reloading or closing the tab discards the key.</li>
+<li><strong>API clients:</strong> Send <code>Authorization: Bearer &lt;UUID&gt;</code> on HTTP requests. Never pass keys in query parameters, copied links, SDP payloads, or shell history.</li>
+</ul>
+<h3 id="credential-lifecycle-settings--access"><a class="header" href="#credential-lifecycle-settings--access">Credential lifecycle (<strong>Settings → Access</strong>)</a></h3>
+<p>Create a dedicated named credential for every person, browser, service, or integration (up to 128 credentials). Metadata, camera grants, and SHA-256 verifiers persist atomically under <code>[access_credentials]</code> in <code>config.toml</code>; raw keys are never stored there (the compatibility Initial Administrator key lives in owner-only <code>secrets.toml</code>).</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Action</th><th>Effect</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>New credential</strong></td><td>Sets name (&lt;=64 B), optional description (&lt;=256 B), role, optional expiry (1–3,650 d). Key shown once.</td></tr>
+<tr><td><strong>Rotate credential</strong></td><td>Issues a replacement key once, increments revision, and closes sessions on the old key.</td></tr>
+<tr><td><strong>Disable / Enable</strong></td><td>Suspends without deleting history; disabling closes sessions; enabling bumps revision.</td></tr>
+<tr><td><strong>Revoke credential</strong></td><td>Permanent (requires <strong>Confirm revoke</strong>). Closes sessions; cannot be re-enabled/rotated.</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="external-sign-in-oidc-and-identity-aware-proxy"><a class="header" href="#external-sign-in-oidc-and-identity-aware-proxy">External sign-in (OIDC and identity-aware proxy)</a></h2>
+<p>Configure opt-in OIDC providers or identity-aware proxies under <strong>Settings → Access</strong> using exact origins and explicit role/camera mappings:</p>
+<ul>
+<li><strong>Cookies and tokens:</strong> Browser cookies are <code>Secure</code>, <code>HttpOnly</code>, host-only, and bound to a single allowed origin. Provider tokens never reach the web UI. Restarting KeepPeek invalidates all external browser sessions.</li>
+<li><strong>Secrets:</strong> Provider secrets remain <code>{secret:KEY}</code> references into <code>secrets.toml</code>.</li>
+<li><strong>Anti-lockout guard:</strong> Any change or configuration ZIP restore that alters or removes the last usable remote Administrator path requires fresh verification against the exact proposed candidate and explicit confirmation on the original control connection. Unavailable providers, stale proofs, or failed writes leave the active config untouched.</li>
+<li><strong>Desktop client note:</strong> Cross-origin OIDC login and popup-based admin proof require a standard browser; see <a href="./desktop-app.html">Desktop application</a>.</li>
+</ul>
+<p>See <a href="./configuration-reference.html#external-authentication-configuration">External authentication configuration</a> for TOML fields and <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/external-authentication-operations.md">Operate external authentication</a> for reverse-proxy header sanitation, mixed-mode migration deadlines, and troubleshooting.</p>
+<h2 id="sessions-limits-and-audit"><a class="header" href="#sessions-limits-and-audit">Sessions, limits, and audit</a></h2>
+<p>Each WebRTC session uses a random opaque ID bound to its principal, role, effective address, classification, credential revision, and expiry; a session ID never authorizes a request alone.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Control / limit</th><th>Default / bound</th></tr>
+</thead>
+<tbody>
+<tr><td>Session idle / absolute timeout</td><td>30 minutes (<code>1800</code> s) / 24 hours (<code>86400</code> s); credential expiry can shorten</td></tr>
+<tr><td>Concurrent session caps</td><td>64 per principal, 128 per effective address</td></tr>
+<tr><td>Failed bearer auth rate limit</td><td>5 failures per 60 s per effective address (up to 1,024 tracked addresses)</td></tr>
+<tr><td>External login/callback rate limit</td><td>30 attempts per 60 s per peer IP; 10 per 60 s per browser handle</td></tr>
+<tr><td>Expiration sweep &amp; graceful close</td><td>Swept every 100 ms; 1 s graceful WebRTC close before warning</td></tr>
+<tr><td>Bounded security audit buffer</td><td>1,024 in-memory events (resets on restart)</td></tr>
+</tbody>
+</table>
+</div>
+<p>Rotating, disabling, revoking, or expiring a credential (or revoking a session in <strong>Settings → Access → Active sessions</strong>) terminates matching WebRTC sessions and log streams and releases owned PTZ movement, talkback, stored-media cursors, searches, discovery, and queued transfers.</p>
+<p><strong>Audit and metrics:</strong> <strong>Security audit</strong> records principal, role, action, target, result, client classification, and UTC timestamp—never raw keys, verifiers, <code>Authorization</code> headers, cookies, SDP, log text, or media. Audit history, active sessions, and last-use timestamps live in memory and reset on restart. For durable compliance evidence, collect audit records externally before eviction/restart and retain protected service logs off-host. <code>GET /metrics</code> exposes label-free auth/session counters and gauges and requires <strong>Administrator</strong>.</p>
+<h2 id="video-walkthrough"><a class="header" href="#video-walkthrough">Video walkthrough</a></h2>
+<p>This walkthrough demonstrates creating named credentials, assigning roles, scoping per-user camera and group grants in <strong>User access</strong>, and revoking an active session in <strong>Settings → Access</strong>:</p>
+<video controls="" crossorigin="anonymous" preload="metadata" playsinline="" style="width: 100%; height: auto">
+  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/settings.desktop.access.mp4" type="video/mp4">
+  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/settings.desktop.access.vtt" kind="captions" srclang="en" label="English">
+  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/settings.desktop.access.mp4">Download the access and roles demo</a>.
+</video>
 <h2 id="reverse-proxies-and-https"><a class="header" href="#reverse-proxies-and-https">Reverse proxies and HTTPS</a></h2>
-<p>Prefer a private VPN for remote access. If KeepPeek is Internet-reachable, terminate HTTPS at a
-maintained reverse proxy, firewall the KeepPeek listener so clients cannot bypass that proxy, and
-trust only the proxy’s exact address.</p>
-<p>Direct remote HTTP is rejected when <code>require_secure_remote = true</code>. A configured trusted proxy is
-the declared TLS boundary: KeepPeek cannot inspect the client-side TLS connection after the proxy
-terminates it.</p>
-<p>KeepPeek accepts one forwarded-client contract: exactly one <code>X-Forwarded-For</code> field containing a
-comma-separated chain of IP addresses without ports or quoted values. The proxy must remove any
-client-supplied forwarding headers before setting it. KeepPeek walks the chain from right to left
-and selects the first address that is not a trusted proxy.</p>
-<p>Other forwarding headers make the contract ambiguous. Remove <code>Forwarded</code>, <code>X-Real-IP</code>,
-<code>X-Forwarded-Host</code>, and <code>X-Forwarded-Proto</code> before forwarding to KeepPeek.</p>
-<p>Example Nginx configuration:</p>
+<p>Prefer a private VPN for remote access. If KeepPeek is exposed behind a reverse proxy, terminate HTTPS at the proxy, firewall port <code>8081</code> against direct remote bypass, and list only the proxy’s exact CIDR in <code>access.trusted_proxies</code>. With <code>require_secure_remote = true</code> (default), direct remote HTTP returns <code>HTTP 426</code>.</p>
+<p>KeepPeek accepts one strict forwarding contract: a single <code>X-Forwarded-For</code> header with comma-separated IPs (no ports or quotes), walked right-to-left to the first non-trusted IP. Strip <code>Forwarded</code>, <code>X-Real-IP</code>, <code>X-Forwarded-Host</code>, and <code>X-Forwarded-Proto</code> at the proxy:</p>
 <pre><code class="language-nginx">location / {
     proxy_pass http://127.0.0.1:8081;
     proxy_set_header X-Forwarded-For $remote_addr;
@@ -360,82 +335,38 @@ and selects the first address that is not a trusted proxy.</p>
     proxy_set_header Host $host;
 }
 </code></pre>
-<p>Pair it with an exact proxy address:</p>
 <pre><code class="language-toml">[access]
 trusted_proxies = ["127.0.0.1/32"]
 require_secure_remote = true
 </code></pre>
-<p>Do not trust a proxy unless its listener, forwarding-header sanitation, network path, and bypass
-firewall are all under the same administrative control.</p>
-<h2 id="audit-and-metrics"><a class="header" href="#audit-and-metrics">Audit and metrics</a></h2>
-<p>KeepPeek keeps a bounded security audit for remote authentication, credential changes, session
-lifecycle, denied commands, sensitive Administrator operations, and proxy-classification failures.
-Each record includes the principal, role, action, target, result, client classification, and UTC
-timestamp. It never contains a raw key, verifier, Authorization header, cookie, SDP, log payload, or
-media.</p>
-<p>Audit history, active sessions, and credential last-use activity stay in memory and reset on
-restart. Graceful shutdown does not persist them. Credential identities, verifiers, roles,
-revisions, lifecycle metadata, and camera grants persist atomically in <code>config.toml</code>; this does
-not make audit records durable.</p>
-<p>If an installation requires durable security evidence, retain protected service logs outside the
-recorder and verify that the required actions are represented. Logs are not a guaranteed complete
-copy of the bounded audit. Collect required audit records before eviction or restart using an
-Administrator client and retain them in the installation’s external evidence system. Without
-that collection, the pre-restart audit cannot be recovered from a configuration backup.</p>
-<p><code>GET /metrics</code> exposes label-free counters and gauges for authentication successes and failures,
-authorization denials, session creation and revocation, active sessions, and active credentials.
-Logs, metrics, diagnostics, and audit access require Administrator.</p>
 <h2 id="troubleshooting"><a class="header" href="#troubleshooting">Troubleshooting</a></h2>
-<h3 id="a-local-browser-shows-remote-sign-in"><a class="header" href="#a-local-browser-shows-remote-sign-in">A local browser shows Remote sign-in</a></h3>
-<p>Check the browser’s source address and <code>access.local_networks</code>. A forwarding header from an
-untrusted peer intentionally forces remote classification. If a proxy is involved, configure its
-exact address in <code>trusted_proxies</code> and send only the supported <code>X-Forwarded-For</code> contract.</p>
-<h3 id="remote-access-returns-http-426"><a class="header" href="#remote-access-returns-http-426">Remote access returns HTTP 426</a></h3>
-<p>The request reached KeepPeek over unprotected direct HTTP while <code>require_secure_remote</code> is enabled.
-Use HTTPS through a configured trusted proxy. A VPN does not by itself change the server’s address
-classification or secure-transport check. A VPN client kept outside <code>local_networks</code> still needs the
-supported secure boundary for remote sign-in; adding its range to <code>local_networks</code> instead grants
-Administrator access to that range.</p>
-<h3 id="remote-sign-in-is-temporarily-limited"><a class="header" href="#remote-sign-in-is-temporarily-limited">Remote sign-in is temporarily limited</a></h3>
-<p>Five failed attempts from one effective address within 60 seconds are rejected by default. Wait for
-the window to expire, verify the key, and confirm the credential is enabled, unexpired, and not
-revoked.</p>
-<h3 id="a-credential-works-for-viewing-but-not-settings"><a class="header" href="#a-credential-works-for-viewing-but-not-settings">A credential works for viewing but not Settings</a></h3>
-<p>It has the User role. Issue an Administrator credential only when that client must change recorder
-configuration or manage security.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Symptom</th><th>Cause and resolution</th></tr>
+</thead>
+<tbody>
+<tr><td>Local browser shows <strong>Remote sign-in</strong></td><td>Source IP is outside <code>local_networks</code>, or an untrusted peer sent a forwarding header. Fix <code>trusted_proxies</code> and strip non-<code>X-Forwarded-For</code> headers.</td></tr>
+<tr><td>Remote request returns <code>HTTP 426</code></td><td>Plain remote HTTP hit KeepPeek with <code>require_secure_remote = true</code>. Use HTTPS via a trusted proxy (a VPN alone does not satisfy TLS checks if kept outside <code>local_networks</code>).</td></tr>
+<tr><td>Remote sign-in rejected / rate limited</td><td>Exceeded 5 failed attempts in 60 s (or external login budget). Wait out the window and confirm credential is active and unexpired.</td></tr>
+<tr><td>Credential works for viewing, not <strong>Settings</strong></td><td>Credential has the <strong>User</strong> role. Issue an <strong>Administrator</strong> credential only for operators who manage config/security.</td></tr>
+<tr><td>Shared dashboard is empty or missing tiles</td><td>Dashboard audience does not grant cameras. Update <strong>User access</strong> for that credential, save, and sign in again.</td></tr>
+<tr><td>Restricted person still has <strong>Administrator</strong></td><td>Their effective IP matched <code>access.local_networks</code>. Remove their subnet from <code>local_networks</code> while keeping local loopback recovery.</td></tr>
+<tr><td>Key was lost or exposed</td><td>From a local Administrator session, rotate that named credential, store the new key, and update only that client.</td></tr>
+</tbody>
+</table>
+</div>
 <h3 id="session-expired-after-a-permission-change"><a class="header" href="#session-expired-after-a-permission-change">Session expired after a permission change</a></h3>
-<p>Saving User camera grants deliberately closes that credential’s existing sessions. Rotation,
-disable, revoke, and expiry also invalidate authenticated work. If a dashboard opened during that
-change remains at <strong>API session expired or was revoked</strong>, reload the page and sign in again with
-the current key. The current UI can retain this error during initialization even though the server
-continues to deny requests from the invalid session.</p>
-<p>For a rotated credential, use the replacement key. A disabled, expired, or revoked credential will
-not work merely because the page was reloaded. Ask the recorder Administrator to inspect its status.</p>
-<h3 id="a-shared-dashboard-is-empty-or-has-fewer-cameras"><a class="header" href="#a-shared-dashboard-is-empty-or-has-fewer-cameras">A shared dashboard is empty or has fewer cameras</a></h3>
-<p>Check both the dashboard audience and the User’s camera grants. Audience membership makes the
-dashboard visible; it does not grant cameras. Verify the intended group or individual cameras in
-<strong>User access</strong>, save the current revision, then sign the User in again. The Administrator’s complete
-layout is retained even when the User sees fewer tiles.</p>
-<h3 id="a-supposedly-restricted-person-still-has-administrator-access"><a class="header" href="#a-supposedly-restricted-person-still-has-administrator-access">A supposedly restricted person still has Administrator access</a></h3>
-<p>Check their effective source address first. A trusted-local request receives Administrator access
-before a remote key is considered. Exclude that client’s network from <code>local_networks</code> if it must
-use a restricted User credential, while retaining the local recovery access you need.</p>
-<h3 id="a-key-was-lost-or-exposed"><a class="header" href="#a-key-was-lost-or-exposed">A key was lost or exposed</a></h3>
-<p>From a local Administrator session, rotate the affected credential. Store the replacement key
-before hiding it, then update only the client or integration that owns that named credential.</p>
+<p>Saving <strong>User access</strong> camera grants deliberately closes that credential’s active sessions, as do rotation, disable, revoke, and expiry. If a browser tab opened during that transition stays on an expired-session error (such as <strong>Your session expired or was revoked</strong> or <strong>API session expired or was revoked</strong>), reload the page and sign in again with the current key.</p>
+<p>For rotated credentials, enter the replacement key. Disabled, expired, or revoked credentials will not reconnect after reload; ask an Administrator to verify the credential’s status in <strong>Settings → Access</strong>.</p>
 <h2 id="verify-access-before-deployment"><a class="header" href="#verify-access-before-deployment">Verify access before deployment</a></h2>
-<p>Create a disposable User credential and test from a genuinely remote-classified address. Check an
-allowed camera and a denied camera through live view, Keep, event images, and controls. Confirm that
-Settings, exports, and diagnostics remain unavailable to that User. Test a dashboard whose audience
-includes the User but whose tiles include a denied camera.</p>
-<p>Change the grants and confirm the old session loses access. Reconnect and verify the new scope,
-then disable or revoke the test credential when finished. A successful local browser check does
-not test remote restrictions. Record the proxy or VPN topology with your
-<a href="./release-readiness.html#representative-deployment-matrix">release qualification evidence</a>.</p>
-<p>Credentials and grants are included in configuration ZIPs. Before applying a ZIP from another
-recorder, ensure you can use its restored access policy and retain a local recovery path. Sessions,
-last-use activity, and audit history are not restored by that ZIP. See
-<a href="./backup-and-restore.html#what-survives-a-restart">what survives a restart</a>.</p>
+<ol>
+<li>Create a disposable <strong>User</strong> credential and test from a genuinely remote-classified IP (local browser checks do not test remote boundaries).</li>
+<li>Verify allowed vs denied cameras across live view, <strong>Keep</strong>, event previews, PTZ, and a shared dashboard containing one denied camera, and confirm <strong>Settings</strong>, exports, and diagnostics are denied.</li>
+<li>Modify the User’s camera grants, confirm the old session closes, reconnect to verify the new scope, then revoke the disposable credential.</li>
+<li>Record your proxy/VPN topology in your <a href="./release-readiness.html#representative-deployment-matrix">release qualification evidence</a>.</li>
+</ol>
+<p>Configuration ZIPs include <code>[access_credentials]</code> and grants (but not active sessions, last-use times, or audit history). Ensure you retain a valid local recovery path before restoring a ZIP from another host; see <a href="./backup-and-restore.html#what-survives-a-restart">what survives a restart</a>.</p>
 
                     </main>
 

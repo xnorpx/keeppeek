@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9681fb04.js";
+            window.path_to_searchindex_js = "searchindex-f3bc00c1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-515efa10.js"></script>
@@ -175,85 +175,125 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="camera-controls"><a class="header" href="#camera-controls">Camera controls</a></h1>
-<p>As an Administrator, open <strong>Cameras</strong>, select a camera, and use its overview and control panels to inspect capabilities
-and operate supported devices. A live picture, a manufacturer name, or a capability badge alone
-does not prove that a camera command will succeed. KeepPeek reports command failures separately
-from <a href="./camera-health.html">camera and stream health</a>.</p>
-<p>The Cameras navigation and configuration editors are Administrator workflows. The API also allows
-authorized Users to read motion-detection status and issue supported PTZ commands for their granted
-cameras. Changing detector configuration requires Administrator access. Camera grants and advertised
-capabilities still apply to each operation. See
-<a href="./authentication.html">Authentication and access</a> for the trusted-local policy and camera grants.</p>
-<h2 id="move-a-ptz-camera"><a class="header" href="#move-a-ptz-camera">Move a PTZ camera</a></h2>
-<p>On a supported camera, the PTZ panel provides directional movement, optical zoom, <strong>Stop PTZ</strong>, and
-existing presets.</p>
+<p>This chapter covers onboarding cameras (<code>/cameras</code>, <code>/cameras/new</code>), inspecting and editing camera details (<code>/camera</code>), operating PTZ and motion-detection switches, browser <strong>Talk</strong> and <strong>Broadcast talkback</strong>, and switching live streams or runtime profiles. Adding/editing cameras, toggling motion detection, using browser <strong>Talk</strong>, and managing runtime profiles require <strong>Administrator</strong>; <strong>User</strong> accounts can operate PTZ, recall presets, and play supported doorbell sounds on their granted cameras.</p>
+<blockquote>
+<p><strong>Evidence boundary:</strong> A live video feed, manufacturer name, or capability badge does not guarantee a camera command will succeed. KeepPeek reports command errors separately from <a href="./camera-health.html">camera and stream health</a>.</p>
+</blockquote>
+<h2 id="add-and-manage-cameras-cameras-camerasnew"><a class="header" href="#add-and-manage-cameras-cameras-camerasnew">Add and manage cameras (<code>/cameras</code>, <code>/cameras/new</code>)</a></h2>
+<p>Open <strong>Cameras</strong> (<code>/cameras</code>) to search your fleet, filter <strong>Not healthy</strong> sources, select cameras for bulk <strong>Configuration</strong>, or launch <strong>Add camera</strong> (<code>/cameras/new</code>).</p>
+<p>The <code>/cameras/new</code> wizard guides you through five steps:</p>
 <ol>
-<li>Check the live image and select the intended camera.</li>
-<li>Press and hold a direction or optical zoom control. Release it to request a stop. Keyboard users
-can focus a movement button and hold Space or Enter.</li>
-<li>Use <strong>Stop PTZ</strong> to stop movement explicitly.</li>
-<li>Select an existing preset to recall that device position. Preset creation and deletion are not
-available through the shared KeepPeek controls; manage them in the camera’s own interface.</li>
+<li><strong>Find &amp; connect:</strong> Run subnet discovery (customizable <code>/24</code> prefixes, cancellable), enter a manual IPv4 or <code>rtsp://</code> address, or search the embedded <strong>CCTV Database</strong> catalog for model-specific credential-free RTSP hints (Reolink matches default to <code>reo-proto</code>, ONVIF port <code>8000</code>, HTTP port <code>80</code>).</li>
+<li><strong>Connection options:</strong> Enter per-camera credentials (or leave blank to inherit server defaults), optional ONVIF/HTTP ports, backend (<code>auto</code>, <code>retina</code>, <code>reo-proto</code>), and transport (<code>tcp</code>/<code>udp</code>). Unless you supplied a manual <code>rtsp://</code> URL, KeepPeek probes ONVIF across common ports automatically.</li>
+<li><strong>Streams:</strong> Review or edit <strong>Main stream</strong> (recording) and <strong>Sub stream</strong> (live) URLs, optionally <strong>Restore catalog streams</strong>, and run <strong>Verify streams</strong>. KeepPeek authenticates and checks streams in parallel; <strong>every stream required by your recording policy must deliver decoded video and a keyframe (<code>VIDEO + KEYFRAME</code>) before saving</strong>:
+<ul>
+<li><code>event-boost</code> or <code>both</code>: both <code>main</code> and <code>sub</code> verified</li>
+<li><code>event-only</code>: selected event stream verified</li>
+<li><code>main</code> or <code>sub</code>: that stream verified</li>
+<li><code>off</code>: at least one stream verified
+Editing either RTSP URL invalidates prior verification.</li>
+</ul>
+</li>
+<li><strong>Recording:</strong> Set the camera display name, recording policy (default <code>event-boost</code>), <strong>Store generic motion events</strong> (<code>false</code> by default), event duration (<code>1–3600</code> s, default <code>60</code> s), and optional pre-recording (<code>0–30</code> s) and event stream.</li>
+<li><strong>Review &amp; save:</strong> Confirm settings and write the camera to <code>config.toml</code> (passwords remain write-only).</li>
 </ol>
-<p>Continuous movement belongs to the controlling WebRTC connection. KeepPeek requests a stop on
-disconnect and after an uncertain movement acknowledgement. If a stop cannot be confirmed, it
-reports the failure and retains ownership instead of treating the camera as safely idle. Check
-the camera directly before another operation. Keep the device’s own movement timeout enabled.</p>
-<p>Hikvision/Annke controls use ISAPI HTTP. The current Reolink control adapter uses Reolink HTTP even
-when the recording backend is <code>reo-proto</code>. Their movement speed scales differ. Reolink HTTP controls
-currently address channel 0; do not assume arbitrary NVR channel control is supported. A missing
-PTZ axis or unavailable preset is not supplied by software emulation.</p>
-<p>For magnifying a picture without moving the device, use <a href="./digital-zoom.html">Digital zoom and pan</a>.
-Digital zoom also works on recordings and event images.</p>
-<h2 id="enable-or-disable-motion-detection"><a class="header" href="#enable-or-disable-motion-detection">Enable or disable motion detection</a></h2>
-<p>The camera detail page’s <strong>Motion detection &gt; Enabled</strong> switch changes the camera’s detector
-configuration. It is independent of whether motion is occurring at this instant.</p>
-<p>KeepPeek reads the current alarm configuration, changes the enabled field, and reads it back.
-Unrelated settings such as masks and sensitivity remain intact. Wait for the result before
-making another change. An error or mismatched read-back is a failed operation, and KeepPeek does
-not automatically reboot the camera to apply it.</p>
-<p>Three settings have different purposes:</p>
+<p>This walkthrough shows LAN discovery, embedded <strong>CCTV Database</strong> catalog lookup, and stream verification before the first configuration write:</p>
+<video controls="" crossorigin="anonymous" preload="metadata" playsinline="" style="width: 100%; height: auto">
+  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.catalog-guided-setup.mp4" type="video/mp4">
+  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.catalog-guided-setup.vtt" kind="captions" srclang="en" label="English">
+  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.catalog-guided-setup.mp4">Download the catalog-guided camera setup demo</a>.
+</video>
+<h2 id="camera-detail-page-camera"><a class="header" href="#camera-detail-page-camera">Camera detail page (<code>/camera</code>)</a></h2>
+<p>Select any camera to open <code>/camera?camera=&lt;id&gt;</code>. Desktop navigation provides eight sections:</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Setting</th><th>Effect</th></tr>
+<tr><th>Section</th><th>Purpose</th></tr>
 </thead>
 <tbody>
-<tr><td>Motion detection enabled</td><td>Turns the device’s detector on or off where supported.</td></tr>
-<tr><td>Store generic motion events</td><td>Controls whether KeepPeek stores unclassified motion notifications.</td></tr>
-<tr><td>Camera recording policy</td><td>Chooses which stream KeepPeek records and whether events boost quality.</td></tr>
+<tr><td><strong>Overview</strong></td><td>Live preview (<code>sub</code> H.264 preferred) and PTZ control panel when supported and privacy is inactive</td></tr>
+<tr><td><strong>Configuration</strong></td><td><strong>Edit settings</strong> for credentials, ports, RTSP URLs, backend/transport, and recording policy</td></tr>
+<tr><td><strong>Privacy</strong></td><td><strong>Edit schedule</strong> for server-enforced privacy blocking across all live, recorded, and control paths</td></tr>
+<tr><td><strong>Connection</strong></td><td>Health state, hardware identity, <strong>Manufacturer</strong> override, <strong>Test connection</strong>, <strong>Open camera UI</strong>, and <strong>CCTV Database</strong> link</td></tr>
+<tr><td><strong>Events</strong></td><td><strong>Motion detection</strong> status and <strong>Enabled</strong> switch (where controllable)</td></tr>
+<tr><td><strong>Streams</strong></td><td><strong>Configured media profiles</strong> table and <strong>Live stream health</strong> metrics (auto-refreshes every 5 s)</td></tr>
+<tr><td><strong>Audio</strong></td><td>Discovered audio profiles plus recorded and live audio timing offset controls (with live preview)</td></tr>
+<tr><td><strong>Advanced</strong></td><td><strong>Reported capabilities</strong> (<code>PTZ</code>, <code>Audio</code>, <code>Events</code>, <code>Recording</code>, <code>Analytics</code>, <code>Imaging</code>, <code>Two-way audio</code>)</td></tr>
 </tbody>
 </table>
 </div>
-<p>Turning off generic motion retention does not turn off the detector or native subscriptions.
-Smart person or vehicle classifications may still depend on those subscriptions. Configure
-detector regions, schedules and vendor-specific target filters in the camera interface. See
-<a href="./native-camera-events.html">Native camera events</a> and
-<a href="./recording-and-evidence.html">Recording and evidence</a>.</p>
-<h2 id="audio-and-unsupported-controls"><a class="header" href="#audio-and-unsupported-controls">Audio and unsupported controls</a></h2>
-<p>Listening to an available camera audio stream is separate from sending microphone audio back to
-its speaker. <strong>Talk</strong> sends the browser microphone to the camera speaker. It is available only to
-an Administrator, and only for a camera whose speaker KeepPeek has confirmed:</p>
+<p>Use <strong>Camera</strong> (<code>/camera</code>) for per-camera edits and <strong>Settings</strong> (<code>/settings</code>) only for server-wide settings.</p>
+<h2 id="ptz-movement-and-presets"><a class="header" href="#ptz-movement-and-presets">PTZ movement and presets</a></h2>
+<p>On a PTZ-capable camera, the <strong>Overview</strong> panel exposes an 8-way directional pad, optical zoom (<strong>Wide</strong> / <strong>Tele</strong>), <strong>Stop PTZ</strong>, and device presets:</p>
+<ol>
+<li>Verify the live image for the target camera.</li>
+<li>Press and hold a direction or optical zoom button; release to send stop. Keyboard users can focus any movement button and hold <code>Space</code> or <code>Enter</code>.</li>
+<li>Select <strong>Stop PTZ</strong> to halt movement explicitly.</li>
+<li>Select a listed preset to recall that saved camera position.</li>
+</ol>
+<p><strong>Ownership and vendor boundaries:</strong></p>
 <ul>
-<li><strong>Reolink:</strong> a powered, direct camera on the native TCP backend. The configured channel must
-grant talk permission, and the camera must report a compatible mono ADPCM speaker profile at
-8 or 16 kHz. Firmware that answers the speaker query only while a speaker stream is open
-leaves <strong>Talk</strong> unavailable.</li>
-<li><strong>Hikvision/Annke:</strong> a camera whose ISAPI audio discovery reports an explicit speaker channel.
-KeepPeek sends the camera-advertised 8 kHz G.711 A-law or mu-law codec. A microphone channel
-alone does not enable <strong>Talk</strong>.</li>
+<li>Continuous movement belongs to one controlling WebRTC session; transitions are serialized and concurrent commands are rejected while another is in flight.</li>
+<li>KeepPeek sends a stop on disconnect or uncertain movement acknowledgement. If stop cannot be confirmed, KeepPeek reports the error and retains ownership rather than assuming the camera is idle—inspect the camera directly and keep the camera’s own movement timeout enabled.</li>
+<li>Control transport is independent of media backend: Hikvision/Annke uses ISAPI HTTP (signed per-axis speeds scaled to reported spaces), while Reolink uses Reolink HTTP on <strong>channel 0</strong> even when media uses <code>reo-proto</code> (directional movement + speed <code>1..64</code>; arbitrary NVR channel control is not supported). Speed scales differ across vendors, and missing axes or presets are never software-emulated.</li>
 </ul>
-<p>Select <strong>Talk</strong> in the focused live view and grant microphone permission when the browser asks.
-Select it again to stop; stopping or closing the page releases the microphone. The camera’s
-incoming audio stays available while you talk. On the Dashboard, an Administrator can use
-<strong>Broadcast talkback</strong> to talk to a selected target. Users do not see <strong>Talk</strong> or broadcast
-controls, but can still use supported quick replies and chimes on their permitted cameras.</p>
-<p>Talk was verified with simulated cameras. Speaker volume, latency, and half- or full-duplex
-behavior depend on the camera model, firmware, and network, so test them on your device before
-relying on them.</p>
-<p>Relative PTZ movement, preset save/delete and vendor-specific focus, guard, sensitivity or smart
-rule editing are not shared browser controls. Disabled controls describe unavailable application
-operations; they are not a reason to grant broader access or enable an unsupported protocol.</p>
+<p>For non-mechanical magnification on live views, recordings, or event images, use <a href="./digital-zoom.html">Digital zoom and pan</a>.</p>
+<h2 id="motion-detection-switch"><a class="header" href="#motion-detection-switch">Motion detection switch</a></h2>
+<p>On <code>/camera</code>, <strong>Motion detection → Enabled</strong> modifies the camera’s hardware detector configuration (not whether motion is happening right now). KeepPeek reads the full alarm configuration, toggles only the enabled field while preserving masks and sensitivity, writes it back, and verifies via read-back. A failed write or mismatched read-back reports an error; KeepPeek never reboots a camera automatically.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Setting</th><th>Scope and effect</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Motion detection → Enabled</strong></td><td>Toggles the camera’s on-device motion detector (Administrator only).</td></tr>
+<tr><td><strong>Store generic motion events</strong></td><td>Controls whether KeepPeek persists unclassified motion events in storage.</td></tr>
+<tr><td><strong>Camera recording policy</strong></td><td>Selects recorded streams (<code>event-boost</code>, <code>main</code>, <code>sub</code>, <code>both</code>, <code>event-only</code>, <code>off</code>).</td></tr>
+</tbody>
+</table>
+</div>
+<p>Disabling generic motion retention does not disable the detector or native event subscriptions that smart person/vehicle classifications rely on. Configure regions, schedules, sensitivity, and vendor filters in the camera’s own UI. See <a href="./native-camera-events.html">Native camera events</a> and <a href="./recording-and-evidence.html">Recording and evidence</a>.</p>
+<h2 id="two-way-audio-talk-and-doorbell-sounds"><a class="header" href="#two-way-audio-talk-and-doorbell-sounds">Two-way audio (Talk) and doorbell sounds</a></h2>
+<p>Listening to camera audio is independent of transmitting microphone audio to a camera speaker. <strong>Talk</strong> and <strong>Broadcast talkback</strong> require the <strong>Administrator</strong> role and a speaker confirmed by KeepPeek’s metadata probe:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Vendor / backend</th><th>Confirmation requirement for browser <strong>Talk</strong></th><th>Transport &amp; codec sent</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Reolink</strong></td><td>Powered, direct camera on <code>reo-proto</code> TCP (not battery/UDP); channel grants CGI talk permission AND read-only Baichuan probe confirms compatible mono ADPCM speaker profile at 8 or 16 kHz. Firmware answering only while a speaker stream is open leaves <strong>Talk</strong> unavailable.</td><td>Native Baichuan IMA ADPCM (8/16 kHz mono)</td></tr>
+<tr><td><strong>Hikvision / Annke</strong></td><td>ISAPI audio discovery reports an explicit enabled speaker channel (a microphone channel alone never enables <strong>Talk</strong>).</td><td>Raw ISAPI 8 kHz mono G.711 A-law or mu-law (bounded 300 s session)</td></tr>
+<tr><td><strong>Other ONVIF / RTSP</strong></td><td>Browser <strong>Talk</strong> is unavailable unless a supported speaker adapter confirms a speaker channel.</td><td>Not supported</td></tr>
+</tbody>
+</table>
+</div>
+<ul>
+<li><strong>Single-camera Talk:</strong> In the focused live view, select the microphone (<strong>Talkback</strong>) button and grant browser microphone permission. Select it again (<strong>Stop talkback</strong>) or close the page to release the microphone. Incoming camera audio stays active while you talk.</li>
+<li><strong>Broadcast talkback:</strong> On the Dashboard (<code>/</code>), Administrators with confirmed speaker cameras can pick <strong>Target</strong> (<strong>All cameras</strong> or a camera group) and select <strong>Broadcast talkback</strong> / <strong>Stop broadcast</strong> (one active talkback owner at a time, up to 128 targets). Losing speaker evidence, replacing credentials, or removing a camera automatically retires its active talkback route.</li>
+<li><strong>Quick replies and chimes:</strong> Cameras reporting doorbell sounds show a <code>♫</code> (<strong>Play doorbell sound</strong>) menu in live view. Both Administrators and permitted Users can trigger quick replies and chimes (disabled while Talk is active).</li>
+</ul>
+<h2 id="video-walkthrough"><a class="header" href="#video-walkthrough">Video walkthrough</a></h2>
+<p>This walkthrough demonstrates continuous PTZ movement, <strong>Stop PTZ</strong>, preset recall, the <strong>Motion detection → Enabled</strong> switch distinction, and the browser <strong>Talk</strong> boundary on <code>/camera</code>:</p>
+<video controls="" crossorigin="anonymous" preload="metadata" playsinline="" style="width: 100%; height: auto">
+  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/camera.desktop.details-ptz.mp4" type="video/mp4">
+  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/camera.desktop.details-ptz.vtt" kind="captions" srclang="en" label="English">
+  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/camera.desktop.details-ptz.mp4">Download the camera details and PTZ demo</a>.
+</video>
+<h2 id="live-stream-switching-and-runtime-profiles"><a class="header" href="#live-stream-switching-and-runtime-profiles">Live stream switching and runtime profiles</a></h2>
+<ul>
+<li><strong>Per-viewer stream switching:</strong> In focused live view (<code>/</code> or <code>/viewer</code>), choose <strong>Auto</strong> (network-adaptive), <strong>High</strong>, <strong>Low</strong>, <strong>Main</strong>, or <strong>Sub</strong>. If a browser cannot decode the requested stream’s codec, KeepPeek falls back to a compatible stream and shows a notice.</li>
+<li><strong>Server-wide runtime profiles:</strong> Administrators manage up to 32 named profiles in <strong>Settings → Runtime profiles</strong> (<code>/settings#runtime-profiles</code>), overriding up to 127 cameras each across four levers: <code>availability</code>, <code>recording_mode</code>, <code>privacy_enforced</code>, and <code>notifications_suppressed</code>. Profile switches apply asynchronously with per-camera <code>pending</code>, <code>applied</code>, or <code>degraded</code> status; see <a href="./configuration-reference.html#runtime-profiles">Runtime profiles</a>.</li>
+</ul>
+<h2 id="unavailable-controls"><a class="header" href="#unavailable-controls">Unavailable controls</a></h2>
+<p>Relative PTZ movement, preset creation/deletion, focus, guard position, sensitivity, detection regions, schedules, and vendor smart-rule editing are not shared KeepPeek browser controls. Manage them in the camera’s native UI (<strong>Open camera UI</strong> on <code>/camera</code>).</p>
+<h2 id="application-and-test-coverage"><a class="header" href="#application-and-test-coverage">Application and test coverage</a></h2>
+<p>KeepPeek’s camera control stack is verified with synthetic integration and browser tests rather than physical-device certification across every model and firmware:</p>
+<ul>
+<li><strong>Hikvision/Annke (<code>test-hikvision</code>):</strong> Covers HTTP Digest, motion config read-back, capability updates, PTZ session ownership and original-target disconnect cleanup, ISAPI audio busy/open/close, raw G.711 speaker writes, full-duplex progress, cancellation, expiry, and malformed responses.</li>
+<li><strong>Reolink:</strong> Covers CGI talk permission + read-only Baichuan speaker-profile verification, talkback routing/retirement on config change or removal, idle activity vs enabled detector state, and channel-0 PTZ behavior.</li>
+<li><strong>Browser E2E:</strong> Verifies Administrator-only Talk/Broadcast gating and User quick-reply/chime permissions in Peek.</li>
+</ul>
+<p>Real-world speaker volume, latency, half- vs full-duplex behavior, and firmware quirks still vary by physical camera model, firmware version, account permissions, and network topology—test directly on your hardware before relying on controls. See the <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/camera-controls.md">camera control reference</a> for protocol-level vendor mappings.</p>
 <h2 id="troubleshooting"><a class="header" href="#troubleshooting">Troubleshooting</a></h2>
 <div class="table-wrapper">
 <table>
@@ -261,17 +301,16 @@ operations; they are not a reason to grant broader access or enable an unsupport
 <tr><th>Symptom</th><th>What to check</th></tr>
 </thead>
 <tbody>
-<tr><td>Controls are disabled</td><td>The operation’s role requirement, camera grant, capability evidence and current connection state.</td></tr>
-<tr><td>PTZ works in the vendor app only</td><td>The configured HTTP port, device credentials, selected channel and supported KeepPeek adapter. RTSP playback alone does not validate these.</td></tr>
-<tr><td>Motion is enabled but no events appear</td><td>Camera schedule, regions, notification linkage and generic-motion retention; then inspect native event status.</td></tr>
-<tr><td>A capability appears but its command fails</td><td>Reachability and the command’s error. Cached discovery evidence is not a current successful command.</td></tr>
-<tr><td>Zoom changes only the displayed crop</td><td>You are using Digital zoom. Optical zoom is a separate PTZ operation.</td></tr>
+<tr><td>Controls are missing or disabled</td><td>Role requirement (Administrator vs User), camera grant, active privacy schedule, confirmed capability evidence, and WebRTC connection state.</td></tr>
+<tr><td><strong>Verify streams</strong> fails in <code>/cameras/new</code></td><td>Camera credentials, ONVIF/RTSP port, TCP vs UDP transport, and whether the stream emits a valid video keyframe.</td></tr>
+<tr><td>PTZ works in vendor app only</td><td>Configured HTTP port, device account permissions, channel mapping (Reolink HTTP targets channel 0), and supported adapter; RTSP alone does not verify HTTP controls.</td></tr>
+<tr><td><strong>Talk</strong> button does not appear</td><td>Requires Administrator role plus confirmed speaker evidence (Reolink powered TCP + CGI permission + 8/16 kHz ADPCM profile; Hikvision explicit enabled speaker channel).</td></tr>
+<tr><td>Motion is enabled but no events appear</td><td>Camera detector schedule, regions, notification linkage, <code>record_generic_motion_events</code>, and native event status.</td></tr>
+<tr><td>Capability badge shows yes but command fails</td><td>Device reachability and the returned command error; cached discovery evidence does not guarantee current reachability.</td></tr>
+<tr><td>Zoom only crops the picture</td><td>You are using <a href="./digital-zoom.html">Digital zoom</a>; optical zoom is in the PTZ panel.</td></tr>
 </tbody>
 </table>
 </div>
-<p>The <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/camera-controls.md">camera control reference</a>
-details vendor differences and synthetic test coverage. Physical support still depends on the
-camera model, firmware, account permissions and channel mapping.</p>
 
                     </main>
 

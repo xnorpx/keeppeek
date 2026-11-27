@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9681fb04.js";
+            window.path_to_searchindex_js = "searchindex-f3bc00c1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-515efa10.js"></script>
@@ -175,177 +175,95 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="contributing"><a class="header" href="#contributing">Contributing</a></h1>
-<p>KeepPeek welcomes focused contributions that strengthen recording, camera compatibility, media
-routing, observability, the public API, and the first-party experience. A contribution should make
-the supported product more dependable without silently turning the core into a different product.</p>
-<p>Read <a href="./users-and-design-choices.html">Users and design choices</a> before proposing a substantial
-change. It describes the users, boundaries, and trade-offs that guide review.</p>
-<p>Use <a href="./reporting-bugs.html">Reporting bugs</a> for a reproducible defect. Use GitHub Discussions for
-setup help, troubleshooting, usage questions, and feature proposals.</p>
-<h2 id="guard-the-product-boundary"><a class="header" href="#guard-the-product-boundary">Guard the product boundary</a></h2>
-<p>The feature set is deliberately and heavily guarded. Any proposal that expands product scope must
-be discussed and reviewed before implementation begins. A complete implementation is not, by
-itself, a reason to add a feature to the core.</p>
-<p>Feature review asks:</p>
+<p>This chapter defines KeepPeek’s product-scope bar, repository engineering policies (<code>AGENTS.md</code>), local formatting and validation commands (<code>fix.sh</code>/<code>fix.bat</code>, <code>check.sh</code>/<code>check.bat</code>), AI-assisted contribution rules, and pull-request workflow. Read <a href="./users-and-design-choices.html">Users and design choices</a> before proposing scope changes; file defects through <a href="./reporting-bugs.html">Reporting bugs</a> and ask questions or propose features in <a href="https://github.com/xnorpx/keeppeek/discussions">GitHub Discussions</a>.</p>
+<h2 id="scope-boundaries-and-high-fit-work"><a class="header" href="#scope-boundaries-and-high-fit-work">Scope boundaries and high-fit work</a></h2>
+<p>KeepPeek guards its core feature set strictly—a completed implementation does not justify expanding scope. Open a <a href="https://github.com/xnorpx/keeppeek/discussions">GitHub Discussion</a> <strong>before</strong> implementing any change to product scope, the public API, storage format, platform contract, or long-term maintenance surface.</p>
+<p>Feature proposals are evaluated against five questions:</p>
 <ol>
-<li>Does this belong in a focused recorder and media gateway?</li>
-<li>Can an independent service or protocol plugin provide it through the public API instead?</li>
-<li>Which documented users need it, and does it make another user’s core workflow worse?</li>
-<li>What permanent maintenance, security, storage, resource, compatibility, and licensing costs
-does it add?</li>
-<li>Can the behavior be tested without depending on one private device, account, or cloud service?</li>
+<li>Does this belong in a focused recorder and WebRTC media gateway?</li>
+<li>Can an independent external service provide it over the MIT-licensed public API instead?</li>
+<li>Which documented users need it, and does it degrade another user’s core workflow?</li>
+<li>What permanent maintenance, security, storage, resource, compatibility, and licensing cost does it add?</li>
+<li>Can it be tested deterministically without depending on one private device, account, or cloud service?</li>
 </ol>
-<p>Open a <a href="https://github.com/xnorpx/keeppeek/discussions">GitHub Discussion</a> before writing a feature
-that changes the product boundary, public protocol, storage model, supported platform contract, or
-long-term maintenance surface. Expect alternatives and non-goals to be reviewed as seriously as
-the proposed implementation. This review is how KeepPeek avoids accidental scope creep.</p>
-<h2 id="contributions-that-fit-well"><a class="header" href="#contributions-that-fit-well">Contributions that fit well</a></h2>
-<p>Focused bug fixes, tests, documentation corrections, diagnostics, and interoperability improvements
-usually have a clear path when they preserve the existing product boundary.</p>
-<h3 id="camera-protocols-and-rtsp-interoperability"><a class="header" href="#camera-protocols-and-rtsp-interoperability">Camera protocols and RTSP interoperability</a></h3>
-<p>Camera protocol fixes and bounded RTSP workarounds are especially welcome. They are often easier to
-submit and review than feature proposals because the expected behavior can be captured in a fixture
-and regression test.</p>
-<p>A useful camera contribution includes:</p>
+<h3 id="contributions-that-fit-well"><a class="header" href="#contributions-that-fit-well">Contributions that fit well</a></h3>
 <ul>
-<li>manufacturer, model, firmware version, backend, and TCP or UDP transport;</li>
-<li>the smallest reproducible failure with credentials, addresses, and private media removed;</li>
-<li>sanitized protocol, SDP, or packet evidence when it can be shared legally and safely;</li>
-<li>a regression fixture or deterministic fake-camera case;</li>
-<li>a narrow parser, transport, or adapter fix instead of a product-wide brand check;</li>
-<li>successful main/sub frame, keyframe, MP4 finalization, and independent decode validation when the
-change affects recording.</li>
+<li><strong>Bug fixes, diagnostics, tests, and docs</strong>: High-signal fixes with deterministic regression coverage that preserve existing boundaries.</li>
+<li><strong>Camera protocols &amp; RTSP interoperability</strong>: Narrow parser, transport, or adapter fixes backed by model/firmware/transport details, a sanitized minimal repro, and a deterministic fixture or fake-camera test. Never weaken validation globally for one camera quirk, never submit secrets/URLs/private captures, and validate real-device main/sub frames, keyframes, MP4 finalization, and independent decode when recording changes.</li>
+<li><strong>Protected <code>api/</code> contract</strong>: <code>api/</code> (OpenAPI, protobuf schemas, protocol docs, generated contract sources) is <strong>read-only by default</strong>. Contract changes require explicit approval for the task, must stay within approved scope, preserve unrelated contracts, and keep docs, generated bindings, and contract tests synchronized. New detectors, transcoders, and bridges belong outside core first.</li>
 </ul>
-<p>Never submit camera passwords, access keys, private stream URLs, identifiable recordings, or packet
-captures containing secrets. If private evidence cannot be published, file the bug with only the
-safe evidence and explain what is unavailable rather than attempting a speculative workaround.</p>
-<p>One camera quirk should not weaken validation for every camera. Prefer a protocol-level correction
-when the device is standards-compliant, and a bounded, evidence-backed compatibility rule when it
-is not.</p>
-<h3 id="public-api-and-external-services"><a class="header" href="#public-api-and-external-services">Public API and external services</a></h3>
-<p>API contributions should preserve typed messages, stable identity, explicit capabilities, bounded
-queues, and clear failure behavior. An example client or service should consume the canonical API
-definitions rather than copy handwritten wire types or depend on private server internals.</p>
-<p>New detector, transcoder, automation, and commercial-service ideas generally belong outside the
-core first. A small reference implementation may demonstrate interoperability without becoming a
-promise that KeepPeek will own that service as a product.</p>
+<h2 id="repository-policies-and-tooling"><a class="header" href="#repository-policies-and-tooling">Repository policies and tooling</a></h2>
+<p>Follow <a href="https://github.com/xnorpx/keeppeek/blob/main/AGENTS.md"><code>AGENTS.md</code></a> and the language guidelines below for every contribution:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Area</th><th>Requirement</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Rust</strong></td><td>Stable Rust, <code>cargo-nextest</code>, <code>cargo-machete</code>, public crates.io only (<code>.cargo/config.toml</code>). Follow <a href="https://github.com/xnorpx/keeppeek/blob/main/.github/instructions/rust_pragmatic_guidelines.md">Pragmatic Rust Guidelines</a>.</td></tr>
+<tr><td><strong>Frontend (<code>ui/</code>)</strong></td><td><strong>Bun only</strong> (pinned <code>1.4.5</code> in <code>ui/.bun-version</code>), public npm registry only (<code>.npmrc</code>, <code>ui/bunfig.toml</code>), <code>bun install --no-save</code>, <strong>no npm/pnpm/Yarn lockfiles</strong> and no committed JS lockfiles. Follow <a href="https://github.com/xnorpx/keeppeek/blob/main/.github/instructions/svelte5_pragmatic_guidelines.md">Pragmatic Svelte 5 Guidelines</a>.</td></tr>
+<tr><td><strong>Python</strong></td><td><strong>Python <code>3.12</code></strong> (<code>examples/object_detection_service/.python-version</code>). <strong>Never create or use a virtual environment (<code>.venv</code>)</strong>. Install <code>examples/object_detection_service/requirements.txt</code> directly into the resolved Python 3.12 interpreter (falling back to <code>--break-system-packages</code>). Requirements stay intentionally unpinned; fix upstream lint/type breaks instead of pinning. Override path via absolute <code>KEEPPEEK_PYTHON</code> (never a venv).</td></tr>
+<tr><td><strong>Configuration</strong></td><td>Store settings in <code>config.toml</code> and private strings in <code>secrets.toml</code> (<code>{secret:KEY}</code>, <code>{secret:KEY|url}</code>). Never add separate settings files; keep <a href="./configuration-reference.html">Configuration reference</a> synchronized.</td></tr>
+<tr><td><strong>Engineering style</strong></td><td>Apply TigerStyle safety/boundedness (excluding static allocation) and Ponytail minimal-diff discipline; write comments only for non-obvious constraints.</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="formatting-validation-and-ci-gates"><a class="header" href="#formatting-validation-and-ci-gates">Formatting, validation, and CI gates</a></h2>
+<p>Run the narrowest relevant test during development, then pass the canonical root validation before requesting review:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Goal</th><th>macOS / Linux</th><th>Windows (PowerShell / cmd)</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Auto-format &amp; refresh Python deps</strong></td><td><code>./fix.sh</code></td><td><code>.\fix.bat</code></td></tr>
+<tr><td><strong>Canonical full check</strong></td><td><code>./check.sh</code></td><td><code>.\check.bat</code></td></tr>
+<tr><td><strong>Full check + slow Rust tests</strong></td><td><code>KEEPPEEK_RUN_SLOW_TESTS=1 ./check.sh</code></td><td><code>$env:KEEPPEEK_RUN_SLOW_TESTS = '1'; .\check.bat</code></td></tr>
+<tr><td><strong>Docs, mdBook, and Wiki checks</strong></td><td><code>bun run --cwd ui format:markdown:check &amp;&amp; mdbook build book &amp;&amp; bun run --cwd ui wiki:typecheck &amp;&amp; bun run --cwd ui wiki:test &amp;&amp; bun run --cwd ui wiki:check &amp;&amp; bun run --cwd ui wiki:build</code></td><td>Same commands (requires <code>mdbook</code> and <code>mdbook-mermaid</code> on <code>PATH</code>).</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>check.sh</code> / <code>check.bat</code> builds the Rust workspace, runs <code>cargo nextest</code> (<code>--features macos-test-aws-crypto</code> on macOS), runs <code>cargo clippy --all --all-targets -- -D warnings</code>, <code>cargo machete</code>, <code>cargo fmt --check</code>, <code>taplo fmt --check</code>, Python <code>black --check</code>, and in <code>ui/</code> runs <code>bun run quality:check</code>, <code>bun run test:e2e</code>, and <code>bun run perf:playback:run</code>. <code>fix.sh</code> / <code>fix.bat</code> upgrades Python requirements, formats Rust, TOML, Python, Markdown, and UI files, and runs <code>lint:fix</code>. Document any test you could not run locally in your PR.</p>
+<h3 id="ci-workflow-coverage"><a class="header" href="#ci-workflow-coverage">CI workflow coverage</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Workflow</th><th>Trigger</th><th>What runs</th></tr>
+</thead>
+<tbody>
+<tr><td><strong><code>CI</code> (PR / merge)</strong></td><td>Pull requests &amp; merge groups</td><td>Path-filtered jobs: Format, Book (mdBook + Mermaid + Wiki checks), Clippy, <code>cargo-machete</code>, doctests, Python object-detection example &amp; integration, macOS/Windows builds + service/desktop smoke checks, full Linux Rust suites via <code>nextest</code>, OS-targeted macOS &amp; Windows Rust core/durable-state subsets, and UI static/unit/coverage/Linux Playwright/Home Assistant Container.</td></tr>
+<tr><td><strong><code>CI</code> (push to <code>main</code>)</strong></td><td>Push to <code>main</code></td><td>Full Rust core &amp; durable-state suites across Linux, macOS, and Windows, plus signed x64 and ARM64 Windows release artifacts.</td></tr>
+<tr><td><strong><code>CodeQL</code></strong></td><td>PRs to <code>main</code>, push, merge group, weekly</td><td>Actions, JavaScript/TypeScript, Python, and Rust static analysis.</td></tr>
+<tr><td><strong><code>Main</code></strong></td><td>Push to <code>main</code>, hourly cron</td><td>Opt-in slow Rust tests, Rust coverage (<code>cargo-llvm-cov</code>), Linux ARM64 &amp; Windows x64/ARM64 builds/tests + NSIS installer lifecycle, and macOS/Windows Playwright E2E shards.</td></tr>
+</tbody>
+</table>
+</div>
 <h2 id="ai-assisted-contributions"><a class="header" href="#ai-assisted-contributions">AI-assisted contributions</a></h2>
-<p>AI is one of the tools used to develop KeepPeek. This section does not take a position on AI in
-general; it defines only how AI-assisted contributions to this repository are reviewed.</p>
-<p>AI-assisted contributions are acceptable. The standard is the same as for code written without an
-assistant, and responsibility never transfers to the model.</p>
-<p>The person submitting the pull request is its first reviewer. Before requesting another review,
-they must:</p>
+<p>AI tools are permitted under the exact same review bar as handwritten code—responsibility never transfers to the model. The submitter is the PR’s first reviewer and must:</p>
 <ul>
-<li>inspect every changed line, including generated tests and configuration;</li>
-<li>understand and be able to explain every line in the pull request;</li>
-<li>verify API, security, resource, failure, and compatibility assumptions against the repository;</li>
-<li>remove invented behavior, unnecessary abstractions, unrelated cleanup, and generated commentary;</li>
-<li>run the required validation and investigate failures rather than asking reviewers to debug raw
-model output.</li>
+<li>inspect, understand, and be able to explain every changed line (including tests and configuration);</li>
+<li>verify API, security, resource, failure, and compatibility assumptions directly against the repository;</li>
+<li>remove invented behavior, unnecessary abstractions, unrelated cleanup, and filler commentary;</li>
+<li>run validation locally and investigate failures rather than asking reviewers to debug raw model output.</li>
 </ul>
-<p>“The AI wrote it” is not an explanation for a design decision and is not a reason to merge code the
-submitter cannot defend. Reviewers may ask the submitter to explain control flow, ownership,
-protocol behavior, tests, or individual lines. If they cannot, the contribution is not ready.</p>
-<h2 id="pull-request-shape"><a class="header" href="#pull-request-shape">Pull request shape</a></h2>
-<p>Use the repository’s
-<a href="https://github.com/xnorpx/keeppeek/blob/main/.github/pull_request_template.md">pull request template</a>
-as the canonical shape for every pull request. Complete its summary, linked Discussion, acceptance
-criteria verification, performance evidence, validation, and review evidence before requesting
-review. A bug-fix pull request may link its reproducible bug issue instead of a feature Discussion.</p>
-<p>Keep pull requests small enough to review as one coherent behavioral change. State the supported
-user and boundary affected, include focused regression coverage, update public documentation when a
-contract changes, and leave unrelated formatting, dependency updates, and refactors out.</p>
-<p>Use draft pull requests for early feedback when the boundary is clear but the implementation is not
-ready. Do not use a large completed pull request as the first request for product-scope review.</p>
-<h2 id="review-cadence"><a class="header" href="#review-cadence">Review cadence</a></h2>
-<p>Pull request reviews are done on Sundays. If a Sunday review window passes and a pull request is
-missed, leave a short, polite ping on that pull request to remind the maintainer. A reminder on the
-existing pull request is enough; do not open a second Discussion or duplicate pull request.</p>
-<h2 id="development-environment"><a class="header" href="#development-environment">Development environment</a></h2>
-<p>Repository development uses stable Rust, Bun <code>1.4.5</code>, and Python <code>3.12</code>. The pinned Bun and Python
-versions live in <code>ui/.bun-version</code> and <code>examples/object_detection_service/.python-version</code>.</p>
-<p>Formatting and validation require the Python packages in
-<code>examples/object_detection_service/requirements.txt</code>, including Black. The root <code>fix</code> and <code>check</code>
-scripts use an absolute interpreter path from <code>KEEPPEEK_PYTHON</code> when set. Otherwise, macOS/Linux
-scripts try <code>python3.12</code> and then <code>python3</code>; Windows scripts resolve <code>python</code> from <code>PATH</code>. The
-selected interpreter must be Python 3.12. Set <code>KEEPPEEK_PYTHON</code> explicitly if another Python
-installation wins that lookup.</p>
-<p>Do not use a Python virtual environment. <code>fix.sh</code> and <code>fix.bat</code> install the requirements into the
-resolved interpreter, retrying with <code>--break-system-packages</code> when that interpreter is externally
-managed.</p>
-<p>The canonical checks also require Bun, <code>cargo-nextest</code>, and <code>cargo-machete</code>. Install UI dependencies
-with Bun from the public npm registry and do not create or commit an npm, pnpm, or Yarn lockfile.</p>
-<h2 id="validation"><a class="header" href="#validation">Validation</a></h2>
-<p>Run the canonical repository check from the repository root before requesting review:</p>
+<p>“The AI wrote it” is not an acceptable design rationale; if the submitter cannot defend control flow, ownership, protocol behavior, or tests, the PR is not ready.</p>
+<h2 id="pull-request-workflow-and-review-cadence"><a class="header" href="#pull-request-workflow-and-review-cadence">Pull request workflow and review cadence</a></h2>
+<p>Use <a href="https://github.com/xnorpx/keeppeek/blob/main/.github/pull_request_template.md"><code>.github/pull_request_template.md</code></a> for every PR and complete all sections before requesting review:</p>
+<ol>
+<li><strong>Summary</strong>: Describe the user-visible outcome and link the feature Discussion or reproducible bug issue.</li>
+<li><strong>Acceptance criteria verification</strong>: Include one row per criterion from the linked context with observable outcome, verification method, and observed result.</li>
+<li><strong>Performance evidence</strong>: Provide reproducible before/after numbers (baseline, environment, workload, command, runs, median/p95), or <code>Performance: N/A</code> explaining which paths cannot change.</li>
+<li><strong>Validation &amp; Review evidence</strong>: Confirm canonical checks, slow tests, focused tests, and sanitized artifacts/CI links (zero secrets or private media).</li>
+</ol>
+<p>Keep each PR scoped to one coherent behavioral change with regression tests and synchronized docs; omit unrelated formatting or refactors. Use Draft PRs for early feedback once scope is agreed.</p>
+<p><strong>Review cadence</strong>: Pull requests are reviewed on <strong>Sundays</strong>. If a Sunday window passes without review, leave one short, polite ping on the existing PR—do not open duplicate PRs or Discussions.</p>
+<h2 id="book-wiki-and-paper-design-evidence"><a class="header" href="#book-wiki-and-paper-design-evidence">Book, Wiki, and Paper design evidence</a></h2>
 <ul>
-<li>macOS or Linux: <code>./check.sh</code></li>
-<li>Windows: <code>.\check.bat</code></li>
+<li><strong>Single Markdown source</strong>: Edit documentation in <code>book/src/</code> (<code>SUMMARY.md</code> controls navigation) and selected <code>docs/</code> files via PR—never edit the <a href="https://github.com/xnorpx/keeppeek/wiki">GitHub Wiki</a> directly. Both the Wiki and the <a href="https://xnorpx.github.io/keeppeek/">mdBook site</a> are generated from repository Markdown (see <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/wiki-publishing.md"><code>docs/wiki-publishing.md</code></a>). Update <a href="./feature-guide.html">Feature guide and navigation</a> when adding or moving screens, and verify live handlers before documenting a feature as available.</li>
+<li><strong>Paper design references</strong>: Versioned UI specs live under <a href="https://github.com/xnorpx/keeppeek/tree/main/ui/design/paper"><code>ui/design/paper/</code></a>. <code>keeppeek-nvr-alpha</code> is the active NVR reference; <code>keeppeek-nvr-v34</code> remains the historical input for the existing visual harness and Linux Loki baselines. A Paper export records design intent, not an approved baseline or proof of working behavior—keep unavailable, loading, denied, empty, and error states explicit.</li>
 </ul>
-<p>Run the same gate with opt-in slow Rust test bodies before submitting a pull request:</p>
-<ul>
-<li>macOS or Linux: <code>KEEPPEEK_RUN_SLOW_TESTS=1 ./check.sh</code></li>
-<li>Windows PowerShell: <code>$env:KEEPPEEK_RUN_SLOW_TESTS = '1'; .\check.bat</code></li>
-</ul>
-<p>Pull-request CI keeps feedback fast by splitting static UI checks, unit tests, coverage, and Linux
-Playwright tests into non-overlapping jobs. The <code>CodeQL</code> workflow runs Actions,
-JavaScript/TypeScript, Python, and Rust CodeQL on pull requests targeting <code>main</code>, pushes to <code>main</code>,
-and a weekly schedule. After each merge and once per hour, <code>Main</code> runs the opt-in slow Rust tests,
-ARM builds and tests, Windows installer lifecycles, Rust coverage, and full Playwright suites on
-macOS and Windows.</p>
-<p>Windows pull-request core tests run only the runtime-profile regressions and native volume-root
-validation. Windows pull-request durable-state tests retain ordinary regressions and defer
-scale/quota/churn qualification. The full Windows core and durable-state suites run on every push to
-<code>main</code> in the <code>CI</code> workflow. Linux and macOS still run the full core suite before merge, and local
-canonical checks still run the complete suite. This split changes scheduling, not test assertions or
-the required post-merge Windows coverage.</p>
-<p>During development, run the narrowest relevant test first. The final check covers repository
-formatting, Rust tests and lints, frontend checks, and the supported test suites. Document any test
-that cannot run in the pull request and explain why.</p>
-<p>Camera changes should also be validated against the affected device and independent MP4 tooling.
-Passing a unit test does not prove that a real camera authenticates, advances frames and keyframes,
-finalizes recordings, and produces decodable output.</p>
-<h2 id="update-the-book-and-design-evidence"><a class="header" href="#update-the-book-and-design-evidence">Update the book and design evidence</a></h2>
-<p>The book lives in <code>book/src</code>; <code>SUMMARY.md</code> controls its navigation. Document the current behavior
-and the practical task it enables, including authorization, persistence, limits, and failure
-recovery. Update the <a href="./feature-guide.html">feature guide</a> when adding a screen or changing where a
-task starts. Fill operational chapters with instructions rather than leaving empty placeholders.</p>
-<p>Repository Markdown is the only editing source for the
-<a href="https://github.com/xnorpx/keeppeek/wiki">Wiki</a> and the
-<a href="https://xnorpx.github.io/keeppeek/">mdBook site</a>. The Wiki also includes selected engineering pages
-from <code>docs/</code>; Pages remains the generated mdBook mirror. Submit documentation changes through a
-repository pull request. Do not edit generated Wiki pages directly.
-See <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/wiki-publishing.md">Wiki publishing</a>
-for page mapping, preview, credentials,
-publication status, and recovery.</p>
-<p>Keep serialized fields, defaults, and examples synchronized with the
-<a href="./configuration-reference.html">configuration reference</a>. Protocol declarations and engineering
-scenarios can describe capabilities that do not yet have a runtime handler. Check the server and
-client implementation before presenting those capabilities as available.</p>
-<p>From the repository root, validate documentation with:</p>
-<pre><code class="language-sh">bun run --cwd ui format:markdown:check
-mdbook build book
-bun run --cwd ui wiki:test
-bun run --cwd ui wiki:check
-bun run --cwd ui wiki:build
-</code></pre>
-<p>Install <code>mdbook</code> and <code>mdbook-mermaid</code> and make both available on <code>PATH</code>; the book’s configuration
-uses the Mermaid preprocessor. After building, open the generated book, follow the changed
-navigation and cross-links, and check diagrams and long tables at desktop and narrow widths.
-These focused documentation checks complement the repository validation above.</p>
-<p>The first-party interface has versioned Paper references and scenario-based browser evidence under
-<a href="https://github.com/xnorpx/keeppeek/tree/main/ui/design/paper"><code>ui/design/paper</code></a>. Use the active reference’s
-README and manifests to identify its scope. The active NVR design is <code>keeppeek-nvr-alpha</code>;
-<code>keeppeek-nvr-v34</code> remains the historical input to the existing visual harness and Linux Loki
-baselines. A new Paper export does not approve a replacement baseline. A reference image records design intent; browser
-interaction tests prove working behavior. Keep unavailable, loading, denied, empty, and error
-states explicit, and preserve the actual evidence when updating a reference. Do not infer current
-feature availability from a mockup or a demonstration video.</p>
 <h2 id="licensing"><a class="header" href="#licensing">Licensing</a></h2>
-<p>See <a href="./open-source-and-licensing.html#licensing-model">Open source and licensing</a> for the project-wide
-license model. Contributions are accepted under the license of the area they modify. Submit only
-work you have the right to provide under that license, including fixtures, generated files, and
-AI-assisted output.</p>
+<p>Contributions are accepted under the license of the area modified; see <a href="./open-source-and-licensing.html#licensing-model">Open source and licensing</a>. Submit only work you have the right to contribute under that license, including fixtures, generated files, and AI-assisted output.</p>
 
                     </main>
 

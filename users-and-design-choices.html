@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9681fb04.js";
+            window.path_to_searchindex_js = "searchindex-f3bc00c1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-515efa10.js"></script>
@@ -175,216 +175,77 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="users-and-design-choices"><a class="header" href="#users-and-design-choices">Users and design choices</a></h1>
-<p>KeepPeek is a local-first network video recorder and media gateway. Its core job is to ingest
-camera media, record it reliably, make live and stored media available, and provide a stable place
-for events and integrations to meet. It can use analytics events produced directly by a camera,
-events from an optional external service, or no analytics at all.</p>
-<p>That narrow center is deliberate. Inference frameworks, models, accelerators, and licensing change
-much faster than a recorder should. KeepPeek therefore accepts camera-native events and makes media
-available through an open protocol instead of deciding which models every installation must run.</p>
-<p>This chapter records the product’s users and rationale, including intended directions. Use the
-<a href="./feature-guide.html">feature guide</a> for current screen availability and
-<a href="./release-readiness.html">release readiness</a> for qualification limits. The
-<a href="./how-it-works.html">architecture overview</a> connects these choices to the running service.</p>
-<h2 id="at-a-glance"><a class="header" href="#at-a-glance">At a glance</a></h2>
+<p>This page explains who KeepPeek is built for, how it decides which cameras and protocols to support, and the architectural trade-offs and non-goals behind the recorder. It records product rationale and intended boundaries; use the <a href="./feature-guide.html">feature guide</a> for current screen availability, <a href="./how-it-works.html">How KeepPeek works</a> for runtime behavior, and <a href="./release-readiness.html">release readiness</a> for Alpha qualification limits.</p>
+<p>KeepPeek is a local-first network video recorder and WebRTC media gateway with a deliberately narrow center: ingest camera media, record it reliably as standard MP4, serve live and recorded streams, and provide a stable boundary for camera-native or external events. Inference frameworks, models, accelerators, and licensing change much faster than a recorder should, so KeepPeek exposes an open protocol instead of forcing one AI stack into every installation.</p>
+<h2 id="target-users"><a class="header" href="#target-users">Target users</a></h2>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>User</th><th>Starting point</th><th>What they value</th><th>KeepPeek’s role</th></tr>
+<tr><th>User</th><th>Starting point</th><th>Primary priority</th><th>KeepPeek’s role</th></tr>
 </thead>
 <tbody>
-<tr><td><strong>Software Consumer</strong></td><td><a href="#cameras-brands-and-protocols">Common cameras</a> and a problem to solve, not an integration project</td><td>Sensible defaults and dependable results</td><td>A complete first-party recording and viewing experience</td></tr>
-<tr><td><strong>Small Business Security</strong></td><td>A shop, workshop, office, or yard with needs generic analytics do not fully cover</td><td>Relevant alerts, dependable evidence, and a solution fitted to the business</td><td>A reliable recorder plus a boundary for tailored inference and workflows</td></tr>
-<tr><td><strong>Open Source Enthusiast</strong></td><td>Existing tools and a willingness to connect them</td><td>Reuse, inspectability, and replaceable components</td><td>A composable open core rather than another closed ecosystem</td></tr>
-<tr><td><strong>Home Automation Enthusiast</strong></td><td>Home Assistant, MQTT, HAP, automations, and devices that should cooperate</td><td>Local orchestration, useful events, and stable identities</td><td>A camera and event source for the automation system already in place</td></tr>
-<tr><td><strong>Residential Sysadmin</strong></td><td>A home server, NAS, container host, or automation stack</td><td>Reliability, diagnostics, and repeatable operation</td><td>A native service with stable interfaces and health evidence</td></tr>
-<tr><td><strong>Residential Power Optimization Engineer</strong></td><td>Cameras, networks, and compute that can be arranged deliberately</td><td>Control, measurement, and efficient placement of work</td><td>An observable media plane that can feed the right hardware</td></tr>
+<tr><td><strong>Software Consumer</strong></td><td><a href="#cameras-brands-and-protocols">Common cameras</a> and a home monitoring goal</td><td>Sensible defaults and dependable playback</td><td>Complete first-party recording, live wall, and review experience</td></tr>
+<tr><td><strong>Small Business Security</strong></td><td>Shop, office, workshop, or yard with domain-specific risks</td><td>Relevant alerts and portable evidence</td><td>Stable recorder core plus open boundary for tailored inference</td></tr>
+<tr><td><strong>Open Source Enthusiast</strong></td><td>Existing self-hosted tools and reusable components</td><td>Inspectability and replaceable parts</td><td>Composable open core (AGPL server, MIT API) without vendor lock-in</td></tr>
+<tr><td><strong>Home Automation Enthusiast</strong></td><td>Home Assistant, MQTT, HAP, and household automations</td><td>Local orchestration and stable device identities</td><td>Camera and event source without proxying video through the hub</td></tr>
+<tr><td><strong>Residential Sysadmin</strong></td><td>Home server, NAS, container host, or monitoring stack</td><td>Predictable operations and clear diagnostics</td><td>Native service with reason codes, bounded logs, and <code>/metrics</code></td></tr>
+<tr><td><strong>Residential Power Optimization Engineer</strong></td><td>Mixed cameras and compute hosts with power/heat limits</td><td>Deliberate workload placement and efficiency</td><td>Low-overhead media plane that feeds whichever host should decode or analyze</td></tr>
 </tbody>
 </table>
 </div>
-<h2 id="software-consumer"><a class="header" href="#software-consumer">Software Consumer</a></h2>
+<h3 id="software-consumer"><a class="header" href="#software-consumer">Software Consumer</a></h3>
 <blockquote>
 <p><em>I just want it to work.</em></p>
 </blockquote>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="./images/users/software-consumer.svg" alt="A relaxed capybara using a simple KeepPeek live and recording interface."><span class="img-wrapper"><img src="./images/users/software-consumer.svg" alt="A relaxed capybara using a simple KeepPeek live and recording interface."></span></label></p>
-<h3 id="profile"><a class="header" href="#profile">Profile</a></h3>
 <ul>
-<li><strong>Starting point:</strong> A set of <a href="#cameras-brands-and-protocols">common cameras</a> and an expectation
-that recording, live view, and review form one product.</li>
-<li><strong>Primary goal:</strong> Install it, add cameras, and trust that footage will be available when needed.</li>
-<li><strong>Constraints:</strong> Little interest in protocols, model runtimes, or maintaining an integration
-stack.</li>
+<li><strong>Workflow:</strong> Install KeepPeek, run guided camera setup with safe defaults, watch live/recorded footage in the Svelte web UI or desktop app, and act on clear diagnoses rather than raw protocol errors.</li>
+<li><strong>Product implication:</strong> Optional architecture stays out of the way until needed; core recording works without a cloud account, AI subscription, or accelerator setup. Start with <a href="./get-started.html">Get started</a>, then verify <a href="./camera-health.html">camera health</a> and <a href="./recording-and-evidence.html">recording coverage</a>.</li>
 </ul>
-<h3 id="how-they-use-keeppeek"><a class="header" href="#how-they-use-keeppeek">How they use KeepPeek</a></h3>
-<ol>
-<li><strong>Set up:</strong> Follow a guided camera workflow with safe defaults.</li>
-<li><strong>Operate:</strong> Use the Svelte web application for live viewing and recording review.</li>
-<li><strong>Investigate:</strong> Receive a clear diagnosis and a next action instead of raw protocol state.</li>
-<li><strong>Extend:</strong> Choose an optional free or paid service only when it adds something useful.</li>
-</ol>
-<h3 id="what-success-looks-like"><a class="header" href="#what-success-looks-like">What success looks like</a></h3>
-<p>Core recording works without a cloud account, an AI subscription, or decisions about model and
-accelerator compatibility.</p>
-<h3 id="product-implications"><a class="header" href="#product-implications">Product implications</a></h3>
-<p>The first-party experience must hide optional architecture until it matters, without removing the
-open interfaces that let other users go further.</p>
-<p>Follow <a href="./get-started.html">Get started</a> from installation to a first camera, then verify both
-<a href="./camera-health.html">live stream health</a> and <a href="./recording-and-evidence.html">recorded coverage</a>.</p>
-<h2 id="small-business-security"><a class="header" href="#small-business-security">Small Business Security</a></h2>
+<h3 id="small-business-security"><a class="header" href="#small-business-security">Small Business Security</a></h3>
 <blockquote>
 <p><em>Custom detection for the way the business actually works.</em></p>
 </blockquote>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="./images/users/small-business-security.svg" alt="A fox monitoring a small business with a tailored security event dashboard."><span class="img-wrapper"><img src="./images/users/small-business-security.svg" alt="A fox monitoring a small business with a tailored security event dashboard."></span></label></p>
-<h3 id="profile-1"><a class="header" href="#profile-1">Profile</a></h3>
 <ul>
-<li><strong>Starting point:</strong> A shop, workshop, office, warehouse, or yard with existing cameras and a
-specific operational risk.</li>
-<li><strong>Primary goal:</strong> Combine dependable recording with alerts and search events designed around the
-way the business operates.</li>
-<li><strong>Constraints:</strong> Privacy, false alarms, existing equipment, available compute, response time, and
-a solution that staff can operate without becoming AI specialists.</li>
+<li><strong>Workflow:</strong> Run KeepPeek for local recording and portable MP4 evidence, attach an external inference service tuned to business-specific objects, zones, and schedules over WebRTC, and route resulting events into timelines, notifications, MQTT, or webhooks.</li>
+<li><strong>Product implication:</strong> Custom business logic lives in an external protocol plugin rather than a private recorder fork, keeping camera credentials and storage ownership inside KeepPeek while recording stays independent of model changes. Need a tailored deployment or custom inference integration? Contact KeepPeek to discuss business-specific requirements.</li>
 </ul>
-<h3 id="how-they-use-keeppeek-1"><a class="header" href="#how-they-use-keeppeek-1">How they use KeepPeek</a></h3>
-<ol>
-<li><strong>Establish the baseline:</strong> Deploy KeepPeek for local recording, live viewing, health, and
-portable MP4 evidence.</li>
-<li><strong>Define the need:</strong> Identify the events, objects, zones, schedules, and responses that matter to
-the business rather than starting with a generic model feature list.</li>
-<li><strong>Add tailored inference:</strong> Run a separate service that subscribes to selected WebRTC streams and
-publishes normalized events back to KeepPeek.</li>
-<li><strong>Connect the workflow:</strong> Route useful events into the KeepPeek timeline, notifications, Home
-Assistant, MQTT, webhooks, or another business system.</li>
-</ol>
-<h3 id="what-success-looks-like-1"><a class="header" href="#what-success-looks-like-1">What success looks like</a></h3>
-<p>The business receives relevant, reviewable events without making recording dependent on the custom
-model. The inference service can evolve with the business while KeepPeek remains the stable media
-and evidence layer.</p>
-<h3 id="product-implications-1"><a class="header" href="#product-implications-1">Product implications</a></h3>
-<p>Custom business logic belongs in an external protocol plugin, not a private fork of the recorder.
-That keeps camera credentials and storage ownership inside KeepPeek while allowing a tailored free
-or paid service to use the hardware, models, and support arrangement appropriate for the customer.</p>
-<blockquote>
-<p><strong>Need a tailored solution?</strong> Contact KeepPeek to discuss custom AI, inference, integrations, and
-deployment for your specific business needs.</p>
-</blockquote>
-<!-- Add the preferred business contact link and a concrete engagement example. -->
-<h2 id="open-source-enthusiast"><a class="header" href="#open-source-enthusiast">Open Source Enthusiast</a></h2>
+<h3 id="open-source-enthusiast"><a class="header" href="#open-source-enthusiast">Open Source Enthusiast</a></h3>
 <blockquote>
 <p><em>Because someone else already wrote it.</em></p>
 </blockquote>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="./images/users/open-source-enthusiast.svg" alt="A crow assembling KeepPeek from reusable open protocol and software components."><span class="img-wrapper"><img src="./images/users/open-source-enthusiast.svg" alt="A crow assembling KeepPeek from reusable open protocol and software components."></span></label></p>
-<h3 id="profile-2"><a class="header" href="#profile-2">Profile</a></h3>
 <ul>
-<li><strong>Starting point:</strong> A collection of proven open-source tools, libraries, models, and devices.</li>
-<li><strong>Primary goal:</strong> Reuse the best available component for each job and replace it when something
-better appears.</li>
-<li><strong>Constraints:</strong> Avoid proprietary lock-in and duplicated implementations.</li>
+<li><strong>Workflow:</strong> Deploy KeepPeek alongside existing self-hosted software, inspect the wire contract and generated bindings, and attach or swap independent detectors, transcoders, forwarders, or viewers.</li>
+<li><strong>Product implication:</strong> The <a href="./open-source-and-licensing.html#licensing-model">licensing model</a> (AGPL server, MIT API) protects server improvements while letting external clients and services choose their own licenses and business models.</li>
 </ul>
-<h3 id="how-they-use-keeppeek-2"><a class="header" href="#how-they-use-keeppeek-2">How they use KeepPeek</a></h3>
-<ol>
-<li><strong>Set up:</strong> Combine KeepPeek with existing cameras and familiar self-hosted infrastructure.</li>
-<li><strong>Operate:</strong> Use the included viewer or another client that implements the public protocol.</li>
-<li><strong>Investigate:</strong> Inspect the server, wire contract, and generated bindings.</li>
-<li><strong>Extend:</strong> Build or adopt an independent detector, transcoder, event forwarder, or viewer.</li>
-</ol>
-<h3 id="what-success-looks-like-2"><a class="header" href="#what-success-looks-like-2">What success looks like</a></h3>
-<p>The recorder remains a useful shared foundation while every fast-moving or specialized component
-can come from somewhere else.</p>
-<h3 id="product-implications-2"><a class="header" href="#product-implications-2">Product implications</a></h3>
-<p>The <a href="./open-source-and-licensing.html#licensing-model">licensing model</a> protects improvements to the
-server while allowing independent clients and services to use their own licensing and business
-model.</p>
-<!-- Add examples of existing projects that could be connected rather than rewritten. -->
-<h2 id="home-automation-enthusiast"><a class="header" href="#home-automation-enthusiast">Home Automation Enthusiast</a></h2>
+<h3 id="home-automation-enthusiast"><a class="header" href="#home-automation-enthusiast">Home Automation Enthusiast</a></h3>
 <blockquote>
 <p><em>Because the porch light should have opinions.</em></p>
 </blockquote>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="./images/users/home-automation-enthusiast.svg" alt="A gecko connecting camera events to lights, MQTT, Home Assistant, and HAP."><span class="img-wrapper"><img src="./images/users/home-automation-enthusiast.svg" alt="A gecko connecting camera events to lights, MQTT, Home Assistant, and HAP."></span></label></p>
-<h3 id="profile-3"><a class="header" href="#profile-3">Profile</a></h3>
 <ul>
-<li><strong>Starting point:</strong> A local automation system built around Home Assistant, MQTT, HAP/HomeKit,
-notification services, and a growing collection of devices.</li>
-<li><strong>Primary goal:</strong> Turn camera events and recording health into useful household actions without
-making the automation controller proxy video.</li>
-<li><strong>Constraints:</strong> Stable device identities, local control, understandable event semantics, and
-automations that recover cleanly after either system restarts.</li>
+<li><strong>Workflow:</strong> Embed direct WebRTC views in Home Assistant, trigger automations from normalized MQTT events or webhooks, optionally expose cameras to Apple Home through an independent HAP bridge, and monitor health via Prometheus.</li>
+<li><strong>Product implication:</strong> KeepPeek maintains stable source IDs, normalized event semantics, direct browser media, and explicit integration boundaries without trying to replace an automation hub.</li>
 </ul>
-<h3 id="how-they-use-keeppeek-3"><a class="header" href="#how-they-use-keeppeek-3">How they use KeepPeek</a></h3>
-<ol>
-<li><strong>View:</strong> Put selected live streams, events, and timeline review in a Home Assistant dashboard.</li>
-<li><strong>React:</strong> Forward normalized camera-native or external analytics events through MQTT or
-webhooks.</li>
-<li><strong>Present:</strong> Use an independent HAP bridge when selected cameras should appear in Apple Home.</li>
-<li><strong>Observe:</strong> Scrape Prometheus metrics and include recording or camera health in automations.</li>
-</ol>
-<h3 id="what-success-looks-like-3"><a class="header" href="#what-success-looks-like-3">What success looks like</a></h3>
-<p>A meaningful camera event can turn on a light, send a notification, or update a dashboard while
-KeepPeek continues recording independently. Reconnects do not silently retarget an automation to a
-different camera, and media does not take an unnecessary trip through the automation hub.</p>
-<h3 id="product-implications-3"><a class="header" href="#product-implications-3">Product implications</a></h3>
-<p>KeepPeek needs stable source IDs, normalized event types, backfill after disconnects, direct browser
-media, and clear integration boundaries. It should participate in a home automation system without
-trying to replace one.</p>
-<!-- Add one delightfully excessive but genuinely useful automation. -->
-<h2 id="residential-sysadmin"><a class="header" href="#residential-sysadmin">Residential Sysadmin</a></h2>
+<h3 id="residential-sysadmin"><a class="header" href="#residential-sysadmin">Residential Sysadmin</a></h3>
 <blockquote>
 <p><em>Unnecessarily professional.</em></p>
 </blockquote>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="./images/users/residential-sysadmin.svg" alt="An owl monitoring a home server and KeepPeek health dashboard."><span class="img-wrapper"><img src="./images/users/residential-sysadmin.svg" alt="An owl monitoring a home server and KeepPeek health dashboard."></span></label></p>
-<h3 id="profile-4"><a class="header" href="#profile-4">Profile</a></h3>
 <ul>
-<li><strong>Starting point:</strong> A self-hosted environment with monitoring, backups, and perhaps Home
-Assistant, MQTT, or a reverse proxy.</li>
-<li><strong>Primary goal:</strong> Operate cameras like a small but well-run production service.</li>
-<li><strong>Constraints:</strong> Limited maintenance time and no separate operations team.</li>
+<li><strong>Workflow:</strong> Run one native service or container, validate every camera before trusting it, monitor explicit server/storage/stream/WebRTC health evidence and bounded logs, and separate transport failures from storage issues.</li>
+<li><strong>Product implication:</strong> KeepPeek exposes stable health reason codes, structured logs, Prometheus metrics, and validated configuration/backup workflows in a predictable Rust binary.</li>
 </ul>
-<h3 id="how-they-use-keeppeek-4"><a class="header" href="#how-they-use-keeppeek-4">How they use KeepPeek</a></h3>
-<ol>
-<li><strong>Set up:</strong> Install one native service or container and validate each camera before trusting it.</li>
-<li><strong>Operate:</strong> Use the web interface for normal work and inspect health evidence, reason codes, and
-bounded logs when something changes.</li>
-<li><strong>Investigate:</strong> Distinguish camera, transport, recording, and external-service failures.</li>
-<li><strong>Extend:</strong> Attach integrations without patching the recorder or sharing its storage internals.</li>
-</ol>
-<h3 id="what-success-looks-like-4"><a class="header" href="#what-success-looks-like-4">What success looks like</a></h3>
-<p>The system can be monitored and recovered using explicit server, storage, camera, stream, ingress,
-recording, and WebRTC evidence instead of guesses based on whether a video tile happens to be
-playing.</p>
-<h3 id="product-implications-4"><a class="header" href="#product-implications-4">Product implications</a></h3>
-<p>KeepPeek exposes stable health reason codes, bounded logs, and documented interfaces. Rust supports
-a predictable native service, while the open API and external-service boundary keep upgrades and
-failures isolated.</p>
-<!-- Add a representative home-lab deployment and recovery story. -->
-<h2 id="residential-power-optimization-engineer"><a class="header" href="#residential-power-optimization-engineer">Residential Power Optimization Engineer</a></h2>
+<h3 id="residential-power-optimization-engineer"><a class="header" href="#residential-power-optimization-engineer">Residential Power Optimization Engineer</a></h3>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="./images/users/residential-power-optimization-engineer.svg" alt="A beaver balancing camera recording, edge compute, and household power usage."><span class="img-wrapper"><img src="./images/users/residential-power-optimization-engineer.svg" alt="A beaver balancing camera recording, edge compute, and household power usage."></span></label></p>
-<h3 id="profile-5"><a class="header" href="#profile-5">Profile</a></h3>
 <ul>
-<li><strong>Starting point:</strong> A mixed set of cameras and compute devices, each with different power and
-performance characteristics.</li>
-<li><strong>Primary goal:</strong> Put capture, storage, decoding, and inference where each task runs best.</li>
-<li><strong>Constraints:</strong> Power, heat, bandwidth, accelerator availability, privacy, and equipment already
-owned.</li>
+<li><strong>Workflow:</strong> Place KeepPeek near cameras and disks, record camera-native encoded streams without local inference overhead, and subscribe to WebRTC media from whichever host (GPU box, desktop, or repurposed edge device) should decode or analyze it.</li>
+<li><strong>Product implication:</strong> The core stays observable and lightweight, and its media boundary never assumes decoding or inference runs on the recording host.</li>
 </ul>
-<h3 id="how-they-use-keeppeek-5"><a class="header" href="#how-they-use-keeppeek-5">How they use KeepPeek</a></h3>
-<ol>
-<li><strong>Set up:</strong> Run KeepPeek close to the cameras and storage.</li>
-<li><strong>Operate:</strong> Record camera-native streams without requiring an inference workload on the server.</li>
-<li><strong>Investigate:</strong> Use explicit health and media evidence to find transport, recording, or
-downstream-service problems.</li>
-<li><strong>Extend:</strong> Subscribe to WebRTC media from whichever device should decode or analyze it.</li>
-</ol>
-<h3 id="what-success-looks-like-5"><a class="header" href="#what-success-looks-like-5">What success looks like</a></h3>
-<p>Recording stays dependable while optional work can move between a server, GPU host, desktop, or
-repurposed edge device without redesigning the recorder.</p>
-<h3 id="product-implications-5"><a class="header" href="#product-implications-5">Product implications</a></h3>
-<p>The server must remain efficient and observable, while its media boundary must not assume that
-inference runs in the same process or even on the same machine.</p>
-<!-- Add a concrete household, hardware layout, and power budget. -->
 <h2 id="cameras-brands-and-protocols"><a class="header" href="#cameras-brands-and-protocols">Cameras, brands, and protocols</a></h2>
-<p>KeepPeek assumes that a home or small business may contain cameras from several generations and
-manufacturers. Compatibility is therefore organized around working protocols and verified media,
-not a logo on the enclosure. A discovered camera is a candidate, not proof that authentication,
-streaming, controls, and events all work.</p>
+<p>Mixed-vendor fleets are normal in homes and small businesses. Compatibility is therefore defined by verified protocols and validated media—never by a brand logo alone. A discovered device is a candidate, not proof that authentication, streaming, controls, or events work.</p>
 <h3 id="brand-integration-paths"><a class="header" href="#brand-integration-paths">Brand integration paths</a></h3>
 <div class="table-wrapper">
 <table>
@@ -392,155 +253,50 @@ streaming, controls, and events all work.</p>
 <tr><th>Camera family</th><th>Integration path</th><th>Current meaning</th></tr>
 </thead>
 <tbody>
-<tr><td><strong>Reolink</strong></td><td>Dedicated <code>reo-proto</code> backend for Baichuan over TCP or UDP, with ONVIF and RTSP fallback paths</td><td>First-class discovery, authentication, main/sub media, supported controls, and native camera events</td></tr>
-<tr><td><strong>Dahua and compatible OEM/rebrand models</strong></td><td>ONVIF discovery and profile queries with RTSP media through Retina or explicit stream URLs</td><td>A supported standards-based family with coverage for common H.264/AAC and H.265/G.711 stream patterns; each OEM model and firmware still requires validation</td></tr>
-<tr><td><strong>Tapo (supported models)</strong></td><td>ONVIF discovery and profile queries where available, with RTSP media through Retina or explicit stream URLs</td><td>A supported mainstream vendor through the standards path; exact capabilities still depend on model and firmware</td></tr>
-<tr><td><strong>Hikvision / Annke</strong></td><td>SADP discovery, ONVIF/RTSP media, and a plain-Rust ISAPI event worker</td><td>Native event support depends on model, firmware, channel mapping, and enabled camera rules; see the <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/hikvision-isapi.md">ISAPI guide</a></td></tr>
-<tr><td><strong>Other ONVIF cameras</strong></td><td>ONVIF discovery and device/profile queries, then RTSP media</td><td>Support depends on the device’s implementation of the standards and must be validated per model</td></tr>
-<tr><td><strong>Generic or unknown cameras</strong></td><td>Explicit main and/or sub RTSP URLs</td><td>Recording can work without a recognized brand; metadata, controls, and native events may be limited</td></tr>
+<tr><td><strong>Reolink</strong></td><td>Dedicated <code>reo-proto</code> backend for Baichuan over TCP or UDP, with ONVIF and RTSP fallback paths</td><td>First-class discovery, authentication, main/sub media, supported controls (including confirmed-speaker <strong>Talk</strong>), and native camera events</td></tr>
+<tr><td><strong>Dahua and compatible OEM/rebrand models</strong></td><td>ONVIF discovery and profile queries with RTSP media through Retina or explicit stream URLs</td><td>Supported standards-based family covering common H.264/AAC and H.265/G.711 patterns; each OEM model and firmware still requires validation</td></tr>
+<tr><td><strong>Tapo (supported models)</strong></td><td>ONVIF discovery and profile queries where available, with RTSP media through Retina or explicit stream URLs</td><td>Supported mainstream vendor through the standards path; exact capabilities depend on model and firmware</td></tr>
+<tr><td><strong>Hikvision / Annke</strong></td><td>SADP discovery, ONVIF/RTSP media, and a plain-Rust ISAPI event worker</td><td>Native event support depends on model, firmware, channel mapping, and enabled device rules; see <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/hikvision-isapi.md">Hikvision ISAPI</a></td></tr>
+<tr><td><strong>Other ONVIF cameras</strong></td><td>ONVIF discovery and device/profile queries, then RTSP media</td><td>Support depends on the device’s standards implementation and must be validated per model</td></tr>
+<tr><td><strong>Generic or unknown cameras</strong></td><td>Explicit main and/or sub RTSP URLs</td><td>Recording works without a recognized brand; discovery, controls, metadata, and native events may be unavailable</td></tr>
 </tbody>
 </table>
 </div>
-<h3 id="support-a-pragmatic-subset-not-every-camera"><a class="header" href="#support-a-pragmatic-subset-not-every-camera">Support a pragmatic subset, not every camera</a></h3>
-<p>KeepPeek does not aim to support every camera ever sold. The camera market contains too many
-firmware variants, incomplete protocol implementations, cloud-only products, and models that reuse
-a brand name while behaving differently. Claiming universal compatibility would create a large,
-fragile surface and make failures harder to diagnose.</p>
-<p>The practical goal is excellent support for a well-known subset: dedicated integration where that
-creates real value, as with Reolink; tested standards paths for selected Dahua-family and Tapo
-models; and a clear ONVIF or RTSP route for other cameras that implement those protocols correctly.
-A brand row means KeepPeek deliberately tests and maintains a useful path for that vendor family.
-It does not mean every model, firmware version, codec, control, cloud feature, or native analytics
-event is supported.</p>
-<p>Compatibility is described at three levels:</p>
+<h3 id="pragmatic-support-tiers"><a class="header" href="#pragmatic-support-tiers">Pragmatic support tiers</a></h3>
+<p>KeepPeek deliberately targets strong support for a well-known subset rather than claiming universal compatibility across every cloud-only or non-standard camera. New vendor support is added from measured evidence and maintainable protocol paths, not one-off device hacks:</p>
 <ol>
-<li><strong>Supported vendor and model:</strong> The documented firmware and configuration pass discovery or
-manual setup, authentication, main/sub streaming, keyframe detection, MP4 recording, and
-independent playback validation.</li>
-<li><strong>Protocol-compatible camera:</strong> The camera exposes usable ONVIF and RTSP behavior, but its exact
-model has not yet earned a maintained compatibility claim.</li>
-<li><strong>Manual RTSP camera:</strong> KeepPeek can record a validated stream URL even when discovery, controls,
-metadata, and native camera events are unavailable.</li>
+<li><strong>Supported vendor and model:</strong> Documented firmware and config pass discovery/manual setup, authentication, main/sub streaming, keyframe detection, finalized MP4 recording, and independent playback validation.</li>
+<li><strong>Protocol-compatible camera:</strong> Exposes usable ONVIF/RTSP behavior, but the exact model has not yet earned a maintained compatibility claim.</li>
+<li><strong>Manual RTSP camera:</strong> Records a validated explicit stream URL even when discovery, controls, metadata, and native events are absent.</li>
 </ol>
-<p>New camera support should be added from measured evidence and a maintainable protocol path, not by
-collecting one-off exceptions for every device. This keeps setup predictable for common cameras
-while leaving an honest manual path for experienced users.</p>
-<h3 id="protocol-responsibilities"><a class="header" href="#protocol-responsibilities">Protocol responsibilities</a></h3>
+<h3 id="protocol-responsibilities-and-media-policy"><a class="header" href="#protocol-responsibilities-and-media-policy">Protocol responsibilities and media policy</a></h3>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Responsibility</th><th>Protocol or component</th><th>What KeepPeek uses it for</th></tr>
+<tr><th>Responsibility</th><th>Protocol or component</th><th>Role in KeepPeek</th></tr>
 </thead>
 <tbody>
-<tr><td><strong>Discovery</strong></td><td>ONVIF WS-Discovery, Reolink discovery, Hikvision SADP, and bounded local port probes</td><td>Find candidate devices and collect safe identity hints</td></tr>
-<tr><td><strong>Device queries and control</strong></td><td>ONVIF SOAP plus supported Reolink HTTP or Baichuan commands</td><td>Read device information, profiles, capabilities, imaging state, and supported PTZ controls</td></tr>
-<tr><td><strong>Generic media ingest</strong></td><td>RTSP/RTP through Retina over TCP or UDP</td><td>Receive standards-based camera media, including explicit main and sub URLs</td></tr>
-<tr><td><strong>Reolink media ingest</strong></td><td>Baichuan through <code>reo-proto</code> over TCP or UDP</td><td>Receive complete Reolink video and audio frames without requiring RTSP</td></tr>
-<tr><td><strong>Native camera events</strong></td><td>Reolink Baichuan and compatible Hikvision/Annke ISAPI</td><td>Normalize supported alarms into stored/live events; classifications require event evidence, and image association is protocol-specific</td></tr>
-<tr><td><strong>Viewer and service delivery</strong></td><td>WebRTC with RTP and reliable/unreliable data channels</td><td>Forward live media, control, events, and publications without exposing camera credentials</td></tr>
+<tr><td><strong>Discovery</strong></td><td>ONVIF WS-Discovery, Reolink discovery, Hikvision SADP, bounded local port probes</td><td>Find candidate devices and collect safe identity hints</td></tr>
+<tr><td><strong>Device queries and control</strong></td><td>ONVIF SOAP plus supported Reolink HTTP or Baichuan commands</td><td>Read device info, profiles, capabilities, imaging state, PTZ, and supported speaker talkback</td></tr>
+<tr><td><strong>Generic media ingest</strong></td><td>RTSP/RTP through Retina (TCP or UDP)</td><td>Receive standards-based media, including explicit main/sub URLs</td></tr>
+<tr><td><strong>Reolink media ingest</strong></td><td>Baichuan through <code>reo-proto</code> (TCP or UDP)</td><td>Receive complete Reolink video and audio frames without requiring RTSP</td></tr>
+<tr><td><strong>Native camera events</strong></td><td>Reolink Baichuan, Hikvision/Annke ISAPI, ONVIF PullPoint, and RTSP metadata</td><td>Normalize camera alarms into stored/live events using explicit event evidence</td></tr>
+<tr><td><strong>Viewer and service delivery</strong></td><td>WebRTC (RTP/UDP + SCTP data channels)</td><td>Deliver live/recorded media, protobuf control, and events without exposing camera credentials</td></tr>
 </tbody>
 </table>
 </div>
-<p>WebRTC is the client-facing media gateway protocol, not a requirement imposed on cameras. Cameras
-can continue speaking their native protocol to KeepPeek while browsers and independent services
-use one consistent downstream API.</p>
-<h3 id="media-and-transport-policy"><a class="header" href="#media-and-transport-policy">Media and transport policy</a></h3>
-<p>KeepPeek accepts H.264 and H.265 video and supported AAC, G.711 A-law, G.711 mu-law, and ADPCM
-audio. It can retain main and sub profiles and records camera-native streams without re-encoding.
-When backend selection is automatic, Reolink uses <code>reo-proto</code> and other cameras use Retina. TCP is
-the conservative default; UDP remains available when a camera requires it or validation shows it
-is the better path. Explicit RTSP URLs take precedence over URLs discovered through ONVIF.</p>
-<p>Discovery alone is never the final compatibility test. The camera setup workflow verifies
-credentials, requested profiles, incoming frames and keyframes, finalized MP4 output, and
-independent FFmpeg decoding before recommending a backend or adding a camera to the live
-configuration.</p>
-<h3 id="how-this-fits-the-users"><a class="header" href="#how-this-fits-the-users">How this fits the users</a></h3>
-<ul>
-<li><strong>Software Consumer:</strong> Gets discovery and safe automatic defaults where possible, plus a
-validated manual RTSP path when the camera is not recognized.</li>
-<li><strong>Small Business Security:</strong> Can retain an existing mixed camera fleet and add custom inference
-only to the streams and locations that need it.</li>
-<li><strong>Open Source Enthusiast:</strong> Can reuse ONVIF, RTSP, Retina, and vendor-specific protocol work and
-add another adapter without changing the WebRTC client contract.</li>
-<li><strong>Home Automation Enthusiast:</strong> Gets stable camera and event identities across supported vendors
-without making the automation hub understand each camera protocol.</li>
-<li><strong>Residential Sysadmin:</strong> Gets one inventory and one observable recording path across a mixed
-fleet, with the selected backend visible in diagnostics.</li>
-<li><strong>Residential Power Optimization Engineer:</strong> Can choose main or sub media, compare transports,
-and keep camera-native inference on the camera when that is the most efficient location.</li>
-</ul>
-<!-- Add a table of models only after each model and firmware combination has passed validation. -->
+<p>KeepPeek accepts H.264 and H.265 video plus AAC, G.711 A-law, G.711 mu-law, and ADPCM audio, recording camera-native main and sub streams without re-encoding. Automatic backend selection picks <code>reo-proto</code> for Reolink and Retina otherwise; TCP is the conservative default, UDP remains available when validated, and explicit RTSP URLs override ONVIF-discovered URLs. Camera setup verifies credentials, incoming keyframes, finalized MP4 output, and independent decode before recommending a live configuration.</p>
 <h2 id="key-design-choices"><a class="header" href="#key-design-choices">Key design choices</a></h2>
 <h3 id="keep-inference-outside-the-server"><a class="header" href="#keep-inference-outside-the-server">Keep inference outside the server</a></h3>
-<p>KeepPeek does not build object detection, face recognition, license-plate recognition, image
-description, or model management into the server. That does not mean inference must happen in a
-separate assisted service. A camera with built-in motion, person, vehicle, or other analytics can
-send those events directly to KeepPeek, which validates and stores them and presents them beside
-recorded media.</p>
-<p>KeepPeek supports three independent modes:</p>
-<ol>
-<li><strong>Recording only:</strong> Record and view media without enabling analytics anywhere.</li>
-<li><strong>External analytics:</strong> Forward media to an optional service and accept the events it publishes.</li>
-<li><strong>Camera-native analytics:</strong> Use events produced by the camera without another inference service.</li>
-</ol>
-<p>The repository includes a
-<a href="https://github.com/xnorpx/keeppeek/tree/main/examples/object_detection_service">Python object-detection service demo</a>
-for the external analytics path. It uses <code>aiortc</code> to subscribe to encoded KeepPeek video over
-WebRTC, decodes selected frames with the user-installed FFmpeg executable, runs inference, and
-publishes normalized events back to KeepPeek. It is a reference implementation and CI example,
-not a supported detector product.</p>
-<h4 id="forward-encoded-streams-not-inference-jpegs"><a class="header" href="#forward-encoded-streams-not-inference-jpegs">Forward encoded streams, not inference JPEGs</a></h4>
-<p>KeepPeek does not provide a one-image-at-a-time inference API as its detector boundary. A common
-integration with an image-oriented service such as
-<a href="https://github.com/codeproject/CodeProject.AI-Server">CodeProject.AI</a> uploads one JPEG for each
-inference request. That is convenient for a caller that already owns an image, but it is inefficient
-when the source is a continuous H.264 or H.265 camera stream.</p>
-<p>For an ordinary encoded camera stream, a server-generated snapshot pipeline would be:</p>
-<pre><code class="language-text">camera stream -&gt; KeepPeek video decode -&gt; JPEG encode -&gt; HTTP upload -&gt; detector JPEG decode -&gt; model
+<p>KeepPeek does not bundle object detection, face recognition, license-plate recognition, or model management. Installations choose independently among three modes: <strong>recording only</strong> (no analytics), <strong>camera-native analytics</strong> (device alarms stored alongside media), or <strong>external analytics</strong> (separate service subscribing over WebRTC and publishing normalized events). The repository’s <a href="https://github.com/xnorpx/keeppeek/tree/main/examples/object_detection_service">Python object-detection example</a> demonstrates the external path using <code>aiortc</code> and a user-installed FFmpeg binary as a CI reference, not a supported detector product.</p>
+<p>KeepPeek forwards <strong>encoded streams rather than per-frame inference JPEGs</strong>:</p>
+<pre><code class="language-text">Snapshot polling (rejected):  camera -&gt; KeepPeek decode -&gt; JPEG encode -&gt; HTTP upload -&gt; detector decode -&gt; model
+KeepPeek media gateway:       camera -&gt; KeepPeek encoded forwarding -&gt; detector decode &amp; sample -&gt; model
 </code></pre>
-<p>That path requires KeepPeek to bundle video decoders, convert full-resolution frames into pixels,
-encode and allocate a new JPEG for every sample, and transfer it only for the detector to decode it
-again. Repeating that work across several cameras and inference frames per second adds CPU use,
-memory traffic, latency, and another codec and licensing surface to the core service.</p>
-<p>KeepPeek instead uses the media gateway it already has:</p>
-<pre><code class="language-text">camera stream -&gt; KeepPeek encoded forwarding -&gt; detector video decode and sampling -&gt; model
-</code></pre>
-<p>Forwarding encoded access units is much cheaper for the core than decoding pixels and producing
-JPEGs. The inference service keeps one decoder running near the model, chooses its own sampling
-rate, drops stale frames, and can batch work across cameras. This preserves timing and stream
-continuity while letting the service select an H.264 or H.265 decoder suited to its hardware.</p>
-<p>JPEG remains useful after inference. A service or camera can attach a deliberately selected
-snapshot to a durable event, but KeepPeek does not turn every candidate inference frame into a
-JPEG. Event evidence is bounded output, not the transport used to feed the model.</p>
-<p><strong>User fit:</strong> Consumers avoid hidden image work; small businesses can run efficient continuous
-inference; open-source developers keep decoding beside model scheduling; home automation
-enthusiasts receive normalized events without decoding video; sysadmins keep image codecs out of
-the recorder; power optimizers avoid repeated decode, JPEG encode, and JPEG decode work.</p>
-<!-- Add measured CPU, memory-bandwidth, and latency comparisons for representative camera counts. -->
-<p>Inference changes quickly and brings hardware drivers, large model files, model-specific licenses,
-and different privacy decisions. Keeping it out of the recorder lets camera firmware or an external
-model change without coupling its lifecycle to recording and live viewing. It also avoids making
-extra AI compute and a cloud account mandatory costs of running an NVR.</p>
-<p><strong>User fit:</strong> The consumer can use intelligence already present in a camera; a small business can
-commission inference for its specific risks; the open-source enthusiast can swap model stacks; the
-home automation enthusiast consumes the resulting normalized events; the sysadmin gets a smaller
-failure domain; the power optimizer chooses the best compute target.</p>
-<!-- Add examples of camera-native events and external inference services KeepPeek should support. -->
+<p>Avoided snapshot polling removes video decoding, pixel conversion, JPEG allocation, and repeated decode/encode hops from the core recorder. External detectors keep one hardware-appropriate decoder beside the model, choose their own sampling rate, and drop stale frames. JPEG remains useful strictly as bounded post-inference event evidence attached to a durable event.</p>
 <h3 id="keep-recording-and-media-routing-at-the-center"><a class="header" href="#keep-recording-and-media-routing-at-the-center">Keep recording and media routing at the center</a></h3>
-<p>KeepPeek owns the durable and slow-changing responsibilities: camera ingest, recording, stable
-media identity, timeline access, health evidence, authorization, and validation of events received
-from cameras or published back by services. Specialized inference can happen inside a camera or in
-a replaceable service around that center; transcoding likewise remains outside the core.</p>
-<p>This boundary keeps the most important promise narrow: footage should still be recorded when an
-optional service is overloaded, incompatible, or offline. External services receive media through
-the gateway instead of opening camera sessions or writing KeepPeek’s database and recording
-directories directly.</p>
-<p><strong>User fit:</strong> Consumers get one accountable recorder; small businesses keep custom models
-independent from evidence; open-source enthusiasts compose services; home automation enthusiasts
-get a stable event source; sysadmins retain one recording authority; power optimizers can place
-each workload independently.</p>
-<!-- Add the explicit responsibilities that must never move out of the core. -->
-<h3 id="why-webrtc-fits-keeppeek"><a class="header" href="#why-webrtc-fits-keeppeek">Why WebRTC fits KeepPeek</a></h3>
+<p>KeepPeek owns the slow-changing, durable responsibilities: ingest, MP4 recording, stable source identities, timelines, health evidence, authorization, and event validation. External inference and transcoding services consume media through the gateway rather than opening camera sessions or touching SQLite or recording directories directly, ensuring recording continues even if optional services stall or go offline.</p>
+<h3 id="use-webrtc-as-the-client-and-service-gateway"><a class="header" href="#use-webrtc-as-the-client-and-service-gateway">Use WebRTC as the client and service gateway</a></h3>
 <pre class="mermaid">flowchart LR
   C1[Supported camera] --&gt;|Encoded stream| K[KeepPeek&lt;br/&gt;Record, route, validate]
   C2[Supported camera] --&gt;|Encoded stream| K
@@ -551,214 +307,52 @@ each workload independently.</p>
   K --&gt;|Normalized events| A[Home automation]
 </pre>
 
-<p><a href="https://webrtc.org/">WebRTC</a> is a mature, widely implemented protocol suite rather than one
-vendor’s media stack. It is built into browsers, and interoperable implementations are available
-for most common service languages. Examples include:</p>
-<ul>
-<li>Rust: <a href="https://github.com/algesten/str0m">str0m</a>, which KeepPeek uses;</li>
-<li>Python: <a href="https://github.com/aiortc/aiortc">aiortc</a>;</li>
-<li>C++: <a href="https://webrtc.googlesource.com/src/">libwebrtc</a>;</li>
-<li>Node.js and TypeScript: <a href="https://github.com/shinyoshiaki/werift-webrtc">werift</a>.</li>
-</ul>
-<p>An independent viewer, inference service, or protocol plugin can therefore choose an implementation
-that fits its language and deployment instead of adopting KeepPeek’s Rust stack. The author of
-KeepPeek is also well versed in WebRTC protocols and browser behavior. That experience reduces risk
-in the difficult parts of a media gateway: SDP negotiation, ICE, RTP packetization, encryption,
-congestion handling, SCTP, and interoperability between native and browser clients.</p>
-<p>WebRTC also gives KeepPeek two complementary delivery paths inside one session:</p>
-<ul>
-<li><strong>RTP over UDP</strong> carries latency-sensitive audio and video without forcing every frame through an
-ordered reliable stream.</li>
-<li><strong>Data channels over SCTP</strong> carry ordered reliable protobuf control plus reliable or discardable
-binary payloads. They can also deliver encoded media when RTP is not the right binding for a
-client.</li>
-</ul>
-<p>This combination provides flexibility without inventing separate protocols for viewers,
-publishers, transcoders, and inference services. It also gives browsers clean integration through
-<code>RTCPeerConnection</code>, negotiated media tracks, and data channels rather than a custom framing and
-playback stack.</p>
-<p>The protocol boundary separates camera access from compute placement. An inference client can run
-beside KeepPeek, on a GPU machine elsewhere on the private network, or on a repurposed device. An
-older iOS device, for example, could run a small client application that embeds a compatible WebRTC
-implementation, subscribes to an encoded stream, and runs a suitable local model without receiving
-camera credentials or direct access to the recording store. Results return through the same API as
-events.</p>
-<p><strong>User fit:</strong> Consumers receive browser-native live playback; small businesses can attach custom
-inference without exposing camera credentials; open-source developers can choose a language-native
-implementation; home automation enthusiasts get direct media and event paths; sysadmins manage one
-observable boundary; power optimizers can move workloads without moving storage.</p>
+<p>WebRTC is the downstream gateway protocol, not a requirement imposed on cameras. It is built into browsers and has interoperable libraries across major service languages—Rust (<a href="https://github.com/algesten/str0m">str0m</a>, used by KeepPeek), Python (<a href="https://github.com/aiortc/aiortc">aiortc</a>), C++ (<a href="https://webrtc.googlesource.com/src/">libwebrtc</a>), and Node/TypeScript (<a href="https://github.com/shinyoshiaki/werift-webrtc">werift</a>)—so clients and detectors can pick the stack and hardware (server, GPU host, or repurposed mobile/edge device) that fits them without ever receiving camera credentials. Inside one session, <strong>RTP over UDP</strong> carries low-latency media while <strong>SCTP data channels</strong> carry ordered protobuf control and binary payloads.</p>
 <h3 id="fit-into-home-automation-instead-of-replacing-it"><a class="header" href="#fit-into-home-automation-instead-of-replacing-it">Fit into home automation instead of replacing it</a></h3>
-<p>KeepPeek should be a focused recorder and media gateway inside a larger home or small-business
-system, not another general-purpose automation hub. Its open API, stable source identities,
-normalized events, and observability endpoints let established tools do the jobs they already do
-well.</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Integration</th><th>Connection boundary</th><th>Intended role</th></tr>
+<tr><th>Integration</th><th>Connection boundary</th><th>Status and role</th></tr>
 </thead>
 <tbody>
-<tr><td><strong>Home Assistant</strong></td><td>A Lovelace card connects directly to KeepPeek over WebRTC; an optional integration can expose entities</td><td>Put live cameras, events, timelines, and recording health in an existing dashboard without proxying media through Home Assistant</td></tr>
-<tr><td><strong>MQTT</strong></td><td>A data-only event forwarder subscribes to normalized KeepPeek events and publishes them to the user’s broker</td><td>Feed automations with camera-native or external analytics events, optional snapshots, and disconnect backfill without decoding video</td></tr>
-<tr><td><strong>HomeKit Accessory Protocol (HAP)</strong></td><td>An independent bridge translates selected KeepPeek capabilities into HomeKit accessories</td><td>Present compatible camera streams, events, doorbells, and controls to Apple Home while keeping HAP-specific behavior outside the recorder core</td></tr>
-<tr><td><strong>Prometheus</strong></td><td>The monitoring system scrapes <code>GET /metrics</code></td><td>Build dashboards and alerts for server, storage, camera, stream, recording, and WebRTC health</td></tr>
+<tr><td><strong>Home Assistant</strong></td><td>Lovelace card connects the browser directly to KeepPeek over WebRTC</td><td><strong>Shipped card</strong> for live cameras without proxying video through Home Assistant; optional entity integration remains separate</td></tr>
+<tr><td><strong>MQTT</strong></td><td>Built-in data-only MQTT 5 event forwarder configured in <strong>Settings &gt; Integrations</strong></td><td><strong>Shipped</strong>; publishes normalized events and optional snapshots to an existing broker without decoding video</td></tr>
+<tr><td><strong>Prometheus</strong></td><td>Monitoring stack scrapes <code>GET /metrics</code></td><td><strong>Shipped</strong>; exposes server, storage, camera, stream, recording, and WebRTC telemetry</td></tr>
+<tr><td><strong>HomeKit (HAP)</strong></td><td>Independent external bridge translating KeepPeek capabilities into HomeKit accessories</td><td><strong>Intended boundary (not in core)</strong>; keeps HomeKit credentials and quirks outside the recorder</td></tr>
 </tbody>
 </table>
 </div>
-<p>Home Assistant and MQTT designs build on the public API and normalized event model. HAP is an
-intended bridge boundary rather than a currently implemented server feature. A HAP bridge can be
-free, community-maintained, or commercial without requiring HomeKit code or credentials inside the
-KeepPeek process.</p>
-<p><strong>User fit:</strong> The consumer can choose integrations by name; a small business can connect security
-events to operational workflows; the open-source enthusiast can reuse mature ecosystem projects;
-the home automation enthusiast gets stable events and direct media; the sysadmin can connect
-familiar dashboards, brokers, and monitoring; the power optimizer can place each bridge on suitable
-hardware.</p>
-<!-- Add concrete setup links as each integration becomes available. -->
-<h3 id="use-rust-for-the-server"><a class="header" href="#use-rust-for-the-server">Use Rust for the server</a></h3>
-<p>A recorder is a long-running, concurrent parser of untrusted network and media data. Rust provides
-native performance and control over allocation without a garbage collector, while its ownership and
-type systems prevent broad classes of memory and concurrency errors. It also supports native
-services on Linux, macOS, and Windows and has reusable libraries for the protocols KeepPeek needs.</p>
-<p>The trade-off is a steeper contribution path and longer compile times than some managed languages.
-That cost is accepted in the core because predictable resource use and memory safety matter more
-than optimizing for the fastest first prototype.</p>
-<p><strong>User fit:</strong> Consumers benefit from reliability without needing to know the language; small
-businesses get a dependable evidence service; open-source contributors get compiler-checked
-interfaces; home automation enthusiasts get a dependable event source; sysadmins get a predictable
-native process; power users get low overhead.</p>
-<!-- Add real resource measurements when representative benchmarks exist. -->
-<h3 id="keep-the-core-small-and-focused"><a class="header" href="#keep-the-core-small-and-focused">Keep the core small and focused</a></h3>
-<p>KeepPeek is intended to be a recorder and media gateway, not a bundled appliance stack. The core
-service should not need a gigabyte or more of memory merely to start and perform ordinary recording
-and forwarding. That baseline is different from the configurable in-memory cache used for
-pre-event recording. KeepPeek retains recent encoded frames so an event-triggered recording can
-include what happened before the event began.</p>
-<p>The cache grows with the number of buffered streams, their bitrates, the enabled main and sub
-profiles, and the configured pre-event duration. A longer window across many high-bitrate cameras
-can therefore use substantial memory by design. Keeping those frames encoded makes the cache much
-cheaper than retaining decoded images, but it does not make the cache free. A hard total-RAM
-guarantee must wait for representative measurements and must always state the camera, bitrate,
-profile, and pre-event-cache assumptions.</p>
-<p>Keeping inference runtimes, model weights, video encoders and decoders, and a packaged desktop
-browser out of the server protects its binary size, memory footprint, startup time, and attack
-surface. An optional detector or transcoder pays for its own dependencies and resources without
-making every KeepPeek installation pay the same cost.</p>
-<p><strong>User fit:</strong> The consumer avoids unused runtime costs; a small business can scale custom inference
-separately; the open-source enthusiast can compose specialized tools; the home automation
-enthusiast keeps orchestration in the existing hub; the sysadmin gets a service suited to modest
-hardware; the power optimizer can account for each workload.</p>
-<!-- Replace the qualitative target with measured binary, container, idle RSS, and loaded RSS data. -->
-<h3 id="run-on-linux-macos-and-windows"><a class="header" href="#run-on-linux-macos-and-windows">Run on Linux, macOS, and Windows</a></h3>
-<p>The recording, media gateway, health, and public API behavior should remain consistent across
-Linux, macOS, and Windows. Distribution should follow the convention that makes each platform feel
-native rather than forcing one packaging model everywhere.</p>
+<h3 id="store-recordings-as-standard-mp4"><a class="header" href="#store-recordings-as-standard-mp4">Store recordings as standard MP4</a></h3>
+<p>Recordings use fragmented ISO MP4 (<code>.mp4.active</code> while recording, finalized to <code>.mp4</code> without remuxing). Initialization metadata followed by keyframe-aligned fragments allows safe flushing, exact byte-range timeline seeks, and direct playback or inspection in VLC, FFmpeg, and <code>ffprobe</code> without KeepPeek installed. The SQLite catalog indexes metadata and fragments for fast lookup, while encoded footage stays in ordinary files on disk. MP4 is a container, not a codec: playing an H.265 <code>.mp4</code> still requires an H.265-capable player.</p>
+<h3 id="keep-video-codecs-out-of-the-core-service"><a class="header" href="#keep-video-codecs-out-of-the-core-service">Keep video codecs out of the core service</a></h3>
+<p>KeepPeek is codec-aware (parsing H.264/H.265 framing, configuration, and keyframes) without bundling video decoders or encoders. Excluding codec packs avoids jurisdiction-dependent patent/licensing entanglement, large native attack surfaces, and unnecessary CPU/memory overhead. On desktop and mobile, the Svelte UI queries browser/OS codec support (<code>Chrome</code>/<code>Chromium</code>, Windows <code>WebView2</code>, macOS <code>WKWebView</code>) and selects a compatible stream; keep an H.264 substream for universal playback, or attach an independent transcoder that publishes a compatible variant through the gateway. Optional silent MP4 timelapse export is capability-gated on a host-installed external <code>ffmpeg</code> binary rather than bundled codecs.</p>
+<h3 id="core-stack-footprint-and-cross-platform-packaging"><a class="header" href="#core-stack-footprint-and-cross-platform-packaging">Core stack, footprint, and cross-platform packaging</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Decision</th><th>Rationale</th><th>Trade-off / boundary</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Rust server</strong></td><td>Memory-safe, GC-free concurrent parsing of untrusted network/media streams across Linux, macOS, and Windows.</td><td>Steeper contribution curve and longer compile times accepted for runtime reliability.</td></tr>
+<tr><td><strong>Small, focused core</strong></td><td>Keeps inference runtimes, weights, codec packs, and an Electron browser out of the server binary.</td><td>Baseline RAM stays modest, while the configurable <strong>encoded pre-event cache</strong> scales intentionally with stream count, bitrates, profiles, and pre-event duration; no hard total-RAM guarantee is published without workload measurements.</td></tr>
+<tr><td><strong>Svelte 5 static UI</strong></td><td>Compiled reactivity and generated TypeScript protobuf bindings with no second web application server.</td><td>Adds a frontend toolchain, but isolates UI work from the media process and works identically across host OSes.</td></tr>
+<tr><td><strong>AI-assistable setup</strong></td><td>Structured config, stable reason codes, and the repo’s Camera Setup Skill make discovery/validation scriptable by humans or assistants.</td><td>Running the recorder never requires AI; setup skills keep secrets out of chat, stage config, validate MP4s, and require human approval before modifying camera settings.</td></tr>
+</tbody>
+</table>
+</div>
+<p>KeepPeek maintains identical core behavior across platforms while packaging natively for each OS:</p>
 <div class="table-wrapper">
 <table>
 <thead>
 <tr><th>Platform</th><th>First-class distribution</th></tr>
 </thead>
 <tbody>
-<tr><td><strong>Linux</strong></td><td>A minimal multi-architecture Docker image for <code>linux/amd64</code> and <code>linux/arm64</code>, published to GHCR with a persistent configuration volume. Native archives remain useful, but Docker is the primary polished Linux deployment.</td></tr>
-<tr><td><strong>macOS</strong></td><td>A signed and notarized <code>KeepPeek.app</code> in a drag-to-install DMG, with a per-user <code>launchd</code> service. The current release target is Apple Silicon.</td></tr>
-<tr><td><strong>Windows</strong></td><td>Authenticode-signed x86-64 and ARM64 binaries plus a signed NSIS installer that can register, upgrade, and remove the Windows service.</td></tr>
+<tr><td><strong>Linux</strong></td><td>Multi-arch GHCR Docker image (<code>linux/amd64</code>, <code>linux/arm64</code>) with a persistent configuration volume (primary Linux path), plus native <code>linux-x86_64</code> and <code>linux-aarch64</code> archives.</td></tr>
+<tr><td><strong>macOS</strong></td><td>Signed and notarized Apple Silicon (<code>aarch64</code>) <code>KeepPeek.app</code> DMG with a per-user <code>launchd</code> service, plus optional <code>KeepPeek Desktop.app</code> DMG (Tauri v2 client connecting to an existing server).</td></tr>
+<tr><td><strong>Windows</strong></td><td>Authenticode-signed, RFC 3161 timestamped <code>x86_64</code> and <code>aarch64</code> binaries (<code>keeppeek.exe</code>, <code>keeppeek-service.exe</code>, <code>keeppeek-desktop.exe</code>) and a unified signed NSIS installer registering/upgrading <code>KeepPeekService</code>.</td></tr>
 </tbody>
 </table>
 </div>
-<p>Public macOS and Windows release installers should be signed, timestamped where supported, and
-verified by the release workflow before publication. Checksums remain useful for every platform,
-including Linux images and native archives.</p>
-<blockquote>
-<p><strong>An operations-friendly combination:</strong> A focused Rust service is straightforward to build across
-platforms, first-class Docker images make Linux deployment repeatable, and the optional
-Prometheus <code>GET /metrics</code> endpoint plugs into standard dashboards and alerts. Together these make
-KeepPeek a strong choice where portability, container deployment, and conventional observability
-matter.</p>
-</blockquote>
-<p>The Svelte interface runs in the browser and provides the same administration, live view, and
-recording workflow regardless of which operating system hosts the server. Platform-specific code
-should stay behind narrow boundaries so a feature does not quietly become available on only one
-host.</p>
-<p><strong>User fit:</strong> Consumers avoid operating-system lock-in; small businesses can deploy on existing
-hardware; open-source contributors can port and test explicit platform boundaries; home automation
-enthusiasts can place bridges beside their existing controllers; sysadmins can use the machine
-already running the home; power optimizers can choose hardware and operating system independently.</p>
-<!-- Add installation and service-management links for each supported platform. -->
-<h3 id="store-recordings-as-mp4"><a class="header" href="#store-recordings-as-mp4">Store recordings as MP4</a></h3>
-<p>KeepPeek stores encoded video and supported audio in ordinary <code>.mp4</code> files rather than a
-proprietary media container or database blob. Finalized segments can be copied, inspected, and
-played with established tools such as VLC, FFmpeg, and <code>ffprobe</code>, provided that the tool supports
-the codecs used by the camera. Basic access to a recording should not require KeepPeek to remain
-installed or an export into a private intermediate format.</p>
-<p>The files use fragmented ISO MP4. Each file starts with its initialization metadata and continues
-with keyframe-aligned media fragments. This structure lets KeepPeek flush recording progress,
-index exact byte ranges for timeline seeks, and serve only the required fragments while the file
-itself remains a standard media object. Active segments use a temporary <code>.mp4.active</code> suffix and
-become <code>.mp4</code> files when finalized without re-encoding or remuxing them.</p>
-<p>The recording catalog stores identity, time, paths, events, and fragment indexes; encoded media
-stays in the MP4 files on disk. The catalog makes review faster, but it does not hold footage
-hostage inside a KeepPeek-specific database format.</p>
-<p>MP4 is a container, not a codec. An H.265 recording still requires an H.265-capable VLC build,
-browser, or other player. Choosing MP4 improves interoperability without forcing KeepPeek to
-bundle the video decoders and encoders deliberately kept outside the core service.</p>
-<p><strong>User fit:</strong> The consumer can open a finalized segment in VLC; a small business can hand over
-portable evidence; the open-source enthusiast can reuse the MP4 ecosystem; the home automation
-enthusiast can attach standard evidence files to downstream workflows; the sysadmin gets files that
-fit normal backup workflows; the power optimizer can inspect recordings with standard tools.</p>
-<!-- Add tested VLC, FFmpeg, and operating-system playback combinations. -->
-<h3 id="keep-video-codecs-out-of-the-core-service"><a class="header" href="#keep-video-codecs-out-of-the-core-service">Keep video codecs out of the core service</a></h3>
-<p>KeepPeek is codec-aware but does not bundle a video decoder or encoder. It understands enough H.264
-and H.265 structure to receive encoded camera frames, identify configuration and keyframes, write
-MP4, and forward or repacketize media. It does not decode those frames into pixels or re-encode them
-inside the core service.</p>
-<p>Bundling codec implementations would introduce patent and distribution questions that vary by
-codec, build, use, and jurisdiction. It would also bring substantial native dependencies, security
-surface, CPU or accelerator policy, and binary and memory cost into every installation. Keeping
-that machinery outside the core avoids silently inheriting the licensing and packaging choices of
-a particular FFmpeg or codec-library build.</p>
-<p>On desktop, the first-party experience relies on Chrome or Chromium and the operating system’s
-media stack for video decoding and rendering. The UI asks the browser which RTP and MP4 codecs it
-actually supports and selects a compatible camera stream. Svelte provides the application UI;
-the browser provides the desktop runtime, media pipeline, accessibility primitives, and hardware
-decode path, so KeepPeek does not need to ship an Electron-style browser or codec pack.</p>
-<p>Browser support is still a real boundary. H.264 is the broad compatibility path, while H.265
-availability depends on the browser build, operating system, and hardware. When a camera-native
-stream cannot be decoded by the viewer, the user can select an H.264 substream or run an independent
-transcoding service that publishes a compatible variant back through the media gateway. The
-transcoder owns its codec dependencies, resource cost, and licensing decisions.</p>
-<p><strong>User fit:</strong> The consumer opens the interface in Chrome or Chromium without a KeepPeek codec
-bundle; a small business can use standard workstations or commission a specific transcoder; the
-open-source enthusiast can choose codec tooling deliberately; the home automation enthusiast can
-consume event metadata without decoding video; the sysadmin keeps codec packages out of the
-recorder; the power optimizer can use viewer-side hardware decoding.</p>
-<!-- Add a tested browser, operating-system, hardware, and codec compatibility matrix. -->
-<h3 id="use-svelte-for-the-first-party-interface"><a class="header" href="#use-svelte-for-the-first-party-interface">Use Svelte for the first-party interface</a></h3>
-<p>KeepPeek needs a responsive browser interface for live state, timelines, health, and configuration,
-but it does not need a second application server. Svelte 5 and SvelteKit can produce a static
-client, use compiled reactivity for frequently changing media state, and consume generated
-TypeScript protobuf bindings without introducing a separate client state framework.</p>
-<p>The browser becomes the cross-platform user interface while Rust remains responsible for server
-truth. The trade-off is a separate frontend toolchain, but that separation also keeps presentation
-changes out of the media process and makes the interface approachable to web contributors.</p>
-<p><strong>User fit:</strong> Consumers get the complete graphical product; small businesses can adapt focused
-operational views; open-source contributors can work in a familiar web stack; sysadmins get the
-same UI on every host; home automation enthusiasts can use direct dashboard clients; advanced users
-remain free to implement another client against the API.</p>
-<!-- Add the UI qualities that Svelte must continue to protect as the application grows. -->
-<h3 id="make-setup-ai-assistable-without-making-ai-a-dependency"><a class="header" href="#make-setup-ai-assistable-without-making-ai-a-dependency">Make setup AI-assistable without making AI a dependency</a></h3>
-<p>KeepPeek should be easy for an AI assistant to configure, but the running recorder should not need
-an assistant or model. The repository’s KeepPeek Camera Setup Skill turns camera discovery,
-authentication checks, stream tests, MP4 validation, transport selection, and final verification
-into an explicit, reusable workflow.</p>
-<p>The Skill is constrained rather than magical: credentials stay outside the conversation, generated
-configuration is staged, media is independently validated, and camera-side changes require human
-approval. Structured configuration, stable capability messages, reason codes, metrics, and focused
-command-line tools make those steps understandable to both people and assistants.</p>
-<p><strong>User fit:</strong> Consumers can receive guided setup; small businesses get a repeatable custom
-deployment process; open-source contributors can improve the workflow; home automation enthusiasts
-get repeatable integration setup; sysadmins get a documented runbook; power users can automate
-repeatable experiments without turning the recorder into an AI appliance.</p>
-<!-- Add the intended first-run assistant experience and its human approval points. -->
 <h2 id="connecting-users-to-choices"><a class="header" href="#connecting-users-to-choices">Connecting users to choices</a></h2>
 <div class="table-wrapper">
 <table>
@@ -766,38 +360,28 @@ repeatable experiments without turning the recorder into an AI appliance.</p>
 <tr><th>User</th><th>Most relevant choices</th><th>What those choices enable</th></tr>
 </thead>
 <tbody>
-<tr><td><strong>Software Consumer</strong></td><td>First-party Svelte UI, common cameras, MP4, browser decoding, setup Skill</td><td>Install, record, review, and diagnose without assembling an integration stack</td></tr>
-<tr><td><strong>Small Business Security</strong></td><td>Stable recording core, encoded-stream inference, open API, protocol plugins</td><td>Commission tailored analytics and workflows without making evidence depend on the model</td></tr>
-<tr><td><strong>Open Source Enthusiast</strong></td><td>AGPL server, MIT API, documented WebRTC, replaceable external services</td><td>Reuse, inspect, replace, and improve each component</td></tr>
-<tr><td><strong>Home Automation Enthusiast</strong></td><td>Stable identities, normalized events, Home Assistant, MQTT, HAP, Prometheus</td><td>Connect cameras to local dashboards, alerts, and automations without proxying media</td></tr>
-<tr><td><strong>Residential Sysadmin</strong></td><td>Rust, small core, native packaging, Docker, health evidence, standard MP4</td><td>Operate and recover a predictable service using familiar infrastructure</td></tr>
-<tr><td><strong>Residential Power Optimization Engineer</strong></td><td>Encoded forwarding, external inference, browser codecs, flexible placement</td><td>Put storage, decoding, inference, and integrations on the most suitable hardware</td></tr>
+<tr><td><strong>Software Consumer</strong></td><td>Svelte UI + desktop app, common camera paths, MP4, browser decoding, setup Skill</td><td>Install, record, review, and diagnose without assembling an integration stack</td></tr>
+<tr><td><strong>Small Business Security</strong></td><td>Stable recording core, encoded-stream inference, open API, external plugins</td><td>Commission tailored analytics and workflows without making evidence depend on the model</td></tr>
+<tr><td><strong>Open Source Enthusiast</strong></td><td>AGPL server, MIT API, standard WebRTC, replaceable external services</td><td>Reuse, inspect, replace, and improve each component independently</td></tr>
+<tr><td><strong>Home Automation Enthusiast</strong></td><td>Stable identities, normalized events, Home Assistant card, MQTT 5, HAP boundary, <code>/metrics</code></td><td>Connect cameras to dashboards, alerts, and automations without proxying video</td></tr>
+<tr><td><strong>Residential Sysadmin</strong></td><td>Rust, compact core, native packages/Docker, health evidence, standard MP4</td><td>Operate and recover a predictable service with standard infrastructure tools</td></tr>
+<tr><td><strong>Residential Power Optimization Engineer</strong></td><td>Encoded forwarding, external inference, browser decoding, flexible placement</td><td>Put storage, decoding, inference, and integrations on the best host for power and heat</td></tr>
 </tbody>
 </table>
 </div>
 <h2 id="boundaries-and-non-goals"><a class="header" href="#boundaries-and-non-goals">Boundaries and non-goals</a></h2>
 <ul>
 <li>KeepPeek is not a model host, training environment, detector marketplace, or GPU manager.</li>
-<li>KeepPeek does not expose periodic server-generated JPEGs as its native inference API.</li>
-<li>Camera-native analytics events must work without an additional assisted AI service.</li>
-<li>Recording and ordinary viewing must not require camera AI, an external AI service, or a cloud
-service.</li>
-<li>A protocol plugin does not receive direct access to internal databases, recording paths, or
-camera credentials.</li>
-<li>The core service does not bundle a video decoder, encoder, codec pack, or desktop browser runtime.</li>
-<li>MP4 storage improves file portability but does not guarantee that every player can decode every
-camera codec.</li>
-<li>A numeric memory limit is not a published guarantee until representative workloads are measured.
-Baseline service overhead should remain modest, while total memory also includes the configured
-encoded pre-event cache and scales with stream count, bitrate, enabled profiles, and retention
-duration.</li>
-<li>The MIT API permits independent commercial clients and services; it does not exempt private
-modifications to the AGPL server.</li>
-<li>KeepPeek does not try to replace Home Assistant, an MQTT broker, HomeKit, or a monitoring system.</li>
-<li>AI-assisted setup must remain reproducible by a person and must not expose secrets or silently
-change camera settings.</li>
+<li>KeepPeek does not expose periodic server-generated JPEGs as its inference API.</li>
+<li>Camera-native analytics must work without an external AI service; recording and viewing must not require camera AI, external AI, or cloud services.</li>
+<li>External services and plugins never receive camera credentials or direct access to SQLite databases or recording directories.</li>
+<li>The core service does not bundle a video decoder, encoder, codec pack, or packaged browser runtime.</li>
+<li>MP4 storage guarantees container portability, not that every player can decode every camera codec.</li>
+<li>No fixed total-RAM limit is promised before representative workload benchmarks; total memory includes the configured encoded pre-event cache.</li>
+<li>The MIT-licensed API permits independent commercial clients and services; it does not exempt private modifications to the AGPL server.</li>
+<li>KeepPeek does not replace Home Assistant, an MQTT broker, HomeKit, or a monitoring system.</li>
+<li>AI-assisted setup must remain reproducible by a person, protect secrets, and never modify camera settings silently.</li>
 </ul>
-<!-- Add product ideas that were deliberately rejected because they cross these boundaries. -->
 
                     </main>
 

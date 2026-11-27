@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9681fb04.js";
+            window.path_to_searchindex_js = "searchindex-f3bc00c1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-515efa10.js"></script>
@@ -175,102 +175,87 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="open-source-and-licensing"><a class="header" href="#open-source-and-licensing">Open source and licensing</a></h1>
-<p>KeepPeek is built in an ecosystem shaped by other open-source camera projects and protocol
-libraries. This chapter gives those projects credit, explains where KeepPeek made different product
-choices, and documents the license boundary between the server and its public API.</p>
-<h2 id="different-products-different-strengths"><a class="header" href="#different-products-different-strengths">Different products, different strengths</a></h2>
-<p><a href="https://www.scrypted.app/">Scrypted</a> and <a href="https://frigate.video/">Frigate</a> are great products with
-strong, distinct designs. KeepPeek is not an argument that those designs are wrong. Their choices
-may fit another user, home, or business better.</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Project</th><th>Distinct design center</th><th>A strong fit when</th></tr>
-</thead>
-<tbody>
-<tr><td><strong><a href="https://www.scrypted.app/">Scrypted</a></strong></td><td>A high-performance video integration platform and NVR with a rich plugin model, smart detections, and low-latency connections to HomeKit, Google Home, and Alexa</td><td>Broad camera and smart-home integration, an extensible plugin ecosystem, and first-class consumer-platform bridges should live in one system</td></tr>
-<tr><td><strong><a href="https://frigate.video/">Frigate</a></strong></td><td>A local NVR built around real-time AI object detection, accelerator-aware processing, zones, focused event review, Home Assistant, and MQTT</td><td>Detection is a central NVR responsibility and the user wants an integrated, highly configurable local AI and home-automation experience</td></tr>
-<tr><td><strong>KeepPeek</strong></td><td>A focused recorder and WebRTC media gateway that accepts camera events and keeps optional inference, transcoding, and ecosystem bridges outside the core</td><td>Recording should remain independent from analytics, and viewers or services should compose through an open media and event boundary</td></tr>
-</tbody>
-</table>
-</div>
-<p>Thank you to the Scrypted and Frigate maintainers and communities. Their work has advanced local
-camera software, demonstrated what polished self-hosted systems can do, and made the trade-offs in
-this space much easier to understand.</p>
-<h2 id="code-foundations"><a class="header" href="#code-foundations">Code foundations</a></h2>
-<p>KeepPeek depends on substantial protocol work from other Rust projects. The local forks retain
-their upstream authorship and licenses; carrying a fork is a maintenance decision, not a claim that
-KeepPeek created the original work.</p>
-<ul>
-<li><strong><a href="https://github.com/scottlamb/retina">Retina</a></strong> by Scott Lamb and its contributors provides the
-high-level RTSP client, RTP depacketization, codec framing, and much of the interoperability
-groundwork used by KeepPeek. KeepPeek carries a
-<a href="https://github.com/xnorpx/keeppeek/tree/main/crates/retina">local Retina fork</a> for its camera,
-recording, and compatibility needs.</li>
-<li><strong><a href="https://github.com/lumeohq/onvif-rs">ONVIF-rs</a></strong> by Chris Bruce, Lumeo, and its contributors did
-the difficult work of making ONVIF discovery, schemas, authentication, and camera operations
-usable from Rust. KeepPeek carries a
-<a href="https://github.com/xnorpx/keeppeek/tree/main/crates/onvif">local ONVIF-rs fork</a> and continues
-that work for its supported camera surface.</li>
-<li><strong><a href="https://github.com/algesten/str0m">str0m</a></strong> by Martin Algesten and its contributors is the
-upstream WebRTC implementation used by KeepPeek. It is the best Rust WebRTC implementation: its
-Sans I/O design, explicit time and network inputs, RTP and frame APIs, data channels, and lack of
-a hidden async runtime fit a focused media service especially well.</li>
-</ul>
-<p>KeepPeek would be significantly harder to build without these projects. Thank you to every upstream
-author, maintainer, reviewer, and contributor whose work remains in the code.</p>
+<p>This chapter defines KeepPeek’s dual-license boundary (<code>AGPL-3.0-only</code> server vs <code>MIT</code> public API), credits the open-source libraries, datasets, and media fixtures KeepPeek builds on, and summarizes how KeepPeek’s scope compares with peer open-source NVR projects.</p>
 <h2 id="licensing-model"><a class="header" href="#licensing-model">Licensing model</a></h2>
-<p>KeepPeek uses two licenses at a deliberate protocol boundary:</p>
+<p>KeepPeek separates the shared recorder core from its public protocol at an explicit license boundary:</p>
 <div class="table-wrapper">
 <table>
 <thead>
 <tr><th>Area</th><th>License</th><th>Purpose</th></tr>
 </thead>
 <tbody>
-<tr><td>Server, first-party viewer, and most repository code</td><td><code>AGPL-3.0-only</code></td><td>Keep the shared NVR and media-gateway core open, including modified versions operated over a network</td></tr>
-<tr><td>Public definitions and documentation under <code>api/</code>, plus bindings generated solely from them</td><td>MIT</td><td>Let independent clients and services implement the protocol without adopting the server’s license</td></tr>
+<tr><td>Server, first-party UI, desktop wrapper, reference examples (<code>examples/</code>), and most workspace crates</td><td><code>AGPL-3.0-only</code></td><td>Keeps the shared NVR core open—including modified network deployments—with no camera-count limits.</td></tr>
+<tr><td>Public HTTP, WebRTC, protobuf, and SDP contracts under <a href="https://github.com/xnorpx/keeppeek/tree/main/api"><code>api/</code></a>, plus bindings generated solely from them</td><td><code>MIT</code></td><td>Lets independent clients and services implement the protocol under any open or commercial license.</td></tr>
+<tr><td>Permissive protocol library (<code>crates/isapi</code>) and local upstream forks (<code>crates/retina</code>, <code>crates/onvif</code>, <code>crates/mp4</code>, <code>crates/rouille</code>)</td><td>Upstream <code>MIT</code> / <code>Apache-2.0</code></td><td>Retains original upstream authorship and licenses in each crate.</td></tr>
 </tbody>
 </table>
 </div>
-<p>The repository root <a href="https://github.com/xnorpx/keeppeek/blob/main/LICENSE">license</a> contains the
-complete KeepPeek licensing notice and AGPL terms. The <code>api/</code> directory has its own
-<a href="https://github.com/xnorpx/keeppeek/blob/main/api/LICENSE">MIT license</a>.</p>
-<h3 id="why-the-server-uses-agpl"><a class="header" href="#why-the-server-uses-agpl">Why the server uses AGPL</a></h3>
-<p>The server is a network service, so the AGPL is the appropriate copyleft boundary for the shared
-core. The intent is that users can inspect, modify, self-host, and retain access to the source of
-the KeepPeek server they use, including modified versions offered over a network.</p>
-<p>KeepPeek’s NVR and first-party viewer remain open source and free to use without a camera-count
-limit. The license protects that common foundation from becoming a private server fork whose users
-cannot inspect the code serving them.</p>
-<h3 id="why-the-api-uses-mit"><a class="header" href="#why-the-api-uses-mit">Why the API uses MIT</a></h3>
-<p>An open server is most useful when other software can talk to it without inheriting the server’s
-implementation choices. The public HTTP, WebRTC, protobuf, and SDP contracts under <code>api/</code> therefore
-use MIT. Bindings generated solely from those definitions remain covered by that directory’s MIT
-license.</p>
-<p>Implementing or using the public protocol does not, by itself, impose KeepPeek’s repository-wide
-AGPL license on an independent client or service. A service can choose the language, WebRTC
-implementation, deployment model, and license appropriate to its users.</p>
-<h3 id="free-and-paid-protocol-services"><a class="header" href="#free-and-paid-protocol-services">Free and paid protocol services</a></h3>
-<p>This split creates a protocol-plugin model rather than an in-process plugin ABI. A free, community,
-or paid service can run as a separate process and subscribe or publish through the documented API.
-That service may be open or closed source without receiving a private extension point inside the
-KeepPeek server.</p>
-<p>The boundary allows commercial integrations to fund specialized inference, transcoding, business
-workflows, viewers, or support while the recorder and media gateway remain shared open-source
-infrastructure. Camera credentials, recording paths, and internal databases remain owned by
-KeepPeek rather than exposed to an in-process plugin.</p>
-<h3 id="what-the-split-means-for-users"><a class="header" href="#what-the-split-means-for-users">What the split means for users</a></h3>
+<p>See the root <a href="https://github.com/xnorpx/keeppeek/blob/main/LICENSE"><code>LICENSE</code></a> for complete <code>AGPL-3.0-only</code> terms and <a href="https://github.com/xnorpx/keeppeek/blob/main/api/LICENSE"><code>api/LICENSE</code></a> for the <code>api/</code> MIT terms.</p>
+<h3 id="protocol-plugin-boundary-free-and-paid-services"><a class="header" href="#protocol-plugin-boundary-free-and-paid-services">Protocol-plugin boundary (free and paid services)</a></h3>
+<p>Because the recorder is a network service, <code>AGPL-3.0-only</code> ensures operators and users retain source access to the server running for them. Meanwhile, licensing <code>api/</code> and its generated bindings under <code>MIT</code> establishes a <strong>protocol-plugin model</strong> rather than an in-process plugin ABI:</p>
 <ul>
-<li><strong>Software consumers</strong> retain a free recorder and first-party viewer, with optional services only
-when they add value.</li>
-<li><strong>Small businesses</strong> can buy tailored services at the API boundary without depending on a private
-recorder fork.</li>
-<li><strong>Open-source enthusiasts</strong> can audit the server, share core improvements, and build permissively
-licensed clients.</li>
-<li><strong>Home automation enthusiasts</strong> can choose community or commercial bridges.</li>
-<li><strong>Self-hosters</strong> retain control of the server running on their hardware.</li>
-<li><strong>Service authors</strong> can build sustainable offerings without closing the shared core.</li>
+<li>Independent free, community, or commercial services (object detection, transcoding, workflows, alternate viewers) run as separate processes and talk to KeepPeek through the public API without inheriting AGPL.</li>
+<li>KeepPeek retains sole ownership of camera credentials, recording paths, and internal databases rather than exposing them to third-party in-process plugins.</li>
 </ul>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Stakeholder</th><th>What the split provides</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Self-hosters &amp; consumers</strong></td><td>Free, auditable recorder and first-party viewer with no camera-count paywall; optional services only when desired.</td></tr>
+<tr><td><strong>Small businesses</strong></td><td>Ability to purchase specialized external services at the API boundary without a proprietary NVR fork.</td></tr>
+<tr><td><strong>Open-source contributors</strong></td><td>Core improvements stay open under AGPL while permissive API clients remain easy to build.</td></tr>
+<tr><td><strong>Service authors</strong></td><td>Sustainable commercial or open offerings without closing the shared recorder core.</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="code-foundations-and-upstream-forks"><a class="header" href="#code-foundations-and-upstream-forks">Code foundations and upstream forks</a></h2>
+<p>Local workspace forks preserve upstream authorship and licenses; carrying a fork is a maintenance decision, not a claim of original authorship.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Project / crate</th><th>Upstream authors</th><th>License</th><th>Role in KeepPeek</th></tr>
+</thead>
+<tbody>
+<tr><td><strong><a href="https://github.com/scottlamb/retina">Retina</a></strong> (<a href="https://github.com/xnorpx/keeppeek/tree/main/crates/retina"><code>crates/retina</code></a>)</td><td>Scott Lamb &amp; contributors</td><td><code>MIT OR Apache-2.0</code></td><td>Local fork providing the RTSP client, RTP depacketization, and codec framing.</td></tr>
+<tr><td><strong><a href="https://github.com/lumeohq/onvif-rs">ONVIF-rs</a></strong> (<a href="https://github.com/xnorpx/keeppeek/tree/main/crates/onvif"><code>crates/onvif</code></a>)</td><td>Chris Bruce, Lumeo &amp; contributors</td><td><code>MIT</code></td><td>Local fork providing ONVIF discovery, XML schemas, authentication, and camera control operations.</td></tr>
+<tr><td><strong><a href="https://github.com/algesten/str0m">str0m</a></strong></td><td>Martin Algesten &amp; contributors</td><td><code>MIT OR Apache-2.0</code></td><td>Upstream Sans-I/O Rust WebRTC stack (RTP/frame APIs, data channels, explicit time/network inputs).</td></tr>
+<tr><td><strong><a href="https://github.com/alfg/mp4-rust">mp4-rust</a></strong> (<a href="https://github.com/xnorpx/keeppeek/tree/main/crates/mp4"><code>crates/mp4</code></a>)</td><td>Alf &amp; contributors</td><td><code>MIT</code></td><td>Local fork providing ISO BMFF / MP4 reading and writing.</td></tr>
+<tr><td><strong><a href="https://github.com/tomaka/rouille">rouille</a></strong> (<a href="https://github.com/xnorpx/keeppeek/tree/main/crates/rouille"><code>crates/rouille</code></a>)</td><td>Pierre Krieger &amp; contributors</td><td><code>MIT/Apache-2.0</code></td><td>Local fork providing the synchronous HTTP server layer.</td></tr>
+<tr><td><strong><a href="https://github.com/xnorpx/keeppeek/tree/main/crates/isapi"><code>crates/isapi</code></a></strong> &amp; <strong><a href="https://github.com/xnorpx/keeppeek/tree/main/crates/reo-proto"><code>crates/reo-proto</code></a></strong></td><td>KeepPeek contributors</td><td><code>MIT</code> / <code>AGPL-3.0-only</code></td><td>Plain-Rust Sans-I/O Hikvision ISAPI (<a href="https://github.com/xnorpx/keeppeek/blob/main/crates/isapi/UPSTREAM.md">provenance</a>) and Reolink Baichuan protocol (informed by <a href="https://github.com/QuantumEntangledAndy/neolink">neolink</a> and thirtythreeforty’s reverse-engineering notes).</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="third-party-catalogs-and-test-media-fixtures"><a class="header" href="#third-party-catalogs-and-test-media-fixtures">Third-party catalogs and test media fixtures</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Asset</th><th>Attribution / source</th><th>License</th><th>Usage in KeepPeek</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>CCTV Camera Database</strong> (<code>v2.8.0</code>)</td><td><a href="https://github.com/ch-bas/cctv-camera-database"><code>ch-bas/cctv-camera-database</code></a></td><td>Upstream release archive (verified by SHA-256 in <code>build.rs</code>)</td><td>Embedded offline camera model catalog for guided camera setup.</td></tr>
+<tr><td><strong><em>Big Buck Bunny</em></strong></td><td>© 2008 Blender Foundation</td><td><a href="https://creativecommons.org/licenses/by/3.0/">CC BY 3.0</a></td><td>48-second 4K H.264 excerpt (<code>crates/test-camera/testdata/</code>) for the nine-camera demo and benchmarks.</td></tr>
+<tr><td><strong><em>4K resolution sample</em></strong></td><td>Jihei (2011), Wikimedia Commons</td><td><a href="https://creativecommons.org/licenses/by-sa/3.0/">CC BY-SA 3.0</a></td><td>1-second H.264/H.265 derivatives (<code>crates/test-camera/testdata/cc-4k-*.mp4</code>) for backend tests.</td></tr>
+<tr><td><strong>Intel IoT DevKit sample videos</strong> (<code>person-bicycle-car-detection.mp4</code>)</td><td><a href="https://github.com/intel-iot-devkit/sample-videos"><code>intel-iot-devkit/sample-videos</code></a></td><td><a href="https://creativecommons.org/licenses/by/4.0/">CC-BY-4.0</a></td><td>Fetched at pinned commit in CI (not committed; see <a href="https://github.com/xnorpx/keeppeek/blob/main/data/README.md"><code>data/README.md</code></a>) for real-model object-detection integration tests.</td></tr>
+</tbody>
+</table>
+</div>
+<p>See <a href="https://github.com/xnorpx/keeppeek/blob/main/crates/test-camera/testdata/README.md"><code>crates/test-camera/testdata/README.md</code></a> for exact fixture hashes and encoding commands.</p>
+<h2 id="peer-open-source-nvr-projects"><a class="header" href="#peer-open-source-nvr-projects">Peer open-source NVR projects</a></h2>
+<p><a href="https://www.scrypted.app/">Scrypted</a> and <a href="https://frigate.video/">Frigate</a> are strong open-source projects with distinct design centers—thank you to their maintainers and communities for advancing self-hosted camera software.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Project</th><th>Distinct design center</th><th>Strongest fit when</th></tr>
+</thead>
+<tbody>
+<tr><td><strong><a href="https://www.scrypted.app/">Scrypted</a></strong></td><td>Video integration platform and NVR with an extensible plugin model, smart detections, and low-latency HomeKit, Google Home, and Alexa bridges.</td><td>Broad smart-home bridges, an in-process plugin ecosystem, and consumer-platform integration belong in one system.</td></tr>
+<tr><td><strong><a href="https://frigate.video/">Frigate</a></strong></td><td>Local NVR centered on real-time AI object detection, accelerator-aware inference, zones, event review, Home Assistant, and MQTT.</td><td>Tightly integrated, accelerator-tuned local AI detection and home automation are the NVR’s central job.</td></tr>
+<tr><td><strong>KeepPeek</strong></td><td>Focused recorder and WebRTC media gateway that ingests camera events and delegates optional inference, transcoding, and bridges across an open API.</td><td>Recording must stay isolated from analytics, and clients or services should compose cleanly over an open media/event boundary.</td></tr>
+</tbody>
+</table>
+</div>
 <p>See <a href="./contributing.html">Contributing</a> for how licenses apply to submitted changes.</p>
 
                     </main>

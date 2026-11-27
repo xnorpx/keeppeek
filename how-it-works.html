@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9681fb04.js";
+            window.path_to_searchindex_js = "searchindex-f3bc00c1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-515efa10.js"></script>
@@ -175,11 +175,8 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="how-keeppeek-works"><a class="header" href="#how-keeppeek-works">How KeepPeek works</a></h1>
-<p>KeepPeek puts recording, live media, event storage, and investigation in one local service. The
-browser is a client of that service. Closing a tab ends its viewing work; it does not stop the
-server’s configured recording policy.</p>
-<p>This chapter explains the current boundaries. <a href="./users-and-design-choices.html">Users and design choices</a>
-contains the product rationale, while the feature chapters provide operational instructions.</p>
+<p>This page explains KeepPeek’s runtime architecture, media and event pipelines, persistent state boundaries, and protocol surfaces. Use <a href="./users-and-design-choices.html">Users and design choices</a> for product rationale and <a href="./feature-guide.html">Feature guide and navigation</a> for UI navigation.</p>
+<p>KeepPeek runs recording, live media routing, event storage, and investigation in one local Rust service. Browsers and <code>keeppeek-desktop</code> are clients of that service: closing a tab or desktop window ends viewing work without stopping the server’s configured recording policy.</p>
 <h2 id="media-and-event-paths"><a class="header" href="#media-and-event-paths">Media and event paths</a></h2>
 <pre class="mermaid">flowchart TB
     Camera[IP camera] --&gt;|Encoded media| Core[KeepPeek]
@@ -188,85 +185,76 @@ contains the product rationale, while the feature chapters provide operational i
     MP4 --&gt;|Playback via KeepPeek| Browser
 </pre>
 
-<p>The camera supplies encoded media. KeepPeek understands codecs and timing well enough to route,
-package, and record those streams without decoding and re-encoding their video in the core. The
-browser or an external service performs the decoding it needs. Camera control, native events, and
-media can use different protocol connections, so success on one path does not prove the others
-are healthy.</p>
-<p>Supported native adapters and optional analysis services publish events through a separate path:</p>
+<p>Cameras supply encoded video (H.264 or H.265) and supported audio. KeepPeek parses codecs and timing to route, index, and write fragmented ISO MP4 segments without decoding or re-encoding video in the core ingest path; browsers and external services perform their own decoding. (When optional silent MP4 timelapse export is enabled and a user-installed <code>ffmpeg</code> binary is present, KeepPeek runs that external encoder incrementally outside the recording ingest path.)</p>
+<p>Camera control, native events, and media can use separate protocol connections, so health on one path does not prove the others are working. Native adapters (Reolink Baichuan, Hikvision/Annke ISAPI, ONVIF PullPoint, RTSP metadata) and optional external WebRTC analysis services publish events into a separate pipeline:</p>
 <pre class="mermaid">flowchart TB
     Source[Camera or analysis service] --&gt; Events[Validate and store event]
-    Events --&gt; Review[Review in KeepPeek]
-    Events --&gt; Delivery[Rules and MQTT]
+    Events --&gt; Review[Review, search, and analytics]
+    Events --&gt; Delivery[Rules, push signaling, and MQTT]
 </pre>
 
-<p>The server separates camera/media work, storage work, WebRTC sessions, and integration delivery.
-Health and queue evidence make stalls and pressure visible. Optional analysis and notification
-delivery do not become a prerequisite for ordinary recording. Resource exhaustion or failure of
-the recorder’s own storage and network still needs operational attention.</p>
-<h2 id="persistent-data-and-live-state"><a class="header" href="#persistent-data-and-live-state">Persistent data and live state</a></h2>
+<p>The server isolates camera ingest, storage writes, WebRTC sessions, and outbound notification or MQTT delivery. Bounded queues and explicit health states keep stalls visible; optional analysis, notifications, and MQTT never become prerequisites for ordinary recording.</p>
+<h2 id="persistent-state-vs-runtime-memory"><a class="header" href="#persistent-state-vs-runtime-memory">Persistent state vs. runtime memory</a></h2>
+<p>KeepPeek keeps configuration in <code>config.toml</code> and reusable private strings in the companion <code>secrets.toml</code> using <code>{secret:KEY}</code> and <code>{secret:KEY|url}</code> references; do not create separate settings files for layouts, permissions, or desktop targets. See <a href="./configuration-reference.html">Configuration reference</a> for exact schemas and <a href="./backup-and-restore.html#what-survives-a-restart">Backup and restore</a> for restart guarantees.</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Data</th><th>Owner and purpose</th><th>Operational consequence</th></tr>
+<tr><th>Store or state</th><th>Owner and persistence</th><th>Operational consequence</th></tr>
 </thead>
 <tbody>
-<tr><td>Application configuration</td><td>The existing <code>config.toml</code> holds supported settings, policies, layouts, and access configuration.</td><td>Use validated saves or configuration import and preserve the file across upgrades.</td></tr>
-<tr><td>Reusable private strings</td><td>The companion <code>secrets.toml</code> supplies supported secret references.</td><td>Preserve references and protect configuration archives and private restore material.</td></tr>
-<tr><td>Encoded recordings</td><td>MP4 files in the configured storage paths.</td><td>Retention, recording policy, storage pressure, and file integrity determine what remains.</td></tr>
-<tr><td>Fourth-tier local archive</td><td>Verified replica MP4s on an optional confined local destination.</td><td>Extends retention independently of ingest; recover the catalog manifests and archive root together.</td></tr>
-<tr><td>Recording and event catalog</td><td>Indexed recording identity, coverage, events, and related durable investigation state.</td><td>Recover it consistently with the media and the documented archive procedures.</td></tr>
-<tr><td>Images and exports</td><td>Feature-owned data under configured paths and retention policies.</td><td>A playable recording does not imply that an event thumbnail or export is retained.</td></tr>
-<tr><td>Notification and MQTT runtime state</td><td>Bounded process memory for pending work and related runtime history or deduplication.</td><td>A restart does not replay this work. Persisted rules and provider configuration are separate from delivery state.</td></tr>
-<tr><td>Active connections and subscriptions</td><td>The running server and each client connection.</td><td>Reconnect and resolve current capabilities; a stored preference does not prove a stream is live.</td></tr>
+<tr><td><strong>Application configuration</strong> (<code>config.toml</code>)</td><td>Persisted settings, cameras, storage policies, runtime profiles, saved layouts, access policy, notification rules, usage-reporting consent, and optional <code>[desktop].server_url</code>.</td><td>Edit through validated saves or configuration ZIP apply; preserve across upgrades.</td></tr>
+<tr><td><strong>Reusable secrets</strong> (<code>secrets.toml</code>)</td><td>Companion store for named and URL-encoded secret references.</td><td>KeepPeek preserves references instead of writing resolved secrets into <code>config.toml</code>; protect ZIP exports and backups.</td></tr>
+<tr><td><strong>Encoded recordings</strong> (<code>.mp4</code>, <code>.mp4.active</code>)</td><td>Fragmented ISO MP4 files across configured storage paths and named storage volumes.</td><td>Retention, recording policy, storage pressure, and file integrity determine what remains playable.</td></tr>
+<tr><td><strong>Fourth-tier local archive</strong></td><td>Verified replica MP4s on an optional confined local destination.</td><td>Extends retention independently of ingest; recover catalog manifests and archive root together.</td></tr>
+<tr><td><strong>Recording and event catalog</strong> (<code>recordings.db</code>)</td><td>Indexed recording identity, coverage, events, bookmarks, saved searches, activity rollups, export jobs, and guest review grants.</td><td>Back up and recover consistently with media files; see <a href="./recording-archive-recovery.html">Recording archive recovery</a>.</td></tr>
+<tr><td><strong>Event images and exports</strong></td><td>Feature-owned thumbnails, clip exports, and timelapse MP4/manifest artifacts under configured paths.</td><td>Playable recordings do not guarantee that thumbnails or expired export artifacts remain.</td></tr>
+<tr><td><strong>Notification, MQTT, and access runtime state</strong></td><td>Bounded process memory for notification inbox/history/retries, MQTT pending outbox/deduplication, active sessions, and access audit/last-use activity.</td><td><strong>Resets on restart</strong> without replaying pending deliveries; persisted rules and credentials remain durable.</td></tr>
+<tr><td><strong>Active connections and subscriptions</strong></td><td>Ephemeral server and client session state (WebRTC peers, camera workers, subscriptions).</td><td>Reconnect resolves current capabilities; a stored preference never proves a stream is live.</td></tr>
 </tbody>
 </table>
 </div>
-<p>The <a href="./configuration-reference.html">configuration reference</a> is the authority for serialized fields,
-defaults, and paths. Do not create separate settings files for layouts or permissions. For a
-consistent recovery plan, use <a href="./backup-and-restore.html">Backup and restore</a>; configuration export
-and a full recording archive serve different purposes.</p>
-<h2 id="control-media-and-access"><a class="header" href="#control-media-and-access">Control, media, and access</a></h2>
-<p>HTTP creates and deletes API sessions and provides dedicated administration and diagnostic
-operations. WebRTC carries typed control messages, data messages, and media. Clients must use the
-negotiated capabilities and source identities instead of assuming that every camera has the same
-streams, codecs, events, or controls.</p>
-<p>Authentication identifies the caller; authorization determines the operations and cameras that
-caller may use. The same restrictions apply through a dashboard, deep link, or integration. A
-hidden UI control is not the security boundary. See <a href="./authentication.html">Authentication</a> for
-local trust, named credentials, roles, camera grants, reverse proxies, and revocation.</p>
-<p>The server exposes configuration export/apply, backups, recording coverage, logs, and metrics on
-dedicated HTTP routes. Their methods and authentication requirements are defined by the
-<a href="https://github.com/xnorpx/keeppeek/blob/main/api/openapi.yaml">HTTP contract</a> and implementation;
-they are not a general REST replacement for the WebRTC control protocol. Custom clients should
-start with the <a href="https://github.com/xnorpx/keeppeek/blob/main/api/README.md">API overview</a> and verify
-runtime support for each command they need. The API is pre-1.0 and does not yet promise stable
-compatibility across versions.</p>
-<h2 id="recording-truth-and-investigation"><a class="header" href="#recording-truth-and-investigation">Recording truth and investigation</a></h2>
-<p>Live frames, stored coverage, event timestamps, and exported evidence answer different questions.
-A connected camera can fail to record; a retained event can outlive its image or video; a
-successful seek does not prove that the surrounding day has no gaps.</p>
-<p>Keep combines recorded coverage, selected time, camera identity, and event context. Health screens
-explain stream progress and recorder evidence. Maintenance inspects persisted files and catalog
-state. Keep these layers separate when diagnosing an incident so that a browser playback problem
-does not become an unnecessary archive repair.</p>
-<p>Start with <a href="./recording-and-evidence.html">Recording and evidence</a> and
-<a href="./camera-health.html">Camera and stream health</a>. Use <a href="./recording-maintenance.html">Recording maintenance</a>
-when stored-data evidence warrants it.</p>
-<h2 id="extension-boundaries"><a class="header" href="#extension-boundaries">Extension boundaries</a></h2>
-<p>External services consume media and publish supported events without becoming part of the core
-recorder. Camera-native adapters provide another event source. Notifications and MQTT consume
-committed events and maintain their own delivery evidence. Home Assistant’s card connects the
-browser directly to KeepPeek rather than proxying video through Home Assistant.</p>
-<p>Some broader protocol scenarios are implemented only in part. Live <a href="./groups.html">participant groups</a>
-currently have declarations and a UI explanation without a runtime handler. Consult the feature’s
-availability statement before designing a deployment around it.</p>
-<p>Implementation entry points include
-<a href="https://github.com/xnorpx/keeppeek/blob/main/src/app.rs"><code>src/app.rs</code></a> for startup,
-<a href="https://github.com/xnorpx/keeppeek/blob/main/src/server.rs"><code>src/server.rs</code></a> for request handling,
-<a href="https://github.com/xnorpx/keeppeek/blob/main/src/webrtc.rs"><code>src/webrtc.rs</code></a> for sessions and media,
-and <a href="https://github.com/xnorpx/keeppeek/tree/main/src/storage"><code>src/storage</code></a> for recording and
-catalog behavior. Development and verification instructions are in <a href="./contributing.html">Contributing</a>.</p>
+<h2 id="control-media-and-access-plane"><a class="header" href="#control-media-and-access-plane">Control, media, and access plane</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Surface</th><th>Transport and contract</th><th>Responsibilities</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>WebRTC sessions</strong></td><td>RTP/UDP + SCTP data channels (<a href="https://github.com/xnorpx/keeppeek/blob/main/api/webrtc.proto"><code>api/webrtc.proto</code></a>)</td><td>Live video/audio, stored playback, typed protobuf control, capability negotiation, event search/analytics, and external media/event subscriptions.</td></tr>
+<tr><td><strong>HTTP routes</strong></td><td>Dedicated REST endpoints (<a href="https://github.com/xnorpx/keeppeek/blob/main/api/openapi.yaml"><code>api/openapi.yaml</code></a>)</td><td>Session and OIDC auth (<code>/auth/session</code>, <code>/auth/login</code>, <code>/auth/callback</code>, <code>/auth/logout</code>), WebRTC signaling (<code>/create</code>, <code>/delete</code>), config ZIP export/apply (<code>/config/export</code>, <code>/config/apply</code>), backups (<code>/api/backups/*</code>), guest review (<code>/share</code>), logs (<code>/logs</code>, <code>/logs/snapshot</code>), bug reporting (<code>/reporting/*</code>), coverage (<code>/recording-coverage</code>), and Prometheus (<code>GET /metrics</code>).</td></tr>
+<tr><td><strong>Operator clients</strong></td><td>Browser UI, <code>keeppeek-desktop</code>, foreground TUI</td><td>Static Svelte 5 app served by KeepPeek, optional Tauri v2 desktop window on Windows/macOS, and terminal health dashboard on interactive TTY runs.</td></tr>
+</tbody>
+</table>
+</div>
+<p>HTTP routes complement WebRTC rather than replacing the WebRTC control protocol. Clients must negotiate capabilities and source identities at runtime instead of assuming identical streams, codecs, controls, or events across cameras. The API is pre-1.0 and does not yet promise cross-version stability; start with the <a href="https://github.com/xnorpx/keeppeek/blob/main/api/README.md">API overview</a>.</p>
+<p>Authentication identifies the caller (local trusted network, named credential, or external OIDC provider); authorization enforces Administrator vs. User roles and per-camera/group grants uniformly across dashboards, deep links, WebRTC commands, and HTTP routes. A hidden UI control is never the security boundary (<a href="./authentication.html">Authentication</a>).</p>
+<h2 id="recording-truth-and-diagnostics"><a class="header" href="#recording-truth-and-diagnostics">Recording truth and diagnostics</a></h2>
+<p>Keep these four diagnostic layers separate so a browser playback issue does not trigger unnecessary storage repair:</p>
+<ol>
+<li><strong>Live stream health:</strong> Confirms camera transport and incoming frames, not disk writes.</li>
+<li><strong>Recorded coverage:</strong> Confirms cataloged MP4 intervals and gaps for a camera and UTC day.</li>
+<li><strong>Events and analytics:</strong> Confirms validated event metadata; a retained event can outlive its thumbnail or underlying video.</li>
+<li><strong>Stored integrity and exports:</strong> Confirms persisted MP4 containers, catalog alignment, and independently verifiable export bytes.</li>
+</ol>
+<p>Start troubleshooting in <a href="./camera-health.html">Camera and stream health</a> and <a href="./recording-and-evidence.html">Recording and evidence</a>; run <a href="./recording-maintenance.html">Recording maintenance</a> only when stored-data evidence warrants it.</p>
+<h2 id="extension-boundaries-and-codebase-map"><a class="header" href="#extension-boundaries-and-codebase-map">Extension boundaries and codebase map</a></h2>
+<p>External analysis services subscribe to WebRTC media and publish normalized events without receiving camera credentials or direct access to SQLite or recording directories. The Home Assistant card connects the browser directly to KeepPeek instead of proxying video through Home Assistant. Declared protocol types without server handlers—such as live <a href="./groups.html">participant groups</a>—are unavailable until their runtime contract ships.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Entry point</th><th>Responsibility</th></tr>
+</thead>
+<tbody>
+<tr><td><a href="https://github.com/xnorpx/keeppeek/blob/main/src/app.rs"><code>src/app.rs</code></a></td><td>Application startup, subsystem wiring, and lifecycle orchestration.</td></tr>
+<tr><td><a href="https://github.com/xnorpx/keeppeek/blob/main/src/server.rs"><code>src/server.rs</code></a></td><td>HTTP routing, auth, config export/apply, backups, diagnostics, and <code>/metrics</code>.</td></tr>
+<tr><td><a href="https://github.com/xnorpx/keeppeek/blob/main/src/webrtc.rs"><code>src/webrtc.rs</code></a></td><td>WebRTC peer management, media forwarding, and protobuf control dispatch.</td></tr>
+<tr><td><a href="https://github.com/xnorpx/keeppeek/tree/main/src/storage"><code>src/storage</code></a></td><td>Fragmented MP4 recording, SQLite catalog, volumes, archive, timelapse, and exports.</td></tr>
+<tr><td><a href="https://github.com/xnorpx/keeppeek/tree/main/src/tui"><code>src/tui</code></a></td><td>Foreground terminal health dashboard.</td></tr>
+<tr><td><a href="https://github.com/xnorpx/keeppeek/tree/main/crates/keeppeek-desktop"><code>crates/keeppeek-desktop</code></a></td><td>Optional Windows and macOS Tauri desktop client.</td></tr>
+</tbody>
+</table>
+</div>
+<p>For build, test, and contribution rules, see <a href="./contributing.html">Contributing</a>.</p>
 
                     </main>
 

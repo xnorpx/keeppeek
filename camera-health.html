@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9681fb04.js";
+            window.path_to_searchindex_js = "searchindex-f3bc00c1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-515efa10.js"></script>
@@ -175,266 +175,165 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="camera-and-stream-health"><a class="header" href="#camera-and-stream-health">Camera and stream health</a></h1>
-<p>KeepPeek computes camera and stream health on the server. Peek, Cameras, Health, camera
-diagnosis, fleet counts, the control API, and Prometheus metrics consume that same projection.
-Clients do not infer health from display text, local video playback, or issue severity.</p>
+<p>This page covers KeepPeek’s server-authoritative health model (contract version <code>1</code>), fleet and client health diagnostics on <code>/system-health</code>, single-camera diagnosis on <code>/system-health/camera/[cameraId]</code>, the foreground terminal dashboard (<code>--tui</code>), durable operational outage intervals, <code>HealthCommand</code>, and Prometheus <code>GET /metrics</code>. For historical footage coverage see <a href="./recording-and-evidence.html">Recording and evidence</a>; for alert delivery see <a href="./notifications-and-integrations.html">Notifications and integrations</a>.</p>
+<p>KeepPeek computes camera and stream health once on the server. Peek, Cameras, Health, camera diagnosis, fleet counts, the foreground TUI, the control API, and <code>/metrics</code> all project that same state. Clients never infer health from display text, local video decode, or alert severity, and must map unknown future states or reason codes to <code>unknown</code>—never <code>healthy</code>.</p>
+<h2 id="video-walkthrough"><a class="header" href="#video-walkthrough">Video walkthrough</a></h2>
+<p>Watch triaging prioritized fleet findings on <strong>Health</strong> (<code>/system-health</code>), opening single-camera diagnosis (<code>/system-health/camera/[cameraId]</code>), and switching an affected camera to TCP transport:</p>
+<video controls="" crossorigin="anonymous" preload="metadata" playsinline="" style="width: 100%; height: auto">
+  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/health.desktop.triage-diagnosis.mp4" type="video/mp4">
+  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/health.desktop.triage-diagnosis.vtt" kind="captions" srclang="en" label="English">
+  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/health.desktop.triage-diagnosis.mp4">Download the camera health triage and diagnosis demo</a>.
+</video>
 <h2 id="investigate-an-unhealthy-camera"><a class="header" href="#investigate-an-unhealthy-camera">Investigate an unhealthy camera</a></h2>
 <ol>
-<li>Open <strong>Cameras</strong> and use <strong>Not healthy</strong> to narrow the fleet. Select the camera for its current
-state, primary reason, stream profiles and recording evidence.</li>
-<li>Open <strong>Health</strong> for fleet findings. Refresh to request a current snapshot, then follow a
-finding’s camera or timeline link to the affected source and time.</li>
-<li>Compare transport, advancing frames, keyframes and recording progress. A connected socket can
-still deliver stale or undecodable video; a decoded live picture does not prove recording.</li>
-<li>Use <strong>Recording integrity</strong> when the question is whether footage was retained. Its historical
-coverage and gaps answer a different question from current-process health counters.</li>
-<li>Check native event and external service status separately when only detections or alerts are
-missing. Their failures do not make otherwise healthy camera media offline.</li>
+<li>Open <strong>Cameras</strong> (<code>/cameras</code>) and filter by <strong>Not healthy</strong> (every state except <code>healthy</code>) to narrow affected devices, or open <strong>Health</strong> (<code>/system-health</code>) for prioritized fleet findings and refresh on demand.</li>
+<li>On <code>/system-health</code>, switch between the <strong>Server</strong> tab (fleet counts, camera/stream dimensions, host CPU/memory/disks, WebRTC sources including <code>live_audio</code>) and the <strong>Client</strong> tab (this browser’s WebRTC session, ICE state, inbound tracks, receive bitrate, packet loss, jitter, RTT, and decoder implementation).</li>
+<li>Select a camera finding to open <strong>Camera diagnosis</strong> (<code>/system-health/camera/[cameraId]</code>), which presents server-observed <strong>TRANSPORT</strong>, <strong>FRAMES</strong>, <strong>DECODABLE</strong>, and <strong>RECORDING</strong> evidence, stream drop/error counters, <strong>Pre-recording</strong> buffer history/memory state, and an ordered checklist:
+<ol>
+<li><strong>Open the camera on this network</strong> (<code>http://&lt;ip&gt;</code>) to verify power and reachability.</li>
+<li>Note that credentials are write-only (no authentication probe endpoint exists).</li>
+<li><strong>Test TCP</strong> (available when configured transport is UDP and <code>keeppeek.runtime-config.v1</code> is supported) to switch RTSP transport to TCP without changing other settings.</li>
+<li><strong>Open logs</strong> (<code>/settings/logs</code>) for redacted server diagnostics.</li>
 </ol>
-<p>An active health finding clears when new evidence shows recovery. It has no dismiss action that
-changes the underlying state. Acknowledging an alert or marking an event reviewed is a separate
-workflow. See <a href="./notifications-and-integrations.html">Notifications and integrations</a> and
-<a href="./recording-and-evidence.html">Recording and evidence</a>.</p>
-<p>Health and administrative diagnostics depend on your role. If a User can view video but cannot
-load fleet health, check <a href="./authentication.html">access permissions</a> before treating the unavailable
-diagnostic panel as a camera failure.</p>
-<p>The current health contract version is <code>1</code>. A client that cannot understand a state or reason must
-treat it as <code>unknown</code>, never as healthy.</p>
-<h2 id="read-the-terminal-dashboard"><a class="header" href="#read-the-terminal-dashboard">Read the terminal dashboard</a></h2>
-<p>The foreground dashboard uses the recorder’s health evidence for its summary, stream states
-and warnings. To stay non-blocking, the foreground dashboard derives camera warnings from live
-camera state instead of querying stored operational event history. Each stream row shows its
-camera name (with source identity on wide terminals or when names collide), main/sub video or
-audio stream kind, health state, received bitrate, and report/frame age. Select a row to
-inspect its source identity, media type, recording progress age, and available counters.
-Received bitrate uses decimal kbit/s. Ingest FPS comes from received video frames. Process CPU
-and resident memory describe the KeepPeek process.</p>
-<p>A zero is a measured value. A dash marks evidence that is unavailable or does not apply to the
-selected stream. The report age shows how recently the recorder sampled the stream. The header
-shows the age of the latest successful health collection. A stale bitrate retains its last
-measured value and carries a stale label. Use the selected row’s recording progress age and
-health reason when investigating a stalled recording.</p>
-<h2 id="evidence-dimensions"><a class="header" href="#evidence-dimensions">Evidence dimensions</a></h2>
-<p>Health keeps these dimensions separate:</p>
+</li>
+<li>Compare transport, advancing frames, keyframes, and recording progress separately: a connected socket can carry stale/undecodable media, and a live browser picture never proves recording. Check <strong>Recording integrity</strong> (<code>/recordings</code>) for retained historical coverage.</li>
+<li>Inspect native camera events and external analysis services separately—their failures never mark healthy camera media or recording offline.</li>
+</ol>
+<p>Health findings are live snapshot evidence and clear automatically once positive evidence recovers; they have no dismiss action (alert acknowledgement belongs to the notification inbox). Health panels also follow role permissions—if a User can view video but cannot load fleet health, check <a href="./authentication.html">Authentication and access control</a>. A failed refresh marks the view unavailable without rewriting the last server state.</p>
+<h2 id="foreground-terminal-dashboard---tui"><a class="header" href="#foreground-terminal-dashboard---tui">Foreground terminal dashboard (<code>--tui</code>)</a></h2>
+<p>Running KeepPeek in the foreground supports a read-only, non-blocking terminal dashboard controlled by <code>--tui</code>:</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Dimension</th><th>Evidence</th></tr>
+<tr><th>Mode</th><th>Behavior</th></tr>
 </thead>
 <tbody>
-<tr><td>Configured and expected</td><td>Camera configuration, recording policy, and expected stream IDs</td></tr>
-<tr><td>Transport</td><td>Router lifecycle plus the expected and connected stream IDs</td></tr>
-<tr><td>Report freshness</td><td>Monotonic age of the latest periodic ingress report</td></tr>
-<tr><td>Frame freshness</td><td>Monotonic age of the latest advancing frame counter</td></tr>
-<tr><td>Decodability</td><td>Monotonic age of the latest advancing video keyframe counter</td></tr>
-<tr><td>Ingress quality</td><td>Measured frame rate and recent reconnect, drop, and error deltas</td></tr>
-<tr><td>Recording</td><td>Requested stream IDs, writer attempts, successful MP4 appends, and bounded writer errors</td></tr>
-<tr><td>Battery sleep</td><td>Fresh registration heartbeat plus no pending wake request from the optional battery wake service</td></tr>
+<tr><td><code>--tui auto</code></td><td>Default. Starts the TUI when stdin, stdout, and stderr are interactive terminals with screen support; otherwise logs plain text.</td></tr>
+<tr><td><code>--tui always</code></td><td>Requests the TUI; prints a notice and continues with plain logs if no interactive terminal is attached.</td></tr>
+<tr><td><code>--tui never</code></td><td>Runs with plain console logs only.</td></tr>
 </tbody>
 </table>
 </div>
-<p>Native events, external detectors, and other optional services have their own health. Their failure
-does not make otherwise healthy media or recording appear offline.</p>
-<h2 id="canonical-states"><a class="header" href="#canonical-states">Canonical states</a></h2>
+<ul>
+<li><strong>Bounded collection:</strong> Samples server health single-flight every <code>2 s</code> and derives camera warnings from live camera state rather than querying stored event history. If a sample is <code>&gt;= 5 s</code> old or collection fails, the header retains the last successful snapshot with a <code>STALE</code> badge and sample/failure age.</li>
+<li><strong>Columns and detail:</strong> Displays host process CPU %, RSS MiB, active viewers, connected/recording video counts, KeepPeek storage usage/pressure, and per-stream rows (camera name plus source ID on terminals <code>&gt;= 115</code> columns wide or on name collisions, Main/Sub video or audio kind, canonical state, decimal <code>kbit/s</code> bitrate retaining stale values with a stale label, and report/frame age). Selecting a row shows source ID, media type, recording progress age, counters, and health reason. <code>0</code> is a measured value; <code>—</code> means unavailable or not applicable.</li>
+<li><strong>Controls:</strong> <code>Up</code>/<code>Down</code> move selection, <code>PageUp</code>/<code>PageDown</code> page rows, <code>q</code> exits to plain logs (server keeps running), and <code>Ctrl+C</code> stops the server.</li>
+</ul>
+<h2 id="authoritative-health-model"><a class="header" href="#authoritative-health-model">Authoritative health model</a></h2>
+<h3 id="evidence-dimensions"><a class="header" href="#evidence-dimensions">Evidence dimensions</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Dimension</th><th>Server-observed evidence</th></tr>
+</thead>
+<tbody>
+<tr><td>Configured and expected</td><td>Camera configuration, recording policy, and expected stream IDs</td></tr>
+<tr><td>Transport</td><td>Router lifecycle plus expected vs. connected stream IDs</td></tr>
+<tr><td>Report freshness</td><td>Monotonic age of the latest periodic ingress report</td></tr>
+<tr><td>Frame freshness</td><td>Monotonic age of the latest advancing frame counter</td></tr>
+<tr><td>Decodability</td><td>Monotonic age of the latest advancing video keyframe counter</td></tr>
+<tr><td>Ingress quality</td><td>Measured FPS plus per-window reconnect, drop, and error deltas</td></tr>
+<tr><td>Recording</td><td>Requested stream IDs, writer attempts, successful MP4 appends, and bounded writer errors</td></tr>
+<tr><td>Battery sleep</td><td>Fresh registration heartbeat with no pending wake request from the optional battery wake service</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="canonical-states"><a class="header" href="#canonical-states">Canonical states</a></h3>
 <div class="table-wrapper">
 <table>
 <thead>
 <tr><th>State</th><th>Meaning</th></tr>
 </thead>
 <tbody>
-<tr><td><code>starting</code></td><td>KeepPeek is inside the initial evidence grace period.</td></tr>
-<tr><td><code>healthy</code></td><td>Required transport, frame, keyframe, frame-rate, and recording evidence is current.</td></tr>
-<tr><td><code>degraded</code></td><td>Media is current, but one or more quality, decodability, transport, ingress, or recording dimensions failed.</td></tr>
-<tr><td><code>stale</code></td><td>A report is missing or old, or frame counters stopped advancing.</td></tr>
-<tr><td><code>reconnecting</code></td><td>Transport is reconnecting and recent media evidence still exists.</td></tr>
-<tr><td><code>offline</code></td><td>Transport is disconnected without recent evidence.</td></tr>
-<tr><td><code>stopped</code></td><td>Media is not expected, the camera is shutting down, or a registered battery camera is sleeping.</td></tr>
-<tr><td><code>unknown</code></td><td>The server or client lacks enough authoritative evidence.</td></tr>
+<tr><td><code>starting</code></td><td>Inside initial startup evidence grace period (<code>20 s</code>).</td></tr>
+<tr><td><code>healthy</code></td><td>Only healthy state. Required transport, report, frame, keyframe, FPS, and recording evidence is current.</td></tr>
+<tr><td><code>degraded</code></td><td>Media is current, but partial transport, keyframes, recording, FPS, errors, drops, or reconnects failed.</td></tr>
+<tr><td><code>stale</code></td><td>Stream report is missing/stale, or frame counters stopped advancing.</td></tr>
+<tr><td><code>reconnecting</code></td><td>Transport is reconnecting while recent media evidence remains within the offline threshold.</td></tr>
+<tr><td><code>offline</code></td><td>Transport is disconnected/reconnecting without recent media evidence.</td></tr>
+<tr><td><code>stopped</code></td><td>Media is not expected, shutting down, stopped, or a registered battery camera is sleeping.</td></tr>
+<tr><td><code>unknown</code></td><td>Server or client lacks authoritative evidence (never counted as connected, fresh, decodable, or healthy).</td></tr>
 </tbody>
 </table>
 </div>
-<p><code>healthy</code> is the only healthy state. <code>starting</code>, <code>unknown</code>, and <code>stopped</code> are not included in healthy
-counts. A health request failure makes the current view unavailable; it does not rewrite the last
-server camera state.</p>
-<h2 id="precedence"><a class="header" href="#precedence">Precedence</a></h2>
-<p>The server applies this order. The first matching rule supplies the canonical state and primary
-reason code.</p>
+<h3 id="precedence-order"><a class="header" href="#precedence-order">Precedence order</a></h3>
+<p>The server evaluates rules in strict order; the first match supplies canonical <code>state</code> and primary <code>reason</code>:</p>
 <ol>
-<li>Not expected, shutting down, or stopped: <code>stopped</code>.</li>
-<li>Fresh battery registration without a connected transport or pending wake request: <code>stopped</code>
-with <code>battery_sleeping</code>. An accepted wake remains pending until connected media clears it;
-failures therefore become <code>reconnecting</code> or <code>offline</code>, not sleeping.</li>
-<li>During initial grace, incomplete or transiently unhealthy evidence remains <code>starting</code>; a complete
-healthy snapshot may promote immediately.</li>
-<li>Reconnecting transport: <code>reconnecting</code>, or <code>offline</code> after recent evidence expires.</li>
-<li>No report, an old report, or frames that stopped advancing: <code>stale</code>.</li>
-<li>Missing keyframes, stalled requested recording, low frame rate, partial transport, recent errors,
-drops, or reconnects: <code>degraded</code>. The primary degraded reason is ordered as partial transport,
-missing keyframes, recording failure, low frame rate, errors, drops, then reconnects; all matching
-codes remain in <code>reason_codes</code>.</li>
-<li>Required evidence unavailable: <code>unknown</code>.</li>
-<li>All required evidence current: <code>healthy</code>.</li>
+<li>Not expected, shutting down, or stopped → <code>stopped</code> (<code>not_expected</code>).</li>
+<li>Fresh battery registration with no connected transport and no pending wake → <code>stopped</code> (<code>battery_sleeping</code>). An accepted wake stays pending until connected media clears it, so wake failures become <code>reconnecting</code> or <code>offline</code>.</li>
+<li>Startup grace (<code>&lt; 20 s</code> uptime) with incomplete or transiently unhealthy evidence → <code>starting</code> (<code>starting</code>); a complete healthy snapshot promotes immediately.</li>
+<li>Reconnecting transport → <code>reconnecting</code> (<code>transport_reconnecting</code>) while report age <code>&lt;= 90 s</code>, else <code>offline</code> (<code>transport_disconnected</code>).</li>
+<li>Missing lifecycle and report → <code>unknown</code> (<code>evidence_unavailable</code>); missing report (<code>no_stream_report</code>), stale report (<code>stream_report_stale</code>), or non-advancing frames (<code>frames_not_arriving</code>) → <code>stale</code>.</li>
+<li>Any degraded condition → <code>degraded</code>, choosing primary <code>reason</code> in order: <code>transport_partially_connected</code>, <code>keyframes_missing</code>, <code>recording_not_progressing</code>, <code>frames_below_expected</code>, <code>ingress_errors</code>, <code>ingress_drops</code>, <code>ingress_reconnects</code> (all matching codes appear in <code>reason_codes</code>).</li>
+<li>Missing required evidence dimension → <code>unknown</code> (<code>evidence_unavailable</code>).</li>
+<li>All required evidence current → <code>healthy</code> (<code>healthy</code>).</li>
 </ol>
-<p>A connected transport cannot override stale frames, missing keyframes, or failed recording.
-A decoded browser frame cannot promote server state. A fresh capability snapshot is not media
-evidence.</p>
-<h2 id="thresholds"><a class="header" href="#thresholds">Thresholds</a></h2>
-<p>Ingress publishes every 10 seconds.</p>
-<ul>
-<li>A stream report is stale after 30 seconds.</li>
-<li>Reconnecting becomes offline when the latest stream evidence is older than 90 seconds.</li>
-<li>Frame freshness is
-$\max(20\text{ s}, 3 / \text{expected fps})$, capped at 120 seconds, and also requires a fresh
-stream report.</li>
-<li>Keyframe freshness is three configured GOP intervals, or three observed keyframe intervals when
-configuration is unavailable. It is clamped to 30 through 120 seconds.</li>
-<li>Recording progress is fresh for the configured short-term buffer plus flush interval plus 30
-seconds.</li>
-<li>Initial startup grace is two ingress report intervals, currently 20 seconds.</li>
-</ul>
-<p>Frame-arrival jitter measures the absolute difference between each observed frame gap and the
-configured frame interval. Its P99 is computed over the current 10-second ingress report window; it
-is not WebRTC network jitter. KeepPeek displays it as diagnostic evidence but does not create a
-finding from jitter alone. Stale frames, low sustained frame rate, decode failure, ingress
-drops/errors, recording failure, and a maximum observed frame gap above 2 seconds remain actionable
-health signals.</p>
-<p>The first ingress report establishes the baseline for cumulative reconnect, drop, and error
-counters. An initial connection is therefore not reported as a recent reconnect. During startup
-grace, partial-window frame rates and other transient evidence remain <code>starting</code>; if they have not
-recovered when grace expires, the canonical degraded or offline reason becomes visible.</p>
-<p>These thresholds are the bounded debounce window. One missed 10-second ingress report does not
-change a camera to <code>stale</code>; report evidence must age beyond 30 seconds. Recovery is intentionally
-asymmetric: a new advancing frame or keyframe counter can recover the state immediately. The API
-still returns the actual evidence ages, and clients do not add another timer or rewrite the state.</p>
-<p>These ages use monotonic clocks inside the server. Wall-clock timestamps are included for display,
-but wall-clock changes do not make stale evidence fresh.</p>
-<p>Health findings are live snapshot evidence rather than acknowledgements or retained alerts. They
-disappear automatically after a later ingress report no longer meets the condition. The refresh
-button requests a current snapshot immediately, but an active finding cannot be dismissed from the
-Health page. Acknowledging a delivered alert belongs to the notification inbox rather than changing
-server health evidence.</p>
-<h2 id="operational-intervals"><a class="header" href="#operational-intervals">Operational intervals</a></h2>
-<p>KeepPeek projects four durable event kinds from the independent health dimensions:</p>
+<p>A connected socket never overrides stale frames, missing keyframes, or stalled recording; a decoded browser frame or fresh capability snapshot never promotes server health.</p>
+<h3 id="thresholds-jitter-and-recovery"><a class="header" href="#thresholds-jitter-and-recovery">Thresholds, jitter, and recovery</a></h3>
+<p>All evidence ages use <strong>server monotonic clocks</strong> (wall timestamps are for display only; clock jumps never make stale evidence fresh).</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Event kind</th><th>Scope</th><th>Evidence</th></tr>
+<tr><th>Signal</th><th>Threshold / rule</th></tr>
 </thead>
 <tbody>
-<tr><td><code>camera_offline</code></td><td>Camera</td><td>No expected transport is connected, or aggregate transport is disconnected</td></tr>
-<tr><td><code>stream_stale</code></td><td>Camera stream</td><td>The stream report is missing or stale, or frames stopped advancing</td></tr>
-<tr><td><code>decode_unavailable</code></td><td>Camera stream</td><td>No recent decodable keyframe exists</td></tr>
-<tr><td><code>recording_interrupted</code></td><td>Camera stream</td><td>Recording was requested but writer progress stopped</td></tr>
+<tr><td>Ingress report cadence</td><td>Published every <code>10 s</code> (first report establishes baseline for cumulative reconnect/drop/error counters).</td></tr>
+<tr><td>Startup grace</td><td><code>20 s</code> (two ingress report intervals).</td></tr>
+<tr><td>Stream report stale</td><td><code>&gt; 30 s</code> (tolerates one missed <code>10 s</code> report without flapping).</td></tr>
+<tr><td>Reconnecting → <code>offline</code></td><td>Latest stream report age <code>&gt; 90 s</code>.</td></tr>
+<tr><td>Frame freshness</td><td><code>max(20 s, 3 / expected_fps)</code>, capped at <code>120 s</code>; also requires a fresh stream report.</td></tr>
+<tr><td>Keyframe freshness</td><td><code>3 × configured GOP</code> (or <code>3 × observed keyframe interval</code>), clamped to <code>30</code>–<code>120 s</code>.</td></tr>
+<tr><td>Recording progress fresh</td><td><code>short_term_buffer + flush_interval + 30 s</code>.</td></tr>
+<tr><td>Frame-arrival jitter (P99)</td><td>Absolute deviation from configured frame interval over <code>10 s</code> window (not WebRTC jitter); diagnostic only. Max observed frame gap <code>&gt; 2 s</code> remains actionable.</td></tr>
 </tbody>
 </table>
 </div>
-<p>These event kinds remain independent. One stream can be stale and undecodable while another stays
-healthy, and recording failure does not rewrite transport evidence. Native event and external
-analysis failures are not camera, stream, or recording outages.</p>
-<p>A candidate interval starts as soon as evidence fails. Monotonic elapsed time controls warning,
-critical, and recovery thresholds; server wall time supplies the displayed start and end
-timestamps. The default policy is:</p>
-<pre><code class="language-toml">[operational_events]
-warning_hold_down_secs = 15
-outage_hold_down_secs = 60
-recovery_debounce_secs = 10
-record_short_flaps = false
-
-[operational_events.cameras.front-door]
-warning_hold_down_secs = 30
-</code></pre>
-<p>Camera overrides may use the stable camera ID or IP address and inherit omitted global values. A
-zero duration requests an immediate transition. Durations cannot exceed 24 hours, and the warning
-hold-down cannot exceed the outage hold-down.</p>
-<p>Recovery before the warning hold-down removes the candidate unless <code>record_short_flaps</code> is true.
-Once visible, an interval keeps one event ID. Cause or severity changes increment its revision;
-stable recovery increments the same event again, records the recovery timestamp, and reports total
-duration from the original evidence-loss instant. Open intervals are restored from the recording
-catalog after restart. Stable revision replay makes notification processing at least once while
-the notification store collapses duplicate revisions.</p>
-<p>The stored timeline renders open and recovered intervals beside recording availability. Event
-payloads include severity, bounded cause and explanation, affected streams, recording consequence,
-evidence source, duration, and recovery state. Health findings link to the corresponding camera and
-timeline instant.</p>
-<h2 id="session-durations"><a class="header" href="#session-durations">Session durations</a></h2>
-<p>Camera health reports current-process session durations separately from historical archive
-coverage:</p>
+<p><strong>Asymmetric recovery:</strong> Failing states wait through the bounded debounce thresholds above, while positive evidence recovers immediately—an advancing frame or keyframe counter refreshes age, a successful MP4 append clears a bounded writer error, per-report deltas clear prior drop/error/reconnect penalties, and a fresh report clears stale state.</p>
+<h2 id="operational-outage-intervals"><a class="header" href="#operational-outage-intervals">Operational outage intervals</a></h2>
+<p>KeepPeek projects four independent durable event kinds from the health dimensions:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Event kind</th><th>Scope</th><th>Trigger evidence</th></tr>
+</thead>
+<tbody>
+<tr><td><code>camera_offline</code></td><td>Camera</td><td>No expected transport connected, or aggregate transport disconnected</td></tr>
+<tr><td><code>stream_stale</code></td><td>Camera stream</td><td>Stream report missing/stale, or frames stopped advancing</td></tr>
+<tr><td><code>decode_unavailable</code></td><td>Camera stream</td><td>No recent decodable keyframe</td></tr>
+<tr><td><code>recording_interrupted</code></td><td>Camera stream</td><td>Recording requested by policy, but writer progress stopped</td></tr>
+</tbody>
+</table>
+</div>
+<p>Candidate intervals begin immediately on evidence loss and use monotonic elapsed time for hold-downs and recovery debounce (defaults under <code>[operational_events]</code>: <code>warning_hold_down_secs = 15</code>, <code>outage_hold_down_secs = 60</code>, <code>recovery_debounce_secs = 10</code>, <code>record_short_flaps = false</code>; per-camera overrides by ID or IP inherit omitted globals; bounds <code>0 s</code>–<code>24 h</code> with <code>warning &lt;= outage</code>). See <a href="./configuration-reference.html#operational-events">Operational events</a>.</p>
 <ul>
-<li><code>session_duration_ms</code> is the longest observed ingress-worker duration for the camera’s expected
-video streams;</li>
-<li><code>recorded_main_duration_ms</code> and <code>recorded_sub_duration_ms</code> accumulate video sample durations only
-after those samples are successfully appended to MP4 during the current process run;</li>
-<li><code>recorded_total_duration_ms</code> is the sum of all requested stream durations for that camera session.</li>
+<li>Recovery before warning hold-down discards the candidate unless <code>record_short_flaps = true</code>.</li>
+<li>Visible intervals keep one stable event ID; severity/cause changes and stable recovery increment <code>revision</code>, recording recovery time and total duration from initial evidence loss.</li>
+<li>Open intervals restore from the recording catalog after restart, render alongside recording coverage on the timeline, and link from Health findings. Catalog persistence precedes notification delivery, so provider failures never alter or close health intervals.</li>
 </ul>
-<p>The total can exceed camera session elapsed time when Main and Sub record concurrently. These
-counters reset when KeepPeek restarts or the corresponding recording-health registry is replaced;
-they do not claim lifetime or retained archive coverage. A recording indicator uses writer progress
-state, not a comparison between these counters and wall time.</p>
-<h2 id="reasons-and-detail"><a class="header" href="#reasons-and-detail">Reasons and detail</a></h2>
-<p>Every camera and stream includes:</p>
+<h2 id="session-durations-fleet-counts-api-and-metrics"><a class="header" href="#session-durations-fleet-counts-api-and-metrics">Session durations, fleet counts, API, and <code>/metrics</code></a></h2>
+<p><strong>Current-process session durations</strong> reset on server restart or registry replacement and do not claim retained archive coverage:</p>
 <ul>
-<li><code>state</code>: the canonical state;</li>
-<li><code>reason</code>: the primary stable reason code;</li>
-<li><code>reason_codes</code>: all applicable ordered reason codes;</li>
-<li><code>detail</code>: bounded human-readable text;</li>
-<li><code>dimensions</code>: the independent raw evidence and counts.</li>
+<li><code>session_duration_ms</code>: longest observed ingress-worker duration across the camera’s expected video streams.</li>
+<li><code>recorded_main_duration_ms</code> / <code>recorded_sub_duration_ms</code>: video sample durations accumulated only after successful MP4 appends during the current run.</li>
+<li><code>recorded_total_duration_ms</code>: sum across requested streams (can exceed elapsed wall time when Main and Sub record concurrently).</li>
 </ul>
-<p>Stable reasons include <code>transport_disconnected</code>, <code>transport_reconnecting</code>,
-<code>transport_partially_connected</code>, <code>no_stream_report</code>, <code>stream_report_stale</code>,
-<code>frames_not_arriving</code>, <code>frames_below_expected</code>, <code>keyframes_missing</code>, <code>ingress_reconnects</code>,
-<code>ingress_drops</code>, <code>ingress_errors</code>, and <code>recording_not_progressing</code>.</p>
-<p>Use reason codes for automation. Display text may change.</p>
-<h2 id="fleet-counts"><a class="header" href="#fleet-counts">Fleet counts</a></h2>
-<p>Fleet summaries name the dimension they count:</p>
-<ul>
-<li>configured cameras and expected video streams;</li>
-<li>cameras and streams with connected transports;</li>
-<li>cameras and streams with fresh frames;</li>
-<li>cameras and streams with recent keyframes;</li>
-<li>cameras and streams requested for recording;</li>
-<li>cameras and streams with current writer progress;</li>
-<li>cameras whose evidence is unknown.</li>
-</ul>
-<p>Fleet aggregates count expected video streams. Audio freshness remains available on each stream
-snapshot and is not folded into the video decodability or recording totals.</p>
-<p>Unknown evidence is not counted as connected, fresh, decodable, recording, or healthy. The Cameras
-<code>Not healthy</code> filter counts every state except <code>healthy</code>.</p>
-<h2 id="api-and-metrics"><a class="header" href="#api-and-metrics">API and metrics</a></h2>
-<p><code>HealthCommand</code> returns the versioned protobuf health snapshot. Version 1 includes the canonical
-<code>state</code>, stable reasons, camera and stream dimensions, media progress timestamps, explicit fleet
-counts, and per-source WebRTC live-audio timing occupancy and drop counters (<code>WebRtcSourceHealthSnapshot.live_audio</code>).
-Unknown future state or reason strings are presented as <code>unknown</code>. See
-<a href="./recording-and-evidence.html#calibrating-live-audio">Calibrating live audio</a> for live timing
-bounds and queue drop semantics.</p>
-<p><code>GET /metrics</code> exposes the same projection. Important gauges include:</p>
-<ul>
-<li><code>keeppeek_cameras_connected</code>, <code>keeppeek_cameras_fresh</code>,
-<code>keeppeek_cameras_decodable</code>, and <code>keeppeek_cameras_recording</code>;</li>
-<li>corresponding <code>keeppeek_video_streams_*</code> gauges;</li>
-<li><code>keeppeek_camera_info</code> with the canonical state label;</li>
-<li><code>keeppeek_camera_health_dimension</code> and
-<code>keeppeek_camera_health_dimension_known</code>;</li>
-<li>corresponding per-stream dimension and known gauges;</li>
-<li><code>keeppeek_operational_event_active</code>, labeled by camera, stream, event kind, and severity.</li>
-</ul>
-<p>There is no separate <code>online</code> or <code>degraded</code> gauge. Consumers use the canonical state label and
-explicit dimensions.</p>
-<h2 id="recovery"><a class="header" href="#recovery">Recovery</a></h2>
-<p>Recovery requires new positive evidence:</p>
-<ul>
-<li>a newly advancing frame counter refreshes frame age;</li>
-<li>a newly advancing keyframe counter refreshes decodability;</li>
-<li>a successful writer append clears the previous bounded recording error;</li>
-<li>drop, error, and reconnect reasons use per-report deltas, so old cumulative counters do not keep a
-recovered stream degraded;</li>
-<li>a fresh report can recover stale state, while cached metadata cannot.</li>
-</ul>
-<p>Operational interval recovery uses this canonical projection. Delivery failure cannot change or
-close an interval because catalog persistence happens before notification publication and provider
-work runs independently from camera media.</p>
-<p>Use <a href="./recording-and-evidence.html">Recording and evidence</a> to inspect retained coverage and explain
-gaps. Use <a href="./notifications-and-integrations.html">Notifications and integrations</a> to deliver these
-operational transitions without coupling providers or brokers to camera ingest.</p>
+<p><strong>Fleet counts</strong> aggregate expected video streams separately per dimension (<code>configured</code>, <code>connected</code>, <code>fresh</code>, <code>decodable</code>, <code>recording_requested</code>, <code>recording</code>, <code>unknown</code>). Audio freshness stays on each stream snapshot and is never folded into video totals.</p>
+<p><strong>Stable API fields:</strong> Every camera and stream exposes <code>state</code>, primary <code>reason</code>, ordered <code>reason_codes</code>, bounded human-readable <code>detail</code>, and raw <code>dimensions</code>. Automate on <code>state</code> and <code>reason</code>/<code>reason_codes</code>, not display text. <code>HealthCommand</code> (version <code>1</code>) returns the protobuf snapshot including <code>WebRtcSourceHealthSnapshot.live_audio</code> timing occupancy and drop counters; see <a href="./recording-and-evidence.html#calibrating-live-audio">Calibrating live audio</a>.</p>
+<p><strong>Prometheus <code>GET /metrics</code></strong> exposes the identical projection (with no legacy <code>online</code> or <code>degraded</code> gauge—use <code>camera_info</code> state labels and explicit dimension gauges):</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Metric family</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>keeppeek_cameras_{connected,fresh,decodable,recording_requested,recording}</code></td><td>Fleet camera counts per independent evidence dimension.</td></tr>
+<tr><td><code>keeppeek_video_streams_{configured,connected,fresh,decodable,recording_requested,recording}</code></td><td>Fleet expected video stream counts per dimension.</td></tr>
+<tr><td><code>keeppeek_camera_info</code></td><td>Per-camera info gauge carrying canonical <code>state</code> label.</td></tr>
+<tr><td><code>keeppeek_camera_health_dimension</code> / <code>_known</code> (+ per-stream equivalents)</td><td>Explicit dimension values paired with availability (<code>_known</code>) gauges.</td></tr>
+<tr><td><code>keeppeek_operational_event_active</code></td><td>Active operational outage intervals labeled by camera, stream, kind, and severity.</td></tr>
+</tbody>
+</table>
+</div>
 
                     </main>
 
