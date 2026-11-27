@@ -4,6 +4,7 @@ use tracing_subscriber::EnvFilter;
 mod catalog;
 mod discover;
 mod events;
+mod replay;
 mod stream_test;
 
 #[global_allocator]
@@ -27,6 +28,8 @@ enum Command {
     Discover(discover::Cli),
     /// Observe ONVIF or ISAPI events without changing camera settings or recording video.
     Events(events::Cli),
+    /// Replay a sanitized camera-repro fixture over loopback RTSP, HTTP, and Baichuan.
+    Replay(replay::Cli),
     /// Stream selected camera profiles to MP4 and report ingress statistics.
     Test(stream_test::Cli),
 }
@@ -47,6 +50,7 @@ fn main() -> anyhow::Result<()> {
                 events::run(command)
             })
         }
+        Command::Replay(command) => replay::run(command),
         Command::Test(command) => stream_test::run(command),
     }
 }

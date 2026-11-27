@@ -158,7 +158,11 @@ fn dispatch_inner(
             proto::configuration_result::Result::Snapshot(delete_template(state, request)?)
         }
         Some(proto::configuration_command::Action::Plan(request)) => {
-            proto::configuration_result::Result::Plan(plan_configuration_change(state, request)?)
+            proto::configuration_result::Result::Plan(plan_configuration_change_as(
+                state,
+                actor.map(|(_, principal)| principal),
+                request,
+            )?)
         }
         Some(proto::configuration_command::Action::Apply(request)) => {
             proto::configuration_result::Result::Applied(apply_configuration_plan_as(
@@ -253,8 +257,17 @@ fn stamp_privacy_schedule_update(update: &mut Option<proto::PrivacyScheduleUpdat
     override_.accepted_at_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
 }
 
+#[cfg(test)]
 fn plan_configuration_change(
     state: &ServerState,
+    request: proto::PlanConfigurationChange,
+) -> Result<proto::ConfigurationPlan, ControlCommandError> {
+    plan_configuration_change_as(state, None, request)
+}
+
+fn plan_configuration_change_as(
+    state: &ServerState,
+    principal: Option<&ApiPrincipal>,
     request: proto::PlanConfigurationChange,
 ) -> Result<proto::ConfigurationPlan, ControlCommandError> {
     let _configuration_update = state
@@ -277,6 +290,13 @@ fn plan_configuration_change(
             )
         })?;
     if let proto::configuration_change::Change::ExternalAuthentication(update) = change {
+        if principal.is_some_and(|p| p.credential_binding().is_some()) {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::Rejected,
+                403,
+                "Bearer credentials cannot modify [external_auth] settings; use trusted local access or an interactive OIDC/identity-proxy browser session",
+            ));
+        }
         if request.targets.is_some() {
             return Err(ControlCommandError::new(
                 proto::ErrorCode::InvalidRequest,
@@ -477,6 +497,15 @@ fn apply_configuration_plan_as(
         before.storage.archive.as_ref(),
         after.storage.archive.as_ref(),
     )?;
+    if actor.is_some_and(|(_, principal)| principal.credential_binding().is_some())
+        && before.external_auth != after.external_auth
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            403,
+            "Bearer credentials cannot modify [external_auth] settings; use trusted local access or an interactive OIDC/identity-proxy browser session",
+        ));
+    }
     let candidate = authentication::verification::Candidate {
         plan_id: stored.plan.plan_id.clone(),
         revision: current_revision,
