@@ -115,6 +115,7 @@ mod export_storage_tests;
 mod guest_review;
 mod health_snapshot;
 mod logging;
+mod mcp_catalog_probe;
 mod mqtt_integration;
 mod native_events;
 pub(super) mod peek_layouts;

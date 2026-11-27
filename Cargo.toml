@@ -229,6 +229,7 @@ prometheus-client = "0.26.0"
 uuid = { version = "1", features = ["v4", "serde"] }
 sha2 = "0.11"
 subtle = "2"
+zeroize = { version = "1.9.2", default-features = false, features = ["alloc"] }
 zip = { version = "9.0.0", default-features = false, features = ["deflate"] }
 
 [target.'cfg(unix)'.dependencies]

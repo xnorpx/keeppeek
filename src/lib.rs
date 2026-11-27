@@ -14,6 +14,7 @@ pub mod health;
 mod isapi;
 pub mod keeppeek;
 pub mod logging;
+pub mod mcp;
 mod media_time;
 pub(crate) mod metrics;
 #[doc(hidden)]
