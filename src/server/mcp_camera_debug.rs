@@ -11,6 +11,15 @@ use super::{
 use crate::{
     access::{AccessRole, ClientClassificationReason},
     api::{CameraStatus, proto},
+    camera_debug::{
+        protocols::{
+            self as debug_protocols, CaptureProtocol, CaptureRequest as EngineCaptureRequest,
+            CaptureResult, TransportComparisonEntry,
+        },
+        repro::{self, ExportReproOptions, TrimMediaMode as ReproTrimMediaMode},
+        store::{CaptureMetadata, CaptureStore, DEFAULT_CAPTURE_TTL_SECS, StoreLimits},
+    },
+    cameras::{BAICHUAN_PORT, CameraTransport},
     config::mcp::McpConfig,
     mcp::protocol::ToolCallResult,
     runtime::{FacadeSender, RouterMessage, RouterQuery, RouterResponse},
@@ -24,6 +33,7 @@ use std::{
     fmt,
     net::IpAddr,
     path::{Path, PathBuf},
+    sync::Mutex,
     time::{Duration, Instant},
 };
 use zeroize::Zeroize;
@@ -38,6 +48,10 @@ const CAPTURE_BYTES_MAX: usize = 268_435_456;
 const ARTIFACTS_MAX: usize = 5;
 const PROTOCOLS_MAX: usize = 6;
 const INSPECT_CAMERAS_MAX: usize = 256;
+const PIPELINE_METRICS_CACHE_MAX: usize = 256;
+const DEADLINE_MARGIN_MS: u64 = 250;
+const MIN_CAPTURE_DURATION_MS: u64 = 100;
+const DEFAULT_CAPTURE_FPS: u64 = 60;
 
 const _: () = {
     assert!(DURATION_SECONDS_MIN <= DURATION_SECONDS_DEFAULT);
@@ -195,6 +209,67 @@ impl DebugCameraTarget {
     }
 }
 
+/// Internal connection parameters passed to the capture engine without serialization.
+#[derive(Clone)]
+pub(super) struct CameraDebugConnection {
+    pub(super) credentials: CameraDebugCredentials,
+    pub(super) main_rtsp_url: Option<String>,
+    pub(super) sub_rtsp_url: Option<String>,
+}
+
+impl CameraDebugConnection {
+    fn from_camera(camera: &CameraEntry) -> Self {
+        Self {
+            credentials: CameraDebugCredentials::from_camera(camera),
+            main_rtsp_url: camera.configuration.main_rtsp_url.clone(),
+            sub_rtsp_url: camera.configuration.sub_rtsp_url.clone(),
+        }
+    }
+}
+
+impl fmt::Debug for CameraDebugConnection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CameraDebugConnection")
+            .field("credentials", &self.credentials)
+            .field("has_main_rtsp_url", &self.main_rtsp_url.is_some())
+            .field("has_sub_rtsp_url", &self.sub_rtsp_url.is_some())
+            .finish()
+    }
+}
+
+impl Drop for CameraDebugConnection {
+    fn drop(&mut self) {
+        if let Some(url) = &mut self.main_rtsp_url {
+            url.zeroize();
+        }
+        if let Some(url) = &mut self.sub_rtsp_url {
+            url.zeroize();
+        }
+    }
+}
+
+/// Zeroized secret strings passed to repro scrubbing without serialization.
+#[derive(Clone, Default)]
+pub(super) struct ZeroizedSecretList(pub(super) Vec<String>);
+
+impl fmt::Debug for ZeroizedSecretList {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ZeroizedSecretList")
+            .field("count", &self.0.len())
+            .finish()
+    }
+}
+
+impl Drop for ZeroizedSecretList {
+    fn drop(&mut self) {
+        for item in &mut self.0 {
+            item.zeroize();
+        }
+    }
+}
+
 /// Bounded inputs for a `capture` request.
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct CaptureRequest {
@@ -202,6 +277,7 @@ pub(super) struct CaptureRequest {
     pub(super) stream: DebugStream,
     pub(super) artifacts: Vec<DebugArtifact>,
     pub(super) protocols: Vec<DebugProtocol>,
+    pub(super) protocols_explicit: bool,
     pub(super) duration_seconds: u64,
     pub(super) max_bytes: usize,
     pub(super) max_storage_bytes: u64,
@@ -210,6 +286,8 @@ pub(super) struct CaptureRequest {
     pub(super) config_dir: Option<PathBuf>,
     #[serde(skip_serializing)]
     pub(super) credentials: Option<CameraDebugCredentials>,
+    #[serde(skip_serializing)]
+    pub(super) connection: CameraDebugConnection,
     #[serde(skip_serializing)]
     pub(super) deadline: Instant,
 }
@@ -228,6 +306,8 @@ pub(super) struct CompareTransportsRequest {
     #[serde(skip_serializing)]
     pub(super) credentials: Option<CameraDebugCredentials>,
     #[serde(skip_serializing)]
+    pub(super) connection: CameraDebugConnection,
+    #[serde(skip_serializing)]
     pub(super) deadline: Instant,
 }
 
@@ -242,6 +322,8 @@ pub(super) struct ExportReproFixtureRequest {
     pub(super) trim_media: TrimMediaMode,
     pub(super) max_bytes: usize,
     pub(super) config_dir: Option<PathBuf>,
+    #[serde(skip_serializing)]
+    pub(super) extra_secrets: ZeroizedSecretList,
     #[serde(skip_serializing)]
     pub(super) deadline: Instant,
 }
@@ -287,24 +369,124 @@ pub(super) trait CameraDebugService: Send + Sync {
     }
 }
 
-/// Default backend used before the capture engine is wired into the runtime.
+/// Live camera debug backend backed by [`CaptureStore`] and `crate::camera_debug`.
 #[derive(Debug, Default)]
-pub(super) struct UnavailableCameraDebugService;
+pub(super) struct EngineCameraDebugService {
+    latest_metrics: Mutex<HashMap<String, Value>>,
+}
 
-impl CameraDebugService for UnavailableCameraDebugService {
+impl EngineCameraDebugService {
+    fn record_metrics(&self, meta: &CaptureMetadata) {
+        let mut cache = self
+            .latest_metrics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !cache.contains_key(&meta.camera_id) && cache.len() >= PIPELINE_METRICS_CACHE_MAX {
+            cache.clear();
+        }
+        cache.insert(
+            meta.camera_id.clone(),
+            json!({
+                "capture_id": meta.capture_id,
+                "protocol": meta.protocol,
+                "transport": meta.transport,
+                "created_at_unix_secs": meta.created_at_unix_secs,
+                "duration_ms": meta.duration_ms,
+                "total_bytes": meta.total_bytes,
+                "packet_count": meta.packet_count,
+                "anomalies": meta.anomalies,
+            }),
+        );
+    }
+
+    fn clear_metrics_for_deleted(&self, deleted_ids: &[String]) {
+        if deleted_ids.is_empty() {
+            return;
+        }
+        let mut cache = self
+            .latest_metrics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache.retain(|_, value| {
+            value
+                .get("capture_id")
+                .and_then(Value::as_str)
+                .is_none_or(|id| !deleted_ids.iter().any(|deleted| deleted == id))
+        });
+    }
+}
+
+impl CameraDebugService for EngineCameraDebugService {
     fn capture(&self, request: CaptureRequest) -> Result<Value, ControlCommandError> {
-        remaining_timeout(request.deadline)?;
-        let _ = request.credentials.as_ref().map(|c| format!("{c:?}"));
-        Err(capture_backend_unavailable("capture"))
+        let remaining = remaining_timeout(request.deadline)?;
+        let store = open_capture_store(
+            request.config_dir.as_deref(),
+            u64::try_from(request.max_bytes).unwrap_or(u64::MAX),
+            request.max_storage_bytes,
+        )?;
+        let targets = resolve_capture_targets(&request)?;
+        let target_count = u64::try_from(targets.len()).unwrap_or(1).max(1);
+        let duration_max_ms =
+            bounded_capture_duration_ms(request.duration_seconds, remaining, target_count)?;
+        let frames_max = request
+            .duration_seconds
+            .saturating_mul(DEFAULT_CAPTURE_FPS)
+            .clamp(60, 1800);
+        let write_rtp_dump = request
+            .artifacts
+            .contains(&DebugArtifact::ProtocolTranscript)
+            || request.artifacts.contains(&DebugArtifact::VideoBitstream)
+            || request.artifacts.contains(&DebugArtifact::AudioBitstream);
+        let mut results = Vec::with_capacity(targets.len());
+        for (idx, (protocol, stream_label, target_url)) in targets.into_iter().enumerate() {
+            let capture_id = generate_capture_id(
+                &request.target.camera_id,
+                protocol.as_str(),
+                stream_label,
+                idx,
+            );
+            let mut engine_req = EngineCaptureRequest::new(
+                capture_id,
+                request.target.camera_id.clone(),
+                protocol,
+                target_url,
+            );
+            let creds = request
+                .credentials
+                .as_ref()
+                .unwrap_or(&request.connection.credentials);
+            engine_req.username = creds.username.clone();
+            engine_req.password = creds.password.clone();
+            engine_req.transport = parse_camera_transport(&request.target.transport);
+            engine_req.include_raw_auth = request.include_raw_auth;
+            engine_req.trigger_probe = request.trigger_probe;
+            engine_req.write_rtp_dump = write_rtp_dump;
+            engine_req.duration_max_ms = duration_max_ms;
+            engine_req.frames_max = frames_max;
+            let result = debug_protocols::run_capture(&store, &engine_req)
+                .map_err(|err| engine_error("capture", err))?;
+            self.record_metrics(&result.metadata);
+            results.push(result);
+        }
+        Ok(build_capture_response(&request, &results))
     }
 
     fn compare_transports(
         &self,
         request: CompareTransportsRequest,
     ) -> Result<Value, ControlCommandError> {
-        remaining_timeout(request.deadline)?;
-        let _ = request.credentials.as_ref().map(|c| format!("{c:?}"));
-        Err(capture_backend_unavailable("compare_transports"))
+        let remaining = remaining_timeout(request.deadline)?;
+        let store = open_capture_store(
+            request.config_dir.as_deref(),
+            u64::try_from(request.max_bytes).unwrap_or(u64::MAX),
+            request.max_storage_bytes,
+        )?;
+        match request.mode {
+            CompareMode::MediaTransports => {
+                self.compare_media_transports(&store, &request, remaining)
+            }
+            CompareMode::EventChannels => self.compare_event_channels(&store, &request, remaining),
+        }
     }
 
     fn export_repro_fixture(
@@ -312,23 +494,651 @@ impl CameraDebugService for UnavailableCameraDebugService {
         request: ExportReproFixtureRequest,
     ) -> Result<Value, ControlCommandError> {
         remaining_timeout(request.deadline)?;
-        Err(capture_backend_unavailable("export_repro_fixture"))
+        let store = open_existing_store(request.config_dir.as_deref())?;
+        let meta = store.load_metadata(&request.capture_id).map_err(|err| {
+            ControlCommandError::new(
+                proto::ErrorCode::NotFound,
+                404,
+                format!("capture '{}' was not found: {err}", request.capture_id),
+            )
+        })?;
+        check_capture_scope(
+            &meta,
+            request.allowed_camera_ids.as_deref(),
+            request.camera_id.as_deref(),
+        )?;
+        let options = ExportReproOptions {
+            strip_credentials: request.strip_credentials,
+            anonymize_network: request.anonymize_network,
+            trim_media: map_trim_media(request.trim_media),
+            packet_range: None,
+            nalu_range: None,
+            extra_secrets: if request.strip_credentials {
+                request.extra_secrets.0.clone()
+            } else {
+                Vec::new()
+            },
+        };
+        let fixture = repro::export_repro_fixture(&store, &request.capture_id, &options)
+            .map_err(|err| engine_error("export_repro_fixture", err))?;
+        let encoded_len = serde_json::to_vec(&fixture)
+            .map_err(|err| engine_error("export_repro_fixture", err.into()))?
+            .len();
+        if encoded_len > request.max_bytes {
+            return Err(invalid(&format!(
+                "exported repro fixture ({encoded_len} bytes) exceeds max_bytes ({})",
+                request.max_bytes
+            )));
+        }
+        Ok(json!({
+            "action": "export_repro_fixture",
+            "capture_id": request.capture_id,
+            "camera_id": meta.camera_id,
+            "strip_credentials": request.strip_credentials,
+            "anonymize_network": request.anonymize_network,
+            "sharing_safety_report": fixture.sharing_safety_report,
+            "fixture": fixture,
+        }))
     }
 
-    fn list_captures(&self, _request: ListCapturesRequest) -> Result<Value, ControlCommandError> {
-        Err(capture_backend_unavailable("list_captures"))
+    fn list_captures(&self, request: ListCapturesRequest) -> Result<Value, ControlCommandError> {
+        let root_dir = resolve_store_root(request.config_dir.as_deref());
+        if !root_dir.exists() {
+            return Ok(json!({
+                "action": "list_captures",
+                "count": 0,
+                "captures": [],
+            }));
+        }
+        let store = open_store_at(&root_dir, StoreLimits::default())?;
+        let captures = store
+            .list_captures()
+            .map_err(|err| engine_error("list_captures", err))?;
+        let filtered: Vec<CaptureMetadata> = captures
+            .into_iter()
+            .filter(|meta| {
+                capture_matches_scope(
+                    meta,
+                    request.allowed_camera_ids.as_deref(),
+                    request.camera_id.as_deref(),
+                )
+            })
+            .collect();
+        Ok(json!({
+            "action": "list_captures",
+            "count": filtered.len(),
+            "captures": filtered,
+        }))
     }
 
-    fn delete_capture(&self, _request: DeleteCaptureRequest) -> Result<Value, ControlCommandError> {
-        Err(capture_backend_unavailable("delete_capture"))
+    fn delete_capture(&self, request: DeleteCaptureRequest) -> Result<Value, ControlCommandError> {
+        let root_dir = resolve_store_root(request.config_dir.as_deref());
+        if request.delete_all {
+            return self.delete_all_captures(&root_dir, &request);
+        }
+        let capture_id = request
+            .capture_id
+            .as_deref()
+            .ok_or_else(|| invalid("capture_id is required when delete_all is false"))?;
+        if !root_dir.exists() {
+            return Err(not_found_capture(capture_id));
+        }
+        let store = open_store_at(&root_dir, StoreLimits::default())?;
+        if let Ok(meta) = store.load_metadata(capture_id) {
+            check_capture_scope(
+                &meta,
+                request.allowed_camera_ids.as_deref(),
+                request.camera_id.as_deref(),
+            )?;
+        }
+        let existed = store
+            .delete_capture(capture_id)
+            .map_err(|err| engine_error("delete_capture", err))?;
+        if !existed {
+            return Err(not_found_capture(capture_id));
+        }
+        let deleted_ids = vec![capture_id.to_owned()];
+        self.clear_metrics_for_deleted(&deleted_ids);
+        Ok(json!({
+            "action": "delete_capture",
+            "capture_id": capture_id,
+            "deleted": 1,
+            "deleted_capture_ids": deleted_ids,
+        }))
+    }
+
+    fn pipeline_debug_metrics(&self, camera_id: &str) -> Option<Value> {
+        self.latest_metrics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(camera_id)
+            .cloned()
     }
 }
 
-fn capture_backend_unavailable(action: &str) -> ControlCommandError {
+impl EngineCameraDebugService {
+    fn compare_media_transports(
+        &self,
+        store: &CaptureStore,
+        request: &CompareTransportsRequest,
+        remaining: Duration,
+    ) -> Result<Value, ControlCommandError> {
+        let (protocol, target_url) =
+            resolve_primary_media_target(&request.target, &request.connection, request.stream);
+        let duration_max_ms = bounded_capture_duration_ms(request.duration_seconds, remaining, 2)?;
+        let base_id = generate_capture_id(&request.target.camera_id, "cmp", "media", 0);
+        let mut base_req = EngineCaptureRequest::new(
+            base_id,
+            request.target.camera_id.clone(),
+            protocol,
+            target_url,
+        );
+        let creds = request
+            .credentials
+            .as_ref()
+            .unwrap_or(&request.connection.credentials);
+        base_req.username = creds.username.clone();
+        base_req.password = creds.password.clone();
+        base_req.include_raw_auth = request.include_raw_auth;
+        base_req.duration_max_ms = duration_max_ms;
+        base_req.frames_max = request
+            .duration_seconds
+            .saturating_mul(DEFAULT_CAPTURE_FPS)
+            .clamp(30, 600);
+        let report = debug_protocols::compare_transports(
+            store,
+            &base_req,
+            &[CameraTransport::Tcp, CameraTransport::Udp],
+        )
+        .map_err(|err| engine_error("compare_transports", err))?;
+        for entry in report.entries.iter().filter(|entry| entry.success) {
+            if let Ok(meta) = store.load_metadata(&entry.capture_id) {
+                self.record_metrics(&meta);
+            }
+        }
+        Ok(json!({
+            "action": "compare_transports",
+            "mode": "media_transports",
+            "camera_id": report.camera_id,
+            "protocol": report.protocol,
+            "recommended_transport": report.recommended_transport,
+            "entries": report.entries,
+        }))
+    }
+
+    fn compare_event_channels(
+        &self,
+        store: &CaptureStore,
+        request: &CompareTransportsRequest,
+        remaining: Duration,
+    ) -> Result<Value, ControlCommandError> {
+        let candidates = resolve_event_channel_targets(&request.target);
+        if candidates.is_empty() {
+            return Err(invalid(
+                "camera does not have an ONVIF, HTTP, or Reolink event channel endpoint configured",
+            ));
+        }
+        let count = u64::try_from(candidates.len()).unwrap_or(1).max(1);
+        let duration_max_ms =
+            bounded_capture_duration_ms(request.duration_seconds, remaining, count)?;
+        let mut entries = Vec::with_capacity(candidates.len());
+        for (idx, (protocol, url)) in candidates.into_iter().enumerate() {
+            let capture_id =
+                generate_capture_id(&request.target.camera_id, "evt", protocol.as_str(), idx);
+            let mut req = EngineCaptureRequest::new(
+                capture_id.clone(),
+                request.target.camera_id.clone(),
+                protocol,
+                url,
+            );
+            req.username = request.connection.credentials.username.clone();
+            req.password = request.connection.credentials.password.clone();
+            req.include_raw_auth = request.include_raw_auth;
+            req.trigger_probe = true;
+            req.duration_max_ms = duration_max_ms;
+            entries.push(self.run_comparison_candidate(store, &req, protocol.as_str()));
+        }
+        let recommended = entries
+            .iter()
+            .find(|entry| entry.success)
+            .map(|entry| entry.transport.clone());
+        Ok(json!({
+            "action": "compare_transports",
+            "mode": "event_channels",
+            "camera_id": request.target.camera_id,
+            "recommended_transport": recommended,
+            "entries": entries,
+        }))
+    }
+
+    fn run_comparison_candidate(
+        &self,
+        store: &CaptureStore,
+        req: &EngineCaptureRequest,
+        label: &str,
+    ) -> TransportComparisonEntry {
+        let started = Instant::now();
+        match debug_protocols::run_capture(store, req) {
+            Ok(result) => {
+                self.record_metrics(&result.metadata);
+                TransportComparisonEntry {
+                    transport: label.to_owned(),
+                    capture_id: result.metadata.capture_id,
+                    success: true,
+                    error: None,
+                    duration_ms: result.metadata.duration_ms,
+                    time_to_first_frame_ms: None,
+                    total_bytes: result.metadata.total_bytes,
+                    anomalies: result.bitstream.anomalies,
+                }
+            }
+            Err(err) => TransportComparisonEntry {
+                transport: label.to_owned(),
+                capture_id: req.capture_id.clone(),
+                success: false,
+                error: Some(err.to_string()),
+                duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                time_to_first_frame_ms: None,
+                total_bytes: 0,
+                anomalies: Default::default(),
+            },
+        }
+    }
+
+    fn delete_all_captures(
+        &self,
+        root_dir: &Path,
+        request: &DeleteCaptureRequest,
+    ) -> Result<Value, ControlCommandError> {
+        if !root_dir.exists() {
+            return Ok(json!({
+                "action": "delete_capture",
+                "deleted": 0,
+                "deleted_capture_ids": [],
+            }));
+        }
+        let store = open_store_at(root_dir, StoreLimits::default())?;
+        let captures = store
+            .list_captures()
+            .map_err(|err| engine_error("delete_capture", err))?;
+        let mut deleted_ids = Vec::new();
+        for meta in captures {
+            if !capture_matches_scope(
+                &meta,
+                request.allowed_camera_ids.as_deref(),
+                request.camera_id.as_deref(),
+            ) {
+                continue;
+            }
+            if store
+                .delete_capture(&meta.capture_id)
+                .map_err(|err| engine_error("delete_capture", err))?
+            {
+                deleted_ids.push(meta.capture_id);
+            }
+        }
+        self.clear_metrics_for_deleted(&deleted_ids);
+        Ok(json!({
+            "action": "delete_capture",
+            "deleted": deleted_ids.len(),
+            "deleted_capture_ids": deleted_ids,
+        }))
+    }
+}
+
+fn resolve_store_root(config_dir: Option<&Path>) -> PathBuf {
+    config_dir
+        .map_or_else(crate::config::config_dir, Path::to_path_buf)
+        .join("camera-debug")
+}
+
+fn open_capture_store(
+    config_dir: Option<&Path>,
+    max_capture_bytes: u64,
+    max_storage_bytes: u64,
+) -> Result<CaptureStore, ControlCommandError> {
+    if max_capture_bytes > max_storage_bytes {
+        return Err(invalid(&format!(
+            "max_bytes ({max_capture_bytes}) exceeds [mcp].max_debug_storage_bytes ({max_storage_bytes})"
+        )));
+    }
+    let limits = StoreLimits {
+        max_capture_bytes,
+        max_storage_bytes,
+        ttl_secs: DEFAULT_CAPTURE_TTL_SECS,
+    };
+    open_store_at(&resolve_store_root(config_dir), limits)
+}
+
+fn open_existing_store(config_dir: Option<&Path>) -> Result<CaptureStore, ControlCommandError> {
+    let root_dir = resolve_store_root(config_dir);
+    if !root_dir.exists() {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::NotFound,
+            404,
+            "no camera debug captures exist on disk",
+        ));
+    }
+    open_store_at(&root_dir, StoreLimits::default())
+}
+
+fn open_store_at(
+    root_dir: &Path,
+    limits: StoreLimits,
+) -> Result<CaptureStore, ControlCommandError> {
+    CaptureStore::new(root_dir, limits).map_err(|err| {
+        ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            500,
+            format!("unable to open camera debug store: {err}"),
+        )
+    })
+}
+
+fn check_capture_scope(
+    meta: &CaptureMetadata,
+    allowed_camera_ids: Option<&[String]>,
+    requested_camera_id: Option<&str>,
+) -> Result<(), ControlCommandError> {
+    if let Some(allowed) = allowed_camera_ids
+        && !allowed.iter().any(|id| id == &meta.camera_id)
+    {
+        return Err(allowlist_denied(&meta.camera_id));
+    }
+    if let Some(camera_id) = requested_camera_id
+        && meta.camera_id != camera_id
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::NotFound,
+            404,
+            format!(
+                "capture '{}' belongs to camera '{}', not '{camera_id}'",
+                meta.capture_id, meta.camera_id
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn capture_matches_scope(
+    meta: &CaptureMetadata,
+    allowed_camera_ids: Option<&[String]>,
+    requested_camera_id: Option<&str>,
+) -> bool {
+    let allowed = allowed_camera_ids.is_none_or(|ids| ids.iter().any(|id| id == &meta.camera_id));
+    let matches_filter = requested_camera_id.is_none_or(|id| id == meta.camera_id);
+    allowed && matches_filter
+}
+
+fn bounded_capture_duration_ms(
+    duration_seconds: u64,
+    remaining: Duration,
+    capture_count: u64,
+) -> Result<u64, ControlCommandError> {
+    let remaining_ms = u64::try_from(remaining.as_millis()).unwrap_or(u64::MAX);
+    let usable_ms = remaining_ms.saturating_sub(DEADLINE_MARGIN_MS);
+    if usable_ms < MIN_CAPTURE_DURATION_MS {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Timeout,
+            504,
+            "remaining MCP timeout budget is too small for camera capture",
+        ));
+    }
+    let per_capture_budget = (usable_ms / capture_count.max(1)).max(MIN_CAPTURE_DURATION_MS);
+    let requested_ms = duration_seconds.saturating_mul(1_000);
+    Ok(requested_ms.min(per_capture_budget))
+}
+
+fn generate_capture_id(
+    camera_id: &str,
+    proto_label: &str,
+    stream_label: &str,
+    idx: usize,
+) -> String {
+    let mut prefix: String = camera_id
+        .bytes()
+        .take(28)
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_') {
+                byte as char
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if prefix.is_empty() {
+        prefix.push_str("cam");
+    }
+    let short_id = &uuid::Uuid::new_v4().simple().to_string()[..8];
+    let ts = unix_time_ms() / 1_000;
+    format!("{prefix}-{proto_label}-{stream_label}-{idx}-{ts}-{short_id}")
+}
+
+fn resolve_capture_targets(
+    request: &CaptureRequest,
+) -> Result<Vec<(CaptureProtocol, &'static str, String)>, ControlCommandError> {
+    if !request.protocols_explicit {
+        let (protocol, stream_label, url) = resolve_primary_capture_with_label(
+            &request.target,
+            &request.connection,
+            request.stream,
+        );
+        return Ok(vec![(protocol, stream_label, url)]);
+    }
+    let mut targets = Vec::new();
+    let mut rtsp_added = false;
+    for proto in &request.protocols {
+        match proto {
+            DebugProtocol::Rtsp | DebugProtocol::Audio => {
+                if rtsp_added {
+                    continue;
+                }
+                rtsp_added = true;
+                push_rtsp_stream_targets(
+                    &request.target,
+                    &request.connection,
+                    request.stream,
+                    &mut targets,
+                );
+            }
+            DebugProtocol::Onvif => {
+                let port = request.target.onvif_port.unwrap_or(8000);
+                targets.push((
+                    CaptureProtocol::Onvif,
+                    "onvif",
+                    format!("http://{}:{port}/onvif/device_service", request.target.ip),
+                ));
+            }
+            DebugProtocol::Isapi => {
+                let port = request.target.http_port.unwrap_or(80);
+                targets.push((
+                    CaptureProtocol::Isapi,
+                    "isapi",
+                    format!("http://{}:{port}", request.target.ip),
+                ));
+            }
+            DebugProtocol::ReolinkHttp => {
+                let port = request.target.http_port.unwrap_or(80);
+                targets.push((
+                    CaptureProtocol::ReolinkHttp,
+                    "http",
+                    format!("http://{}:{port}/cgi-bin/api.cgi", request.target.ip),
+                ));
+            }
+            DebugProtocol::ReoProto => {
+                targets.push((
+                    CaptureProtocol::ReoProto,
+                    "main",
+                    format!("reo://{}:{BAICHUAN_PORT}", request.target.ip),
+                ));
+            }
+        }
+    }
+    if targets.is_empty() {
+        return Err(invalid("no capture protocol targets could be resolved"));
+    }
+    Ok(targets)
+}
+
+fn push_rtsp_stream_targets(
+    target: &DebugCameraTarget,
+    conn: &CameraDebugConnection,
+    stream: DebugStream,
+    out: &mut Vec<(CaptureProtocol, &'static str, String)>,
+) {
+    let main_url = conn
+        .main_rtsp_url
+        .clone()
+        .unwrap_or_else(|| format!("rtsp://{}:554/", target.ip));
+    let sub_url = conn
+        .sub_rtsp_url
+        .clone()
+        .unwrap_or_else(|| main_url.clone());
+    match stream {
+        DebugStream::Main => out.push((CaptureProtocol::Rtsp, "main", main_url)),
+        DebugStream::Sub => out.push((CaptureProtocol::Rtsp, "sub", sub_url)),
+        DebugStream::Both => {
+            out.push((CaptureProtocol::Rtsp, "main", main_url.clone()));
+            if sub_url != main_url {
+                out.push((CaptureProtocol::Rtsp, "sub", sub_url));
+            }
+        }
+    }
+}
+
+fn resolve_primary_capture_with_label(
+    target: &DebugCameraTarget,
+    conn: &CameraDebugConnection,
+    stream: DebugStream,
+) -> (CaptureProtocol, &'static str, String) {
+    let is_reo = matches!(target.backend.as_str(), "reo-proto" | "reo_proto");
+    if is_reo && conn.main_rtsp_url.is_none() && conn.sub_rtsp_url.is_none() {
+        return (
+            CaptureProtocol::ReoProto,
+            "main",
+            format!("reo://{}:{BAICHUAN_PORT}", target.ip),
+        );
+    }
+    let mut rtsp = Vec::new();
+    push_rtsp_stream_targets(target, conn, stream, &mut rtsp);
+    rtsp.into_iter().next().unwrap_or_else(|| {
+        (
+            CaptureProtocol::Rtsp,
+            "main",
+            format!("rtsp://{}:554/", target.ip),
+        )
+    })
+}
+
+fn resolve_primary_media_target(
+    target: &DebugCameraTarget,
+    conn: &CameraDebugConnection,
+    stream: DebugStream,
+) -> (CaptureProtocol, String) {
+    let (proto, _, url) = resolve_primary_capture_with_label(target, conn, stream);
+    (proto, url)
+}
+
+fn resolve_event_channel_targets(target: &DebugCameraTarget) -> Vec<(CaptureProtocol, String)> {
+    let mut out = Vec::new();
+    if let Some(port) = target.onvif_port {
+        out.push((
+            CaptureProtocol::Onvif,
+            format!("http://{}:{port}/onvif/device_service", target.ip),
+        ));
+    }
+    if let Some(port) = target.http_port {
+        if matches!(target.backend.as_str(), "reo-proto" | "reo_proto") {
+            out.push((
+                CaptureProtocol::ReolinkHttp,
+                format!("http://{}:{port}/cgi-bin/api.cgi", target.ip),
+            ));
+        } else {
+            out.push((
+                CaptureProtocol::Isapi,
+                format!("http://{}:{port}", target.ip),
+            ));
+        }
+    }
+    if matches!(target.backend.as_str(), "reo-proto" | "reo_proto") {
+        out.push((
+            CaptureProtocol::ReoProto,
+            format!("reo://{}:{BAICHUAN_PORT}", target.ip),
+        ));
+    }
+    out
+}
+
+const fn parse_camera_transport(raw: &str) -> CameraTransport {
+    if raw.eq_ignore_ascii_case("udp") {
+        CameraTransport::Udp
+    } else {
+        CameraTransport::Tcp
+    }
+}
+
+const fn map_trim_media(mode: TrimMediaMode) -> ReproTrimMediaMode {
+    match mode {
+        TrimMediaMode::HeadersAndMinimalFailingSlice => {
+            ReproTrimMediaMode::HeadersAndMinimalFailingSlice
+        }
+        TrimMediaMode::SyntheticPayloads => ReproTrimMediaMode::SyntheticPayloads,
+        TrimMediaMode::KeepRawFrames => ReproTrimMediaMode::KeepRawFrames,
+    }
+}
+
+fn build_capture_response(request: &CaptureRequest, results: &[CaptureResult]) -> Value {
+    let primary = &results[0];
+    let summaries: Vec<Value> = results.iter().map(capture_summary_json).collect();
+    json!({
+        "action": "capture",
+        "camera_id": request.target.camera_id,
+        "capture_id": primary.metadata.capture_id,
+        "capture_dir": primary.capture_dir,
+        "protocol": primary.metadata.protocol,
+        "transport": primary.metadata.transport,
+        "duration_ms": primary.metadata.duration_ms,
+        "total_bytes": primary.metadata.total_bytes,
+        "packet_count": primary.metadata.packet_count,
+        "include_raw_auth": primary.metadata.include_raw_auth,
+        "tls_decrypted": primary.metadata.tls_decrypted,
+        "files": primary.metadata.files,
+        "bitstream": primary.bitstream,
+        "anomalies": primary.metadata.anomalies,
+        "warnings": primary.metadata.warnings,
+        "requested_artifacts": request.artifacts,
+        "captures": summaries,
+    })
+}
+
+fn capture_summary_json(result: &CaptureResult) -> Value {
+    json!({
+        "capture_id": result.metadata.capture_id,
+        "capture_dir": result.capture_dir,
+        "protocol": result.metadata.protocol,
+        "transport": result.metadata.transport,
+        "duration_ms": result.metadata.duration_ms,
+        "total_bytes": result.metadata.total_bytes,
+        "packet_count": result.metadata.packet_count,
+        "files": result.metadata.files,
+        "anomalies": result.metadata.anomalies,
+        "warnings": result.metadata.warnings,
+    })
+}
+
+fn engine_error(action: &str, err: anyhow::Error) -> ControlCommandError {
     ControlCommandError::new(
         proto::ErrorCode::Unavailable,
-        503,
-        format!("camera debugging capture backend is not attached for action '{action}'"),
+        502,
+        format!("camera_debugging '{action}' failed: {err:#}"),
+    )
+}
+
+fn not_found_capture(capture_id: &str) -> ControlCommandError {
+    ControlCommandError::new(
+        proto::ErrorCode::NotFound,
+        404,
+        format!("capture '{capture_id}' was not found"),
     )
 }
 
@@ -520,7 +1330,7 @@ fn dispatch_action(
             )?;
             let request = ListCapturesRequest {
                 camera_id,
-                allowed_camera_ids: allowed_camera_scope(ctx.cfg),
+                allowed_camera_ids: allowed_camera_scope(ctx.state, ctx.cfg),
                 config_dir: ctx.config_dir,
             };
             let payload = state.mcp.camera_debug().list_captures(request)?;
@@ -549,6 +1359,7 @@ fn build_capture_request(
     )?;
     let stream = args.stream.unwrap_or(DebugStream::Main);
     let artifacts = parse_artifacts(args.artifacts.as_deref())?;
+    let protocols_explicit = args.protocols.is_some();
     let protocols = parse_protocols(args.protocols.as_deref())?;
     let duration_seconds = parse_duration_seconds(args.duration_seconds)?;
     let max_bytes = parse_max_bytes(args.max_bytes, ctx.cfg)?;
@@ -558,6 +1369,7 @@ fn build_capture_request(
         stream,
         artifacts,
         protocols,
+        protocols_explicit,
         duration_seconds,
         max_bytes,
         max_storage_bytes: ctx.cfg.max_debug_storage_bytes,
@@ -565,6 +1377,7 @@ fn build_capture_request(
         trigger_probe: args.trigger_probe.unwrap_or(false),
         config_dir: ctx.config_dir.clone(),
         credentials,
+        connection: CameraDebugConnection::from_camera(&camera),
         deadline: ctx.deadline,
     })
 }
@@ -597,6 +1410,7 @@ fn build_compare_request(
         include_raw_auth,
         config_dir: ctx.config_dir.clone(),
         credentials,
+        connection: CameraDebugConnection::from_camera(&camera),
         deadline: ctx.deadline,
     })
 }
@@ -615,10 +1429,15 @@ fn build_export_request(
         args.camera_id.as_deref(),
     )?;
     let max_bytes = parse_max_bytes(args.max_bytes, ctx.cfg)?;
+    let extra_secrets = if strip_credentials {
+        collect_camera_secrets(ctx.state)
+    } else {
+        ZeroizedSecretList::default()
+    };
     Ok(ExportReproFixtureRequest {
         capture_id,
         camera_id,
-        allowed_camera_ids: allowed_camera_scope(ctx.cfg),
+        allowed_camera_ids: allowed_camera_scope(ctx.state, ctx.cfg),
         strip_credentials,
         anonymize_network: args.anonymize_network.unwrap_or(true),
         trim_media: args
@@ -626,6 +1445,7 @@ fn build_export_request(
             .unwrap_or(TrimMediaMode::HeadersAndMinimalFailingSlice),
         max_bytes,
         config_dir: ctx.config_dir.clone(),
+        extra_secrets,
         deadline: ctx.deadline,
     })
 }
@@ -661,7 +1481,7 @@ fn build_delete_request(
         capture_id,
         camera_id,
         delete_all,
-        allowed_camera_ids: allowed_camera_scope(ctx.cfg),
+        allowed_camera_ids: allowed_camera_scope(ctx.state, ctx.cfg),
         config_dir: ctx.config_dir.clone(),
     })
 }
@@ -917,8 +1737,29 @@ fn camera_entry_allowed(cfg: &McpConfig, camera: &CameraEntry) -> bool {
             .any(|allowed| allowed == &camera.info.id || allowed == &camera.recording_label)
 }
 
-fn allowed_camera_scope(cfg: &McpConfig) -> Option<Vec<String>> {
-    (!cfg.debug_camera_ids.is_empty()).then(|| cfg.debug_camera_ids.clone())
+fn allowed_camera_scope(state: &ServerState, cfg: &McpConfig) -> Option<Vec<String>> {
+    if cfg.debug_camera_ids.is_empty() {
+        return None;
+    }
+    let mut scope = cfg.debug_camera_ids.clone();
+    for camera in state.camera_entries() {
+        if camera_entry_allowed(cfg, &camera) && !scope.contains(&camera.info.id) {
+            scope.push(camera.info.id);
+        }
+    }
+    Some(scope)
+}
+
+fn collect_camera_secrets(state: &ServerState) -> ZeroizedSecretList {
+    let mut secrets = Vec::new();
+    for camera in state.camera_entries() {
+        if !camera.configuration.password.is_empty()
+            && !secrets.contains(&camera.configuration.password)
+        {
+            secrets.push(camera.configuration.password);
+        }
+    }
+    ZeroizedSecretList(secrets)
 }
 
 fn allowlist_denied(camera_id: &str) -> ControlCommandError {
@@ -1093,13 +1934,13 @@ fn invalid(message: &str) -> ControlCommandError {
 mod tests {
     use super::*;
     use crate::{
-        cameras::{CameraBackend, CameraConfig, CameraRecordingMode, CameraTransport},
+        cameras::{CameraBackend, CameraConfig, CameraRecordingMode},
         config::Config,
         runtime::Router,
         storage::{RecordingDemand, StorageConfig},
         webrtc::WebRtc,
     };
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     struct MockCameraDebugService {
         last_capture: Mutex<Option<CaptureRequest>>,

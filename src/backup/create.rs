@@ -330,4 +330,47 @@ MQTT_PASSWORD = "mqtt-password"
         std::fs::create_dir(&path).unwrap();
         path
     }
+
+    #[test]
+    fn configuration_bundle_preserves_mcp_camera_debugging_fields() {
+        let directory = test_directory();
+        let config_path = directory.join("config.toml");
+        let source = r#"
+[mcp]
+enabled = true
+allow_camera_debugging = true
+max_debug_capture_bytes = 2097152
+max_debug_storage_bytes = 33554432
+debug_camera_ids = ["192.0.2.10", "front-door"]
+"#;
+        std::fs::write(&config_path, source).unwrap();
+        std::fs::write(config::secrets_path(&config_path), "").unwrap();
+        let (bundle, _) = create_bundle(
+            Cursor::new(Vec::new()),
+            CreateBundleOptions {
+                config_path: &config_path,
+                sections: &[],
+                created_at_unix_ms: 1_788_000_000_000,
+            },
+        )
+        .unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(bundle.into_inner())).unwrap();
+        let mut saved = String::new();
+        archive
+            .by_name("config.toml")
+            .unwrap()
+            .read_to_string(&mut saved)
+            .unwrap();
+        let after: config::Config = toml::from_str(&saved).unwrap();
+        assert!(after.mcp.enabled);
+        assert!(after.mcp.allow_camera_debugging);
+        assert_eq!(after.mcp.max_debug_capture_bytes, 2_097_152);
+        assert_eq!(after.mcp.max_debug_storage_bytes, 33_554_432);
+        assert_eq!(
+            after.mcp.debug_camera_ids,
+            vec!["192.0.2.10".to_owned(), "front-door".to_owned()]
+        );
+        assert!(after.mcp.validate().is_ok());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }

@@ -84,7 +84,7 @@ impl Runtime {
             })),
             snapshot_limiter: Arc::new(mcp_snapshot::SnapshotRateLimiter::new()),
             handoffs: Arc::new(mcp_secret_handoff::HandoffStore::new()),
-            camera_debug: Arc::new(mcp_camera_debug::UnavailableCameraDebugService),
+            camera_debug: Arc::new(mcp_camera_debug::EngineCameraDebugService::default()),
         };
         runtime.emit_startup_warning();
         runtime
@@ -5797,6 +5797,389 @@ display_name = "Front Door"
         );
         assert!(read_response_json(ro_export)["result"].is_object());
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn call_mcp_tool(
+        state: &ServerState,
+        router_tx: &FacadeSender<RouterMessage>,
+        id: u64,
+        name: &str,
+        arguments: Value,
+    ) -> Value {
+        let req = mcp_post_request(
+            &json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": { "name": name, "arguments": arguments }
+            }),
+            Vec::new(),
+            "127.0.0.1:50000",
+        );
+        let resp = super::super::handle_request(&req, router_tx, state);
+        assert_eq!(resp.status_code, 200);
+        read_response_json(resp)
+    }
+
+    fn assert_valid_pcapng_blocks(path: &std::path::Path) {
+        let bytes = std::fs::read(path).expect("read capture.pcapng");
+        assert!(bytes.len() >= 28, "pcapng file too short");
+        let shb_magic = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        assert_eq!(shb_magic, 0x0A0D_0D0A);
+        let mut offset = 0usize;
+        let mut saw_shb = false;
+        let mut saw_idb = false;
+        let mut saw_epb = false;
+        while offset + 12 <= bytes.len() {
+            let block_type = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+            let block_len = usize::try_from(u32::from_le_bytes(
+                bytes[offset + 4..offset + 8].try_into().unwrap(),
+            ))
+            .unwrap();
+            assert!(block_len >= 12 && offset + block_len <= bytes.len());
+            match block_type {
+                0x0A0D_0D0A => saw_shb = true,
+                0x0000_0001 => saw_idb = true,
+                0x0000_0006 => saw_epb = true,
+                _ => {}
+            }
+            offset += block_len;
+        }
+        assert!(saw_shb && saw_idb && saw_epb, "missing SHB/IDB/EPB blocks");
+    }
+
+    fn live_debug_fixture(
+        mcp_config: McpConfig,
+        sentinel: &str,
+        camera_toml: &str,
+    ) -> (PathBuf, ServerState, FacadeSender<RouterMessage>) {
+        let dir = std::env::temp_dir().join(format!("keeppeek-mcp-e2e-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("config.toml");
+        std::fs::write(
+            dir.join("secrets.toml"),
+            format!("CAMERA_PASSWORD = \"{sentinel}\"\nKEEPPEEK_ACCESS_KEY = \"550e8400-e29b-41d4-a716-446655440000\"\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            &config_path,
+            format!(
+                "host = \"127.0.0.1\"\nport = 8081\naccess_key = \"{{secret:KEEPPEEK_ACCESS_KEY}}\"\n\n[mcp]\nenabled = true\nallow_camera_debugging = true\n\n[camera_defaults]\nusername = \"admin\"\npassword = \"{{secret:CAMERA_PASSWORD}}\"\n\n{camera_toml}"
+            ),
+        )
+        .unwrap();
+        let mut cfg = config::load_config(&config_path).unwrap();
+        cfg.mcp = mcp_config;
+        let cameras = cfg.camera_configurations().unwrap();
+        let storage = crate::storage::StorageConfig {
+            long_term_path: dir.join("recordings"),
+            ..crate::storage::StorageConfig::default()
+        };
+        let state = ServerState::new(
+            &cfg,
+            &cameras,
+            &HashMap::new(),
+            &storage,
+            crate::storage::RecordingDemand::new(Duration::from_secs(5)),
+            crate::webrtc::WebRtc::new(),
+        )
+        .with_camera_config_path(config_path);
+        let (_router, router_tx) = Router::new().unwrap();
+        (dir, state, router_tx)
+    }
+
+    fn assert_rtsp_capture_and_inspect(
+        state: &ServerState,
+        router_tx: &FacadeSender<RouterMessage>,
+        dir: &std::path::Path,
+        sentinel: &str,
+    ) -> String {
+        let cap_resp = call_mcp_tool(
+            state,
+            router_tx,
+            1,
+            "camera_debugging",
+            json!({
+                "action": "capture",
+                "camera_id": "127.0.0.1",
+                "protocols": ["rtsp"],
+                "duration_seconds": 1
+            }),
+        );
+        let cap = &cap_resp["result"]["structuredContent"];
+        let capture_id = cap["capture_id"].as_str().expect("capture_id").to_owned();
+        let capture_dir = dir.join("camera-debug").join(&capture_id);
+        assert!(capture_dir.is_dir());
+        assert_valid_pcapng_blocks(&capture_dir.join("capture.pcapng"));
+        assert!(capture_dir.join("video.h264").is_file());
+        assert!(capture_dir.join("muxed.mp4").is_file());
+        assert!(capture_dir.join("protocol_transcript.json").is_file());
+        assert!(capture_dir.join("capture.json").is_file());
+        if cap["bitstream"]["audio_path"].is_string() {
+            assert!(capture_dir.join("audio.aac").is_file());
+        }
+
+        let inspect = call_mcp_tool(
+            state,
+            router_tx,
+            2,
+            "camera_debugging",
+            json!({ "action": "inspect_pipeline", "camera_id": "127.0.0.1" }),
+        );
+        assert_eq!(
+            inspect["result"]["structuredContent"]["cameras"][0]["debug_metrics"]["capture_id"],
+            capture_id
+        );
+
+        let exported = call_mcp_tool(
+            state,
+            router_tx,
+            4,
+            "camera_debugging",
+            json!({ "action": "export_repro_fixture", "capture_id": capture_id }),
+        );
+        let exp = &exported["result"]["structuredContent"];
+        assert_eq!(exp["fixture"]["schema_version"], "keeppeek.camera-repro.v1");
+        assert!(exp["fixture"]["rtsp"]["sessions"].is_array());
+        assert_eq!(exp["sharing_safety_report"]["safe_to_share_publicly"], true);
+        assert!(!serde_json::to_string(exp).unwrap().contains(sentinel));
+        capture_id
+    }
+
+    fn assert_rtsp_compare_list_delete_and_redaction(
+        state: &ServerState,
+        router_tx: &FacadeSender<RouterMessage>,
+        dir: &std::path::Path,
+        capture_id: &str,
+        sentinel: &str,
+    ) {
+        let cmp = call_mcp_tool(
+            state,
+            router_tx,
+            3,
+            "camera_debugging",
+            json!({
+                "action": "compare_transports",
+                "camera_id": "127.0.0.1",
+                "mode": "media_transports",
+                "duration_seconds": 1
+            }),
+        );
+        let cmp_sc = &cmp["result"]["structuredContent"];
+        assert_eq!(cmp_sc["recommended_transport"], "tcp");
+        assert_eq!(cmp_sc["entries"].as_array().unwrap().len(), 2);
+
+        let listed = call_mcp_tool(
+            state,
+            router_tx,
+            5,
+            "camera_debugging",
+            json!({ "action": "list_captures", "camera_id": "127.0.0.1" }),
+        );
+        assert!(
+            listed["result"]["structuredContent"]["count"]
+                .as_u64()
+                .unwrap()
+                >= 2
+        );
+        let del_one = call_mcp_tool(
+            state,
+            router_tx,
+            6,
+            "camera_debugging",
+            json!({ "action": "delete_capture", "capture_id": capture_id }),
+        );
+        assert_eq!(del_one["result"]["structuredContent"]["deleted"], 1);
+        assert!(!dir.join("camera-debug").join(capture_id).exists());
+        let del_all = call_mcp_tool(
+            state,
+            router_tx,
+            7,
+            "camera_debugging",
+            json!({ "action": "delete_capture", "delete_all": true }),
+        );
+        assert!(
+            del_all["result"]["structuredContent"]["deleted"]
+                .as_u64()
+                .unwrap()
+                >= 1
+        );
+
+        for (id, tool, args) in [
+            (8, "search_logs", json!({})),
+            (9, "get_server_health", json!({})),
+            (10, "get_configuration", json!({})),
+        ] {
+            let text =
+                serde_json::to_string(&call_mcp_tool(state, router_tx, id, tool, args)).unwrap();
+            assert!(!text.contains(sentinel), "{tool} leaked secret");
+        }
+    }
+
+    #[test]
+    fn camera_debugging_e2e_rtsp_capture_compare_export_list_delete_and_redaction() {
+        let sentinel = "E2E-RTSP-SECRET-442111";
+        let mp4 = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("crates/test-camera/testdata/flash-tone-lead-200ms.mp4");
+        let rtsp = retina::server::RtspServer::from_mp4(&mp4).unwrap();
+        let cam_toml = format!(
+            "[front.door]\nip = \"127.0.0.1\"\ndisplay_name = \"Front Door\"\nmain_rtsp_url = \"{}\"\n",
+            rtsp.url()
+        );
+        let (dir, state, router_tx) = live_debug_fixture(
+            McpConfig {
+                enabled: true,
+                allow_camera_debugging: true,
+                request_timeout_seconds: 30,
+                ..McpConfig::default()
+            },
+            sentinel,
+            &cam_toml,
+        );
+        let (logging_service, dispatch) =
+            LoggingService::for_test(LogFilterFile::new(dir.join("log-filter")), "info");
+        let state = state.with_logging(logging_service);
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!(target: "keeppeek::test", "camera auth {sentinel}");
+        });
+
+        let capture_id = assert_rtsp_capture_and_inspect(&state, &router_tx, &dir, sentinel);
+        assert_rtsp_compare_list_delete_and_redaction(
+            &state,
+            &router_tx,
+            &dir,
+            &capture_id,
+            sentinel,
+        );
+        drop(rtsp);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn assert_isapi_repro_redaction(
+        state: &ServerState,
+        router_tx: &FacadeSender<RouterMessage>,
+        raw_id: &str,
+        sentinel: &str,
+    ) {
+        let safe_exp = call_mcp_tool(
+            state,
+            router_tx,
+            2,
+            "camera_debugging",
+            json!({ "action": "export_repro_fixture", "capture_id": raw_id }),
+        );
+        let safe_sc = &safe_exp["result"]["structuredContent"];
+        assert_eq!(
+            safe_sc["sharing_safety_report"]["safe_to_share_publicly"],
+            true
+        );
+        assert_eq!(safe_sc["fixture"]["camera"]["credentials_stripped"], true);
+        assert_eq!(safe_sc["fixture"]["camera"]["anonymized"], true);
+        assert_eq!(
+            safe_sc["fixture"]["camera"]["base_host"],
+            "camera-1.example.invalid"
+        );
+        let safe_text = serde_json::to_string(safe_sc).unwrap();
+        let fixture_text = serde_json::to_string(&safe_sc["fixture"]).unwrap();
+        assert!(!safe_text.contains(sentinel));
+        assert!(!fixture_text.contains("127.0.0.1"));
+
+        let raw_exp = call_mcp_tool(
+            state,
+            router_tx,
+            3,
+            "camera_debugging",
+            json!({
+                "action": "export_repro_fixture",
+                "capture_id": raw_id,
+                "strip_credentials": false,
+                "anonymize_network": false
+            }),
+        );
+        let raw_sc = &raw_exp["result"]["structuredContent"];
+        assert_eq!(
+            raw_sc["sharing_safety_report"]["safe_to_share_publicly"],
+            false
+        );
+        assert_eq!(raw_sc["fixture"]["camera"]["credentials_stripped"], false);
+        assert_eq!(raw_sc["fixture"]["camera"]["anonymized"], false);
+        assert_eq!(raw_sc["fixture"]["camera"]["base_host"], "127.0.0.1");
+        assert!(
+            !raw_sc["sharing_safety_report"]["warnings"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    fn run_isapi_capture(
+        state: &ServerState,
+        router_tx: &FacadeSender<RouterMessage>,
+        dir: &std::path::Path,
+        id: u64,
+        include_raw_auth: bool,
+    ) -> (Value, String, String) {
+        let resp = call_mcp_tool(
+            state,
+            router_tx,
+            id,
+            "camera_debugging",
+            json!({
+                "action": "capture",
+                "camera_id": "127.0.0.1",
+                "protocols": ["isapi"],
+                "include_raw_auth": include_raw_auth,
+                "duration_seconds": 1
+            }),
+        );
+        let capture_id = resp["result"]["structuredContent"]["capture_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let cap_dir = dir.join("camera-debug").join(&capture_id);
+        assert_valid_pcapng_blocks(&cap_dir.join("capture.pcapng"));
+        let transcript = std::fs::read_to_string(cap_dir.join("protocol_transcript.json")).unwrap();
+        (resp, capture_id, transcript)
+    }
+
+    #[test]
+    fn camera_debugging_e2e_isapi_raw_auth_vs_stripped_repro() {
+        let sentinel = "E2E-ISAPI-SECRET-442222";
+        let device = test_hikvision::FakeHikvision::builder()
+            .credentials("admin", sentinel)
+            .start()
+            .unwrap();
+        let port = url::Url::parse(&device.origin())
+            .unwrap()
+            .port()
+            .expect("fake hikvision port");
+        let cam_toml = format!(
+            "[isapi.cam]\nip = \"127.0.0.1\"\ndisplay_name = \"ISAPI Cam\"\nhttp_port = {port}\n"
+        );
+        let (dir, state, router_tx) = live_debug_fixture(
+            McpConfig {
+                enabled: true,
+                allow_camera_debugging: true,
+                ..McpConfig::default()
+            },
+            sentinel,
+            &cam_toml,
+        );
+
+        let (_raw_cap, raw_id, raw_transcript) =
+            run_isapi_capture(&state, &router_tx, &dir, 1, true);
+        assert!(raw_transcript.contains("Digest username="));
+        assert_isapi_repro_redaction(&state, &router_tx, &raw_id, sentinel);
+
+        let (redacted_cap, _red_id, red_transcript) =
+            run_isapi_capture(&state, &router_tx, &dir, 4, false);
+        assert!(!red_transcript.contains("Digest username="));
+        assert!(
+            !serde_json::to_string(&redacted_cap)
+                .unwrap()
+                .contains(sentinel)
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
