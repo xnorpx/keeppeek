@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-094e09a8.js";
+            window.path_to_searchindex_js = "searchindex-9681fb04.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-738fe896.js"></script>
+        <script src="toc-515efa10.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -235,6 +235,7 @@ Root fields must appear before a table header or they belong to that table.</p>
 <tr><td><code>[access]</code></td><td><code>AccessConfig</code></td><td>Administrator security policy</td></tr>
 <tr><td><code>[direct_card]</code></td><td><code>DirectCardConfig</code></td><td>Exact browser-origin allowlist</td></tr>
 <tr><td><code>[desktop]</code></td><td><code>DesktopConfig</code></td><td>Optional default server URL for KeepPeek Desktop</td></tr>
+<tr><td><code>[mcp]</code></td><td><code>McpConfig</code></td><td>Opt-in MCP server, write, and snapshot policy</td></tr>
 <tr><td><code>[storage]</code></td><td><code>StorageToml</code></td><td>Recording paths, retention, and safety</td></tr>
 <tr><td><code>[battery_wake]</code></td><td><code>BatteryWakeConfig</code></td><td>Reolink battery-camera wake service</td></tr>
 <tr><td><code>[logging]</code></td><td><code>LoggingConfig</code></td><td>Service log destination</td></tr>
@@ -1203,6 +1204,34 @@ Do not embed credentials in <code>broker_url</code>; use the dedicated fields. M
 deduplication state are in memory and reset on restart. <code>outbox_max_mb</code> is a runtime memory budget;
 it does not enable persistence. The retired <code>mqtt-forwarder.db</code> is removed during startup and is
 not replayed. See <a href="./notifications-and-integrations.html">Notifications and integrations</a>.</p>
+<h2 id="mcp-server"><a class="header" href="#mcp-server">MCP server</a></h2>
+<p>Type: <code>McpConfig</code>, optional section <code>[mcp]</code>. The embedded Streamable HTTP endpoint (<code>POST /mcp</code>),
+configuration writes, and single-frame camera snapshots are all disabled by default. When all
+fields remain at their default values, the canonical writer omits the section.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Validation and meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>enabled</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable the embedded Streamable HTTP endpoint at <code>POST /mcp</code>; returns <code>404</code> when false.</td></tr>
+<tr><td><code>allow_writes</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable opt-in Administrator configuration mutation tools when not overridden by a read-only client.</td></tr>
+<tr><td><code>allow_snapshots</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable opt-in privacy-gated single-frame snapshots via <code>get_camera_snapshot</code> (camera hardware masks only).</td></tr>
+<tr><td><code>max_concurrent_requests</code></td><td><code>usize</code></td><td><code>4</code></td><td>Maximum concurrent in-flight MCP requests, from <code>1</code> through <code>32</code>.</td></tr>
+<tr><td><code>max_response_bytes</code></td><td><code>usize</code></td><td><code>65536</code></td><td>Maximum serialized JSON-RPC response payload in bytes (<code>4096..=262144</code>); <code>get_camera_snapshot</code> uses <code>max_snapshot_bytes</code>.</td></tr>
+<tr><td><code>request_timeout_seconds</code></td><td><code>u64</code></td><td><code>15</code></td><td>Maximum execution time per MCP request in seconds, from <code>1</code> through <code>60</code>.</td></tr>
+<tr><td><code>max_snapshot_bytes</code></td><td><code>usize</code></td><td><code>262144</code></td><td>Maximum encoded JPEG snapshot size in bytes (<code>16384..=1048576</code>; response limit adds base64 and metadata envelope overhead).</td></tr>
+<tr><td><code>max_snapshot_dimension</code></td><td><code>u32</code></td><td><code>1280</code></td><td>Maximum snapshot width or height in pixels, from <code>160</code> through <code>1920</code>.</td></tr>
+<tr><td><code>snapshot_min_interval_seconds</code></td><td><code>u64</code></td><td><code>5</code></td><td>Minimum interval between snapshots per camera in seconds, from <code>1</code> through <code>300</code>.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Out-of-range values fail configuration validation during startup and configuration planning.
+<code>POST /mcp</code> enforces the existing <code>[access]</code> policy, Bearer header authentication, <code>localhost</code>/IP
+<code>Host</code> checks for unauthenticated local requests, <code>[direct_card].allowed_origins</code> allowlisting plus
+mandatory Bearer auth for browser <code>Origin</code> headers, serialization-layer secret redaction, and fail-closed camera privacy
+schedules for snapshots. Restart KeepPeek after manually editing <code>[mcp]</code>. See
+<a href="./mcp.html">MCP server and LLM configuration</a>.</p>
 <h2 id="credential-records"><a class="header" href="#credential-records">Credential records</a></h2>
 <p>Source: <a href="https://github.com/xnorpx/keeppeek/blob/main/src/access.rs">access persistence</a>.
 Use the Administrator credential controls, not hand-written verifiers or revision changes.</p>

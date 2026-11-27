@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-094e09a8.js";
+            window.path_to_searchindex_js = "searchindex-9681fb04.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-738fe896.js"></script>
+        <script src="toc-515efa10.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -341,6 +341,10 @@ different states. The notification rule’s Forwarder action is currently unavai
 integration is configured separately.</li>
 <li><strong>Embed a camera in Home Assistant:</strong> Use the direct browser card with an appropriate named
 credential and browser-to-recorder connectivity.</li>
+<li><strong>Connect an AI assistant or MCP client:</strong> Use the local <code>keeppeek mcp</code> <code>stdio</code> bridge or enable
+the opt-in <code>POST /mcp</code> endpoint to inspect health, logs, events, and coverage or preview and
+apply configuration changes with explicit approval. See
+<a href="#mcp-server-and-llm-configuration">MCP server and LLM configuration</a>.</li>
 </ul>
 <p>The integration chapters explain their requirements and failure behavior. Protocol scenarios that
 describe future client possibilities are not an installation checklist for a shipped service.</p>
@@ -2318,6 +2322,7 @@ Root fields must appear before a table header or they belong to that table.</p>
 <tr><td><code>[access]</code></td><td><code>AccessConfig</code></td><td>Administrator security policy</td></tr>
 <tr><td><code>[direct_card]</code></td><td><code>DirectCardConfig</code></td><td>Exact browser-origin allowlist</td></tr>
 <tr><td><code>[desktop]</code></td><td><code>DesktopConfig</code></td><td>Optional default server URL for KeepPeek Desktop</td></tr>
+<tr><td><code>[mcp]</code></td><td><code>McpConfig</code></td><td>Opt-in MCP server, write, and snapshot policy</td></tr>
 <tr><td><code>[storage]</code></td><td><code>StorageToml</code></td><td>Recording paths, retention, and safety</td></tr>
 <tr><td><code>[battery_wake]</code></td><td><code>BatteryWakeConfig</code></td><td>Reolink battery-camera wake service</td></tr>
 <tr><td><code>[logging]</code></td><td><code>LoggingConfig</code></td><td>Service log destination</td></tr>
@@ -3286,6 +3291,34 @@ Do not embed credentials in <code>broker_url</code>; use the dedicated fields. M
 deduplication state are in memory and reset on restart. <code>outbox_max_mb</code> is a runtime memory budget;
 it does not enable persistence. The retired <code>mqtt-forwarder.db</code> is removed during startup and is
 not replayed. See <a href="#notifications-and-integrations">Notifications and integrations</a>.</p>
+<h2 id="mcp-server"><a class="header" href="#mcp-server">MCP server</a></h2>
+<p>Type: <code>McpConfig</code>, optional section <code>[mcp]</code>. The embedded Streamable HTTP endpoint (<code>POST /mcp</code>),
+configuration writes, and single-frame camera snapshots are all disabled by default. When all
+fields remain at their default values, the canonical writer omits the section.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Validation and meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>enabled</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable the embedded Streamable HTTP endpoint at <code>POST /mcp</code>; returns <code>404</code> when false.</td></tr>
+<tr><td><code>allow_writes</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable opt-in Administrator configuration mutation tools when not overridden by a read-only client.</td></tr>
+<tr><td><code>allow_snapshots</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable opt-in privacy-gated single-frame snapshots via <code>get_camera_snapshot</code> (camera hardware masks only).</td></tr>
+<tr><td><code>max_concurrent_requests</code></td><td><code>usize</code></td><td><code>4</code></td><td>Maximum concurrent in-flight MCP requests, from <code>1</code> through <code>32</code>.</td></tr>
+<tr><td><code>max_response_bytes</code></td><td><code>usize</code></td><td><code>65536</code></td><td>Maximum serialized JSON-RPC response payload in bytes (<code>4096..=262144</code>); <code>get_camera_snapshot</code> uses <code>max_snapshot_bytes</code>.</td></tr>
+<tr><td><code>request_timeout_seconds</code></td><td><code>u64</code></td><td><code>15</code></td><td>Maximum execution time per MCP request in seconds, from <code>1</code> through <code>60</code>.</td></tr>
+<tr><td><code>max_snapshot_bytes</code></td><td><code>usize</code></td><td><code>262144</code></td><td>Maximum encoded JPEG snapshot size in bytes (<code>16384..=1048576</code>; response limit adds base64 and metadata envelope overhead).</td></tr>
+<tr><td><code>max_snapshot_dimension</code></td><td><code>u32</code></td><td><code>1280</code></td><td>Maximum snapshot width or height in pixels, from <code>160</code> through <code>1920</code>.</td></tr>
+<tr><td><code>snapshot_min_interval_seconds</code></td><td><code>u64</code></td><td><code>5</code></td><td>Minimum interval between snapshots per camera in seconds, from <code>1</code> through <code>300</code>.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Out-of-range values fail configuration validation during startup and configuration planning.
+<code>POST /mcp</code> enforces the existing <code>[access]</code> policy, Bearer header authentication, <code>localhost</code>/IP
+<code>Host</code> checks for unauthenticated local requests, <code>[direct_card].allowed_origins</code> allowlisting plus
+mandatory Bearer auth for browser <code>Origin</code> headers, serialization-layer secret redaction, and fail-closed camera privacy
+schedules for snapshots. Restart KeepPeek after manually editing <code>[mcp]</code>. See
+<a href="#mcp-server-and-llm-configuration">MCP server and LLM configuration</a>.</p>
 <h2 id="credential-records"><a class="header" href="#credential-records">Credential records</a></h2>
 <p>Source: <a href="https://github.com/xnorpx/keeppeek/blob/main/src/access.rs">access persistence</a>.
 Use the Administrator credential controls, not hand-written verifiers or revision changes.</p>
@@ -5217,6 +5250,319 @@ exact setup-only WebSocket close notice separately; other runtime errors fail th
 published module through HACS, exercise it in a disposable Home Assistant instance, and verify
 upgrade and rollback. A configured CI job is not evidence of a successful hosted run; check the
 workflow result for the commit being released.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="mcp-server-and-llm-configuration"><a class="header" href="#mcp-server-and-llm-configuration">MCP server and LLM configuration</a></h1>
+<p>KeepPeek includes built-in Model Context Protocol (MCP) support so AI assistants and MCP clients
+(such as Claude, Codex, Cursor, and Gemini) can inspect recorder health, logs, events, storage,
+and recording coverage, and preview or apply validated configuration changes.</p>
+<p>MCP is disabled by default for network access. You can connect locally through the <code>keeppeek mcp</code>
+<code>stdio</code> bridge or enable the embedded Streamable HTTP endpoint (<code>POST /mcp</code>) in <code>config.toml</code>.</p>
+<pre class="mermaid">flowchart LR
+    A[Local AI client] --&gt;|stdio JSON-RPC| B[keeppeek mcp bridge]
+    B --&gt;|Bearer auth over HTTP or HTTPS| K[KeepPeek POST /mcp]
+    R[Remote MCP client] --&gt;|HTTPS Bearer auth| P[Trusted reverse proxy or VPN]
+    P --&gt; K
+</pre>
+
+<h2 id="use-the-bundled-agent-skill"><a class="header" href="#use-the-bundled-agent-skill">Use the bundled agent skill</a></h2>
+<p>KeepPeek ships a canonical agent skill (<code>skills/keeppeek-mcp/SKILL.md</code>) that teaches LLM
+assistants how to locate <code>config.toml</code> and <code>secrets.toml</code>, use <code>{secret:KEY}</code> references, run
+<code>plan_configuration_change</code> before requesting writes, and respect privacy and role boundaries.</p>
+<p>Print the skill from any installed KeepPeek binary or export it to a directory:</p>
+<pre><code class="language-sh">keeppeek mcp skill
+keeppeek mcp skill --output ./skills/keeppeek-mcp
+</code></pre>
+<p>Release artifacts and container images also include <code>SKILL.md</code> directly:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Package</th><th>Shipped skill path</th></tr>
+</thead>
+<tbody>
+<tr><td>Linux <code>.tar.gz</code> archive</td><td><code>keeppeek-&lt;version&gt;-&lt;platform&gt;/skills/keeppeek-mcp/SKILL.md</code></td></tr>
+<tr><td>Windows <code>.zip</code> archive</td><td><code>keeppeek-&lt;version&gt;-&lt;platform&gt;\skills\keeppeek-mcp\SKILL.md</code></td></tr>
+<tr><td>macOS <code>.dmg</code> (<code>KeepPeek.app</code>)</td><td><code>KeepPeek.app/Contents/Resources/skills/keeppeek-mcp/SKILL.md</code></td></tr>
+<tr><td>Container image</td><td><code>/usr/local/share/keeppeek/skills/keeppeek-mcp/SKILL.md</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>To guide an assistant (Claude, Codex, Cursor, or Gemini), copy <code>SKILL.md</code> into the assistant’s
+skills folder or point the assistant at the exported file before asking it to inspect or configure
+KeepPeek.</p>
+<h2 id="enable-and-configure-mcp"><a class="header" href="#enable-and-configure-mcp">Enable and configure <code>[mcp]</code></a></h2>
+<p>All MCP server settings live in the existing <code>config.toml</code> under <code>[mcp]</code>. Every capability that
+opens network access, mutates configuration, or captures camera frames defaults to <code>false</code>.</p>
+<p>Stop KeepPeek before editing <code>config.toml</code> manually, add <code>[mcp]</code>, and restart the server:</p>
+<pre><code class="language-toml">[mcp]
+enabled = true
+allow_writes = false
+allow_snapshots = false
+max_concurrent_requests = 4
+max_response_bytes = 65536
+request_timeout_seconds = 15
+max_snapshot_bytes = 262144
+max_snapshot_dimension = 1280
+snapshot_min_interval_seconds = 5
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Allowed range</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>enabled</code></td><td><code>bool</code></td><td><code>false</code></td><td><code>true</code>/<code>false</code></td><td>Enable the embedded Streamable HTTP endpoint at <code>POST /mcp</code>.</td></tr>
+<tr><td><code>allow_writes</code></td><td><code>bool</code></td><td><code>false</code></td><td><code>true</code>/<code>false</code></td><td>Permit Administrator write tools after explicit plan approval.</td></tr>
+<tr><td><code>allow_snapshots</code></td><td><code>bool</code></td><td><code>false</code></td><td><code>true</code>/<code>false</code></td><td>Permit privacy-gated single-frame snapshots via <code>get_camera_snapshot</code>.</td></tr>
+<tr><td><code>max_concurrent_requests</code></td><td><code>usize</code></td><td><code>4</code></td><td><code>1..=32</code></td><td>Maximum simultaneous in-flight MCP requests.</td></tr>
+<tr><td><code>max_response_bytes</code></td><td><code>usize</code></td><td><code>65536</code></td><td><code>4096..=262144</code></td><td>Maximum serialized JSON-RPC response size in bytes (<code>get_camera_snapshot</code> uses <code>max_snapshot_bytes</code>).</td></tr>
+<tr><td><code>request_timeout_seconds</code></td><td><code>u64</code></td><td><code>15</code></td><td><code>1..=60</code></td><td>Server-side deadline per MCP request, in seconds.</td></tr>
+<tr><td><code>max_snapshot_bytes</code></td><td><code>usize</code></td><td><code>262144</code></td><td><code>16384..=1048576</code></td><td>Maximum encoded JPEG size for <code>get_camera_snapshot</code>, in bytes (base64 + metadata overhead is added).</td></tr>
+<tr><td><code>max_snapshot_dimension</code></td><td><code>u32</code></td><td><code>1280</code></td><td><code>160..=1920</code></td><td>Maximum width or height of returned snapshot frames, in pixels.</td></tr>
+<tr><td><code>snapshot_min_interval_seconds</code></td><td><code>u64</code></td><td><code>5</code></td><td><code>1..=300</code></td><td>Minimum interval between snapshot captures per camera, in seconds.</td></tr>
+</tbody>
+</table>
+</div>
+<p>See <a href="#mcp-server">Configuration reference</a> for validation rules and
+file ownership details.</p>
+<h2 id="connect-an-mcp-client"><a class="header" href="#connect-an-mcp-client">Connect an MCP client</a></h2>
+<p>Create a dedicated named credential in <strong>Settings &gt; Access &amp; roles</strong> for each MCP client so its
+activity appears separately in audit records and can be rotated or revoked independently. Use the
+<strong>User</strong> role for camera-scoped read-only monitoring, or <strong>Administrator</strong> for full diagnostics and
+configuration management. See <a href="#authentication-and-access-control">Authentication and access control</a>.</p>
+<h3 id="local-stdio-bridge"><a class="header" href="#local-stdio-bridge">Local <code>stdio</code> bridge</a></h3>
+<p>Most desktop AI assistants launch MCP servers over <code>stdio</code>. KeepPeek provides a built-in <code>stdio</code>
+JSON-RPC bridge that talks to your KeepPeek server over <code>POST /mcp</code> (with <code>[mcp].enabled = true</code>):</p>
+<pre><code class="language-sh">keeppeek mcp [--server &lt;URL&gt;] [--config &lt;PATH&gt;] [--credential-file &lt;PATH&gt;] [--read-only]
+</code></pre>
+<ul>
+<li><code>--server &lt;URL&gt;</code> targets a specific KeepPeek server origin (for example <code>http://127.0.0.1:8081</code>
+or <code>https://keeppeek.example.net</code>).</li>
+<li><code>--config &lt;PATH&gt;</code> selects an alternate <code>config.toml</code> when resolving local server settings.</li>
+<li><code>--credential-file &lt;PATH&gt;</code> reads the Bearer access key from an owner-only file instead of an
+environment variable.</li>
+<li><code>--read-only</code> sends <code>X-KeepPeek-MCP-Read-Only: true</code>, blocking all write tools even if the server
+has <code>[mcp].allow_writes = true</code>.</li>
+<li><code>stdout</code> is reserved strictly for newline-delimited JSON-RPC messages; warnings and logs go to
+<code>stderr</code>.</li>
+</ul>
+<p>Example MCP client configuration (Claude Desktop, Cursor, or other <code>mcpServers</code> clients) using an
+environment variable:</p>
+<pre><code class="language-json">{
+  "mcpServers": {
+    "keeppeek": {
+      "command": "keeppeek",
+      "args": ["mcp", "--server", "http://127.0.0.1:8081", "--read-only"],
+      "env": {
+        "KEEPPEEK_ACCESS_KEY": "replace-with-dedicated-access-key"
+      }
+    }
+  }
+}
+</code></pre>
+<p>Example using an owner-only credential file (<code>chmod 600</code> on Unix) so the access key is not stored
+inside the MCP client’s JSON file:</p>
+<pre><code class="language-json">{
+  "mcpServers": {
+    "keeppeek": {
+      "command": "keeppeek",
+      "args": [
+        "mcp",
+        "--server",
+        "https://keeppeek.example.net",
+        "--credential-file",
+        "/path/to/keeppeek-mcp.key",
+        "--read-only"
+      ]
+    }
+  }
+}
+</code></pre>
+<p>Remove <code>"--read-only"</code> only when you intentionally allow the assistant to apply approved changes
+against a server configured with <code>[mcp].allow_writes = true</code>.</p>
+<h3 id="remote-streamable-http-post-mcp"><a class="header" href="#remote-streamable-http-post-mcp">Remote Streamable HTTP (<code>POST /mcp</code>)</a></h3>
+<p>Clients that support MCP Streamable HTTP directly can send JSON-RPC requests to <code>POST /mcp</code> once
+<code>[mcp].enabled = true</code> is configured and KeepPeek has restarted:</p>
+<pre><code class="language-http">POST /mcp HTTP/1.1
+Host: keeppeek.example.net
+Authorization: Bearer replace-with-dedicated-access-key
+Content-Type: application/json
+X-KeepPeek-MCP-Read-Only: true
+</code></pre>
+<p>Example remote MCP client configuration:</p>
+<pre><code class="language-json">{
+  "mcpServers": {
+    "keeppeek": {
+      "url": "https://keeppeek.example.net/mcp",
+      "headers": {
+        "Authorization": "Bearer replace-with-dedicated-access-key",
+        "X-KeepPeek-MCP-Read-Only": "true"
+      }
+    }
+  }
+}
+</code></pre>
+<p>Omit <code>X-KeepPeek-MCP-Read-Only</code> when the client needs to call approved write tools and the server
+enables <code>[mcp].allow_writes = true</code>.</p>
+<p>When exposing <code>POST /mcp</code> beyond loopback, keep <code>[access].require_secure_remote = true</code> and
+terminate HTTPS at a trusted reverse proxy listed in <code>[access].trusted_proxies</code>, or reach KeepPeek
+over a private VPN. Direct plain HTTP from a remote-classified address is rejected with HTTP <code>426</code>.</p>
+<h2 id="available-mcp-tools"><a class="header" href="#available-mcp-tools">Available MCP tools</a></h2>
+<h3 id="read-only-and-dry-run-tools"><a class="header" href="#read-only-and-dry-run-tools">Read-only and dry-run tools</a></h3>
+<p>These tools do not modify persisted configuration or runtime settings. <code>plan_configuration_change</code>
+always runs as a dry-run preview and remains available even when <code>allow_writes = false</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Tool</th><th>Minimum role</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>get_server_health</code></td><td>User</td><td>Recorder status, stream health, and disk pressure (filtered to permitted cameras for Users).</td></tr>
+<tr><td><code>search_events</code></td><td>User</td><td>Search stored events across permitted cameras (bounded <code>limit</code>, default 25, max 100).</td></tr>
+<tr><td><code>get_recording_coverage</code></td><td>User</td><td>Inspect recorded intervals and coverage gaps for permitted cameras over a bounded time window.</td></tr>
+<tr><td><code>search_logs</code></td><td>Administrator</td><td>Query redacted server logs filtered by level, target, camera, time, and limit.</td></tr>
+<tr><td><code>get_logging_settings</code></td><td>Administrator</td><td>Inspect active logging destination and diagnostic filter settings.</td></tr>
+<tr><td><code>get_configuration</code></td><td>Administrator</td><td>Read current configuration with <code>{secret:KEY}</code> references preserved and raw secrets redacted.</td></tr>
+<tr><td><code>list_secret_keys</code></td><td>Administrator</td><td>Return sorted key names from <code>secrets.toml</code> without ever returning secret values.</td></tr>
+<tr><td><code>plan_configuration_change</code></td><td>Administrator</td><td>Validate a proposed configuration change and return <code>plan_id</code>, revision, redacted diff, and impact.</td></tr>
+<tr><td><code>get_storage_status</code></td><td>Administrator</td><td>Inspect storage configuration, disk pressure, named volumes, archive status, and maintenance state.</td></tr>
+<tr><td><code>get_notification_status</code></td><td>Administrator</td><td>Summarize notification rules, cloud push status, and MQTT delivery health without raw secrets.</td></tr>
+<tr><td><code>discover_cameras</code></td><td>Administrator</td><td>Run a bounded camera discovery and connection probe.</td></tr>
+<tr><td><code>get_runtime_configuration</code></td><td>Administrator</td><td>Read runtime storage, retention, and listener settings and revision.</td></tr>
+<tr><td><code>list_runtime_profiles</code></td><td>Administrator</td><td>List saved runtime profiles and active selection.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="opt-in-write-tools"><a class="header" href="#opt-in-write-tools">Opt-in write tools</a></h3>
+<p>Write tools require all three conditions:</p>
+<ol>
+<li><code>[mcp].allow_writes = true</code> in <code>config.toml</code>.</li>
+<li>An <strong>Administrator</strong> credential (or trusted-local Administrator access).</li>
+<li>No <code>--read-only</code> flag and no <code>X-KeepPeek-MCP-Read-Only: true</code> header.</li>
+</ol>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Tool</th><th>Minimum role</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>apply_configuration_plan</code></td><td>Administrator</td><td>Apply a previously reviewed <code>plan_configuration_change</code> plan with revision verification.</td></tr>
+<tr><td><code>manage_camera</code></td><td>Administrator</td><td>Add, update, or remove a camera by IP address using <code>{secret:KEY}</code> / `{secret:KEY</td></tr>
+<tr><td><code>update_runtime_configuration</code></td><td>Administrator</td><td>Update runtime storage, retention, or listener settings (always requires <code>expected_configuration_revision</code>).</td></tr>
+<tr><td><code>manage_configuration_template</code></td><td>Administrator</td><td>Save, duplicate, or delete reusable camera templates using <code>{secret:KEY}</code> references.</td></tr>
+<tr><td><code>manage_notification_rule</code></td><td>Administrator</td><td>List (read-only), save draft, activate, or delete notification rules (<code>push</code>/<code>webhook</code>/<code>forwarder</code> require <code>{secret:KEY}</code> or <code>destination_ref</code>).</td></tr>
+<tr><td><code>set_runtime_profile</code></td><td>Administrator</td><td>Activate or update runtime profile selection.</td></tr>
+<tr><td><code>set_logging_filter</code></td><td>Administrator</td><td>Update the live diagnostic log filter atomically.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="opt-in-snapshot-tool"><a class="header" href="#opt-in-snapshot-tool">Opt-in snapshot tool</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Tool</th><th>Minimum role</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>get_camera_snapshot</code></td><td>User</td><td>Capture one privacy-gated, downscaled JPEG frame for a permitted camera when <code>[mcp].allow_snapshots = true</code>.</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="safe-configuration-workflow"><a class="header" href="#safe-configuration-workflow">Safe configuration workflow</a></h2>
+<p>KeepPeek enforces plan-before-apply so an assistant never modifies cameras or storage blindly:</p>
+<ol>
+<li>Inspect the current configuration (<code>get_configuration</code>) and available secret key names
+(<code>list_secret_keys</code>).</li>
+<li>Add any new camera or integration passwords directly to <code>secrets.toml</code> on the server (or via
+<code>KEEPPEEK_SECRET_&lt;KEY&gt;</code> in the server environment) and reference them as <code>{secret:KEY}</code> or
+<code>{secret:KEY|url}</code>. Never paste raw passwords into an LLM prompt.</li>
+<li>Run <code>discover_cameras</code> (read-only LAN probe) if adding new devices, then call
+<code>plan_configuration_change</code> (or preview a <code>manage_camera</code> / <code>manage_notification_rule</code> payload).</li>
+<li>Review the returned redacted diff, validation errors, revision, and live-apply versus restart
+summary.</li>
+<li>Approve the plan explicitly, then allow the assistant to call <code>apply_configuration_plan</code> (or the
+approved <code>manage_camera</code> / <code>manage_notification_rule</code> write action).</li>
+<li>Check <code>get_server_health</code> and <code>search_logs</code> to confirm activation, or restart KeepPeek when the
+plan reports that a restart is required.</li>
+</ol>
+<p>See <a href="#visual-configuration-management">Visual configuration management</a> for revision conflicts,
+inheritance, and template rules.</p>
+<h2 id="security-privacy-and-resource-boundaries"><a class="header" href="#security-privacy-and-resource-boundaries">Security, privacy, and resource boundaries</a></h2>
+<h3 id="authentication-rbac-and-audit"><a class="header" href="#authentication-rbac-and-audit">Authentication, RBAC, and audit</a></h3>
+<p><code>POST /mcp</code> reuses KeepPeek’s standard <code>[access]</code> authentication and authorization pipeline:</p>
+<ul>
+<li>Remote requests require an active Bearer credential in the <code>Authorization</code> header. Query-string
+tokens are rejected, and failed authentication rate limits apply.</li>
+<li><strong>User</strong> credentials can call only <code>get_server_health</code>, <code>search_events</code>,
+<code>get_recording_coverage</code>, and (when enabled) <code>get_camera_snapshot</code>, strictly scoped to their
+granted cameras.</li>
+<li><strong>Administrator</strong> credentials are required for logs, configuration, secret key listing, discovery,
+storage, notifications, profiles, and write tools.</li>
+<li>Privileged reads, configuration mutations, and snapshot requests record bounded entries in
+KeepPeek’s security audit without logging raw credentials or image bytes.</li>
+</ul>
+<p>Remember that KeepPeek’s <code>[access].local_networks</code> policy grants Administrator access to trusted
+local addresses. Narrow <code>local_networks</code> if a local MCP client must be restricted to a <strong>User</strong>
+credential.</p>
+<h3 id="secret-redaction"><a class="header" href="#secret-redaction">Secret redaction</a></h3>
+<p>Every MCP response, configuration snapshot, dry-run diff, log search result, and error passes
+through serialization-layer secret redaction before leaving KeepPeek:</p>
+<ul>
+<li>Raw values loaded from <code>secrets.toml</code> (including URL percent-encoded variants) are scrubbed.</li>
+<li>Fields with credential-like names (<code>password</code>, <code>secret</code>, <code>token</code>, <code>access_key</code>, <code>verifier</code>,
+<code>cookie</code>, <code>authorization</code>, <code>api_key</code>, <code>private_key</code>) are redacted unless they are already
+<code>{secret:KEY}</code> or <code>{secret:KEY|url}</code> references.</li>
+<li>Embedded URL credentials (<code>scheme://user:pass@host</code>) are scrubbed while <code>{secret:KEY}</code> and
+<code>{secret:KEY|url}</code> tokens remain visible for safe editing.</li>
+</ul>
+<h3 id="dns-rebinding-and-cross-origin-protection"><a class="header" href="#dns-rebinding-and-cross-origin-protection">DNS rebinding and cross-origin protection</a></h3>
+<p><code>POST /mcp</code> validates the <code>Host</code> header and enforces an explicit browser origin allowlist:</p>
+<ul>
+<li>Non-browser MCP clients that omit <code>Origin</code> are permitted.</li>
+<li>Unauthenticated local requests (when <code>[access].local_networks</code> grants local trust) require <code>Host</code>
+to be <code>localhost</code> or an IP literal (<code>127.0.0.1</code>, <code>[::1]</code>) so DNS-rebound domain names are
+rejected with <code>403</code>.</li>
+<li>Requests carrying a browser <code>Origin</code> header are rejected with <code>403</code> unless the exact origin is
+listed in <code>[direct_card].allowed_origins</code>, and require <code>Authorization: Bearer &lt;key&gt;</code> even on local
+networks (returning <code>401</code> if unauthenticated).</li>
+<li>Unsupported HTTP methods on <code>/mcp</code> return <code>405 Method Not Allowed</code>, and a disabled MCP server
+returns <code>404 Not Found</code>.</li>
+</ul>
+<h3 id="fail-closed-privacy-and-snapshot-limits"><a class="header" href="#fail-closed-privacy-and-snapshot-limits">Fail-closed privacy and snapshot limits</a></h3>
+<p><code>get_camera_snapshot</code> enforces four sequential gates before returning any image bytes:</p>
+<ol>
+<li><code>[mcp].allow_snapshots</code> must be <code>true</code>.</li>
+<li>The authenticated principal must have view permission for the requested camera.</li>
+<li>The per-camera rate limit (<code>snapshot_min_interval_seconds</code>) must not be exceeded.</li>
+<li>Camera privacy state (<code>[privacy]</code> schedules and runtime profile overrides) must be verified as
+inactive. If privacy mode is active or cannot be verified, KeepPeek fails closed and refuses the
+snapshot.</li>
+</ol>
+<p>Decoded frames use bounded image decoder limits, downscale to at most <code>max_snapshot_dimension</code>
+pixels per side while preserving aspect ratio, and encode JPEG within <code>max_snapshot_bytes</code>.
+KeepPeek does not apply server-side pixel masks; only camera-side (hardware) privacy masks already
+rendered into the camera stream appear in the returned frame.</p>
+<h3 id="concurrency-and-payload-caps"><a class="header" href="#concurrency-and-payload-caps">Concurrency and payload caps</a></h3>
+<p>KeepPeek caps simultaneous MCP executions at <code>max_concurrent_requests</code>, enforces
+<code>request_timeout_seconds</code>, and rejects oversized JSON-RPC responses above <code>max_response_bytes</code>
+(<code>get_camera_snapshot</code> uses <code>max_snapshot_bytes</code> plus base64 and metadata envelope overhead) so an
+automated assistant cannot starve camera ingest, recording, or live playback.</p>
+<h2 id="troubleshooting-3"><a class="header" href="#troubleshooting-3">Troubleshooting</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Symptom</th><th>Check</th></tr>
+</thead>
+<tbody>
+<tr><td><code>POST /mcp</code> returns <code>404</code></td><td>Confirm <code>[mcp].enabled = true</code> in <code>config.toml</code> and restart KeepPeek.</td></tr>
+<tr><td><code>POST /mcp</code> returns <code>403</code></td><td>Check whether <code>Origin</code> is missing from <code>[direct_card].allowed_origins</code>, <code>Host</code> is non-local for local trust, or role is User.</td></tr>
+<tr><td><code>POST /mcp</code> returns <code>426</code></td><td>Remote plain HTTP is blocked by <code>[access].require_secure_remote = true</code>. Use HTTPS via a trusted proxy or a private VPN.</td></tr>
+<tr><td>Write tool is denied</td><td>Confirm <code>[mcp].allow_writes = true</code>, an Administrator credential, and that <code>--read-only</code> is not set.</td></tr>
+<tr><td><code>get_camera_snapshot</code> is denied</td><td>Confirm <code>[mcp].allow_snapshots = true</code>, camera view permission, inactive privacy mode, and the per-camera interval limit.</td></tr>
+<tr><td>Request returns <code>429</code> or <code>503</code> or times out</td><td>Too many simultaneous MCP calls (<code>max_concurrent_requests</code>) or slow probe exceeding <code>request_timeout_seconds</code>.</td></tr>
+<tr><td><code>apply_configuration_plan</code> fails conflict</td><td>Configuration changed after the plan was created. Call <code>get_configuration</code> and generate a fresh plan.</td></tr>
+<tr><td><code>keeppeek mcp</code> fails to connect remotely</td><td>Confirm <code>KEEPPEEK_ACCESS_KEY</code> or <code>--credential-file</code> is set and readable, and verify <code>--server</code> points to the HTTPS origin.</td></tr>
+</tbody>
+</table>
+</div>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="groups-and-two-way-audio-current-status"><a class="header" href="#groups-and-two-way-audio-current-status">Groups and two-way audio: current status</a></h1>
 <p><strong>Live participant groups are not operational in the current server and browser runtime.</strong>
