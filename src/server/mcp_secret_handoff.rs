@@ -66,16 +66,19 @@ const _: () = {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HandoffStatus {
     Pending,
+    Claimed,
     Completed,
     Expired,
+    Failed,
 }
 
 impl HandoffStatus {
     const fn as_str(self) -> &'static str {
         match self {
-            Self::Pending => "pending",
+            Self::Pending | Self::Claimed => "pending",
             Self::Completed => "completed",
             Self::Expired => "expired",
+            Self::Failed => "failed",
         }
     }
 }
@@ -173,12 +176,16 @@ impl HandoffStore {
         find_record_index_ct(&records, &digest).map(|idx| records[idx].clone())
     }
 
-    fn complete_by_token(
+    /// Atomically validates submission keys and claims a pending token once.
+    ///
+    /// Transitions `Pending -> Claimed` and zeros `token_digest` under the mutex
+    /// before any disk write so concurrent POSTs cannot write twice.
+    fn claim_for_submission(
         &self,
         token: &str,
-        configured_keys: Vec<String>,
+        submitted: &BTreeMap<String, Zeroizing<String>>,
         now_ms: i64,
-    ) -> Result<HandoffRecord, (u16, &'static str)> {
+    ) -> Result<(String, String), Response> {
         let digest = sha256_bytes(token.as_bytes());
         let mut records = self
             .records
@@ -186,19 +193,43 @@ impl HandoffStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         expire_stale_records(&mut records, now_ms);
         let Some(index) = find_record_index_ct(&records, &digest) else {
-            return Err((403, "secret entry token is invalid or already used"));
+            return Err(api_status(
+                403,
+                "secret entry token is invalid or already used",
+            ));
         };
+        check_record_pending(&records[index])?;
+        validate_submission_keys(&records[index], submitted)?;
         let record = &mut records[index];
-        match record.status {
-            HandoffStatus::Pending => {
-                record.status = HandoffStatus::Completed;
-                record.configured_keys = configured_keys;
-                // Zero the token digest immediately so replay cannot match this record again.
-                record.token_digest = [0u8; 32];
-                Ok(record.clone())
-            }
-            HandoffStatus::Expired => Err((410, "secret entry link has expired")),
-            HandoffStatus::Completed => Err((410, "secret entry link has already been used")),
+        record.status = HandoffStatus::Claimed;
+        record.token_digest = [0u8; 32];
+        Ok((record.handoff_id.clone(), record.principal_id.clone()))
+    }
+
+    fn finish_claimed(&self, handoff_id: &str, configured_keys: Vec<String>) {
+        let mut records = self
+            .records
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(record) = records
+            .iter_mut()
+            .find(|record| record.handoff_id == handoff_id)
+        {
+            record.status = HandoffStatus::Completed;
+            record.configured_keys = configured_keys;
+        }
+    }
+
+    fn fail_claimed(&self, handoff_id: &str) {
+        let mut records = self
+            .records
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(record) = records
+            .iter_mut()
+            .find(|record| record.handoff_id == handoff_id)
+        {
+            record.status = HandoffStatus::Failed;
         }
     }
 }
@@ -265,6 +296,7 @@ struct GetSecretEntryStatusArgs {
 pub(super) fn request_secret_entry(
     state: &ServerState,
     principal: &ApiPrincipal,
+    classification: ClientClassificationReason,
     host_port: Option<u16>,
     args: &Value,
 ) -> Result<Value, ControlCommandError> {
@@ -296,7 +328,11 @@ pub(super) fn request_secret_entry(
     } else {
         host_port.unwrap_or(8081)
     };
-    let local_ui_url = format!("http://127.0.0.1:{port}/mcp/secret-entry?token={}", *token);
+    let loopback_host = loopback_url_host(&state.host);
+    let local_ui_url = format!(
+        "http://{loopback_host}:{port}/mcp/secret-entry?token={}",
+        *token
+    );
     let cli_commands = build_cli_commands(state, &requested_keys);
     record_access_audit(
         state,
@@ -306,7 +342,7 @@ pub(super) fn request_secret_entry(
         "mcp_secret_entry_requested",
         Some(&handoff_id),
         "pending",
-        ClientClassificationReason::DirectLocal,
+        classification,
     );
     Ok(json!({
         "handoff_id": handoff_id,
@@ -391,6 +427,13 @@ fn validate_requested_keys(
         validate_secret_key(&key).map_err(|error| {
             ControlCommandError::new(proto::ErrorCode::InvalidRequest, 400, error.to_string())
         })?;
+        if is_reserved_handoff_key(&key) {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                format!("reserved secret key cannot be requested via MCP handoff: {key}"),
+            ));
+        }
         if !seen.insert(key.clone()) {
             return Err(ControlCommandError::new(
                 proto::ErrorCode::InvalidRequest,
@@ -412,6 +455,21 @@ fn validate_requested_keys(
         validated.push(RequestedSecretKey { key, purpose });
     }
     Ok(validated)
+}
+
+fn is_reserved_handoff_key(key: &str) -> bool {
+    key.starts_with("KEEPPEEK_")
+}
+
+fn loopback_url_host(listen_host: &str) -> &'static str {
+    let trimmed = listen_host
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    match trimmed.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V6(v6)) if v6.is_loopback() || v6.is_unspecified() => "[::1]",
+        _ => "127.0.0.1",
+    }
 }
 
 fn build_cli_commands(state: &ServerState, keys: &[RequestedSecretKey]) -> Vec<String> {
@@ -445,13 +503,14 @@ pub(super) fn handle_get(request: &Request, state: &ServerState) -> Response {
     };
     match record.status {
         HandoffStatus::Pending => {
-            let html = render_entry_form_html(&token, &record.requested_keys);
+            let existing = existing_secret_keys(state);
+            let html = render_entry_form_html(&token, &record.requested_keys, &existing);
             with_security_headers(Response::html(html))
         }
         HandoffStatus::Expired => {
             with_security_headers(api_status(410, "secret entry link has expired"))
         }
-        HandoffStatus::Completed => {
+        HandoffStatus::Claimed | HandoffStatus::Completed | HandoffStatus::Failed => {
             with_security_headers(api_status(410, "secret entry link has already been used"))
         }
     }
@@ -474,51 +533,57 @@ pub(super) fn handle_post(request: &Request, state: &ServerState) -> Response {
         Err(response) => return with_security_headers(response),
     };
     let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
-    let Some(record) = state.mcp.handoffs().lookup_by_token(&token, now_ms) else {
-        return with_security_headers(api_status(
-            403,
-            "secret entry token is invalid or already used",
-        ));
-    };
-    if let Err(response) = check_record_pending(&record) {
-        return with_security_headers(response);
-    }
-    if let Err(response) = validate_submission_keys(&record, &submitted) {
-        return with_security_headers(response);
-    }
-    let configured_keys = match persist_and_reload_secrets(state, &submitted) {
-        Ok(keys) => keys,
-        Err(response) => return with_security_headers(response),
-    };
-    let completed = match state
+    let (handoff_id, principal_id) = match state
         .mcp
         .handoffs()
-        .complete_by_token(&token, configured_keys, now_ms)
+        .claim_for_submission(&token, &submitted, now_ms)
     {
-        Ok(completed) => completed,
-        Err((status, message)) => return with_security_headers(api_status(status, message)),
+        Ok(claimed) => claimed,
+        Err(response) => return with_security_headers(response),
     };
-    let target = completed.configured_keys.join(",");
-    record_access_audit(
-        state,
-        now_ms,
-        Some(&completed.principal_id),
-        Some(AccessRole::Administrator),
-        "mcp_secret_entry_completed",
-        Some(&target),
-        "success",
-        ClientClassificationReason::DirectLocal,
-    );
+    let configured_keys = match persist_and_reload_secrets(state, &submitted) {
+        Ok(keys) => keys,
+        Err(response) => {
+            state.mcp.handoffs().fail_claimed(&handoff_id);
+            audit_secret_entry_outcome(state, now_ms, &principal_id, &handoff_id, "failed");
+            return with_security_headers(response);
+        }
+    };
+    state
+        .mcp
+        .handoffs()
+        .finish_claimed(&handoff_id, configured_keys.clone());
+    let target = configured_keys.join(",");
+    audit_secret_entry_outcome(state, now_ms, &principal_id, &target, "success");
     let response = if is_json {
         Response::json(&json!({
             "status": "completed",
-            "handoff_id": completed.handoff_id,
-            "configured_keys": completed.configured_keys,
+            "handoff_id": handoff_id,
+            "configured_keys": configured_keys,
         }))
     } else {
-        Response::html(render_confirmation_html(&completed.configured_keys))
+        Response::html(render_confirmation_html(&configured_keys))
     };
     with_security_headers(response)
+}
+
+fn audit_secret_entry_outcome(
+    state: &ServerState,
+    now_ms: i64,
+    principal_id: &str,
+    target: &str,
+    result: &str,
+) {
+    record_access_audit(
+        state,
+        now_ms,
+        Some(principal_id),
+        Some(AccessRole::Administrator),
+        "mcp_secret_entry_completed",
+        Some(target),
+        result,
+        ClientClassificationReason::DirectLocal,
+    );
 }
 
 /// Returns `404` when MCP is disabled or `405` for unsupported HTTP methods on `/mcp/secret-entry`.
@@ -584,7 +649,8 @@ fn validate_loopback_request(request: &Request, check_origin: bool) -> Result<()
 fn with_security_headers(response: Response) -> Response {
     response
         .with_additional_header("Cache-Control", "no-store")
-        .with_additional_header("Referrer-Policy", "no-referrer")
+        // Same-origin preserves the browser POST Origin header while keeping token URLs off third-party origins.
+        .with_additional_header("Referrer-Policy", "same-origin")
         .with_additional_header("X-Frame-Options", "DENY")
         .with_additional_header("X-Content-Type-Options", "nosniff")
         .with_additional_header(
@@ -662,7 +728,9 @@ fn check_record_pending(record: &HandoffRecord) -> Result<(), Response> {
     match record.status {
         HandoffStatus::Pending => Ok(()),
         HandoffStatus::Expired => Err(api_status(410, "secret entry link has expired")),
-        HandoffStatus::Completed => Err(api_status(410, "secret entry link has already been used")),
+        HandoffStatus::Claimed | HandoffStatus::Completed | HandoffStatus::Failed => {
+            Err(api_status(410, "secret entry link has already been used"))
+        }
     }
 }
 
@@ -718,18 +786,37 @@ fn persist_and_reload_secrets(
     Ok(configured)
 }
 
-fn render_entry_form_html(token: &str, keys: &[RequestedSecretKey]) -> String {
+fn existing_secret_keys(state: &ServerState) -> HashSet<String> {
+    let Some(config_path) = state.camera_config_path.as_deref() else {
+        return HashSet::new();
+    };
+    let secrets_path = config::secrets_path(config_path);
+    load_secrets_file_with_lock(&secrets_path, &state.config_update)
+        .map(|secrets| secrets.keys().into_iter().collect())
+        .unwrap_or_default()
+}
+
+fn render_entry_form_html(
+    token: &str,
+    keys: &[RequestedSecretKey],
+    existing_keys: &HashSet<String>,
+) -> String {
     let mut fields = String::new();
     for entry in keys {
         let key = escape_html(&entry.key);
         let purpose = escape_html(&entry.purpose);
+        let warning = if existing_keys.contains(&entry.key) {
+            "<em class=\"warn\">Replaces existing value</em>"
+        } else {
+            ""
+        };
         fields.push_str(&format!(
-            "<label><strong>{key}</strong><span>{purpose}</span><input type=\"password\" name=\"{SECRET_FIELD_PREFIX}{key}\" autocomplete=\"off\" required></label>"
+            "<label><strong>{key}</strong>{warning}<span>{purpose}</span><input type=\"password\" name=\"{SECRET_FIELD_PREFIX}{key}\" autocomplete=\"off\" required></label>"
         ));
     }
     let escaped_token = escape_html(token);
     format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>KeepPeek Secret Entry</title><style>body{{font-family:system-ui,sans-serif;max-width:34rem;margin:2rem auto;padding:0 1rem;background:#111;color:#eee}}label{{display:block;margin:1rem 0}}span{{display:block;color:#aaa;font-size:.9rem;margin:.2rem 0 .4rem}}input[type=password]{{width:100%;padding:.6rem;box-sizing:border-box;background:#1d1d1d;color:#fff;border:1px solid #444;border-radius:4px}}button{{margin-top:1rem;padding:.6rem 1.2rem;background:#2563eb;color:#fff;border:0;border-radius:4px;cursor:pointer}}</style></head><body><h1>KeepPeek Secret Entry</h1><p>Values are written directly to <code>secrets.toml</code> and are never sent to MCP clients.</p><form method=\"post\" action=\"/mcp/secret-entry\"><input type=\"hidden\" name=\"token\" value=\"{escaped_token}\">{fields}<button type=\"submit\">Save Secrets</button></form></body></html>"
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>KeepPeek Secret Entry</title><style>body{{font-family:system-ui,sans-serif;max-width:34rem;margin:2rem auto;padding:0 1rem;background:#111;color:#eee}}label{{display:block;margin:1rem 0}}span{{display:block;color:#aaa;font-size:.9rem;margin:.2rem 0 .4rem}}em.warn{{display:inline-block;margin-left:.5rem;color:#fbbf24;font-style:normal;font-size:.85rem}}input[type=password]{{width:100%;padding:.6rem;box-sizing:border-box;background:#1d1d1d;color:#fff;border:1px solid #444;border-radius:4px}}button{{margin-top:1rem;padding:.6rem 1.2rem;background:#2563eb;color:#fff;border:0;border-radius:4px;cursor:pointer}}</style></head><body><h1>KeepPeek Secret Entry</h1><p>Values are written directly to <code>secrets.toml</code> and are never sent to MCP clients.</p><form method=\"post\" action=\"/mcp/secret-entry\"><input type=\"hidden\" name=\"token\" value=\"{escaped_token}\">{fields}<button type=\"submit\">Save Secrets</button></form></body></html>"
     )
 }
 
@@ -770,6 +857,13 @@ mod tests {
         }]
     }
 
+    fn sample_submission() -> BTreeMap<String, Zeroizing<String>> {
+        BTreeMap::from([(
+            "CAM_PASS".to_owned(),
+            Zeroizing::new("secret-value".to_owned()),
+        )])
+    }
+
     #[test]
     fn handoff_store_enforces_expiry_single_use_and_pending_cap() {
         let store = HandoffStore::new();
@@ -786,9 +880,9 @@ mod tests {
             HandoffStatus::Expired
         );
         let expired_err = store
-            .complete_by_token(&token, vec!["CAM_PASS".to_owned()], 61_000)
+            .claim_for_submission(&token, &sample_submission(), 61_000)
             .expect_err("expired token must fail");
-        assert_eq!(expired_err.0, 410);
+        assert_eq!(expired_err.status_code, 410);
 
         let mut tokens = Vec::new();
         for _ in 0..MAX_PENDING_HANDOFFS {
@@ -802,21 +896,72 @@ mod tests {
             .expect_err("17th pending handoff must be rejected");
         assert_eq!(overflow._http_status, 429);
 
-        let completed = store
-            .complete_by_token(&tokens[0], vec!["CAM_PASS".to_owned()], 70_001)
-            .expect("valid token completes once");
-        assert_eq!(completed.status, HandoffStatus::Completed);
+        let (claimed_id, _) = store
+            .claim_for_submission(&tokens[0], &sample_submission(), 70_001)
+            .expect("valid token claims once");
+        assert_eq!(
+            store.status(&claimed_id, 70_001).unwrap().status,
+            HandoffStatus::Claimed
+        );
         let replay_err = store
-            .complete_by_token(&tokens[0], vec!["CAM_PASS".to_owned()], 70_002)
-            .expect_err("replayed token must fail");
-        assert_eq!(replay_err.0, 403);
+            .claim_for_submission(&tokens[0], &sample_submission(), 70_002)
+            .expect_err("replayed token must fail immediately after claim");
+        assert_eq!(replay_err.status_code, 403);
+        store.finish_claimed(&claimed_id, vec!["CAM_PASS".to_owned()]);
+        assert_eq!(
+            store.status(&claimed_id, 70_003).unwrap().status,
+            HandoffStatus::Completed
+        );
     }
 
     #[test]
-    fn html_escaping_neutralizes_special_characters() {
+    fn handoff_store_concurrent_double_claim_allows_only_one_winner() {
+        let store = HandoffStore::new();
+        let (_, token, _) = store
+            .create("admin:test".to_owned(), sample_keys(), 120, 1_000)
+            .expect("create handoff");
+        let barrier = std::sync::Barrier::new(2);
+        let results: Vec<bool> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    let token_ref = &*token;
+                    let store_ref = &store;
+                    let barrier_ref = &barrier;
+                    scope.spawn(move || {
+                        let submission = sample_submission();
+                        barrier_ref.wait();
+                        store_ref
+                            .claim_for_submission(token_ref, &submission, 1_005)
+                            .is_ok()
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        assert_eq!(results.iter().filter(|won| **won).count(), 1);
+    }
+
+    #[test]
+    fn reserved_keys_and_ipv6_loopback_host_are_handled() {
+        let err = validate_requested_keys(vec![RequestedKeyInput {
+            key: "KEEPPEEK_ACCESS_KEY".to_owned(),
+            purpose: "Admin key".to_owned(),
+        }])
+        .expect_err("KEEPPEEK_* key must be rejected");
+        assert_eq!(err._http_status, 400);
+        assert_eq!(loopback_url_host("::1"), "[::1]");
+        assert_eq!(loopback_url_host("::"), "[::1]");
+        assert_eq!(loopback_url_host("0.0.0.0"), "127.0.0.1");
+    }
+
+    #[test]
+    fn html_escaping_and_overwrite_warning_render_safely() {
         assert_eq!(
             escape_html("<script>\"'&</script>"),
             "&lt;script&gt;&quot;&#x27;&amp;&lt;/script&gt;"
         );
+        let existing = HashSet::from(["CAM_PASS".to_owned()]);
+        let html = render_entry_form_html("tok123", &sample_keys(), &existing);
+        assert!(html.contains("Replaces existing value"));
     }
 }

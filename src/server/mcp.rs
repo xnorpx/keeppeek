@@ -826,6 +826,7 @@ fn tool_probe_camera_streams(
         ctx.router_tx,
         &ctx.identity.principal,
         &args,
+        ctx.read_only_header,
         Some(ctx.deadline),
     ) {
         Ok(value) => {
@@ -848,6 +849,7 @@ fn tool_request_secret_entry(
     let payload = mcp_secret_handoff::request_secret_entry(
         ctx.state,
         &ctx.identity.principal,
+        ctx.identity.classification.reason,
         ctx.host_port,
         &args,
     )
@@ -874,21 +876,29 @@ fn tool_get_camera_device_settings(
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::invalid_params("get_camera_device_settings requires camera_id"))?
         .to_owned();
-    let payload = mcp_device_settings::get_camera_device_settings(
+    match mcp_device_settings::get_camera_device_settings(
         ctx.state,
         ctx.router_tx,
         &ctx.identity.principal,
         &camera_id,
         &args,
         ctx.deadline,
-    )
-    .map_err(ToolError::from_control)?;
-    ctx.audit(
-        "mcp_get_camera_device_settings",
-        Some(&camera_id),
-        "success",
-    );
-    Ok(ToolCallResult::json(payload))
+    ) {
+        Ok(payload) => {
+            ctx.audit(
+                "mcp_get_camera_device_settings",
+                Some(&camera_id),
+                "success",
+            );
+            Ok(ToolCallResult::json(payload))
+        }
+        Err(error) => {
+            if ctx.is_admin() {
+                ctx.audit("mcp_get_camera_device_settings", Some(&camera_id), "failed");
+            }
+            Err(ToolError::from_control(error))
+        }
+    }
 }
 
 fn tool_update_camera_device_settings(
@@ -905,10 +915,11 @@ fn tool_update_camera_device_settings(
     let policy = mcp_device_settings::McpDeviceWritePolicy {
         allow_camera_device_writes: ctx.state.mcp.config().allow_camera_device_writes,
     };
-    let payload = mcp_device_settings::update_camera_device_settings(
+    let payload = mcp_device_settings::update_camera_device_settings_classified(
         ctx.state,
         ctx.router_tx,
         &ctx.identity.principal,
+        ctx.identity.classification.reason,
         &camera_id,
         &args,
         policy,
@@ -4952,7 +4963,7 @@ display_name = "Front Door"
             })
         };
         assert!(has_header(&form_resp, "Cache-Control", "no-store"));
-        assert!(has_header(&form_resp, "Referrer-Policy", "no-referrer"));
+        assert!(has_header(&form_resp, "Referrer-Policy", "same-origin"));
         assert!(has_header(&form_resp, "X-Frame-Options", "deny"));
         assert!(has_header(
             &form_resp,
@@ -4960,31 +4971,79 @@ display_name = "Front Door"
             "default-src 'none'"
         ));
 
-        // Submit secrets over loopback POST; verify zero value echo and live reload.
-        let form_body = format!(
-            "token={token}&secret_NEW_CAM_USER=onboard_admin&secret_NEW_CAM_PASS={secret_sentinel}"
-        );
-        let post_form = Request::fake_http_from(
+        // Origin: null (e.g. from no-referrer / sandboxed iframe) must still be rejected.
+        let null_origin = Request::fake_http_from(
             "127.0.0.1:50000".parse().unwrap(),
             "POST",
             "/mcp/secret-entry",
             vec![
                 ("Host".into(), "127.0.0.1:8081".into()),
-                ("Origin".into(), "http://127.0.0.1:8081".into()),
-                (
-                    "Content-Type".into(),
-                    "application/x-www-form-urlencoded".into(),
-                ),
+                ("Origin".into(), "null".into()),
+                ("Content-Type".into(), "application/json".into()),
             ],
-            form_body.into_bytes(),
+            serde_json::to_vec(&json!({ "token": token, "secrets": { "NEW_CAM_PASS": "x" } }))
+                .unwrap(),
         );
-        let post_resp = super::super::handle_request(&post_form, &router_tx, &state);
-        assert_eq!(post_resp.status_code, 200);
-        let (mut reader, _) = post_resp.data.into_reader_and_size();
-        let mut confirm_html = String::new();
-        reader.read_to_string(&mut confirm_html).unwrap();
-        assert!(confirm_html.contains("NEW_CAM_PASS"));
-        assert!(!confirm_html.contains(secret_sentinel));
+        assert_eq!(
+            super::super::handle_request(&null_origin, &router_tx, &state).status_code,
+            403
+        );
+
+        // Concurrent double-submit over loopback POST with browser same-origin Origin:
+        // exactly 1 succeeds (200) and the concurrent second fails (403/410), with 1 audit.
+        let form_body = format!(
+            "token={token}&secret_NEW_CAM_USER=onboard_admin&secret_NEW_CAM_PASS={secret_sentinel}"
+        );
+        let barrier = std::sync::Barrier::new(2);
+        let post_results: Vec<(u16, String)> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    let body = form_body.clone();
+                    let state_ref = &state;
+                    let router_ref = &router_tx;
+                    let barrier_ref = &barrier;
+                    scope.spawn(move || {
+                        let req = Request::fake_http_from(
+                            "127.0.0.1:50000".parse().unwrap(),
+                            "POST",
+                            "/mcp/secret-entry",
+                            vec![
+                                ("Host".into(), "127.0.0.1:8081".into()),
+                                ("Origin".into(), "http://127.0.0.1:8081".into()),
+                                (
+                                    "Content-Type".into(),
+                                    "application/x-www-form-urlencoded".into(),
+                                ),
+                            ],
+                            body.into_bytes(),
+                        );
+                        barrier_ref.wait();
+                        let resp = super::super::handle_request(&req, router_ref, state_ref);
+                        let status = resp.status_code;
+                        let (mut reader, _) = resp.data.into_reader_and_size();
+                        let mut text = String::new();
+                        reader.read_to_string(&mut text).unwrap();
+                        (status, text)
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let successes: Vec<&String> = post_results
+            .iter()
+            .filter(|(status, _)| *status == 200)
+            .map(|(_, body)| body)
+            .collect();
+        let failures: Vec<u16> = post_results
+            .iter()
+            .filter(|(status, _)| *status != 200)
+            .map(|(status, _)| *status)
+            .collect();
+        assert_eq!(successes.len(), 1);
+        assert_eq!(failures.len(), 1);
+        assert!(matches!(failures[0], 403 | 410));
+        assert!(successes[0].contains("NEW_CAM_PASS"));
+        assert!(!successes[0].contains(secret_sentinel));
 
         // Status is completed with zero secret values.
         let done_status = super::super::handle_request(
@@ -5085,13 +5144,15 @@ display_name = "Front Door"
             "192.0.2.77"
         );
 
-        // Audit records never contain the submitted secret value.
+        // Audit records never contain the submitted secret value and count exactly 1 completion.
         let audits = state.access_manager.list_audit(64);
-        assert!(
+        assert_eq!(
             audits
                 .iter()
-                .any(|event| event.action == "mcp_secret_entry_completed"
+                .filter(|event| event.action == "mcp_secret_entry_completed"
                     && event.result == "success")
+                .count(),
+            1
         );
         assert!(
             !serde_json::to_string(&audits)

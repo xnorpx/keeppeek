@@ -232,11 +232,11 @@ http://127.0.0.1:<port>/mcp/secret-entry?token=<256-bit-single-use-token>
   submit. KeepPeek writes `secrets.toml` atomically, reloads secrets live without a restart,
   invalidates the token immediately, emits a value-free audit event, and never echoes secret values.
 - The assistant polls `get_secret_entry_status`, which returns only `status` (`"pending"`,
-  `"completed"`, `"expired"`, or `"cancelled"`), `configured_keys`, and `expires_at_ms`.
+  `"completed"`, `"expired"`, or `"failed"`), `configured_keys`, and `expires_at_ms`.
 - `/mcp/secret-entry` is strictly **loopback-only**: non-loopback connections, proxy-forwarded
   requests, non-loopback `Host` headers, and cross-origin `POST` requests are rejected with `403`.
   When `[mcp].enabled = false`, `/mcp/secret-entry` returns `404`.
-- Form responses enforce `Cache-Control: no-store`, `Referrer-Policy: no-referrer`,
+- Form responses enforce `Cache-Control: no-store`, `Referrer-Policy: same-origin`,
   `X-Frame-Options: DENY`, and a strict Content Security Policy.
 
 ## Available MCP tools (27 total)
@@ -263,7 +263,7 @@ These tools do not modify persisted KeepPeek configuration or on-camera hardware
 | `search_camera_catalog`      | Administrator | Search KeepPeek's embedded camera catalog (`limit` `1..=25`) and attach credential-free RTSP `stream_hints` by IP. |
 | `probe_camera_streams`       | Administrator | Probe ONVIF/RTSP streams using single `{secret:KEY}` refs or `credential_candidates` (max 5); returns refs only.   |
 | `request_secret_entry`       | Administrator | Create a single-use loopback `/mcp/secret-entry` handoff URL and CLI instructions for missing secret keys.         |
-| `get_secret_entry_status`    | Administrator | Check whether a secret-entry handoff is `pending`, `completed`, `expired`, or `cancelled` (never returns values).  |
+| `get_secret_entry_status`    | Administrator | Check whether a secret-entry handoff is `pending`, `completed`, `expired`, or `failed` (never returns values).     |
 | `get_camera_device_settings` | Administrator | Read live on-camera hardware settings and supported/unsupported sections for one configured camera.                |
 | `get_runtime_configuration`  | Administrator | Read runtime storage, retention, and listener settings and revision.                                               |
 | `list_runtime_profiles`      | Administrator | List saved runtime profiles and active selection.                                                                  |

@@ -12,23 +12,27 @@ use crate::{
     access::AccessRole,
     api::proto,
     camera_database::{CatalogCamera, StreamHints},
-    cameras::{CameraBackend, CameraConfig, CameraTransport, MediaProfile, probe_onvif_camera},
+    cameras::{
+        CameraBackend, CameraConfig, CameraTransport, MediaProfile, OnvifProbeFailureKind,
+        probe_onvif_camera_with_deadline,
+    },
     config::{
         self, Secrets,
         secrets_store::{
             load_secrets_file_with_lock, resolve_loaded_reference, validate_secret_key,
         },
     },
-    rtsp::{RtspTransport, probe_rtsp_video},
+    rtsp::{RtspStatusError, RtspTransport, probe_rtsp_video},
     runtime::{FacadeSender, RouterMessage},
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     time::{Duration, Instant},
 };
 use url::{Host, Url};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 const CATALOG_LIMIT_MIN: usize = 1;
 const CATALOG_LIMIT_DEFAULT: usize = 10;
@@ -98,31 +102,46 @@ pub(super) fn probe_camera_streams(
     _router_tx: &FacadeSender<RouterMessage>,
     principal: &ApiPrincipal,
     arguments: &serde_json::Value,
+    read_only: bool,
     deadline: Option<Instant>,
 ) -> Result<serde_json::Value, ControlCommandError> {
-    probe_camera_streams_with(state, principal, arguments, deadline, run_live_probe)
+    probe_camera_streams_with(
+        state,
+        principal,
+        arguments,
+        read_only,
+        deadline,
+        run_live_probe,
+    )
 }
 
 fn probe_camera_streams_with<F>(
     state: &ServerState,
     principal: &ApiPrincipal,
     arguments: &serde_json::Value,
+    read_only: bool,
     caller_deadline: Option<Instant>,
     mut probe_candidate: F,
 ) -> Result<serde_json::Value, ControlCommandError>
 where
-    F: FnMut(&ProbePlan, &ResolvedCandidate, Instant) -> CandidateProbeOutcome,
+    F: FnMut(&mut ProbePlan, &ResolvedCandidate, Instant) -> CandidateProbeOutcome,
 {
     require_administrator(principal)?;
     reject_raw_credential_fields(arguments)?;
     let request: ProbeStreamsRequest = parse_arguments(arguments)?;
-    let plan = build_probe_plan(state, request)?;
-    let (secrets, resolved) = resolve_candidates(state, &plan.candidates)?;
-    let redaction_terms = collect_redaction_terms(&secrets, &resolved);
+    if read_only && request.credential_candidates.is_some() {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            403,
+            "multi-candidate credential probing is disabled while read-only mode is active",
+        ));
+    }
+    let mut plan = build_probe_plan(state, request)?;
+    let (resolved, redaction_terms) = resolve_candidates_and_redaction(state, &plan.candidates)?;
     let effective_deadline = compute_deadline(plan.timeout_seconds, caller_deadline);
 
     let outcome = execute_candidates(
-        &plan,
+        &mut plan,
         &resolved,
         effective_deadline,
         &redaction_terms,
@@ -132,14 +151,14 @@ where
 }
 
 fn execute_candidates<F>(
-    plan: &ProbePlan,
+    plan: &mut ProbePlan,
     candidates: &[ResolvedCandidate],
     deadline: Instant,
     redaction_terms: &[Zeroizing<String>],
     probe_candidate: &mut F,
 ) -> ProbeStreamsResponse
 where
-    F: FnMut(&ProbePlan, &ResolvedCandidate, Instant) -> CandidateProbeOutcome,
+    F: FnMut(&mut ProbePlan, &ResolvedCandidate, Instant) -> CandidateProbeOutcome,
 {
     let mut state = CandidateLoopState::default();
     for (index, candidate) in candidates.iter().enumerate() {
@@ -167,6 +186,10 @@ where
             CandidateProbeOutcome::LockoutOrRateLimited { detail, message } => {
                 state.record_failure(index, detail, message);
                 return state.finish(plan, None, "lockout_or_rate_limited", redaction_terms);
+            }
+            CandidateProbeOutcome::DeadlineExceeded { detail, message } => {
+                state.record_failure(index, detail, message);
+                return state.finish(plan, None, "deadline_exceeded", redaction_terms);
             }
             CandidateProbeOutcome::Unreachable { detail, message } => {
                 state.record_failure(index, detail, message);
@@ -237,10 +260,12 @@ fn build_response(
         .and_then(|matched| matched.uid_secret_reference.as_ref())
         .is_some();
     let recommended_backend = recommend_backend(detail.device.as_ref(), has_uid);
-    let verified = matched_credentials.is_some();
+    let verified = detail.streams.iter().any(|stream| stream.verified);
+    let onvif_authenticated = detail.device.is_some();
     ProbeStreamsResponse {
         ip: plan.ip.to_string(),
         verified,
+        onvif_authenticated,
         stop_reason,
         attempted_candidates,
         matched_credentials,
@@ -371,16 +396,27 @@ fn validate_secret_ref(field: &str, value: &str) -> Result<String, ControlComman
     let trimmed = value.trim();
     if !config::is_secret_reference(trimmed) {
         return Err(invalid_request(format!(
-            "{field} must use {{secret:KEY}} or {{secret:KEY|url}} syntax; raw credentials are rejected"
+            "{field} must use {{secret:KEY}} syntax; raw credentials are rejected"
         )));
     }
     let body = trimmed
         .strip_prefix("{secret:")
         .and_then(|rest| rest.strip_suffix('}'))
-        .expect("validated secret reference must retain braces");
-    let key = body.split_once('|').map_or(body, |(key, _)| key);
-    validate_secret_key(key)
+        .ok_or_else(|| invalid_request(format!("{field} must use {{secret:KEY}} syntax")))?;
+    if body.contains('|') {
+        return Err(invalid_request(format!(
+            "{field} must use plain {{secret:KEY}} syntax without |url encoding"
+        )));
+    }
+    validate_secret_key(body)
         .map_err(|_| invalid_request(format!("{field} contains an invalid secret key name")))?;
+    if body.starts_with("KEEPPEEK_") {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            403,
+            format!("{field} cannot reference reserved secret key {body}"),
+        ));
+    }
     Ok(trimmed.to_owned())
 }
 
@@ -435,9 +471,8 @@ fn validate_probe_target_ip(state: &ServerState, ip: IpAddr) -> Result<(), Contr
             "loopback addresses require an existing configured camera entry",
         ));
     }
-    let in_private = is_private_lan_ip(ip);
-    let in_local_policy = state.network_access.classify(ip, std::iter::empty()).local;
-    if in_private || in_local_policy {
+    // Never reuse [access].local_networks (client trust policy) as the probe target allowlist.
+    if is_private_lan_ip(ip) {
         return Ok(());
     }
     Err(invalid_request(
@@ -528,18 +563,157 @@ fn validate_rtsp_url_for_ip(
 }
 
 fn has_credential_query_param(url: &Url) -> bool {
-    url.query_pairs().any(|(name, _)| {
+    let query_hit = url.query_pairs().any(|(name, _)| {
         matches!(
             name.to_ascii_lowercase().as_str(),
-            "user" | "username" | "pass" | "password" | "pwd" | "token" | "secret" | "auth"
+            "user"
+                | "username"
+                | "pass"
+                | "password"
+                | "passwd"
+                | "pw"
+                | "pwd"
+                | "loginuse"
+                | "loginpas"
+                | "token"
+                | "secret"
+                | "auth"
         )
-    })
+    });
+    if query_hit {
+        return true;
+    }
+    let lower_path = url.path().to_ascii_lowercase();
+    [
+        "password=",
+        "passwd=",
+        "pass=",
+        "pwd=",
+        "loginpas=",
+        "user=",
+        "username=",
+        "loginuse=",
+    ]
+    .iter()
+    .any(|marker| lower_path.contains(marker))
 }
 
-fn resolve_candidates(
+const NON_CAMERA_CONFIG_SECTIONS: [&str; 25] = [
+    "access_key",
+    "access",
+    "sharing",
+    "reporting",
+    "usage_reporting",
+    "cloud_notifications",
+    "external_auth",
+    "direct_card",
+    "desktop",
+    "mcp",
+    "storage",
+    "battery_wake",
+    "logging",
+    "operational_events",
+    "analytics",
+    "privacy",
+    "runtime_profiles",
+    "event_forwarder",
+    "isapi_callbacks",
+    "mqtt",
+    "notifications",
+    "home_assistant",
+    "webhook",
+    "webhooks",
+    "pushover",
+];
+
+fn collect_non_camera_secret_keys(config_path: &std::path::Path) -> HashSet<String> {
+    let mut keys = HashSet::new();
+    let Ok(raw) = std::fs::read_to_string(config_path) else {
+        return keys;
+    };
+    let Ok(table) = raw.parse::<toml::Table>() else {
+        return keys;
+    };
+    for section in NON_CAMERA_CONFIG_SECTIONS {
+        if let Some(value) = table.get(section) {
+            extract_secret_keys_from_toml(value, &mut keys, 0);
+        }
+    }
+    keys
+}
+
+fn extract_secret_keys_from_toml(value: &toml::Value, out: &mut HashSet<String>, depth: usize) {
+    if depth > 16 {
+        return;
+    }
+    match value {
+        toml::Value::String(text) => extract_secret_keys_from_str(text, out),
+        toml::Value::Array(items) => {
+            for item in items {
+                extract_secret_keys_from_toml(item, out, depth + 1);
+            }
+        }
+        toml::Value::Table(map) => {
+            for entry in map.values() {
+                extract_secret_keys_from_toml(entry, out, depth + 1);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn extract_secret_keys_from_str(text: &str, out: &mut HashSet<String>) {
+    let mut rest = text;
+    while let Some(start) = rest.find("{secret:") {
+        let after = &rest[start + 8..];
+        let Some(end) = after.find('}') else {
+            break;
+        };
+        let body = &after[..end];
+        let key = body.split_once('|').map_or(body, |(k, _)| k);
+        if validate_secret_key(key).is_ok() {
+            out.insert(key.to_owned());
+        }
+        rest = &after[end + 1..];
+    }
+}
+
+fn reject_non_camera_secret_candidates(
+    config_path: &std::path::Path,
+    candidates: &[CredentialCandidateRef],
+) -> Result<(), ControlCommandError> {
+    let blocked = collect_non_camera_secret_keys(config_path);
+    for candidate in candidates {
+        for reference in [
+            Some(candidate.username_secret_reference.as_str()),
+            Some(candidate.password_secret_reference.as_str()),
+            candidate.uid_secret_reference.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(key) = reference
+                .strip_prefix("{secret:")
+                .and_then(|rest| rest.strip_suffix('}'))
+                && blocked.contains(key)
+            {
+                return Err(ControlCommandError::new(
+                    proto::ErrorCode::Rejected,
+                    403,
+                    format!(
+                        "secret key {key} is referenced by non-camera configuration and cannot be sent to camera probes"
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn resolve_candidates_and_redaction(
     state: &ServerState,
     candidates: &[CredentialCandidateRef],
-) -> Result<(Secrets, Vec<ResolvedCandidate>), ControlCommandError> {
+) -> Result<(Vec<ResolvedCandidate>, Vec<Zeroizing<String>>), ControlCommandError> {
     let config_path = state.camera_config_path.as_deref().ok_or_else(|| {
         ControlCommandError::new(
             proto::ErrorCode::Unavailable,
@@ -547,6 +721,7 @@ fn resolve_candidates(
             "secret references require configuration persistence",
         )
     })?;
+    reject_non_camera_secret_candidates(config_path, candidates)?;
     let secrets_path = config::secrets_path(config_path);
     let secrets =
         load_secrets_file_with_lock(&secrets_path, &state.config_update).map_err(|_| {
@@ -582,92 +757,133 @@ fn resolve_candidates(
             uid,
         });
     }
-    Ok((secrets, resolved))
+    let redaction_terms = collect_redaction_terms(&secrets, &resolved);
+    // Drop the full Secrets map immediately before starting any camera network I/O.
+    drop(secrets);
+    Ok((resolved, redaction_terms))
 }
 
 fn run_live_probe(
-    plan: &ProbePlan,
+    plan: &mut ProbePlan,
     candidate: &ResolvedCandidate,
     deadline: Instant,
 ) -> CandidateProbeOutcome {
-    let camera_config = build_probe_camera_config(plan, candidate);
-    let detail = if plan.query_onvif {
-        match probe_onvif_stage(plan, &camera_config) {
-            Ok(detail) => detail,
-            Err(early_stop) => return *early_stop,
-        }
+    let mut camera_config = build_probe_camera_config(plan, candidate);
+    let detail_result = if plan.query_onvif {
+        probe_onvif_stage(plan, &camera_config, deadline)
     } else {
-        ProbeDetail {
+        Ok(ProbeDetail {
             main_rtsp_url: plan.main_rtsp_url.clone(),
             sub_rtsp_url: plan.sub_rtsp_url.clone(),
             ..Default::default()
-        }
+        })
+    };
+    zeroize_camera_config(&mut camera_config);
+    let detail = match detail_result {
+        Ok(detail) => detail,
+        Err(early_stop) => return *early_stop,
     };
     verify_candidate_streams(plan, candidate, deadline, detail)
 }
 
+fn zeroize_camera_config(config: &mut CameraConfig) {
+    config.username.zeroize();
+    config.password.zeroize();
+    if let Some(uid) = &mut config.uid {
+        uid.zeroize();
+    }
+}
+
 fn probe_onvif_stage(
-    plan: &ProbePlan,
+    plan: &mut ProbePlan,
     camera_config: &CameraConfig,
+    deadline: Instant,
 ) -> Result<ProbeDetail, Box<CandidateProbeOutcome>> {
     let mut detail = ProbeDetail::default();
-    match probe_onvif_camera(camera_config) {
-        Ok(onvif) => {
-            detail.device = Some(DeviceSummary {
-                onvif_port: Some(onvif.onvif_port),
-                manufacturer: onvif.device.manufacturer,
-                model: onvif.device.model,
-                firmware_version: onvif.device.firmware_version,
-                serial_number: onvif.device.serial_number,
-                hardware_id: onvif.device.hardware_id,
-            });
-            detail.profiles = onvif
-                .profiles
-                .iter()
-                .enumerate()
-                .map(|(idx, profile)| profile_to_summary(idx, profile))
-                .collect();
-            detail.main_rtsp_url = plan
-                .main_rtsp_url
-                .clone()
-                .or_else(|| sanitize_onvif_rtsp_url(onvif.main_rtsp_url, plan.ip));
-            detail.sub_rtsp_url = plan
-                .sub_rtsp_url
-                .clone()
-                .or_else(|| sanitize_onvif_rtsp_url(onvif.sub_rtsp_url, plan.ip));
-            Ok(detail)
-        }
+    let onvif = match probe_onvif_camera_with_deadline(camera_config, Some(deadline)) {
+        Ok(onvif) => onvif,
         Err(error) => {
-            let kind = classify_probe_error(&error.to_string());
-            if matches!(kind, FailureKind::LockoutOrRateLimited) {
-                return Err(Box::new(CandidateProbeOutcome::LockoutOrRateLimited {
-                    detail,
-                    message: "camera reported lockout or rate limiting during ONVIF probe"
-                        .to_owned(),
-                }));
+            if plan.onvif_port.is_none()
+                && let Some(port) = error.port
+                && matches!(
+                    error.kind,
+                    OnvifProbeFailureKind::AuthFailed | OnvifProbeFailureKind::LockoutOrRateLimited
+                )
+            {
+                plan.onvif_port = Some(port);
             }
-            if plan.main_rtsp_url.is_none() && plan.sub_rtsp_url.is_none() {
-                return Err(Box::new(match kind {
-                    FailureKind::AuthFailed => CandidateProbeOutcome::AuthFailed {
-                        detail,
-                        message: "ONVIF authentication failed".to_owned(),
-                    },
-                    FailureKind::Unreachable | FailureKind::LockoutOrRateLimited => {
-                        CandidateProbeOutcome::Unreachable {
-                            detail,
-                            message: "ONVIF service was unreachable".to_owned(),
-                        }
-                    }
-                }));
-            }
-            detail.onvif_error = Some(
-                "ONVIF did not respond; supplied RTSP endpoints were verified directly.".to_owned(),
-            );
-            detail.main_rtsp_url.clone_from(&plan.main_rtsp_url);
-            detail.sub_rtsp_url.clone_from(&plan.sub_rtsp_url);
-            Ok(detail)
+            return handle_onvif_stage_error(plan, detail, error.kind);
         }
+    };
+    detail.device = Some(DeviceSummary {
+        onvif_port: Some(onvif.onvif_port),
+        manufacturer: onvif.device.manufacturer,
+        model: onvif.device.model,
+        firmware_version: onvif.device.firmware_version,
+        serial_number: onvif.device.serial_number,
+        hardware_id: onvif.device.hardware_id,
+    });
+    detail.profiles = onvif
+        .profiles
+        .iter()
+        .enumerate()
+        .map(|(idx, profile)| profile_to_summary(idx, profile))
+        .collect();
+    detail.main_rtsp_url = plan
+        .main_rtsp_url
+        .clone()
+        .or_else(|| sanitize_onvif_rtsp_url(onvif.main_rtsp_url, plan.ip));
+    detail.sub_rtsp_url = plan
+        .sub_rtsp_url
+        .clone()
+        .or_else(|| sanitize_onvif_rtsp_url(onvif.sub_rtsp_url, plan.ip));
+    Ok(detail)
+}
+
+fn handle_onvif_stage_error(
+    plan: &ProbePlan,
+    mut detail: ProbeDetail,
+    kind: OnvifProbeFailureKind,
+) -> Result<ProbeDetail, Box<CandidateProbeOutcome>> {
+    match kind {
+        OnvifProbeFailureKind::LockoutOrRateLimited => {
+            return Err(Box::new(CandidateProbeOutcome::LockoutOrRateLimited {
+                detail,
+                message: "camera reported lockout or rate limiting during ONVIF probe".to_owned(),
+            }));
+        }
+        OnvifProbeFailureKind::AuthFailed => {
+            return Err(Box::new(CandidateProbeOutcome::AuthFailed {
+                detail,
+                message: "ONVIF authentication failed".to_owned(),
+            }));
+        }
+        OnvifProbeFailureKind::RejectedEndpoint => {
+            return Err(Box::new(CandidateProbeOutcome::Unreachable {
+                detail,
+                message: "camera advertised a disallowed ONVIF redirect or foreign endpoint"
+                    .to_owned(),
+            }));
+        }
+        OnvifProbeFailureKind::Timeout => {
+            return Err(Box::new(CandidateProbeOutcome::DeadlineExceeded {
+                detail,
+                message: "ONVIF probe exceeded request deadline".to_owned(),
+            }));
+        }
+        OnvifProbeFailureKind::Unreachable => {}
     }
+    if plan.main_rtsp_url.is_none() && plan.sub_rtsp_url.is_none() {
+        return Err(Box::new(CandidateProbeOutcome::Unreachable {
+            detail,
+            message: "ONVIF service was unreachable".to_owned(),
+        }));
+    }
+    detail.onvif_error =
+        Some("ONVIF did not respond; supplied RTSP endpoints were verified directly.".to_owned());
+    detail.main_rtsp_url.clone_from(&plan.main_rtsp_url);
+    detail.sub_rtsp_url.clone_from(&plan.sub_rtsp_url);
+    Ok(detail)
 }
 
 fn verify_candidate_streams(
@@ -681,8 +897,7 @@ fn verify_candidate_streams(
         ("sub", detail.sub_rtsp_url.clone()),
     ];
     let mut any_verified = false;
-    let mut saw_lockout = false;
-    let mut saw_auth_failure = false;
+    let mut stop_failure = None;
 
     for (name, url) in stream_targets {
         let profile_audio = detail
@@ -698,38 +913,38 @@ fn verify_candidate_streams(
             candidate,
             deadline,
         );
-        if summary.verified {
-            any_verified = true;
-        }
+        any_verified |= summary.verified;
         detail.streams.push(summary);
-        match failure {
-            Some(FailureKind::LockoutOrRateLimited) => {
-                saw_lockout = true;
-                break;
-            }
-            Some(FailureKind::AuthFailed) => saw_auth_failure = true,
-            Some(FailureKind::Unreachable) | None => {}
+        if matches!(
+            failure,
+            Some(
+                FailureKind::LockoutOrRateLimited | FailureKind::AuthFailed | FailureKind::Timeout
+            )
+        ) {
+            stop_failure = failure;
+            // Stop immediately on lockout, first auth failure, or deadline expiry.
+            break;
         }
     }
 
-    if saw_lockout {
-        return CandidateProbeOutcome::LockoutOrRateLimited {
+    match stop_failure {
+        Some(FailureKind::LockoutOrRateLimited) => CandidateProbeOutcome::LockoutOrRateLimited {
             detail,
             message: "camera reported lockout or rate limiting during RTSP probe".to_owned(),
-        };
-    }
-    if any_verified || (detail.device.is_some() && !saw_auth_failure) {
-        return CandidateProbeOutcome::Matched(detail);
-    }
-    if saw_auth_failure {
-        return CandidateProbeOutcome::AuthFailed {
+        },
+        _ if any_verified => CandidateProbeOutcome::Matched(detail),
+        Some(FailureKind::AuthFailed) => CandidateProbeOutcome::AuthFailed {
             detail,
             message: "RTSP authentication was rejected".to_owned(),
-        };
-    }
-    CandidateProbeOutcome::Unreachable {
-        detail,
-        message: "camera RTSP endpoints were unreachable or timed out".to_owned(),
+        },
+        Some(FailureKind::Timeout) => CandidateProbeOutcome::DeadlineExceeded {
+            detail,
+            message: "RTSP verification exceeded request deadline".to_owned(),
+        },
+        _ => CandidateProbeOutcome::Unreachable {
+            detail,
+            message: "camera RTSP endpoints were unreachable or timed out".to_owned(),
+        },
     }
 }
 
@@ -748,7 +963,7 @@ fn verify_single_stream(
     if remaining.is_zero() {
         return (
             StreamVerificationSummary::failed(name, Some(rtsp_url), "probe deadline reached"),
-            Some(FailureKind::Unreachable),
+            Some(FailureKind::Timeout),
         );
     }
     match probe_rtsp_video(
@@ -775,8 +990,8 @@ fn verify_single_stream(
             None,
         ),
         Err(error) => {
+            let kind = classify_rtsp_probe_error(&error, deadline);
             let message = error.to_string();
-            let kind = classify_probe_error(&message);
             (
                 StreamVerificationSummary::failed(
                     name,
@@ -828,15 +1043,35 @@ fn sanitize_onvif_rtsp_url(raw: Option<String>, target_ip: IpAddr) -> Option<Str
     if parse_url_host_ip(&url) != Some(target_ip) {
         return None;
     }
+    if has_credential_query_param(&url) {
+        return None;
+    }
     url.set_username("").ok()?;
     url.set_password(None).ok()?;
     Some(url.into())
 }
 
-fn classify_probe_error(message: &str) -> FailureKind {
-    let lower = message.to_ascii_lowercase();
+fn classify_rtsp_probe_error(error: &anyhow::Error, deadline: Instant) -> FailureKind {
+    if let Some(status) = error.downcast_ref::<RtspStatusError>() {
+        return match status.status_code {
+            429 => FailureKind::LockoutOrRateLimited,
+            401 | 403 => FailureKind::AuthFailed,
+            _ => classify_status_reason(&status.reason),
+        };
+    }
+    if Instant::now() >= deadline {
+        return FailureKind::Timeout;
+    }
+    let lower = error.to_string().to_ascii_lowercase();
+    if lower.contains("timed out before deadline") || lower.contains("no media progress") {
+        return FailureKind::Timeout;
+    }
+    classify_status_reason(&lower)
+}
+
+fn classify_status_reason(reason: &str) -> FailureKind {
+    let lower = reason.to_ascii_lowercase();
     if [
-        "429",
         "too many requests",
         "rate limit",
         "rate-limit",
@@ -854,7 +1089,6 @@ fn classify_probe_error(message: &str) -> FailureKind {
         return FailureKind::LockoutOrRateLimited;
     }
     if [
-        "401",
         "unauthorized",
         "notauthorized",
         "not authorized",
@@ -865,7 +1099,6 @@ fn classify_probe_error(message: &str) -> FailureKind {
         "wrong password",
         "bad credentials",
         "login failed",
-        "403",
         "forbidden",
     ]
     .iter()
@@ -881,6 +1114,7 @@ fn rtsp_error_summary(kind: FailureKind, raw: &str) -> &'static str {
     match kind {
         FailureKind::LockoutOrRateLimited => "Camera reported lockout or rate limiting.",
         FailureKind::AuthFailed => "RTSP authentication was rejected.",
+        FailureKind::Timeout => "RTSP verification exceeded the request deadline.",
         FailureKind::Unreachable => {
             if lower.contains("keyframe") || lower.contains("no media progress") {
                 "No video keyframe arrived before the verification deadline."
@@ -957,10 +1191,16 @@ fn percent_encode_component(value: &str) -> String {
 }
 
 fn redact_detail(detail: &mut ProbeDetail, terms: &[Zeroizing<String>]) {
+    detail.main_rtsp_url = sanitize_output_url(detail.main_rtsp_url.take(), terms);
+    detail.sub_rtsp_url = sanitize_output_url(detail.sub_rtsp_url.take(), terms);
     if let Some(error) = &mut detail.onvif_error {
         *error = redact_text(error, terms);
     }
+    for profile in &mut detail.profiles {
+        profile.name = redact_text(&profile.name, terms);
+    }
     for stream in &mut detail.streams {
+        stream.rtsp_url = sanitize_output_url(stream.rtsp_url.take(), terms);
         if let Some(error) = &mut stream.error {
             *error = redact_text(error, terms);
         }
@@ -979,6 +1219,22 @@ fn redact_detail(detail: &mut ProbeDetail, terms: &[Zeroizing<String>]) {
             *text = redact_text(text, terms);
         }
     }
+}
+
+fn sanitize_output_url(url: Option<String>, terms: &[Zeroizing<String>]) -> Option<String> {
+    let raw = url?;
+    if let Ok(parsed) = Url::parse(&raw)
+        && has_credential_query_param(&parsed)
+    {
+        return None;
+    }
+    if terms
+        .iter()
+        .any(|term| term.len() >= 4 && raw.contains(term.as_str()))
+    {
+        return None;
+    }
+    Some(raw)
 }
 
 fn redact_text(input: &str, terms: &[Zeroizing<String>]) -> String {
@@ -1209,6 +1465,7 @@ struct ResolvedCandidate {
 enum FailureKind {
     AuthFailed,
     LockoutOrRateLimited,
+    Timeout,
     Unreachable,
 }
 
@@ -1219,6 +1476,10 @@ enum CandidateProbeOutcome {
         message: String,
     },
     LockoutOrRateLimited {
+        detail: ProbeDetail,
+        message: String,
+    },
+    DeadlineExceeded {
         detail: ProbeDetail,
         message: String,
     },
@@ -1242,6 +1503,7 @@ struct ProbeDetail {
 struct ProbeStreamsResponse {
     ip: String,
     verified: bool,
+    onvif_authenticated: bool,
     stop_reason: &'static str,
     attempted_candidates: usize,
     matched_credentials: Option<MatchedCredentials>,
@@ -1519,12 +1781,92 @@ mod tests {
             }),
             serde_json::json!({
                 "ip": "192.168.1.50",
+                "username_secret_reference": "{secret:U1|url}",
+                "password_secret_reference": "{secret:P1}",
+            }),
+            serde_json::json!({
+                "ip": "192.168.1.50",
                 "credential_candidates": [],
             }),
         ] {
-            let err = probe_camera_streams(&state, &router_tx, &admin_principal(), &bad_args, None)
-                .unwrap_err();
+            let err = probe_camera_streams(
+                &state,
+                &router_tx,
+                &admin_principal(),
+                &bad_args,
+                false,
+                None,
+            )
+            .unwrap_err();
             assert_eq!(err.code, proto::ErrorCode::InvalidRequest, "for {bad_args}");
+        }
+
+        // Read-only mode blocks multi-candidate credential probing.
+        let ro_err = probe_camera_streams(
+            &state,
+            &router_tx,
+            &admin_principal(),
+            &serde_json::json!({
+                "ip": "192.168.1.50",
+                "credential_candidates": [{
+                    "username_secret_reference": "{secret:U1}",
+                    "password_secret_reference": "{secret:P1}",
+                }],
+            }),
+            true,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(ro_err.code, proto::ErrorCode::Rejected);
+        assert_eq!(ro_err._http_status, 403);
+    }
+
+    #[test]
+    fn probe_camera_streams_blocks_reserved_and_non_camera_secret_keys() {
+        let (dir, state) = state_with_secrets(
+            &[
+                ("U1", "admin"),
+                (
+                    "KEEPPEEK_ACCESS_KEY",
+                    "550e8400-e29b-41d4-a716-446655440000",
+                ),
+                ("MQTT_PASS", "mqtt-super-secret"),
+                ("WEBHOOK_TOKEN", "hook-super-secret"),
+            ],
+            None,
+        );
+        std::fs::write(
+            dir.0.join("config.toml"),
+            r#"
+host = "127.0.0.1"
+port = 8081
+access_key = "{secret:KEEPPEEK_ACCESS_KEY}"
+
+[event_forwarder]
+password = "{secret:MQTT_PASS}"
+
+[cloud_notifications]
+token = "{secret:WEBHOOK_TOKEN}"
+"#,
+        )
+        .unwrap();
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+        for blocked_key in ["KEEPPEEK_ACCESS_KEY", "MQTT_PASS", "WEBHOOK_TOKEN"] {
+            let err = probe_camera_streams(
+                &state,
+                &router_tx,
+                &admin_principal(),
+                &serde_json::json!({
+                    "ip": "192.168.1.50",
+                    "username_secret_reference": "{secret:U1}",
+                    "password_secret_reference": format!("{{secret:{blocked_key}}}"),
+                }),
+                false,
+                None,
+            )
+            .unwrap_err();
+            assert_eq!(err.code, proto::ErrorCode::Rejected, "for {blocked_key}");
+            assert_eq!(err._http_status, 403, "for {blocked_key}");
         }
     }
 
@@ -1573,16 +1915,47 @@ mod tests {
                 "password_secret_reference": "{secret:P1}",
             }),
             serde_json::json!({
+                "ip": "::ffff:127.0.0.1",
+                "username_secret_reference": "{secret:U1}",
+                "password_secret_reference": "{secret:P1}",
+            }),
+            serde_json::json!({
+                "ip": "::ffff:169.254.169.254",
+                "username_secret_reference": "{secret:U1}",
+                "password_secret_reference": "{secret:P1}",
+            }),
+            serde_json::json!({
+                "ip": "fe80::1",
+                "username_secret_reference": "{secret:U1}",
+                "password_secret_reference": "{secret:P1}",
+            }),
+            serde_json::json!({
                 "ip": "192.168.1.50",
                 "main_rtsp_url": "rtsp://192.168.1.50/main?password=leaked",
                 "username_secret_reference": "{secret:U1}",
                 "password_secret_reference": "{secret:P1}",
             }),
+            serde_json::json!({
+                "ip": "192.168.1.50",
+                "main_rtsp_url": "rtsp://192.168.1.50/user=admin&password=leaked&channel=1",
+                "username_secret_reference": "{secret:U1}",
+                "password_secret_reference": "{secret:P1}",
+            }),
         ] {
-            let err = probe_camera_streams(&state, &router_tx, &admin_principal(), &bad_args, None)
-                .unwrap_err();
+            let err = probe_camera_streams(
+                &state,
+                &router_tx,
+                &admin_principal(),
+                &bad_args,
+                false,
+                None,
+            )
+            .unwrap_err();
             assert_eq!(err.code, proto::ErrorCode::InvalidRequest, "for {bad_args}");
         }
+
+        // IPv6 ULA is permitted as a private LAN target.
+        assert!(validate_probe_target_ip(&state, "fd00::1".parse().unwrap()).is_ok());
 
         let denied = probe_camera_streams(
             &state,
@@ -1593,6 +1966,7 @@ mod tests {
                 "username_secret_reference": "{secret:U1}",
                 "password_secret_reference": "{secret:P1}",
             }),
+            false,
             None,
         )
         .unwrap_err();
@@ -1658,6 +2032,7 @@ mod tests {
             &state,
             &admin_principal(),
             &args,
+            false,
             None,
             |_, candidate, _| {
                 seen_passwords.push((*candidate.password).clone());
@@ -1719,7 +2094,7 @@ mod tests {
 
         let mut lockout_attempts = 0;
         let lockout_resp =
-            probe_camera_streams_with(&state, &admin_principal(), &args, None, |_, _, _| {
+            probe_camera_streams_with(&state, &admin_principal(), &args, false, None, |_, _, _| {
                 lockout_attempts += 1;
                 CandidateProbeOutcome::LockoutOrRateLimited {
                     detail: ProbeDetail::default(),
@@ -1735,7 +2110,7 @@ mod tests {
 
         let mut unreachable_attempts = 0;
         let unreachable_resp =
-            probe_camera_streams_with(&state, &admin_principal(), &args, None, |_, _, _| {
+            probe_camera_streams_with(&state, &admin_principal(), &args, false, None, |_, _, _| {
                 unreachable_attempts += 1;
                 CandidateProbeOutcome::Unreachable {
                     detail: ProbeDetail::default(),
@@ -1785,6 +2160,7 @@ mod tests {
                     { "username_secret_reference": "{secret:CAM_USER}", "password_secret_reference": "{secret:CAM_BAD}" }
                 ]
             }),
+            false,
             None,
         )
         .unwrap();
@@ -1807,7 +2183,7 @@ mod tests {
                 .unwrap()
                 .contains(sentinel_pass)
         );
-        assert!(describe_count.load(Ordering::Acquire) <= 4);
+        assert_eq!(describe_count.load(Ordering::Acquire), 4);
     }
 
     #[test]
@@ -1838,6 +2214,7 @@ mod tests {
                     { "username_secret_reference": "{secret:CAM_USER}", "password_secret_reference": "{secret:CAM_GOOD}" }
                 ]
             }),
+            false,
             None,
         )
         .unwrap();
@@ -1847,6 +2224,358 @@ mod tests {
         assert_eq!(lock_response["stop_reason"], "lockout_or_rate_limited");
         assert_eq!(lock_response["attempted_candidates"], 1);
         assert_eq!(lock_describes.load(Ordering::Acquire), 1);
+    }
+
+    fn read_mock_http_request(stream: &mut std::net::TcpStream) -> String {
+        let mut buf = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        let mut header_end = None;
+        let mut content_len = 0usize;
+        while let Ok(n) = stream.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if header_end.is_none()
+                && let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n")
+            {
+                header_end = Some(pos + 4);
+                let headers = String::from_utf8_lossy(&buf[..pos]);
+                for line in headers.lines() {
+                    if let Some((k, v)) = line.split_once(':')
+                        && k.trim().eq_ignore_ascii_case("content-length")
+                    {
+                        content_len = v.trim().parse().unwrap_or(0);
+                    }
+                }
+            }
+            if let Some(end) = header_end
+                && buf.len() >= end + content_len
+            {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&buf).into_owned()
+    }
+
+    #[test]
+    fn mock_onvif_rejects_foreign_xaddr_and_http_302_redirect_without_leaking_credentials() {
+        let (_dir, state) = state_with_secrets(
+            &[("CAM_USER", "admin"), ("CAM_PASS", "ONVIF_SECRET_9911")],
+            Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        );
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+
+        // 1. 302 redirect on GetServices must be rejected before sending credentials.
+        let sink = TcpListener::bind("127.0.0.1:0").unwrap();
+        let sink_port = sink.local_addr().unwrap().port();
+        sink.set_nonblocking(true).unwrap();
+
+        let redirect_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let redirect_port = redirect_listener.local_addr().unwrap().port();
+        let redirect_handle = thread::spawn(move || {
+            let (mut stream, _) = redirect_listener.accept().unwrap();
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let _ = read_mock_http_request(&mut stream);
+            let resp = format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{sink_port}/steal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        });
+
+        let redirect_resp = probe_camera_streams(
+            &state,
+            &router_tx,
+            &admin_principal(),
+            &serde_json::json!({
+                "ip": "127.0.0.1",
+                "onvif_port": redirect_port,
+                "query_onvif": true,
+                "timeout_seconds": 3,
+                "username_secret_reference": "{secret:CAM_USER}",
+                "password_secret_reference": "{secret:CAM_PASS}",
+            }),
+            false,
+            None,
+        )
+        .unwrap();
+        redirect_handle.join().unwrap();
+        assert_eq!(redirect_resp["verified"], false);
+        assert_eq!(redirect_resp["stop_reason"], "unreachable");
+        assert!(
+            sink.accept().is_err(),
+            "302 redirect target must not be contacted"
+        );
+
+        // 2. Foreign media XAddr pointing to 169.254.169.254 must be rejected cleanly.
+        let foreign_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let foreign_port = foreign_listener.local_addr().unwrap().port();
+        foreign_listener.set_nonblocking(true).unwrap();
+        let foreign_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let foreign_stop_clone = foreign_stop.clone();
+        let foreign_handle = thread::spawn(move || {
+            while !foreign_stop_clone.load(Ordering::Acquire) {
+                let Ok((mut stream, _)) = foreign_listener.accept() else {
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                };
+                let _ = stream.set_nonblocking(false);
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                let req = read_mock_http_request(&mut stream);
+                let body = if req.contains("GetServices") {
+                    concat!(
+                        r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+                        r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:tt="http://www.onvif.org/ver10/schema">"#,
+                        r#"<s:Body><tds:GetServicesResponse xmlns:tds="http://www.onvif.org/ver10/device/wsdl">"#,
+                        r#"<tds:Service><tds:Namespace>http://www.onvif.org/ver10/media/wsdl</tds:Namespace>"#,
+                        r#"<tds:XAddr>http://169.254.169.254/latest/meta-data/</tds:XAddr>"#,
+                        r#"<tds:Version><tt:Major>2</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service>"#,
+                        r#"</tds:GetServicesResponse></s:Body></s:Envelope>"#,
+                    )
+                } else if req.contains("GetDeviceInformation") {
+                    concat!(
+                        r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+                        r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:tds="http://www.onvif.org/ver10/device/wsdl">"#,
+                        r#"<s:Body><tds:GetDeviceInformationResponse>"#,
+                        r#"<tds:Manufacturer>EvilCam</tds:Manufacturer><tds:Model>X</tds:Model>"#,
+                        r#"<tds:FirmwareVersion>1</tds:FirmwareVersion><tds:SerialNumber>1</tds:SerialNumber>"#,
+                        r#"<tds:HardwareId>1</tds:HardwareId>"#,
+                        r#"</tds:GetDeviceInformationResponse></s:Body></s:Envelope>"#,
+                    )
+                } else {
+                    concat!(
+                        r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+                        r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">"#,
+                        r#"<s:Body/></s:Envelope>"#,
+                    )
+                };
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/soap+xml; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        let foreign_resp = probe_camera_streams(
+            &state,
+            &router_tx,
+            &admin_principal(),
+            &serde_json::json!({
+                "ip": "127.0.0.1",
+                "onvif_port": foreign_port,
+                "query_onvif": true,
+                "timeout_seconds": 3,
+                "username_secret_reference": "{secret:CAM_USER}",
+                "password_secret_reference": "{secret:CAM_PASS}",
+            }),
+            false,
+            None,
+        )
+        .unwrap();
+        foreign_stop.store(true, Ordering::Release);
+        let _ = foreign_handle.join();
+        assert_eq!(foreign_resp["verified"], false);
+        assert_eq!(foreign_resp["stop_reason"], "unreachable");
+        assert!(
+            !serde_json::to_string(&foreign_resp)
+                .unwrap()
+                .contains("ONVIF_SECRET_9911")
+        );
+    }
+
+    #[test]
+    fn hanging_rtsp_server_aborts_within_request_deadline() {
+        let (_dir, state) = state_with_secrets(
+            &[("CAM_USER", "operator"), ("CAM_PASS", "pass123")],
+            Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        );
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (_stream, _) = listener.accept().unwrap();
+            // Intentionally hold connection open without replying.
+            thread::sleep(Duration::from_secs(3));
+        });
+        let started = Instant::now();
+        let response = probe_camera_streams(
+            &state,
+            &router_tx,
+            &admin_principal(),
+            &serde_json::json!({
+                "ip": "127.0.0.1",
+                "query_onvif": false,
+                "main_rtsp_url": format!("rtsp://127.0.0.1:{port}/main"),
+                "timeout_seconds": 1,
+                "username_secret_reference": "{secret:CAM_USER}",
+                "password_secret_reference": "{secret:CAM_PASS}",
+            }),
+            false,
+            Some(Instant::now() + Duration::from_millis(400)),
+        )
+        .unwrap();
+        let elapsed = started.elapsed();
+        assert_eq!(response["verified"], false);
+        assert_eq!(response["stop_reason"], "deadline_exceeded");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "hanging RTSP server must abort near deadline, took {elapsed:?}"
+        );
+        let _ = server.join();
+    }
+
+    #[test]
+    fn mock_onvif_multi_candidate_auth_and_url_redaction_work_end_to_end() {
+        let sentinel_pass = "ONVIF_MULTI_SECRET_5544";
+        let (_dir, state) = state_with_secrets(
+            &[
+                ("CAM_USER", "operator"),
+                ("CAM_BAD", "wrong-pass"),
+                ("CAM_GOOD", sentinel_pass),
+            ],
+            Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        );
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+
+        let (rtsp_port, describe_count, rtsp_handle) =
+            spawn_mock_rtsp_server(MockRtspMode::RequireAuth {
+                expected_basic: STANDARD.encode(format!("operator:{sentinel_pass}")),
+            });
+
+        let onvif_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let onvif_port = onvif_listener.local_addr().unwrap().port();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop_clone = stop.clone();
+        let onvif_handle = thread::spawn(move || {
+            onvif_listener.set_nonblocking(true).unwrap();
+            let mut rejected_first_candidate_calls = 0usize;
+            while !stop_clone.load(Ordering::Acquire) {
+                let Ok((mut stream, _)) = onvif_listener.accept() else {
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                };
+                let _ = stream.set_nonblocking(false);
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                let req = read_mock_http_request(&mut stream);
+                if req.is_empty() {
+                    continue;
+                }
+                if req.contains("GetServices") && rejected_first_candidate_calls < 2 {
+                    rejected_first_candidate_calls += 1;
+                    let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                    let _ = stream.write_all(resp.as_bytes());
+                    continue;
+                }
+                let body = if req.contains("GetServices") {
+                    format!(
+                        concat!(
+                            r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+                            r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:tt="http://www.onvif.org/ver10/schema">"#,
+                            r#"<s:Body><tds:GetServicesResponse xmlns:tds="http://www.onvif.org/ver10/device/wsdl">"#,
+                            r#"<tds:Service><tds:Namespace>http://www.onvif.org/ver10/media/wsdl</tds:Namespace>"#,
+                            r#"<tds:XAddr>http://127.0.0.1:{}/onvif/media_service</tds:XAddr>"#,
+                            r#"<tds:Version><tt:Major>2</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service>"#,
+                            r#"</tds:GetServicesResponse></s:Body></s:Envelope>"#,
+                        ),
+                        onvif_port
+                    )
+                } else if req.contains("GetDeviceInformation") {
+                    concat!(
+                        r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+                        r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:tds="http://www.onvif.org/ver10/device/wsdl">"#,
+                        r#"<s:Body><tds:GetDeviceInformationResponse>"#,
+                        r#"<tds:Manufacturer>TestCam</tds:Manufacturer><tds:Model>M1</tds:Model>"#,
+                        r#"<tds:FirmwareVersion>1.0</tds:FirmwareVersion><tds:SerialNumber>S1</tds:SerialNumber>"#,
+                        r#"<tds:HardwareId>H1</tds:HardwareId>"#,
+                        r#"</tds:GetDeviceInformationResponse></s:Body></s:Envelope>"#,
+                    )
+                    .to_owned()
+                } else if req.contains("GetProfiles") {
+                    concat!(
+                        r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+                        r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:trt="http://www.onvif.org/ver10/media/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema">"#,
+                        r#"<s:Body><trt:GetProfilesResponse>"#,
+                        r#"<trt:Profiles token="main" fixed="true"><tt:Name>Main</tt:Name></trt:Profiles>"#,
+                        r#"</trt:GetProfilesResponse></s:Body></s:Envelope>"#,
+                    )
+                    .to_owned()
+                } else if req.contains("GetStreamUri") {
+                    format!(
+                        concat!(
+                            r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+                            r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:trt="http://www.onvif.org/ver10/media/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema">"#,
+                            r#"<s:Body><trt:GetStreamUriResponse><trt:MediaUri>"#,
+                            r#"<tt:Uri>rtsp://127.0.0.1:{}/main</tt:Uri>"#,
+                            r#"<tt:InvalidAfterConnect>false</tt:InvalidAfterConnect>"#,
+                            r#"<tt:InvalidAfterReboot>false</tt:InvalidAfterReboot>"#,
+                            r#"<tt:Timeout>PT60S</tt:Timeout>"#,
+                            r#"</trt:MediaUri></trt:GetStreamUriResponse></s:Body></s:Envelope>"#,
+                        ),
+                        rtsp_port
+                    )
+                } else {
+                    concat!(
+                        r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+                        r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body/></s:Envelope>"#,
+                    )
+                    .to_owned()
+                };
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/soap+xml; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+
+        let response = probe_camera_streams(
+            &state,
+            &router_tx,
+            &admin_principal(),
+            &serde_json::json!({
+                "ip": "127.0.0.1",
+                "onvif_port": onvif_port,
+                "query_onvif": true,
+                "timeout_seconds": 5,
+                "credential_candidates": [
+                    { "username_secret_reference": "{secret:CAM_USER}", "password_secret_reference": "{secret:CAM_BAD}" },
+                    { "username_secret_reference": "{secret:CAM_USER}", "password_secret_reference": "{secret:CAM_GOOD}" }
+                ]
+            }),
+            false,
+            None,
+        )
+        .unwrap();
+        stop.store(true, Ordering::Release);
+        let _ = onvif_handle.join();
+        // Close the second unused connection wait on the RTSP mock by connecting once.
+        let _ = std::net::TcpStream::connect(("127.0.0.1", rtsp_port));
+        let _ = rtsp_handle.join();
+
+        assert_eq!(response["verified"], true);
+        assert_eq!(response["onvif_authenticated"], true);
+        assert_eq!(response["stop_reason"], "matched");
+        assert_eq!(response["attempted_candidates"], 2);
+        assert_eq!(response["failed_candidates"], serde_json::json!([0]));
+        assert_eq!(
+            response["matched_credentials"]["password_secret_reference"],
+            "{secret:CAM_GOOD}"
+        );
+        // Candidate 0 stopped on ONVIF 401 and never touched RTSP; candidate 1 sent 2 DESCRIBEs.
+        assert_eq!(describe_count.load(Ordering::Acquire), 2);
+        assert!(
+            !serde_json::to_string(&response)
+                .unwrap()
+                .contains(sentinel_pass)
+        );
+        // Camera-supplied XMEye/Dahua path credentials are dropped at the source.
+        assert!(
+            sanitize_onvif_rtsp_url(
+                Some("rtsp://127.0.0.1:554/user=admin&password=leaked&channel=1".to_owned()),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+            )
+            .is_none()
+        );
     }
 
     enum MockRtspMode {

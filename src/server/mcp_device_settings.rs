@@ -11,20 +11,23 @@ use super::{
 use crate::{
     access::{AccessRole, ClientClassificationReason},
     api::proto,
-    cameras::{CameraBackend, IrCutMode},
+    cameras::{CameraBackend, IrCutMode, validate_pinned_onvif_endpoint},
     runtime::{FacadeSender, RouterMessage},
 };
 use ::isapi::management::{
     Motion, Preset, PtzCapabilities, Rule, RuleKind, Stream, Time, TimeMode,
 };
 use onvif::soap::client::{AuthType, ClientBuilder, Credentials as OnvifCredentials};
-use schema::{devicemgmt, media as onvif_media, onvif as onvif_xsd};
+use schema::{
+    devicemgmt, media as onvif_media, onvif as onvif_xsd, transport::Error as SoapTransportError,
+};
 use serde_json::{Map, Value, json};
 use std::{
     net::SocketAddr,
     time::{Duration, Instant},
 };
 use url::Url;
+use zeroize::Zeroize;
 
 const ALL_SECTIONS: [&str; 7] = [
     "encoder", "imaging", "lighting", "motion", "osd", "time", "ptz",
@@ -43,43 +46,48 @@ const ISAPI_DIMENSION_MAX: u32 = 8_192;
 const ISAPI_BITRATE_KBPS_MAX: u32 = 100_000;
 const ISAPI_FRAME_RATE_HUNDREDTHS_MAX: u32 = 12_000;
 const ISAPI_PRESET_ID_MAX: u32 = 300;
+const ONVIF_QUALITY_MIN: f64 = 0.0;
+const ONVIF_QUALITY_MAX: f64 = 100.0;
+const ONVIF_FPS_MIN: i32 = 1;
+const ONVIF_FPS_MAX: i32 = 120;
+const ONVIF_DIMENSION_MIN: i32 = 1;
+const ONVIF_DIMENSION_MAX: i32 = 8_192;
+const ONVIF_GOV_MIN: i32 = 1;
+const ONVIF_GOV_MAX: i32 = 1_000;
 
-const EXCLUDED_SETTING_KEYS: [&str; 26] = [
-    "factory_reset",
+const EXCLUDED_SETTING_KEYS: [&str; 32] = [
+    "factoryreset",
     "reset",
-    "restore_defaults",
+    "restoredefaults",
     "reboot",
     "firmware",
-    "firmware_update",
+    "firmwareupdate",
     "upgrade",
     "flash",
     "password",
     "passwd",
-    "new_password",
+    "newpassword",
     "username",
     "user",
     "users",
     "credentials",
     "auth",
-    "access_key",
+    "accesskey",
     "ip",
-    "ip_address",
+    "ipaddress",
     "network",
-    "network_interface",
+    "networkinterface",
     "interfaces",
     "dhcp",
     "gateway",
     "subnet",
     "netmask",
-];
-
-const EXCLUDED_NETWORK_KEYS: [&str; 6] = [
     "dns",
     "ports",
-    "http_port",
-    "https_port",
-    "rtsp_port",
-    "onvif_port",
+    "httpport",
+    "httpsport",
+    "rtspport",
+    "onvifport",
 ];
 
 const _: () = {
@@ -161,12 +169,83 @@ pub(super) fn get_camera_device_settings(
     }))
 }
 
+struct PartialWriteError {
+    applied_sections: Vec<String>,
+    failed_section: &'static str,
+    cause: ControlCommandError,
+}
+
+impl PartialWriteError {
+    const fn from_error(error: ControlCommandError) -> Self {
+        Self {
+            applied_sections: Vec::new(),
+            failed_section: "",
+            cause: error,
+        }
+    }
+
+    const fn at_section(
+        applied_sections: Vec<String>,
+        failed_section: &'static str,
+        cause: ControlCommandError,
+    ) -> Self {
+        Self {
+            applied_sections,
+            failed_section,
+            cause,
+        }
+    }
+
+    fn into_control_error(self) -> ControlCommandError {
+        if self.applied_sections.is_empty() {
+            return self.cause;
+        }
+        ControlCommandError::new(
+            self.cause.code,
+            self.cause._http_status,
+            format!(
+                "partial device settings write: applied_sections=[{}], failed_section={}: {}",
+                self.applied_sections.join(","),
+                self.failed_section,
+                self.cause.message
+            ),
+        )
+    }
+}
+
 /// Validates or applies bounded on-camera hardware setting updates with read-back verification.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn update_camera_device_settings(
     state: &ServerState,
+    router_tx: &FacadeSender<RouterMessage>,
+    principal: &ApiPrincipal,
+    camera_id: &str,
+    args: &Value,
+    policy: McpDeviceWritePolicy,
+    read_only: bool,
+    deadline: Instant,
+) -> Result<Value, ControlCommandError> {
+    update_camera_device_settings_classified(
+        state,
+        router_tx,
+        principal,
+        ClientClassificationReason::DirectLocal,
+        camera_id,
+        args,
+        policy,
+        read_only,
+        deadline,
+    )
+}
+
+/// Validates or applies bounded on-camera hardware setting updates with caller classification audit.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn update_camera_device_settings_classified(
+    state: &ServerState,
     _router_tx: &FacadeSender<RouterMessage>,
     principal: &ApiPrincipal,
+    classification: ClientClassificationReason,
     camera_id: &str,
     args: &Value,
     policy: McpDeviceWritePolicy,
@@ -175,16 +254,29 @@ pub(super) fn update_camera_device_settings(
 ) -> Result<Value, ControlCommandError> {
     require_admin(principal)?;
     let map = args_object(args)?;
+    reject_unknown_keys(map, &["camera_id", "dry_run", "settings"], "arguments")?;
     let camera_id = validate_camera_id(camera_id)?;
     let _ = remaining_timeout(deadline)?;
     let requested = extract_requested_settings(map)?;
     if let Err(error) = reject_excluded_fields(requested) {
-        audit_device_update(state, principal, camera_id, "denied_excluded_field");
+        audit_device_update(
+            state,
+            principal,
+            classification,
+            camera_id,
+            "denied_excluded_field",
+        );
         return Err(error);
     }
     let dry_run = optional_bool(map, "dry_run")?.unwrap_or(true);
     if !dry_run && (!policy.allow_camera_device_writes || read_only) {
-        audit_device_update(state, principal, camera_id, "denied_write_policy");
+        audit_device_update(
+            state,
+            principal,
+            classification,
+            camera_id,
+            "denied_write_policy",
+        );
         return Err(ControlCommandError::new(
             proto::ErrorCode::Rejected,
             403,
@@ -193,13 +285,28 @@ pub(super) fn update_camera_device_settings(
     }
     let camera = find_camera(state, camera_id)?;
     let protocol = detect_protocol(&camera);
-    let mut outcome = execute_protocol_update(&camera, protocol, requested, dry_run, deadline)?;
+    let mut outcome = match execute_protocol_update(&camera, protocol, requested, dry_run, deadline)
+    {
+        Ok(outcome) => outcome,
+        Err(partial) => {
+            if !dry_run && !partial.applied_sections.is_empty() {
+                let target = format!(
+                    "{}:applied={}",
+                    camera.info.id,
+                    partial.applied_sections.join(",")
+                );
+                audit_device_update(state, principal, classification, &target, "partial_failure");
+            }
+            return Err(partial.into_control_error());
+        }
+    };
     scrub_sensitive_map(&mut outcome.diff_before);
     scrub_sensitive_map(&mut outcome.diff_after);
     scrub_sensitive_map(&mut outcome.verified_settings);
     Ok(format_update_response(
         state,
         principal,
+        classification,
         &camera.info.id,
         protocol,
         dry_run,
@@ -210,13 +317,14 @@ pub(super) fn update_camera_device_settings(
 fn format_update_response(
     state: &ServerState,
     principal: &ApiPrincipal,
+    classification: ClientClassificationReason,
     camera_id: &str,
     protocol: CameraProtocol,
     dry_run: bool,
     outcome: UpdateOutcome,
 ) -> Value {
     let audit_outcome = if dry_run { "dry_run" } else { "applied" };
-    audit_device_update(state, principal, camera_id, audit_outcome);
+    audit_device_update(state, principal, classification, camera_id, audit_outcome);
     let audit = json!({
         "action": "mcp_camera_device_settings_update",
         "camera_id": camera_id,
@@ -325,31 +433,69 @@ fn extract_requested_settings(
     Ok(settings)
 }
 
+fn normalize_excluded_key(key: &str) -> String {
+    key.chars()
+        .filter(|ch| !matches!(ch, '-' | '_') && !ch.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 fn reject_excluded_fields(settings: &Map<String, Value>) -> Result<(), ControlCommandError> {
     let mut visited = 0usize;
-    let mut stack = vec![(settings, 0usize)];
+    let mut stack: Vec<(&Value, usize)> = settings.values().map(|v| (v, 1)).collect();
+    for key in settings.keys() {
+        check_excluded_key(key, &mut visited)?;
+    }
     while let Some((current, depth)) = stack.pop() {
         if depth > MAX_SETTINGS_DEPTH {
             return Err(invalid("settings nesting exceeds depth limit"));
         }
-        for (key, value) in current {
-            visited += 1;
-            if visited > MAX_SETTINGS_KEYS {
-                return Err(invalid("settings object exceeds maximum field count"));
+        match current {
+            Value::Object(map) => {
+                for (key, value) in map {
+                    check_excluded_key(key, &mut visited)?;
+                    stack.push((value, depth + 1));
+                }
             }
-            let normalized = key.trim().to_ascii_lowercase();
-            if EXCLUDED_SETTING_KEYS.contains(&normalized.as_str())
-                || EXCLUDED_NETWORK_KEYS.contains(&normalized.as_str())
-            {
-                return Err(ControlCommandError::new(
-                    proto::ErrorCode::Rejected,
-                    403,
-                    format!("device setting '{key}' is prohibited by security policy"),
-                ));
+            Value::Array(items) => {
+                for item in items {
+                    visited += 1;
+                    if visited > MAX_SETTINGS_KEYS {
+                        return Err(invalid("settings object exceeds maximum field count"));
+                    }
+                    stack.push((item, depth + 1));
+                }
             }
-            if let Some(child) = value.as_object() {
-                stack.push((child, depth + 1));
-            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn check_excluded_key(key: &str, visited: &mut usize) -> Result<(), ControlCommandError> {
+    *visited += 1;
+    if *visited > MAX_SETTINGS_KEYS {
+        return Err(invalid("settings object exceeds maximum field count"));
+    }
+    let normalized = normalize_excluded_key(key);
+    if EXCLUDED_SETTING_KEYS.contains(&normalized.as_str()) {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            403,
+            format!("device setting '{key}' is prohibited by security policy"),
+        ));
+    }
+    Ok(())
+}
+
+fn reject_unknown_keys(
+    map: &Map<String, Value>,
+    allowed: &[&str],
+    context: &str,
+) -> Result<(), ControlCommandError> {
+    for key in map.keys() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(invalid(&format!("unknown field '{key}' in {context}")));
         }
     }
     Ok(())
@@ -404,12 +550,12 @@ fn execute_protocol_update(
     requested: &Map<String, Value>,
     dry_run: bool,
     deadline: Instant,
-) -> Result<UpdateOutcome, ControlCommandError> {
+) -> Result<UpdateOutcome, PartialWriteError> {
     for section in requested.keys() {
         if !ALL_SECTIONS.contains(&section.as_str()) {
-            return Err(invalid(&format!(
+            return Err(PartialWriteError::from_error(invalid(&format!(
                 "unknown device settings section '{section}'"
-            )));
+            ))));
         }
     }
     match protocol {
@@ -419,11 +565,11 @@ fn execute_protocol_update(
         CameraProtocol::RtspOnly => {
             let unsupported = requested.keys().cloned().collect::<Vec<_>>();
             if !dry_run {
-                return Err(ControlCommandError::new(
+                return Err(PartialWriteError::from_error(ControlCommandError::new(
                     proto::ErrorCode::UnsupportedRequest,
                     501,
                     "RTSP-only cameras do not support on-camera device setting updates",
-                ));
+                )));
             }
             Ok(UpdateOutcome {
                 validated: false,
@@ -462,7 +608,9 @@ fn open_reolink_client(
             )
         },
     );
-    let mut client = ReolinkClient::new_with_http_port(ip, http_port);
+    let remaining = remaining_timeout(deadline)?;
+    let mut client = ReolinkClient::new_with_http_port_and_timeout(ip, http_port, remaining)
+        .with_deadline(deadline);
     client
         .login(username, password)
         .map_err(|_| unavailable("Reolink camera authentication or connection failed"))?;
@@ -651,9 +799,10 @@ fn update_reolink_settings(
     requested: &Map<String, Value>,
     dry_run: bool,
     deadline: Instant,
-) -> Result<UpdateOutcome, ControlCommandError> {
-    let plan = validate_reolink_plan(requested)?;
-    let before = read_reolink_settings(camera, deadline)?;
+) -> Result<UpdateOutcome, PartialWriteError> {
+    let mut plan = validate_reolink_plan(requested).map_err(PartialWriteError::from_error)?;
+    let before = read_reolink_settings(camera, deadline).map_err(PartialWriteError::from_error)?;
+    filter_reolink_unsupported_sections(&mut plan, &before.supported_sections);
     let mut diff_before = Map::new();
     for section in &plan.sections {
         if let Some(value) = before.settings.get(section) {
@@ -673,22 +822,17 @@ fn update_reolink_settings(
         });
     }
     if plan.sections.is_empty() {
-        return Err(ControlCommandError::new(
+        return Err(PartialWriteError::from_error(ControlCommandError::new(
             proto::ErrorCode::UnsupportedRequest,
             501,
             "none of the requested sections are writable on this Reolink camera",
-        ));
+        )));
     }
-    let mut client = open_reolink_client(camera, deadline)?;
+    let mut client =
+        open_reolink_client(camera, deadline).map_err(PartialWriteError::from_error)?;
     apply_reolink_plan(&client, &plan, deadline)?;
     let _ = client.logout();
-    let after = read_reolink_settings(camera, deadline)?;
-    let mut verified = Map::new();
-    for section in &plan.sections {
-        if let Some(value) = after.settings.get(section) {
-            verified.insert(section.clone(), value.clone());
-        }
-    }
+    let (verified, warnings) = readback_reolink_verified(camera, &plan.sections, deadline);
     Ok(UpdateOutcome {
         validated: true,
         diff_before,
@@ -696,9 +840,71 @@ fn update_reolink_settings(
         unsupported: plan.unsupported,
         applied_sections: plan.sections,
         verified_settings: verified,
-        warnings: Vec::new(),
+        warnings,
         restart_or_reconnect_expected: false,
     })
+}
+
+fn filter_reolink_unsupported_sections(plan: &mut ReolinkPlan, supported: &[&'static str]) {
+    let sections = std::mem::take(&mut plan.sections);
+    let mut kept = Vec::with_capacity(sections.len());
+    for section in sections {
+        if supported.contains(&section.as_str()) {
+            kept.push(section);
+        } else {
+            plan.diff_after.remove(&section);
+            clear_reolink_section(plan, &section);
+            plan.unsupported.push(section);
+        }
+    }
+    plan.sections = kept;
+}
+
+fn clear_reolink_section(plan: &mut ReolinkPlan, section: &str) {
+    match section {
+        "imaging" => {
+            plan.imaging_image = None;
+            plan.imaging_isp = None;
+        }
+        "lighting" => {
+            plan.ir_mode = None;
+            plan.white_led = None;
+        }
+        "motion" => {
+            plan.motion_enabled = None;
+            plan.motion_sensitivity = None;
+            plan.ai_people_sensitivity = None;
+            plan.ai_vehicle_sensitivity = None;
+        }
+        "osd" => plan.osd_name = None,
+        "time" => plan.ntp = None,
+        "ptz" => plan.ptz_guard = None,
+        _ => {}
+    }
+}
+
+fn readback_reolink_verified(
+    camera: &CameraEntry,
+    sections: &[String],
+    deadline: Instant,
+) -> (Map<String, Value>, Vec<String>) {
+    let mut verified = Map::new();
+    let mut warnings = Vec::new();
+    match read_reolink_settings(camera, deadline) {
+        Ok(after) => {
+            for section in sections {
+                if let Some(value) = after.settings.get(section).filter(|v| !v.is_null()) {
+                    verified.insert(section.clone(), value.clone());
+                } else {
+                    warnings.push(format!(
+                        "read-back verification did not return updated section '{section}'"
+                    ));
+                }
+            }
+        }
+        Err(_) => warnings.push("post-write read-back verification failed".to_owned()),
+    }
+    (verified, warnings)
 }
 
 fn validate_reolink_plan(
@@ -727,6 +933,20 @@ fn parse_reolink_imaging_update(
     obj: &Map<String, Value>,
     plan: &mut ReolinkPlan,
 ) -> Result<(), ControlCommandError> {
+    reject_unknown_keys(
+        obj,
+        &[
+            "brightness",
+            "contrast",
+            "saturation",
+            "sharpness",
+            "day_night",
+            "hdr",
+            "exposure",
+            "back_light",
+        ],
+        "imaging",
+    )?;
     let brightness = optional_u32_range(obj, "brightness", 0, REOLINK_IMAGE_VALUE_MAX)?;
     let contrast = optional_u32_range(obj, "contrast", 0, REOLINK_IMAGE_VALUE_MAX)?;
     let saturation = optional_u32_range(obj, "saturation", 0, REOLINK_IMAGE_VALUE_MAX)?;
@@ -774,6 +994,7 @@ fn parse_reolink_lighting_update(
     obj: &Map<String, Value>,
     plan: &mut ReolinkPlan,
 ) -> Result<(), ControlCommandError> {
+    reject_unknown_keys(obj, &["ir_mode", "white_led"], "lighting")?;
     if let Some(mode) = optional_printable_str(obj, "ir_mode", 16)? {
         plan.ir_mode = Some(match mode.to_ascii_lowercase().as_str() {
             "auto" => IrCutMode::Auto,
@@ -782,7 +1003,11 @@ fn parse_reolink_lighting_update(
             _ => return Err(invalid("lighting.ir_mode must be auto, on, or off")),
         });
     }
-    if let Some(led) = obj.get("white_led").and_then(Value::as_object) {
+    if let Some(led_value) = obj.get("white_led").filter(|value| !value.is_null()) {
+        let led = led_value
+            .as_object()
+            .ok_or_else(|| invalid("lighting.white_led must be a JSON object"))?;
+        reject_unknown_keys(led, &["state", "brightness", "mode"], "lighting.white_led")?;
         let state = optional_u32_range(led, "state", 0, 1)?
             .ok_or_else(|| invalid("lighting.white_led.state must be 0 or 1"))?;
         let bright = optional_u32_range(led, "brightness", 0, 100)?;
@@ -802,6 +1027,16 @@ fn parse_reolink_motion_update(
     obj: &Map<String, Value>,
     plan: &mut ReolinkPlan,
 ) -> Result<(), ControlCommandError> {
+    reject_unknown_keys(
+        obj,
+        &[
+            "enabled",
+            "sensitivity",
+            "ai_people_sensitivity",
+            "ai_vehicle_sensitivity",
+        ],
+        "motion",
+    )?;
     plan.motion_enabled = optional_bool(obj, "enabled")?;
     plan.motion_sensitivity =
         optional_u32_range(obj, "sensitivity", 0, REOLINK_MD_SENSITIVITY_MAX)?;
@@ -828,6 +1063,7 @@ fn parse_reolink_osd_update(
     obj: &Map<String, Value>,
     plan: &mut ReolinkPlan,
 ) -> Result<(), ControlCommandError> {
+    reject_unknown_keys(obj, &["channel_name"], "osd")?;
     let name = optional_printable_str(obj, "channel_name", REOLINK_OSD_CHARS_MAX)?
         .ok_or_else(|| invalid("osd.channel_name is required"))?;
     plan.osd_name = Some(name);
@@ -841,6 +1077,7 @@ fn parse_reolink_time_update(
     obj: &Map<String, Value>,
     plan: &mut ReolinkPlan,
 ) -> Result<(), ControlCommandError> {
+    reject_unknown_keys(obj, &["ntp_server", "ntp_port"], "time")?;
     let server = optional_printable_str(obj, "ntp_server", 128)?
         .ok_or_else(|| invalid("time.ntp_server is required"))?;
     if server.chars().any(char::is_whitespace) {
@@ -859,6 +1096,7 @@ fn parse_reolink_ptz_update(
     obj: &Map<String, Value>,
     plan: &mut ReolinkPlan,
 ) -> Result<(), ControlCommandError> {
+    reject_unknown_keys(obj, &["guard_enabled", "guard_preset_cmd"], "ptz")?;
     let enable = optional_bool(obj, "guard_enabled")?
         .ok_or_else(|| invalid("ptz.guard_enabled is required"))?;
     let preset_cmd = optional_printable_str(obj, "guard_preset_cmd", 32)?;
@@ -869,13 +1107,21 @@ fn parse_reolink_ptz_update(
     Ok(())
 }
 
+fn record_applied_section(applied: &mut Vec<String>, section: &str) {
+    if !applied.iter().any(|entry| entry == section) {
+        applied.push(section.to_owned());
+    }
+}
+
 fn apply_reolink_plan(
     client: &ReolinkClient,
     plan: &ReolinkPlan,
     deadline: Instant,
-) -> Result<(), ControlCommandError> {
+) -> Result<(), PartialWriteError> {
+    let mut applied = Vec::new();
     if let Some(img) = &plan.imaging_image {
-        let _ = remaining_timeout(deadline)?;
+        let _ = remaining_timeout(deadline)
+            .map_err(|err| PartialWriteError::at_section(applied.clone(), "imaging", err))?;
         client
             .set_image(
                 0,
@@ -884,10 +1130,18 @@ fn apply_reolink_plan(
                 img.saturation,
                 img.sharpness,
             )
-            .map_err(|_| unavailable("Reolink SetImage failed"))?;
+            .map_err(|_| {
+                PartialWriteError::at_section(
+                    applied.clone(),
+                    "imaging",
+                    unavailable("Reolink SetImage failed"),
+                )
+            })?;
+        record_applied_section(&mut applied, "imaging");
     }
     if let Some(isp) = &plan.imaging_isp {
-        let _ = remaining_timeout(deadline)?;
+        let _ = remaining_timeout(deadline)
+            .map_err(|err| PartialWriteError::at_section(applied.clone(), "imaging", err))?;
         client
             .set_isp(
                 0,
@@ -896,69 +1150,155 @@ fn apply_reolink_plan(
                 isp.exposure.as_deref(),
                 isp.back_light.as_deref(),
             )
-            .map_err(|_| unavailable("Reolink SetIsp failed"))?;
+            .map_err(|_| {
+                PartialWriteError::at_section(
+                    applied.clone(),
+                    "imaging",
+                    unavailable("Reolink SetIsp failed"),
+                )
+            })?;
+        record_applied_section(&mut applied, "imaging");
     }
+    apply_reolink_lighting(client, plan, deadline, &mut applied)?;
+    apply_reolink_tail_plan(client, plan, deadline, &mut applied)
+}
+
+fn apply_reolink_lighting(
+    client: &ReolinkClient,
+    plan: &ReolinkPlan,
+    deadline: Instant,
+    applied: &mut Vec<String>,
+) -> Result<(), PartialWriteError> {
     if let Some(mode) = plan.ir_mode.clone() {
-        let _ = remaining_timeout(deadline)?;
-        client
-            .set_ir_lights(0, mode)
-            .map_err(|_| unavailable("Reolink SetIrLights failed"))?;
+        let _ = remaining_timeout(deadline)
+            .map_err(|err| PartialWriteError::at_section(applied.clone(), "lighting", err))?;
+        client.set_ir_lights(0, mode).map_err(|_| {
+            PartialWriteError::at_section(
+                applied.clone(),
+                "lighting",
+                unavailable("Reolink SetIrLights failed"),
+            )
+        })?;
+        record_applied_section(applied, "lighting");
     }
     if let Some((state, bright, mode)) = plan.white_led {
-        let _ = remaining_timeout(deadline)?;
-        client
-            .set_white_led(0, state, bright, mode)
-            .map_err(|_| unavailable("Reolink SetWhiteLed failed"))?;
+        let _ = remaining_timeout(deadline)
+            .map_err(|err| PartialWriteError::at_section(applied.clone(), "lighting", err))?;
+        client.set_white_led(0, state, bright, mode).map_err(|_| {
+            PartialWriteError::at_section(
+                applied.clone(),
+                "lighting",
+                unavailable("Reolink SetWhiteLed failed"),
+            )
+        })?;
+        record_applied_section(applied, "lighting");
     }
-    apply_reolink_tail_plan(client, plan, deadline)
+    Ok(())
 }
 
 fn apply_reolink_tail_plan(
     client: &ReolinkClient,
     plan: &ReolinkPlan,
     deadline: Instant,
-) -> Result<(), ControlCommandError> {
-    if let Some(enabled) = plan.motion_enabled {
-        let _ = remaining_timeout(deadline)?;
-        client
-            .set_alarm(0, enabled)
-            .map_err(|_| unavailable("Reolink SetAlarm failed"))?;
-    }
-    if let Some(sensitivity) = plan.motion_sensitivity {
-        let _ = remaining_timeout(deadline)?;
-        client
-            .set_md_alarm(0, sensitivity)
-            .map_err(|_| unavailable("Reolink SetMdAlarm failed"))?;
-    }
-    if let Some(sensitivity) = plan.ai_people_sensitivity {
-        let _ = remaining_timeout(deadline)?;
-        client
-            .set_ai_alarm(0, "people", sensitivity)
-            .map_err(|_| unavailable("Reolink SetAiAlarm people failed"))?;
-    }
-    if let Some(sensitivity) = plan.ai_vehicle_sensitivity {
-        let _ = remaining_timeout(deadline)?;
-        client
-            .set_ai_alarm(0, "vehicle", sensitivity)
-            .map_err(|_| unavailable("Reolink SetAiAlarm vehicle failed"))?;
-    }
+    applied: &mut Vec<String>,
+) -> Result<(), PartialWriteError> {
+    apply_reolink_motion(client, plan, deadline, applied)?;
     if let Some(name) = &plan.osd_name {
-        let _ = remaining_timeout(deadline)?;
-        client
-            .set_osd(0, name)
-            .map_err(|_| unavailable("Reolink SetOsd failed"))?;
+        let _ = remaining_timeout(deadline)
+            .map_err(|err| PartialWriteError::at_section(applied.clone(), "osd", err))?;
+        client.set_osd(0, name).map_err(|_| {
+            PartialWriteError::at_section(
+                applied.clone(),
+                "osd",
+                unavailable("Reolink SetOsd failed"),
+            )
+        })?;
+        record_applied_section(applied, "osd");
     }
     if let Some((server, port)) = &plan.ntp {
-        let _ = remaining_timeout(deadline)?;
-        client
-            .set_ntp(server, *port)
-            .map_err(|_| unavailable("Reolink SetNtp failed"))?;
+        let _ = remaining_timeout(deadline)
+            .map_err(|err| PartialWriteError::at_section(applied.clone(), "time", err))?;
+        client.set_ntp(server, *port).map_err(|_| {
+            PartialWriteError::at_section(
+                applied.clone(),
+                "time",
+                unavailable("Reolink SetNtp failed"),
+            )
+        })?;
+        record_applied_section(applied, "time");
     }
     if let Some((enable, cmd)) = &plan.ptz_guard {
-        let _ = remaining_timeout(deadline)?;
+        let _ = remaining_timeout(deadline)
+            .map_err(|err| PartialWriteError::at_section(applied.clone(), "ptz", err))?;
         client
             .set_ptz_guard(0, *enable, cmd.as_deref())
-            .map_err(|_| unavailable("Reolink SetPtzGuard failed"))?;
+            .map_err(|_| {
+                PartialWriteError::at_section(
+                    applied.clone(),
+                    "ptz",
+                    unavailable("Reolink SetPtzGuard failed"),
+                )
+            })?;
+        record_applied_section(applied, "ptz");
+    }
+    Ok(())
+}
+
+fn apply_reolink_motion(
+    client: &ReolinkClient,
+    plan: &ReolinkPlan,
+    deadline: Instant,
+    applied: &mut Vec<String>,
+) -> Result<(), PartialWriteError> {
+    if let Some(enabled) = plan.motion_enabled {
+        let _ = remaining_timeout(deadline)
+            .map_err(|err| PartialWriteError::at_section(applied.clone(), "motion", err))?;
+        client.set_alarm(0, enabled).map_err(|_| {
+            PartialWriteError::at_section(
+                applied.clone(),
+                "motion",
+                unavailable("Reolink SetAlarm failed"),
+            )
+        })?;
+        record_applied_section(applied, "motion");
+    }
+    if let Some(sensitivity) = plan.motion_sensitivity {
+        let _ = remaining_timeout(deadline)
+            .map_err(|err| PartialWriteError::at_section(applied.clone(), "motion", err))?;
+        client.set_md_alarm(0, sensitivity).map_err(|_| {
+            PartialWriteError::at_section(
+                applied.clone(),
+                "motion",
+                unavailable("Reolink SetMdAlarm failed"),
+            )
+        })?;
+        record_applied_section(applied, "motion");
+    }
+    if let Some(sensitivity) = plan.ai_people_sensitivity {
+        let _ = remaining_timeout(deadline)
+            .map_err(|err| PartialWriteError::at_section(applied.clone(), "motion", err))?;
+        client.set_ai_alarm(0, "people", sensitivity).map_err(|_| {
+            PartialWriteError::at_section(
+                applied.clone(),
+                "motion",
+                unavailable("Reolink SetAiAlarm people failed"),
+            )
+        })?;
+        record_applied_section(applied, "motion");
+    }
+    if let Some(sensitivity) = plan.ai_vehicle_sensitivity {
+        let _ = remaining_timeout(deadline)
+            .map_err(|err| PartialWriteError::at_section(applied.clone(), "motion", err))?;
+        client
+            .set_ai_alarm(0, "vehicle", sensitivity)
+            .map_err(|_| {
+                PartialWriteError::at_section(
+                    applied.clone(),
+                    "motion",
+                    unavailable("Reolink SetAiAlarm vehicle failed"),
+                )
+            })?;
+        record_applied_section(applied, "motion");
     }
     Ok(())
 }
@@ -994,7 +1334,7 @@ fn read_isapi_settings(
     let mut settings = empty_sections_map();
     let _ = remaining_timeout(deadline)?;
     if let Ok(query) = Stream::list()
-        && let Ok(streams) = client.query(&query)
+        && let Ok(streams) = client.query_until(&query, deadline)
     {
         supported.push("encoder");
         let items = streams.iter().map(isapi_stream_json).collect::<Vec<_>>();
@@ -1012,19 +1352,19 @@ fn read_isapi_settings(
         );
     }
     let _ = remaining_timeout(deadline)?;
-    if let Some(motion) = read_isapi_motion(&mut client, route.channel) {
+    if let Some(motion) = read_isapi_motion(&mut client, route.channel, deadline) {
         supported.push("motion");
         settings.insert("motion".to_owned(), motion);
     }
     let _ = remaining_timeout(deadline)?;
     if let Ok(query) = Time::query()
-        && let Ok(time) = client.query(&query)
+        && let Ok(time) = client.query_until(&query, deadline)
     {
         supported.push("time");
         settings.insert("time".to_owned(), isapi_time_json(&time));
     }
     let _ = remaining_timeout(deadline)?;
-    if let Some(ptz) = read_isapi_ptz(&mut client, route.channel) {
+    if let Some(ptz) = read_isapi_ptz(&mut client, route.channel, deadline) {
         supported.push("ptz");
         settings.insert("ptz".to_owned(), ptz);
     }
@@ -1073,10 +1413,14 @@ fn isapi_doc_field(doc: &::isapi::Document, path: &[&str]) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
-fn read_isapi_motion(client: &mut ::isapi::blocking::Client, channel: u32) -> Option<Value> {
+fn read_isapi_motion(
+    client: &mut ::isapi::blocking::Client,
+    channel: u32,
+    deadline: Instant,
+) -> Option<Value> {
     let motion = Motion::query(channel)
         .ok()
-        .and_then(|query| client.query(&query).ok());
+        .and_then(|query| client.query_until(&query, deadline).ok());
     let mut rules = Map::new();
     for (label, kind) in [
         ("line", RuleKind::Line),
@@ -1084,8 +1428,11 @@ fn read_isapi_motion(client: &mut ::isapi::blocking::Client, channel: u32) -> Op
         ("region_entrance", RuleKind::RegionEntrance),
         ("region_exit", RuleKind::RegionExit),
     ] {
+        if Instant::now() >= deadline {
+            break;
+        }
         if let Ok(query) = Rule::query(kind, channel)
-            && let Ok(rule) = client.query(&query)
+            && let Ok(rule) = client.query_until(&query, deadline)
         {
             rules.insert(label.to_owned(), Value::Bool(rule.enabled()));
         }
@@ -1112,13 +1459,17 @@ fn isapi_time_json(time: &Time) -> Value {
     })
 }
 
-fn read_isapi_ptz(client: &mut ::isapi::blocking::Client, channel: u32) -> Option<Value> {
+fn read_isapi_ptz(
+    client: &mut ::isapi::blocking::Client,
+    channel: u32,
+    deadline: Instant,
+) -> Option<Value> {
     let presets = Preset::list(channel)
         .ok()
-        .and_then(|query| client.query(&query).ok());
+        .and_then(|query| client.query_until(&query, deadline).ok());
     let caps = PtzCapabilities::query(channel)
         .ok()
-        .and_then(|query| client.query(&query).ok());
+        .and_then(|query| client.query_until(&query, deadline).ok());
     if presets.is_none() && caps.is_none() {
         return None;
     }
@@ -1154,9 +1505,11 @@ fn update_isapi_settings(
     requested: &Map<String, Value>,
     dry_run: bool,
     deadline: Instant,
-) -> Result<UpdateOutcome, ControlCommandError> {
-    let (mut client, route) = open_isapi_client(camera, deadline)?;
-    let plan = build_isapi_plan(&mut client, route.channel, requested, deadline)?;
+) -> Result<UpdateOutcome, PartialWriteError> {
+    let (mut client, route) =
+        open_isapi_client(camera, deadline).map_err(PartialWriteError::from_error)?;
+    let plan = build_isapi_plan(&mut client, route.channel, requested, deadline)
+        .map_err(PartialWriteError::from_error)?;
     if dry_run {
         return Ok(UpdateOutcome {
             validated: !plan.sections.is_empty(),
@@ -1170,19 +1523,28 @@ fn update_isapi_settings(
         });
     }
     if plan.sections.is_empty() {
-        return Err(ControlCommandError::new(
+        return Err(PartialWriteError::from_error(ControlCommandError::new(
             proto::ErrorCode::UnsupportedRequest,
             501,
             "none of the requested sections are writable on this ISAPI camera",
-        ));
+        )));
     }
     let reboot_required = apply_isapi_plan(&mut client, route.channel, &plan, deadline)?;
-    let verified = read_isapi_settings(camera, deadline)?;
     let mut verified_map = Map::new();
-    for section in &plan.sections {
-        if let Some(value) = verified.settings.get(section) {
-            verified_map.insert(section.clone(), value.clone());
+    let mut warnings = Vec::new();
+    match read_isapi_settings(camera, deadline) {
+        Ok(verified) => {
+            for section in &plan.sections {
+                if let Some(value) = verified.settings.get(section).filter(|v| !v.is_null()) {
+                    verified_map.insert(section.clone(), value.clone());
+                } else {
+                    warnings.push(format!(
+                        "read-back verification did not return updated section '{section}'"
+                    ));
+                }
+            }
         }
+        Err(_) => warnings.push("post-write read-back verification failed".to_owned()),
     }
     Ok(UpdateOutcome {
         validated: true,
@@ -1191,7 +1553,7 @@ fn update_isapi_settings(
         unsupported: plan.unsupported,
         applied_sections: plan.sections,
         verified_settings: verified_map,
-        warnings: Vec::new(),
+        warnings,
         restart_or_reconnect_expected: plan.restart_expected || reboot_required,
     })
 }
@@ -1209,10 +1571,10 @@ fn build_isapi_plan(
             .as_object()
             .ok_or_else(|| invalid(&format!("section '{section}' must be a JSON object")))?;
         match section.as_str() {
-            "encoder" => plan_isapi_encoder(client, channel, obj, &mut plan)?,
-            "motion" => plan_isapi_motion(client, channel, obj, &mut plan)?,
-            "time" => plan_isapi_time(client, obj, &mut plan)?,
-            "ptz" => plan_isapi_ptz(client, channel, obj, &mut plan)?,
+            "encoder" => plan_isapi_encoder(client, channel, obj, &mut plan, deadline)?,
+            "motion" => plan_isapi_motion(client, channel, obj, &mut plan, deadline)?,
+            "time" => plan_isapi_time(client, obj, &mut plan, deadline)?,
+            "ptz" => plan_isapi_ptz(client, channel, obj, &mut plan, deadline)?,
             _ => plan.unsupported.push(section.clone()),
         }
     }
@@ -1224,12 +1586,13 @@ fn plan_isapi_encoder(
     channel: u32,
     obj: &Map<String, Value>,
     plan: &mut IsapiPlan,
+    deadline: Instant,
 ) -> Result<(), ControlCommandError> {
     let default_stream = channel.saturating_mul(100).saturating_add(1);
     let stream_id = optional_u32_range(obj, "stream_id", 1, 99_999)?.unwrap_or(default_stream);
     let query = Stream::query(stream_id).map_err(|_| invalid("encoder.stream_id is invalid"))?;
     let mut current = client
-        .query(&query)
+        .query_until(&query, deadline)
         .map_err(|_| unavailable("ISAPI stream query failed"))?;
     let before = isapi_stream_json(&current);
     let width = optional_u32_range(obj, "width", 1, ISAPI_DIMENSION_MAX)?
@@ -1266,6 +1629,7 @@ fn plan_isapi_motion(
     channel: u32,
     obj: &Map<String, Value>,
     plan: &mut IsapiPlan,
+    deadline: Instant,
 ) -> Result<(), ControlCommandError> {
     let enabled = optional_bool(obj, "enabled")?;
     let sensitivity = optional_u32_range(obj, "sensitivity", 0, ISAPI_SENSITIVITY_MAX)?;
@@ -1275,12 +1639,12 @@ fn plan_isapi_motion(
             "motion update must specify enabled, sensitivity, or rules",
         ));
     }
-    let before = read_isapi_motion(client, channel).unwrap_or(Value::Null);
+    let before = read_isapi_motion(client, channel, deadline).unwrap_or(Value::Null);
     let mut after = before.clone();
     if enabled.is_some() || sensitivity.is_some() {
         let query = Motion::query(channel).map_err(|_| invalid("invalid camera channel"))?;
         let mut motion = client
-            .query(&query)
+            .query_until(&query, deadline)
             .map_err(|_| unavailable("ISAPI motion query failed"))?;
         if let Some(enabled) = enabled {
             motion
@@ -1297,7 +1661,7 @@ fn plan_isapi_motion(
         plan.motion = Some(motion);
     }
     if let Some(rules_obj) = rules_obj {
-        plan_isapi_rules(client, channel, rules_obj, &mut after, plan)?;
+        plan_isapi_rules(client, channel, rules_obj, &mut after, plan, deadline)?;
     }
     plan.diff_before.insert("motion".to_owned(), before);
     plan.diff_after.insert("motion".to_owned(), after);
@@ -1311,8 +1675,10 @@ fn plan_isapi_rules(
     rules_obj: &Map<String, Value>,
     after: &mut Value,
     plan: &mut IsapiPlan,
+    deadline: Instant,
 ) -> Result<(), ControlCommandError> {
     for (name, value) in rules_obj {
+        let _ = remaining_timeout(deadline)?;
         let enabled = value
             .as_bool()
             .ok_or_else(|| invalid(&format!("motion.rules.{name} must be a boolean")))?;
@@ -1325,7 +1691,7 @@ fn plan_isapi_rules(
         };
         let query = Rule::query(kind, channel).map_err(|_| invalid("invalid rule channel"))?;
         let mut rule = client
-            .query(&query)
+            .query_until(&query, deadline)
             .map_err(|_| unavailable("ISAPI smart rule query failed"))?;
         rule.set_enabled(enabled)
             .map_err(|_| invalid("invalid smart rule enabled value"))?;
@@ -1339,10 +1705,11 @@ fn plan_isapi_time(
     client: &mut ::isapi::blocking::Client,
     obj: &Map<String, Value>,
     plan: &mut IsapiPlan,
+    deadline: Instant,
 ) -> Result<(), ControlCommandError> {
     let query = Time::query().map_err(|_| invalid("invalid ISAPI time query"))?;
     let mut clock = client
-        .query(&query)
+        .query_until(&query, deadline)
         .map_err(|_| unavailable("ISAPI time query failed"))?;
     let before = isapi_time_json(&clock);
     let mode = match optional_printable_str(obj, "mode", 16)?.as_deref() {
@@ -1373,6 +1740,7 @@ fn plan_isapi_ptz(
     channel: u32,
     obj: &Map<String, Value>,
     plan: &mut IsapiPlan,
+    deadline: Instant,
 ) -> Result<(), ControlCommandError> {
     let store = obj
         .get("store_preset")
@@ -1383,7 +1751,7 @@ fn plan_isapi_ptz(
     let name = optional_printable_str(store, "name", 64)?
         .ok_or_else(|| invalid("ptz.store_preset.name is required"))?;
     let preset = Preset::new(id, &name).map_err(|_| invalid("ptz preset id or name is invalid"))?;
-    let before = read_isapi_ptz(client, channel).unwrap_or(Value::Null);
+    let before = read_isapi_ptz(client, channel, deadline).unwrap_or(Value::Null);
     plan.diff_before.insert("ptz".to_owned(), before);
     plan.diff_after.insert(
         "ptz".to_owned(),
@@ -1399,65 +1767,142 @@ fn apply_isapi_plan(
     channel: u32,
     plan: &IsapiPlan,
     deadline: Instant,
-) -> Result<bool, ControlCommandError> {
+) -> Result<bool, PartialWriteError> {
+    let mut applied = Vec::new();
     let mut reboot_required = false;
     if let Some((_, stream)) = &plan.stream {
-        let _ = remaining_timeout(deadline)?;
-        let req = stream
-            .update()
-            .map_err(|_| invalid("ISAPI stream update failed"))?;
-        let status = client
-            .command(&req)
-            .map_err(|_| unavailable("ISAPI stream write failed"))?;
-        reboot_required |= status.reboot_required();
+        reboot_required |= run_isapi_command(
+            client,
+            stream.update().map_err(|_| {
+                PartialWriteError::at_section(
+                    applied.clone(),
+                    "encoder",
+                    invalid("ISAPI stream update failed"),
+                )
+            })?,
+            deadline,
+            &mut applied,
+            "encoder",
+            "ISAPI stream write failed",
+        )?;
     }
     if let Some(motion) = &plan.motion {
-        let _ = remaining_timeout(deadline)?;
-        let req = motion
-            .update(channel)
-            .map_err(|_| invalid("ISAPI motion update failed"))?;
-        let status = client
-            .command(&req)
-            .map_err(|_| unavailable("ISAPI motion write failed"))?;
-        reboot_required |= status.reboot_required();
+        reboot_required |= run_isapi_command(
+            client,
+            motion.update(channel).map_err(|_| {
+                PartialWriteError::at_section(
+                    applied.clone(),
+                    "motion",
+                    invalid("ISAPI motion update failed"),
+                )
+            })?,
+            deadline,
+            &mut applied,
+            "motion",
+            "ISAPI motion write failed",
+        )?;
     }
     for (_, rule) in &plan.rules {
-        let _ = remaining_timeout(deadline)?;
-        let req = rule
-            .update(channel)
-            .map_err(|_| invalid("ISAPI rule update failed"))?;
-        let status = client
-            .command(&req)
-            .map_err(|_| unavailable("ISAPI rule write failed"))?;
-        reboot_required |= status.reboot_required();
+        reboot_required |= run_isapi_command(
+            client,
+            rule.update(channel).map_err(|_| {
+                PartialWriteError::at_section(
+                    applied.clone(),
+                    "motion",
+                    invalid("ISAPI rule update failed"),
+                )
+            })?,
+            deadline,
+            &mut applied,
+            "motion",
+            "ISAPI rule write failed",
+        )?;
     }
     if let Some(time) = &plan.time {
-        let _ = remaining_timeout(deadline)?;
-        let req = time
-            .update()
-            .map_err(|_| invalid("ISAPI time update failed"))?;
-        let status = client
-            .command(&req)
-            .map_err(|_| unavailable("ISAPI time write failed"))?;
-        reboot_required |= status.reboot_required();
+        reboot_required |= run_isapi_command(
+            client,
+            time.update().map_err(|_| {
+                PartialWriteError::at_section(
+                    applied.clone(),
+                    "time",
+                    invalid("ISAPI time update failed"),
+                )
+            })?,
+            deadline,
+            &mut applied,
+            "time",
+            "ISAPI time write failed",
+        )?;
     }
     if let Some(preset) = &plan.preset {
-        let _ = remaining_timeout(deadline)?;
-        let req = preset
-            .store(channel)
-            .map_err(|_| invalid("ISAPI preset update failed"))?;
-        let status = client
-            .command(&req)
-            .map_err(|_| unavailable("ISAPI preset write failed"))?;
-        reboot_required |= status.reboot_required();
+        reboot_required |= run_isapi_command(
+            client,
+            preset.store(channel).map_err(|_| {
+                PartialWriteError::at_section(
+                    applied.clone(),
+                    "ptz",
+                    invalid("ISAPI preset update failed"),
+                )
+            })?,
+            deadline,
+            &mut applied,
+            "ptz",
+            "ISAPI preset write failed",
+        )?;
     }
     Ok(reboot_required)
 }
 
-fn open_onvif_media_client(
+fn run_isapi_command(
+    client: &mut ::isapi::blocking::Client,
+    request: ::isapi::Request,
+    deadline: Instant,
+    applied: &mut Vec<String>,
+    section: &'static str,
+    failure_msg: &str,
+) -> Result<bool, PartialWriteError> {
+    let _ = remaining_timeout(deadline)
+        .map_err(|err| PartialWriteError::at_section(applied.clone(), section, err))?;
+    let status = client.command_until(&request, deadline).map_err(|_| {
+        PartialWriteError::at_section(applied.clone(), section, unavailable(failure_msg))
+    })?;
+    record_applied_section(applied, section);
+    Ok(status.reboot_required())
+}
+
+struct OnvifMediaEndpoint {
+    url: Url,
+    creds: Option<OnvifCredentials>,
+}
+
+impl Drop for OnvifMediaEndpoint {
+    fn drop(&mut self) {
+        if let Some(creds) = &mut self.creds {
+            creds.username.zeroize();
+            creds.password.zeroize();
+        }
+    }
+}
+
+impl OnvifMediaEndpoint {
+    fn client(
+        &self,
+        deadline: Instant,
+    ) -> Result<onvif::soap::client::Client, ControlCommandError> {
+        let timeout = remaining_timeout(deadline)?;
+        Ok(ClientBuilder::new(&self.url)
+            .credentials(self.creds.clone())
+            .auth_type(AuthType::Any)
+            .timeout(timeout)
+            .follow_redirects(false)
+            .build())
+    }
+}
+
+fn resolve_onvif_media_endpoint(
     camera: &CameraEntry,
     deadline: Instant,
-) -> Result<onvif::soap::client::Client, ControlCommandError> {
+) -> Result<OnvifMediaEndpoint, ControlCommandError> {
     let timeout = remaining_timeout(deadline)?;
     let port = camera
         .configuration
@@ -1475,68 +1920,89 @@ fn open_onvif_media_client(
         .credentials(creds.clone())
         .auth_type(AuthType::Any)
         .timeout(timeout)
+        .follow_redirects(false)
         .build();
-    let media_url = devicemgmt::get_services(
+    let media_url = match devicemgmt::get_services(
         &device_client,
         &devicemgmt::GetServices {
             include_capability: false,
         },
-    )
-    .ok()
-    .and_then(|resp| {
-        resp.service
-            .into_iter()
-            .find(|service| service.namespace.contains("media/wsdl"))
-            .and_then(|service| Url::parse(&service.x_addr).ok())
+    ) {
+        Ok(resp) => {
+            if let Some(service) = resp
+                .service
+                .into_iter()
+                .find(|service| service.namespace.contains("media/wsdl"))
+            {
+                validate_pinned_onvif_endpoint(&service.x_addr, camera.configuration.ip).map_err(
+                    |_| {
+                        ControlCommandError::new(
+                            proto::ErrorCode::Rejected,
+                            403,
+                            "camera advertised a disallowed ONVIF media endpoint",
+                        )
+                    },
+                )?
+            } else {
+                Url::parse(&format!("http://{address}/onvif/media_service"))
+                    .map_err(|_| unavailable("ONVIF fallback media URL is invalid"))?
+            }
+        }
+        Err(SoapTransportError::Redirection(_)) => {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::Rejected,
+                403,
+                "camera attempted a disallowed HTTP redirect during ONVIF discovery",
+            ));
+        }
+        Err(SoapTransportError::Timeout(_)) => {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::Timeout,
+                504,
+                "ONVIF device service timed out",
+            ));
+        }
+        Err(_) => Url::parse(&format!("http://{address}/onvif/media_service"))
+            .map_err(|_| unavailable("ONVIF fallback media URL is invalid"))?,
+    };
+    Ok(OnvifMediaEndpoint {
+        url: media_url,
+        creds,
     })
-    .unwrap_or_else(|| {
-        Url::parse(&format!("http://{address}/onvif/media_service")).expect("valid fallback URL")
-    });
-    let timeout = remaining_timeout(deadline)?;
-    Ok(ClientBuilder::new(&media_url)
-        .credentials(creds)
-        .auth_type(AuthType::Any)
-        .timeout(timeout)
-        .build())
 }
 
 fn read_onvif_settings(
     camera: &CameraEntry,
     deadline: Instant,
 ) -> Result<DeviceSnapshot, ControlCommandError> {
-    let media_client = open_onvif_media_client(camera, deadline)?;
+    let endpoint = resolve_onvif_media_endpoint(camera, deadline)?;
     let mut supported = Vec::new();
     let mut settings = empty_sections_map();
-    let _ = remaining_timeout(deadline)?;
+    let client = endpoint.client(deadline)?;
     if let Ok(resp) = onvif_media::get_video_encoder_configurations(
-        &media_client,
+        &client,
         &onvif_media::GetVideoEncoderConfigurations {},
     ) {
         supported.push("encoder");
-        let configs = resp
-            .configurations
-            .into_iter()
-            .take(MAX_ONVIF_CONFIGS)
-            .map(|config| {
-                let options = onvif_media::get_video_encoder_configuration_options(
-                    &media_client,
-                    &onvif_media::GetVideoEncoderConfigurationOptions {
-                        configuration_token: Some(onvif_xsd::ReferenceToken(
-                            config.token.0.clone(),
-                        )),
-                        profile_token: None,
-                    },
-                )
-                .ok()
-                .map(|resp| onvif_encoder_options_json(&resp.options));
-                onvif_encoder_json(&config, options)
-            })
-            .collect::<Vec<_>>();
+        let mut configs = Vec::new();
+        for config in resp.configurations.into_iter().take(MAX_ONVIF_CONFIGS) {
+            let opt_client = endpoint.client(deadline)?;
+            let options = onvif_media::get_video_encoder_configuration_options(
+                &opt_client,
+                &onvif_media::GetVideoEncoderConfigurationOptions {
+                    configuration_token: Some(onvif_xsd::ReferenceToken(config.token.0.clone())),
+                    profile_token: None,
+                },
+            )
+            .ok()
+            .map(|resp| onvif_encoder_options_json(&resp.options));
+            configs.push(onvif_encoder_json(&config, options));
+        }
         settings.insert("encoder".to_owned(), json!({ "configurations": configs }));
     }
-    let _ = remaining_timeout(deadline)?;
+    let osd_client = endpoint.client(deadline)?;
     if let Ok(resp) = onvif_media::get_os_ds(
-        &media_client,
+        &osd_client,
         &onvif_media::GetOSDs {
             configuration_token: onvif_xsd::ReferenceToken(String::new()),
         },
@@ -1607,8 +2073,9 @@ fn update_onvif_settings(
     requested: &Map<String, Value>,
     dry_run: bool,
     deadline: Instant,
-) -> Result<UpdateOutcome, ControlCommandError> {
-    let media_client = open_onvif_media_client(camera, deadline)?;
+) -> Result<UpdateOutcome, PartialWriteError> {
+    let endpoint =
+        resolve_onvif_media_endpoint(camera, deadline).map_err(PartialWriteError::from_error)?;
     let mut outcome = UpdateOutcome {
         validated: false,
         diff_before: Map::new(),
@@ -1622,13 +2089,15 @@ fn update_onvif_settings(
     let mut pending_encoder = None;
     let mut pending_osd = None;
     for (section, value) in requested {
-        let _ = remaining_timeout(deadline)?;
-        let obj = value
-            .as_object()
-            .ok_or_else(|| invalid(&format!("section '{section}' must be a JSON object")))?;
+        let obj = value.as_object().ok_or_else(|| {
+            PartialWriteError::from_error(invalid(&format!(
+                "section '{section}' must be a JSON object"
+            )))
+        })?;
         match section.as_str() {
             "encoder" => {
-                let (before, config) = plan_onvif_encoder(&media_client, obj)?;
+                let (before, config) = plan_onvif_encoder(&endpoint, obj, deadline)
+                    .map_err(PartialWriteError::from_error)?;
                 outcome.diff_before.insert("encoder".to_owned(), before);
                 outcome
                     .diff_after
@@ -1638,7 +2107,8 @@ fn update_onvif_settings(
                 pending_encoder = Some(config);
             }
             "osd" => {
-                let (before, osd) = plan_onvif_osd(&media_client, obj)?;
+                let (before, osd) = plan_onvif_osd(&endpoint, obj, deadline)
+                    .map_err(PartialWriteError::from_error)?;
                 outcome.diff_before.insert("osd".to_owned(), before);
                 outcome
                     .diff_after
@@ -1654,30 +2124,42 @@ fn update_onvif_settings(
         return Ok(outcome);
     }
     if !outcome.validated {
-        return Err(ControlCommandError::new(
+        return Err(PartialWriteError::from_error(ControlCommandError::new(
             proto::ErrorCode::UnsupportedRequest,
             501,
             "none of the requested sections are writable via ONVIF",
-        ));
+        )));
     }
-    apply_onvif_updates(&media_client, pending_encoder, pending_osd, deadline)?;
-    let verified = read_onvif_settings(camera, deadline)?;
-    for section in &outcome.applied_sections {
-        if let Some(value) = verified.settings.get(section) {
-            outcome
-                .verified_settings
-                .insert(section.clone(), value.clone());
+    apply_onvif_updates(&endpoint, pending_encoder, pending_osd, deadline)?;
+    match read_onvif_settings(camera, deadline) {
+        Ok(verified) => {
+            for section in &outcome.applied_sections {
+                if let Some(value) = verified.settings.get(section).filter(|v| !v.is_null()) {
+                    outcome
+                        .verified_settings
+                        .insert(section.clone(), value.clone());
+                } else {
+                    outcome.warnings.push(format!(
+                        "read-back verification did not return updated section '{section}'"
+                    ));
+                }
+            }
         }
+        Err(_) => outcome
+            .warnings
+            .push("post-write read-back verification failed".to_owned()),
     }
     Ok(outcome)
 }
 
 fn plan_onvif_encoder(
-    media_client: &onvif::soap::client::Client,
+    endpoint: &OnvifMediaEndpoint,
     obj: &Map<String, Value>,
+    deadline: Instant,
 ) -> Result<(Value, onvif_xsd::VideoEncoderConfiguration), ControlCommandError> {
+    let client = endpoint.client(deadline)?;
     let configs = onvif_media::get_video_encoder_configurations(
-        media_client,
+        &client,
         &onvif_media::GetVideoEncoderConfigurations {},
     )
     .map_err(|_| unavailable("ONVIF GetVideoEncoderConfigurations failed"))?
@@ -1691,8 +2173,9 @@ fn plan_onvif_encoder(
                 .is_none_or(|token| cfg.token.0 == token)
         })
         .ok_or_else(|| invalid("matching ONVIF video encoder configuration was not found"))?;
+    let opt_client = endpoint.client(deadline)?;
     let options = onvif_media::get_video_encoder_configuration_options(
-        media_client,
+        &opt_client,
         &onvif_media::GetVideoEncoderConfigurationOptions {
             configuration_token: Some(onvif_xsd::ReferenceToken(config.token.0.clone())),
             profile_token: None,
@@ -1705,33 +2188,106 @@ fn plan_onvif_encoder(
     Ok((before, config))
 }
 
+struct OnvifEncodingBounds<'a> {
+    resolutions: &'a [onvif_xsd::VideoResolution],
+    fps_range: Option<(i32, i32)>,
+    gov_range: Option<(i32, i32)>,
+}
+
+fn select_onvif_encoding_bounds<'a>(
+    encoding: &onvif_xsd::VideoEncoding,
+    options: Option<&'a onvif_xsd::VideoEncoderConfigurationOptions>,
+) -> OnvifEncodingBounds<'a> {
+    let Some(opts) = options else {
+        return OnvifEncodingBounds {
+            resolutions: &[],
+            fps_range: None,
+            gov_range: None,
+        };
+    };
+    match encoding {
+        onvif_xsd::VideoEncoding::H264 => opts.h264.as_ref().map_or(
+            OnvifEncodingBounds {
+                resolutions: &[],
+                fps_range: None,
+                gov_range: None,
+            },
+            |h| OnvifEncodingBounds {
+                resolutions: &h.resolutions_available,
+                fps_range: Some((h.frame_rate_range.min, h.frame_rate_range.max)),
+                gov_range: Some((h.gov_length_range.min, h.gov_length_range.max)),
+            },
+        ),
+        onvif_xsd::VideoEncoding::Jpeg => opts.jpeg.as_ref().map_or(
+            OnvifEncodingBounds {
+                resolutions: &[],
+                fps_range: None,
+                gov_range: None,
+            },
+            |j| OnvifEncodingBounds {
+                resolutions: &j.resolutions_available,
+                fps_range: Some((j.frame_rate_range.min, j.frame_rate_range.max)),
+                gov_range: None,
+            },
+        ),
+        onvif_xsd::VideoEncoding::Mpeg4 => opts.mpeg4.as_ref().map_or(
+            OnvifEncodingBounds {
+                resolutions: &[],
+                fps_range: None,
+                gov_range: None,
+            },
+            |m| OnvifEncodingBounds {
+                resolutions: &m.resolutions_available,
+                fps_range: Some((m.frame_rate_range.min, m.frame_rate_range.max)),
+                gov_range: Some((m.gov_length_range.min, m.gov_length_range.max)),
+            },
+        ),
+        onvif_xsd::VideoEncoding::__Unknown__(_) => OnvifEncodingBounds {
+            resolutions: &[],
+            fps_range: None,
+            gov_range: None,
+        },
+    }
+}
+
 fn apply_onvif_encoder_fields(
     obj: &Map<String, Value>,
     config: &mut onvif_xsd::VideoEncoderConfiguration,
     options: Option<&onvif_xsd::VideoEncoderConfigurationOptions>,
 ) -> Result<(), ControlCommandError> {
-    if let Some(quality) = obj.get("quality").and_then(Value::as_f64) {
-        if !quality.is_finite() {
-            return Err(invalid("encoder.quality must be finite"));
-        }
-        if let Some(opts) = options {
-            let min = f64::from(opts.quality_range.min);
-            let max = f64::from(opts.quality_range.max);
-            if quality < min || quality > max {
-                return Err(invalid(&format!(
-                    "encoder.quality must be within camera range {min}..={max}"
-                )));
-            }
+    reject_unknown_keys(
+        obj,
+        &[
+            "token",
+            "quality",
+            "frame_rate_limit",
+            "bitrate_limit",
+            "width",
+            "height",
+            "gov_length",
+        ],
+        "encoder",
+    )?;
+    let bounds = select_onvif_encoding_bounds(&config.encoding, options);
+    if let Some(quality) = optional_f64(obj, "quality")? {
+        let (min, max) = options.map_or((ONVIF_QUALITY_MIN, ONVIF_QUALITY_MAX), |opts| {
+            (
+                f64::from(opts.quality_range.min).max(ONVIF_QUALITY_MIN),
+                f64::from(opts.quality_range.max),
+            )
+        });
+        if quality < min || quality > max {
+            return Err(invalid(&format!(
+                "encoder.quality must be within range {min}..={max}"
+            )));
         }
         config.quality = quality;
     }
     if let Some(fps) = optional_i32(obj, "frame_rate_limit")? {
-        if let Some(h264) = options.and_then(|opts| opts.h264.as_ref())
-            && (fps < h264.frame_rate_range.min || fps > h264.frame_rate_range.max)
-        {
+        let (min, max) = bounds.fps_range.unwrap_or((ONVIF_FPS_MIN, ONVIF_FPS_MAX));
+        if fps < min || fps > max {
             return Err(invalid(&format!(
-                "encoder.frame_rate_limit must be within camera range {}..={}",
-                h264.frame_rate_range.min, h264.frame_rate_range.max
+                "encoder.frame_rate_limit must be within range {min}..={max}"
             )));
         }
         let rc = config.rate_control.get_or_insert_with(Default::default);
@@ -1746,23 +2302,29 @@ fn apply_onvif_encoder_fields(
         let rc = config.rate_control.get_or_insert_with(Default::default);
         rc.bitrate_limit = bitrate;
     }
-    apply_onvif_resolution_and_gov(obj, config, options)
+    apply_onvif_resolution_and_gov(obj, config, &bounds)
 }
 
 fn apply_onvif_resolution_and_gov(
     obj: &Map<String, Value>,
     config: &mut onvif_xsd::VideoEncoderConfiguration,
-    options: Option<&onvif_xsd::VideoEncoderConfigurationOptions>,
+    bounds: &OnvifEncodingBounds<'_>,
 ) -> Result<(), ControlCommandError> {
     let width = optional_i32(obj, "width")?;
     let height = optional_i32(obj, "height")?;
     if width.is_some() || height.is_some() {
         let next_w = width.unwrap_or(config.resolution.width);
         let next_h = height.unwrap_or(config.resolution.height);
-        if let Some(h264) = options.and_then(|opts| opts.h264.as_ref())
-            && !h264.resolutions_available.is_empty()
-            && !h264
-                .resolutions_available
+        if !(ONVIF_DIMENSION_MIN..=ONVIF_DIMENSION_MAX).contains(&next_w)
+            || !(ONVIF_DIMENSION_MIN..=ONVIF_DIMENSION_MAX).contains(&next_h)
+        {
+            return Err(invalid(&format!(
+                "encoder width and height must be between {ONVIF_DIMENSION_MIN} and {ONVIF_DIMENSION_MAX}"
+            )));
+        }
+        if !bounds.resolutions.is_empty()
+            && !bounds
+                .resolutions
                 .iter()
                 .any(|res| res.width == next_w && res.height == next_h)
         {
@@ -1774,12 +2336,10 @@ fn apply_onvif_resolution_and_gov(
         config.resolution.height = next_h;
     }
     if let Some(gov) = optional_i32(obj, "gov_length")? {
-        if let Some(h264) = options.and_then(|opts| opts.h264.as_ref())
-            && (gov < h264.gov_length_range.min || gov > h264.gov_length_range.max)
-        {
+        let (min, max) = bounds.gov_range.unwrap_or((ONVIF_GOV_MIN, ONVIF_GOV_MAX));
+        if gov < min || gov > max {
             return Err(invalid(&format!(
-                "encoder.gov_length must be within camera range {}..={}",
-                h264.gov_length_range.min, h264.gov_length_range.max
+                "encoder.gov_length must be within range {min}..={max}"
             )));
         }
         if let Some(h264) = config.h264.as_mut() {
@@ -1790,15 +2350,18 @@ fn apply_onvif_resolution_and_gov(
 }
 
 fn plan_onvif_osd(
-    media_client: &onvif::soap::client::Client,
+    endpoint: &OnvifMediaEndpoint,
     obj: &Map<String, Value>,
+    deadline: Instant,
 ) -> Result<(Value, onvif_xsd::Osdconfiguration), ControlCommandError> {
+    reject_unknown_keys(obj, &["token", "plain_text"], "osd")?;
     let token = optional_printable_str(obj, "token", 64)?
         .ok_or_else(|| invalid("osd.token is required"))?;
     let plain_text = optional_printable_str(obj, "plain_text", MAX_OSD_CHARS)?
         .ok_or_else(|| invalid("osd.plain_text is required"))?;
+    let client = endpoint.client(deadline)?;
     let osds = onvif_media::get_os_ds(
-        media_client,
+        &client,
         &onvif_media::GetOSDs {
             configuration_token: onvif_xsd::ReferenceToken(String::new()),
         },
@@ -1816,28 +2379,60 @@ fn plan_onvif_osd(
 }
 
 fn apply_onvif_updates(
-    media_client: &onvif::soap::client::Client,
+    endpoint: &OnvifMediaEndpoint,
     encoder: Option<onvif_xsd::VideoEncoderConfiguration>,
     osd: Option<onvif_xsd::Osdconfiguration>,
     deadline: Instant,
-) -> Result<(), ControlCommandError> {
+) -> Result<(), PartialWriteError> {
+    let mut applied = Vec::new();
     if let Some(configuration) = encoder {
-        let _ = remaining_timeout(deadline)?;
+        let client = endpoint
+            .client(deadline)
+            .map_err(|err| PartialWriteError::at_section(applied.clone(), "encoder", err))?;
         onvif_media::set_video_encoder_configuration(
-            media_client,
+            &client,
             &onvif_media::SetVideoEncoderConfiguration {
                 configuration,
                 force_persistence: true,
             },
         )
-        .map_err(|_| unavailable("ONVIF SetVideoEncoderConfiguration failed"))?;
+        .map_err(|_| {
+            PartialWriteError::at_section(
+                applied.clone(),
+                "encoder",
+                unavailable("ONVIF SetVideoEncoderConfiguration failed"),
+            )
+        })?;
+        record_applied_section(&mut applied, "encoder");
     }
     if let Some(osd) = osd {
-        let _ = remaining_timeout(deadline)?;
-        onvif_media::set_osd(media_client, &onvif_media::SetOSD { osd })
-            .map_err(|_| unavailable("ONVIF SetOSD failed"))?;
+        let client = endpoint
+            .client(deadline)
+            .map_err(|err| PartialWriteError::at_section(applied.clone(), "osd", err))?;
+        onvif_media::set_osd(&client, &onvif_media::SetOSD { osd }).map_err(|_| {
+            PartialWriteError::at_section(
+                applied.clone(),
+                "osd",
+                unavailable("ONVIF SetOSD failed"),
+            )
+        })?;
+        record_applied_section(&mut applied, "osd");
     }
     Ok(())
+}
+
+fn optional_f64(map: &Map<String, Value>, key: &str) -> Result<Option<f64>, ControlCommandError> {
+    let Some(value) = map.get(key) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let raw = value
+        .as_f64()
+        .filter(|number| number.is_finite())
+        .ok_or_else(|| invalid(&format!("{key} must be a finite number")))?;
+    Ok(Some(raw))
 }
 
 fn optional_u32_range(
@@ -1966,6 +2561,7 @@ fn is_sensitive_key(key: &str) -> bool {
 fn audit_device_update(
     state: &ServerState,
     principal: &ApiPrincipal,
+    classification: ClientClassificationReason,
     camera_id: &str,
     outcome: &'static str,
 ) {
@@ -1977,7 +2573,7 @@ fn audit_device_update(
         "mcp_camera_device_settings_update",
         Some(camera_id),
         outcome,
-        ClientClassificationReason::UnknownSession,
+        classification,
     );
 }
 
@@ -2717,5 +3313,268 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(live._http_status, 501);
+    }
+
+    #[test]
+    fn mcp_device_rejects_nested_camelcase_exclusions_and_defaults_dry_run_true() {
+        let (_fake, state, router_tx, camera_id) = hikvision_fixture();
+        let admin = admin_principal();
+        for nested in [
+            json!({ "osd": { "password": "secret" } }),
+            json!({ "imaging": { "factoryReset": true } }),
+            json!({ "osd": { "firmware-update": "1.2.3" } }),
+            json!({ "motion": { "items": [{ "newPassword": "pwn" }] } }),
+            json!({ "time": { "ipAddress": "10.0.0.1" } }),
+        ] {
+            let err = update_camera_device_settings(
+                &state,
+                &router_tx,
+                &admin,
+                &camera_id,
+                &json!({ "dry_run": true, "settings": nested }),
+                McpDeviceWritePolicy {
+                    allow_camera_device_writes: true,
+                },
+                false,
+                future_deadline(),
+            )
+            .unwrap_err();
+            assert_eq!(err._http_status, 403, "expected 403 for {nested}");
+        }
+
+        // Omitting dry_run with allow_camera_device_writes=true must NOT mutate the camera.
+        let omitted = update_camera_device_settings(
+            &state,
+            &router_tx,
+            &admin,
+            &camera_id,
+            &json!({ "settings": { "motion": { "sensitivity": 15 } } }),
+            McpDeviceWritePolicy {
+                allow_camera_device_writes: true,
+            },
+            false,
+            future_deadline(),
+        )
+        .unwrap();
+        assert_eq!(omitted["dry_run"], true);
+        let after = get_camera_device_settings(
+            &state,
+            &router_tx,
+            &admin,
+            &camera_id,
+            &json!({}),
+            future_deadline(),
+        )
+        .unwrap();
+        assert_ne!(after["settings"]["motion"]["sensitivity"], 15);
+    }
+
+    #[test]
+    fn mcp_device_onvif_rejects_foreign_xaddr_302_redirect_and_unbounded_missing_options() {
+        let admin = admin_principal();
+
+        // 1. 302 redirect on GetServices must return 403 without contacting redirect target.
+        let sink = TcpListener::bind("127.0.0.1:0").unwrap();
+        let sink_port = sink.local_addr().unwrap().port();
+        sink.set_nonblocking(true).unwrap();
+        let redir_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let redir_port = redir_listener.local_addr().unwrap().port();
+        let redir_thread = thread::spawn(move || {
+            let (mut stream, _) = redir_listener.accept().unwrap();
+            let mut buf = [0_u8; 2048];
+            let _ = stream.read(&mut buf);
+            let resp = format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{sink_port}/steal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        });
+        let mut cfg = base_camera_config(Ipv4Addr::LOCALHOST, "onvif-redir");
+        cfg.onvif_port = Some(redir_port);
+        let (state, router_tx, camera_id) = build_state(cfg, None);
+        let redir_err = get_camera_device_settings(
+            &state,
+            &router_tx,
+            &admin,
+            &camera_id,
+            &json!({}),
+            future_deadline(),
+        )
+        .unwrap_err();
+        let _ = redir_thread.join();
+        assert_eq!(redir_err._http_status, 403);
+        assert!(sink.accept().is_err());
+
+        // 2. Foreign XAddr (169.254.169.254) must return 403.
+        let foreign_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let foreign_port = foreign_listener.local_addr().unwrap().port();
+        let foreign_thread = thread::spawn(move || {
+            let (mut stream, _) = foreign_listener.accept().unwrap();
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let _ = read_http_request(&mut stream);
+            let body = concat!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+                r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:tt="http://www.onvif.org/ver10/schema">"#,
+                r#"<s:Body><tds:GetServicesResponse xmlns:tds="http://www.onvif.org/ver10/device/wsdl">"#,
+                r#"<tds:Service><tds:Namespace>http://www.onvif.org/ver10/media/wsdl</tds:Namespace>"#,
+                r#"<tds:XAddr>http://169.254.169.254/media</tds:XAddr>"#,
+                r#"<tds:Version><tt:Major>2</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service>"#,
+                r#"</tds:GetServicesResponse></s:Body></s:Envelope>"#,
+            );
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/soap+xml; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        });
+        let mut cfg2 = base_camera_config(Ipv4Addr::LOCALHOST, "onvif-foreign");
+        cfg2.onvif_port = Some(foreign_port);
+        let (state2, router_tx2, camera_id2) = build_state(cfg2, None);
+        let foreign_err = get_camera_device_settings(
+            &state2,
+            &router_tx2,
+            &admin,
+            &camera_id2,
+            &json!({}),
+            future_deadline(),
+        )
+        .unwrap_err();
+        let _ = foreign_thread.join();
+        assert_eq!(foreign_err._http_status, 403);
+
+        // 3. Missing ONVIF options enforces static safe bounds (rejects negative/zero values).
+        let mut enc = onvif_xsd::VideoEncoderConfiguration {
+            encoding: onvif_xsd::VideoEncoding::__Unknown__("H265".to_owned()),
+            resolution: onvif_xsd::VideoResolution {
+                width: 1920,
+                height: 1080,
+            },
+            quality: 4.0,
+            ..Default::default()
+        };
+        for bad in [
+            json!({ "quality": -1.0 }),
+            json!({ "quality": "bad" }),
+            json!({ "frame_rate_limit": 0 }),
+            json!({ "frame_rate_limit": 240 }),
+            json!({ "width": -10 }),
+            json!({ "height": 99999 }),
+            json!({ "gov_length": 0 }),
+        ] {
+            let err = apply_onvif_encoder_fields(bad.as_object().unwrap(), &mut enc, None)
+                .expect_err("out-of-bounds value without options must fail");
+            assert_eq!(err._http_status, 400, "for {bad}");
+        }
+    }
+
+    #[test]
+    fn mcp_device_partial_write_records_partial_failure_audit_and_reports_applied_sections() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_clone = stop.clone();
+        let state_ref = Arc::new(Mutex::new(FakeReolinkState {
+            bright: 128,
+            ir_state: "Auto".to_owned(),
+            osd_name: "FrontCam".to_owned(),
+            md_enabled: 1,
+            md_sens: 25,
+        }));
+        let handle = thread::spawn(move || {
+            listener.set_nonblocking(true).unwrap();
+            while !stop_clone.load(Ordering::Acquire) {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    let _ = stream.set_nonblocking(false);
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                    let raw = read_http_request(&mut stream);
+                    let body = if raw.contains("cmd=SetOsd") {
+                        r#"[{"cmd":"SetOsd","code":1,"error":{"rspCode":-1}}]"#.to_owned()
+                    } else {
+                        handle_fake_reolink_cmd(&raw, &state_ref).to_string()
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(resp.as_bytes());
+                } else {
+                    thread::sleep(Duration::from_millis(5));
+                }
+            }
+        });
+
+        let (state, router_tx, camera_id) = reolink_fixture(port);
+        let admin = admin_principal();
+        let err = update_camera_device_settings(
+            &state,
+            &router_tx,
+            &admin,
+            &camera_id,
+            &json!({
+                "dry_run": false,
+                "settings": {
+                    "imaging": { "brightness": 190 },
+                    "osd": { "channel_name": "WillFail" }
+                }
+            }),
+            McpDeviceWritePolicy {
+                allow_camera_device_writes: true,
+            },
+            false,
+            future_deadline(),
+        )
+        .unwrap_err();
+        assert!(
+            err.message.contains("applied_sections=[imaging]"),
+            "error must list applied sections: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("failed_section=osd"),
+            "error must name failed section: {}",
+            err.message
+        );
+        let audits = state.access_manager.list_audit(64);
+        assert!(
+            audits.iter().any(|event| {
+                event.action == "mcp_camera_device_settings_update"
+                    && event.result == "partial_failure"
+                    && event
+                        .target_id
+                        .as_deref()
+                        .is_some_and(|t| t.contains("applied=imaging"))
+            }),
+            "partial write must emit partial_failure audit with applied sections"
+        );
+        stop.store(true, Ordering::Release);
+        let _ = handle.join();
+    }
+
+    #[test]
+    fn mcp_device_hanging_reolink_camera_aborts_within_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (_stream, _) = listener.accept().unwrap();
+            thread::sleep(Duration::from_secs(3));
+        });
+        let (state, router_tx, camera_id) = reolink_fixture(port);
+        let admin = admin_principal();
+        let started = Instant::now();
+        let err = get_camera_device_settings(
+            &state,
+            &router_tx,
+            &admin,
+            &camera_id,
+            &json!({}),
+            Instant::now() + Duration::from_millis(350),
+        )
+        .unwrap_err();
+        let elapsed = started.elapsed();
+        assert!(matches!(err._http_status, 503 | 504));
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "hanging camera must abort near deadline, took {elapsed:?}"
+        );
+        let _ = server.join();
     }
 }

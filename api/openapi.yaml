@@ -851,8 +851,8 @@ paths:
         config.toml. Restricted strictly to loopback clients with a localhost
         or loopback IP Host header and no proxy-forwarded headers. Validates
         the 256-bit single-use token in constant time and serves a
-        self-contained HTML form with strict no-store, no-referrer,
-        X-Frame-Options DENY, and CSP headers.
+        self-contained HTML form with strict no-store, same-origin
+        Referrer-Policy, X-Frame-Options DENY, and CSP headers.
       parameters:
         - name: token
           in: query

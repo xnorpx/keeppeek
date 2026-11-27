@@ -15,7 +15,8 @@ impl Client {
         self.query_until(query, Instant::now() + REQUEST_TIMEOUT)
     }
 
-    pub(super) fn query_until<Output>(
+    /// Executes a typed management query bounded by `deadline`.
+    pub fn query_until<Output>(
         &mut self,
         query: &Query<Output>,
         deadline: Instant,
@@ -35,7 +36,8 @@ impl Client {
         self.command_until(request, Instant::now() + REQUEST_TIMEOUT)
     }
 
-    pub(super) fn command_until(
+    /// Executes a typed management write command bounded by `deadline`.
+    pub fn command_until(
         &mut self,
         request: &Request,
         deadline: Instant,
