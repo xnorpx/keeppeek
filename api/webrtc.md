@@ -2071,3 +2071,26 @@ the server admits a distinct silent timelapse job kind under Administrator autho
   SHA-256-verified JSON provenance manifest delivered over `ExportFileChunk` on `reliable-data`.
   `ExportDownloadResult` reports `artifact` (field `4`), `file_name` (field `5`), and `sha256`
   (field `6`).
+
+## MCP access governance
+
+`keeppeek.mcp-access.v1` advertises `McpAccessCommand` (request tag `35`) and `McpAccessResult`
+(success tag `53`). The server advertises this capability when persisted `config.toml` storage is
+available. Every action requires Administrator authorization; non-admin `User` principals receive
+`ERROR_CODE_REJECTED` (`403`).
+
+| Action                          | Authorization                                                                                                                                                                 | Result and guarantees                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `get`                           | Administrator                                                                                                                                                                 | Returns `McpAccessState` with `configuration_revision`, `enabled`, `allow_writes`, `allow_snapshots`, `allow_camera_device_writes`, `enabled_at_unix_secs`, `enabled_duration_secs`, `long_enabled_warning_threshold_secs` (`604800`), `long_enabled_warning_active`, `long_enabled_warning_silenced`, and `human_control_allowed`.                                                                                                       |
+| `set_enabled` (`enabled=true`)  | Human Administrator only (trusted local network or interactive OIDC/identity-proxy browser session; rejects Bearer access-key credentials with `ERROR_CODE_REJECTED` / `403`) | Requires matching `expected_configuration_revision` and explicit `confirm = true`. Stamps a fresh `enabled_at_unix_secs`, clears `long_enabled_warning_silenced`, persists `[mcp]` atomically to `config.toml`, and enables `/mcp` + `/mcp/secret-entry` live without restart.                                                                                                                                                            |
+| `set_enabled` (`enabled=false`) | Any Administrator (human or Bearer)                                                                                                                                           | Requires matching `expected_configuration_revision`. Clears `enabled_at_unix_secs` and `long_enabled_warning_silenced`, persists `[mcp]` atomically (and still disables MCP live fail-safe on non-conflict persistence errors), drops pending `/mcp/secret-entry` handoffs, and immediately returns `404` for new `/mcp` + `/mcp/secret-entry` requests without restart (in-flight `/mcp` calls finish within `request_timeout_seconds`). |
+| `silence_long_enabled_warning`  | Human Administrator only (trusted local network or interactive OIDC/identity-proxy browser session; rejects Bearer access-key credentials with `ERROR_CODE_REJECTED` / `403`) | Requires matching `expected_configuration_revision` and `[mcp].enabled == true` (otherwise rejected with `ERROR_CODE_REJECTED` / `409`). Sets `long_enabled_warning_silenced = true` for the current enabled stretch; disabling and later re-enabling MCP starts a fresh 7-day clock.                                                                                                                                                     |
+
+Remote browser sessions signed in with a Bearer access key authenticate as Bearer credentials
+(`human_control_allowed = false`) and cannot enable MCP, silence the 7-day warning, or plan/apply
+`[external_auth]` changes via `ConfigurationCommand` (`ERROR_CODE_REJECTED` / `403`).
+
+When `[mcp].enabled` remains `true` for at least 7 days (`604,800` seconds) without
+`long_enabled_warning_silenced = true`, `ServerHealthSnapshot.issues` includes an Administrator-only
+warning issue (`severity = "warning"`, `scope = "mcp"`). Non-admin `User` health snapshots omit
+`scope = "mcp"` issues and recompute `status` without them.

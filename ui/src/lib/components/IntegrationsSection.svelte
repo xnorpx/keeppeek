@@ -1,5 +1,8 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
+	import { useCapabilityState } from '$lib/capability-context';
+	import { mcpAccessCapability } from '$lib/control-client-mcp-access';
+	import { useControlClient } from '$lib/control-context';
 	import { integrationsEvidence } from '$lib/integrations';
 	import ActivityIcon from '@lucide/svelte/icons/activity';
 	import CircleAlertIcon from '@lucide/svelte/icons/circle-alert';
@@ -7,8 +10,14 @@
 	import HomeIcon from '@lucide/svelte/icons/house';
 	import RadioTowerIcon from '@lucide/svelte/icons/radio-tower';
 	import WebhookIcon from '@lucide/svelte/icons/webhook';
+	import McpAccessPanel from './McpAccessPanel.svelte';
 	import MqttIntegrationPanel from './MqttIntegrationPanel.svelte';
 
+	let { administrator = false }: { administrator?: boolean } = $props();
+
+	const controlClient = useControlClient();
+	const capabilities = useCapabilityState();
+	let mcpAccessAvailable = $derived(administrator && capabilities.supports(mcpAccessCapability));
 	const evidence = integrationsEvidence();
 	const metricsEndpoint = '/metrics';
 	const icons = {
@@ -43,6 +52,9 @@
 	</header>
 
 	<div class="divide-y divide-hairline">
+		{#if mcpAccessAvailable}
+			<McpAccessPanel controller={controlClient.mcpAccess} />
+		{/if}
 		{#each evidence.integrations as integration (integration.id)}
 			{#if integration.id === 'mqtt-forwarder'}
 				<MqttIntegrationPanel />

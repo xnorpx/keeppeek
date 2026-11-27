@@ -439,7 +439,7 @@ impl Config {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct AccessConfig {
     #[serde(default = "access::default_local_networks")]
     pub local_networks: Vec<IpNet>,
@@ -1700,6 +1700,24 @@ fn load_from_path(path: PathBuf) -> anyhow::Result<(Config, PathBuf)> {
     cfg.direct_card.validate()?;
     cfg.desktop.validate()?;
     cfg.mcp.validate()?;
+    let now_unix_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(1, |duration| duration.as_secs().max(1));
+    if cfg.mcp.enabled {
+        if cfg.mcp.enabled_at_unix_secs.is_none() {
+            cfg.mcp.enabled_at_unix_secs = Some(now_unix_secs);
+        }
+        if cfg.mcp.long_enabled_warning_active(now_unix_secs) {
+            let days = cfg.mcp.enabled_duration_secs(now_unix_secs) / 86_400;
+            tracing::warn!(
+                enabled_days = days,
+                "MCP server access has been enabled for at least 7 days; disable it when no longer needed or silence this warning in Settings -> Integrations"
+            );
+        }
+    } else if cfg.mcp.enabled_at_unix_secs.is_some() || cfg.mcp.long_enabled_warning_silenced {
+        cfg.mcp.enabled_at_unix_secs = None;
+        cfg.mcp.long_enabled_warning_silenced = false;
+    }
     cfg.operational_events.validate()?;
     cfg.analytics.validate()?;
     cfg.privacy.validate()?;
@@ -1731,6 +1749,12 @@ fn load_from_path(path: PathBuf) -> anyhow::Result<(Config, PathBuf)> {
     }
     if preserve_profile_identity_schema {
         stamp_runtime_profile_identity_schema(&mut merged)?;
+    }
+    if !cfg.mcp.enabled
+        && let Some(mcp_table) = merged.get_mut("mcp").and_then(toml::Value::as_table_mut)
+    {
+        mcp_table.remove("enabled_at_unix_secs");
+        mcp_table.remove("long_enabled_warning_silenced");
     }
     if generated_access_key || !access_key_is_reference || access_key_arg.is_some() {
         merged.insert(
