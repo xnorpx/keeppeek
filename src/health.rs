@@ -448,6 +448,53 @@ pub struct HealthIssue {
     pub timeline_end_ms: Option<i64>,
 }
 
+const MAX_DISPLAYED_DEBUG_CAMERA_IDS: usize = 8;
+
+/// Returns the operator security warning when MCP raw camera debugging is active.
+#[must_use]
+pub fn mcp_camera_debugging_warning(mcp: &crate::config::mcp::McpConfig) -> Option<String> {
+    if !(mcp.enabled && mcp.allow_camera_debugging) {
+        return None;
+    }
+    let scope_note = if mcp.debug_camera_ids.is_empty() {
+        "all configured cameras".to_owned()
+    } else {
+        let preview = mcp
+            .debug_camera_ids
+            .iter()
+            .take(MAX_DISPLAYED_DEBUG_CAMERA_IDS)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        if mcp.debug_camera_ids.len() > MAX_DISPLAYED_DEBUG_CAMERA_IDS {
+            format!(
+                "scoped debug_camera_ids ({preview}, ... +{} more)",
+                mcp.debug_camera_ids.len() - MAX_DISPLAYED_DEBUG_CAMERA_IDS
+            )
+        } else {
+            format!("scoped debug_camera_ids ({preview})")
+        }
+    };
+    Some(format!(
+        "SECURITY WARNING: [mcp].allow_camera_debugging is enabled. Authenticated MCP clients/AI agents have full raw access to live video bitstreams, audio streams, decrypted network captures (PCAPNG), and camera credentials for {scope_note}."
+    ))
+}
+
+/// Returns a warning [`HealthIssue`] when MCP raw camera debugging is active.
+#[must_use]
+pub fn mcp_camera_debugging_health_issue(
+    mcp: &crate::config::mcp::McpConfig,
+) -> Option<HealthIssue> {
+    mcp_camera_debugging_warning(mcp).map(|message| HealthIssue {
+        severity: "warning".to_owned(),
+        scope: "mcp".to_owned(),
+        message,
+        operational_event_id: None,
+        timeline_start_ms: None,
+        timeline_end_ms: None,
+    })
+}
+
 #[derive(Debug, Serialize)]
 pub struct StorageHealth {
     pub medium_term_path: String,
@@ -1416,5 +1463,55 @@ mod tests {
         assert_eq!(process_memory_percent(Some(20), 10), Some(100.0));
         assert_eq!(process_memory_percent(None, 10), None);
         assert_eq!(process_memory_percent(Some(10), 0), None);
+    }
+
+    #[test]
+    fn mcp_camera_debugging_health_issue_requires_enabled_and_opt_in() {
+        use crate::config::mcp::McpConfig;
+
+        assert!(mcp_camera_debugging_health_issue(&McpConfig::default()).is_none());
+        assert!(
+            mcp_camera_debugging_health_issue(&McpConfig {
+                enabled: true,
+                allow_camera_debugging: false,
+                ..McpConfig::default()
+            })
+            .is_none()
+        );
+        assert!(
+            mcp_camera_debugging_health_issue(&McpConfig {
+                enabled: false,
+                allow_camera_debugging: true,
+                ..McpConfig::default()
+            })
+            .is_none()
+        );
+
+        let all_cameras_issue = mcp_camera_debugging_health_issue(&McpConfig {
+            enabled: true,
+            allow_camera_debugging: true,
+            ..McpConfig::default()
+        })
+        .expect("warning issue expected when MCP camera debugging is enabled");
+        assert_eq!(all_cameras_issue.severity, "warning");
+        assert_eq!(all_cameras_issue.scope, "mcp");
+        assert!(all_cameras_issue.message.contains("video bitstreams"));
+        assert!(all_cameras_issue.message.contains("audio streams"));
+        assert!(all_cameras_issue.message.contains("PCAPNG"));
+        assert!(all_cameras_issue.message.contains("camera credentials"));
+        assert!(all_cameras_issue.message.contains("all configured cameras"));
+
+        let scoped_issue = mcp_camera_debugging_health_issue(&McpConfig {
+            enabled: true,
+            allow_camera_debugging: true,
+            debug_camera_ids: vec!["192.0.2.10".to_owned(), "192.0.2.11".to_owned()],
+            ..McpConfig::default()
+        })
+        .expect("warning issue expected for scoped cameras");
+        assert!(
+            scoped_issue
+                .message
+                .contains("scoped debug_camera_ids (192.0.2.10, 192.0.2.11)")
+        );
     }
 }

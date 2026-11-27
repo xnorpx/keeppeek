@@ -19,6 +19,7 @@ pub(super) fn tool_definitions(is_admin: bool) -> Vec<ToolDefinition> {
     tools.extend(admin_read_tool_definitions());
     tools.extend(admin_diagnostics_tool_definitions());
     tools.extend(admin_onboarding_tool_definitions());
+    tools.extend(admin_camera_debug_tool_definitions());
     tools.extend(admin_config_write_tool_definitions());
     tools.extend(admin_management_write_tool_definitions());
     tools
@@ -280,6 +281,168 @@ fn admin_onboarding_tool_definitions() -> Vec<ToolDefinition> {
             device_write_annotations,
         ),
     ]
+}
+
+fn admin_camera_debug_tool_definitions() -> Vec<ToolDefinition> {
+    let camera_debug_annotations = ToolAnnotations {
+        read_only_hint: false,
+        destructive_hint: true,
+        idempotent_hint: false,
+        open_world_hint: true,
+    };
+    vec![tool_def(
+        "camera_debugging",
+        "WARNING: Administrator-only raw camera protocol debugging gated by [mcp].allow_camera_debugging = true. Grants full raw access to live video bitstreams, audio streams, decrypted network captures (PCAPNG), and camera credentials for configured or debug_camera_ids-scoped cameras.",
+        camera_debugging_schema(),
+        camera_debug_annotations,
+    )]
+}
+
+fn camera_debugging_schema() -> Value {
+    let mut properties = serde_json::Map::new();
+    insert_camera_debug_target_properties(&mut properties);
+    insert_camera_debug_option_properties(&mut properties);
+    json!({
+        "type": "object",
+        "required": ["action"],
+        "properties": properties,
+        "additionalProperties": false
+    })
+}
+
+fn insert_camera_debug_target_properties(properties: &mut serde_json::Map<String, Value>) {
+    let entries = [
+        (
+            "action",
+            json!({
+                "type": "string",
+                "enum": [
+                    "inspect_pipeline",
+                    "capture",
+                    "compare_transports",
+                    "export_repro_fixture",
+                    "list_captures",
+                    "delete_capture"
+                ]
+            }),
+        ),
+        (
+            "camera_id",
+            json!({ "type": "string", "minLength": 1, "maxLength": 128 }),
+        ),
+        (
+            "capture_id",
+            json!({ "type": "string", "minLength": 1, "maxLength": 128 }),
+        ),
+        (
+            "stream",
+            json!({ "type": "string", "enum": ["main", "sub", "both"] }),
+        ),
+        (
+            "artifacts",
+            json!({
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 5,
+                "items": {
+                    "type": "string",
+                    "enum": [
+                        "pcapng",
+                        "video_bitstream",
+                        "audio_bitstream",
+                        "muxed_mp4",
+                        "protocol_transcript"
+                    ]
+                }
+            }),
+        ),
+        (
+            "protocols",
+            json!({
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 6,
+                "items": {
+                    "type": "string",
+                    "enum": [
+                        "rtsp",
+                        "audio",
+                        "onvif",
+                        "isapi",
+                        "reolink_http",
+                        "reo_proto"
+                    ]
+                }
+            }),
+        ),
+    ];
+    for (key, value) in entries {
+        properties.insert(key.to_owned(), value);
+    }
+}
+
+fn insert_camera_debug_option_properties(properties: &mut serde_json::Map<String, Value>) {
+    let entries = [
+        (
+            "duration_seconds",
+            json!({ "type": "integer", "minimum": 1, "maximum": 60 }),
+        ),
+        (
+            "max_bytes",
+            json!({ "type": "integer", "minimum": 65536, "maximum": 268435456 }),
+        ),
+        (
+            "include_raw_auth",
+            json!({
+                "type": "boolean",
+                "description": "Defaults to true for raw debugging actions (capture, compare_transports); set false to redact credentials."
+            }),
+        ),
+        (
+            "trigger_probe",
+            json!({
+                "type": "boolean",
+                "description": "Defaults to false. Set true to trigger an active protocol probe during capture."
+            }),
+        ),
+        (
+            "mode",
+            json!({
+                "type": "string",
+                "enum": ["media_transports", "event_channels"],
+                "description": "Comparison mode for compare_transports."
+            }),
+        ),
+        (
+            "strip_credentials",
+            json!({
+                "type": "boolean",
+                "description": "Defaults to true for export_repro_fixture. Set false only when unredacted credentials in the fixture are explicitly intended."
+            }),
+        ),
+        (
+            "anonymize_network",
+            json!({
+                "type": "boolean",
+                "description": "Defaults to true for export_repro_fixture to anonymize IP addresses and host identifiers."
+            }),
+        ),
+        (
+            "trim_media",
+            json!({
+                "type": "string",
+                "enum": [
+                    "headers_and_minimal_failing_slice",
+                    "synthetic_payloads",
+                    "keep_raw_frames"
+                ]
+            }),
+        ),
+        ("delete_all", json!({ "type": "boolean" })),
+    ];
+    for (key, value) in entries {
+        properties.insert(key.to_owned(), value);
+    }
 }
 
 fn single_string_arg_schema(field: &str, max_length: u64) -> Value {

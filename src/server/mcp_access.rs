@@ -87,7 +87,7 @@ fn now_unix_secs() -> u64 {
 
 const fn proto_state(
     configuration_revision: String,
-    config: McpConfig,
+    config: &McpConfig,
     principal: &ApiPrincipal,
     now_secs: u64,
 ) -> proto::McpAccessState {
@@ -125,7 +125,7 @@ fn get_state(
     let revision = configuration_revision(&loaded);
     Ok(proto_state(
         revision,
-        loaded.mcp,
+        &loaded.mcp,
         principal,
         now_unix_secs(),
     ))
@@ -198,13 +198,18 @@ fn set_enabled(
             return Err(map_update_error(error));
         }
     };
-    state.mcp.apply_live_config(updated.mcp);
+    state.mcp.apply_live_config(updated.mcp.clone());
     tracing::info!(
         enabled = updated.mcp.enabled,
         principal_id = %principal.id(),
         "updated MCP access state live"
     );
-    Ok(proto_state(next_revision, updated.mcp, principal, now_secs))
+    Ok(proto_state(
+        next_revision,
+        &updated.mcp,
+        principal,
+        now_secs,
+    ))
 }
 
 fn silence_warning(
@@ -253,14 +258,14 @@ fn silence_warning(
         },
     )
     .map_err(map_update_error)?;
-    state.mcp.apply_live_config(updated.mcp);
+    state.mcp.apply_live_config(updated.mcp.clone());
     tracing::info!(
         principal_id = %principal.id(),
         "silenced MCP long-enabled warning until MCP is disabled"
     );
     Ok(proto_state(
         next_revision,
-        updated.mcp,
+        &updated.mcp,
         principal,
         now_unix_secs(),
     ))

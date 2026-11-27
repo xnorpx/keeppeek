@@ -5,6 +5,7 @@ pub mod backup;
 pub mod battery_wake;
 pub mod camera_catalog;
 pub(crate) mod camera_database;
+pub mod camera_debug;
 mod camera_events;
 pub mod cameras;
 pub mod client;

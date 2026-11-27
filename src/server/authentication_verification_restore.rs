@@ -503,6 +503,7 @@ pub(in crate::server) fn authorize_upload(
         if (!before.mcp.allow_writes && after_mcp.allow_writes)
             || (!before.mcp.allow_camera_device_writes && after_mcp.allow_camera_device_writes)
             || (!before.mcp.allow_snapshots && after_mcp.allow_snapshots)
+            || (!before.mcp.allow_camera_debugging && after_mcp.allow_camera_debugging)
         {
             return Err(crate::backup::ServiceError::forbidden(
                 "Bearer credentials cannot escalate [mcp] write or snapshot permissions via configuration restore",
