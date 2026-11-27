@@ -18,39 +18,37 @@ flowchart LR
     S --> K
 ```
 
-## Use the bundled agent skill
+## Use the bundled agent skills
 
-KeepPeek ships a canonical agent skill (`skills/keeppeek-mcp/SKILL.md`) that teaches LLM
-assistants how to locate `config.toml` and `secrets.toml`, collect missing secrets out-of-band via
-`request_secret_entry` or `keeppeek secret`, probe cameras with `{secret:KEY}` references, run
-`plan_configuration_change` or dry-run hardware previews before requesting writes, and respect
-privacy and role boundaries.
+KeepPeek ships two canonical agent skills:
 
-Print the skill from any installed KeepPeek binary or export it to a directory:
+- `skills/keeppeek-mcp/SKILL.md` teaches LLM assistants how to locate `config.toml` and `secrets.toml`, collect missing secrets out-of-band via `request_secret_entry` or `keeppeek secret`, probe cameras with `{secret:KEY}` references, run `plan_configuration_change` or dry-run hardware previews before requesting writes, and respect privacy and role boundaries.
+- `skills/keeppeek-camera-debug/SKILL.md` teaches assistants how to opt in safely to `[mcp].allow_camera_debugging`, capture decrypted PCAPNG and raw elementary bitstreams via `camera_debugging`, triage artifacts with `tshark`/`ffprobe`/`ffmpeg`, and export sanitized offline fixtures for `ReplayCameraServer` and `keeppeek-camera replay`.
+
+List, print, or export bundled skills from any installed KeepPeek binary:
 
 ```sh
+keeppeek mcp skill --list
 keeppeek mcp skill
 keeppeek mcp skill --output ./skills/keeppeek-mcp
+keeppeek mcp skill camera-debug
+keeppeek mcp skill camera-debug --output ./skills/keeppeek-camera-debug
 ```
 
-Release artifacts and container images also include `SKILL.md` directly:
+Release artifacts and container images also include both `SKILL.md` files directly:
 
-| Package                       | Shipped skill path                                             |
-| ----------------------------- | -------------------------------------------------------------- |
-| Linux `.tar.gz` archive       | `keeppeek-<version>-<platform>/skills/keeppeek-mcp/SKILL.md`   |
-| Windows `.zip` archive        | `keeppeek-<version>-<platform>\skills\keeppeek-mcp\SKILL.md`   |
-| macOS `.dmg` (`KeepPeek.app`) | `KeepPeek.app/Contents/Resources/skills/keeppeek-mcp/SKILL.md` |
-| Container image               | `/usr/local/share/keeppeek/skills/keeppeek-mcp/SKILL.md`       |
+| Package                       | Shipped skill paths                                                                                                                     |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Linux `.tar.gz` archive       | `keeppeek-<version>-<platform>/skills/keeppeek-mcp/SKILL.md`, `keeppeek-<version>-<platform>/skills/keeppeek-camera-debug/SKILL.md`     |
+| Windows `.zip` archive        | `keeppeek-<version>-<platform>\skills\keeppeek-mcp\SKILL.md`, `keeppeek-<version>-<platform>\skills\keeppeek-camera-debug\SKILL.md`     |
+| macOS `.dmg` (`KeepPeek.app`) | `KeepPeek.app/Contents/Resources/skills/keeppeek-mcp/SKILL.md`, `KeepPeek.app/Contents/Resources/skills/keeppeek-camera-debug/SKILL.md` |
+| Container image               | `/usr/local/share/keeppeek/skills/keeppeek-mcp/SKILL.md`, `/usr/local/share/keeppeek/skills/keeppeek-camera-debug/SKILL.md`             |
 
-To guide an assistant (Claude, Codex, Cursor, or Gemini), copy `SKILL.md` into the assistant's
-skills folder or point the assistant at the exported file before asking it to inspect or configure
-KeepPeek.
+To guide an assistant (Claude, Codex, Cursor, or Gemini), copy the relevant skill folder into the assistant's skills directory or point the assistant at the exported `SKILL.md` file.
 
 ## Enable and configure `[mcp]`
 
-All MCP server settings live in the existing `config.toml` under `[mcp]`. Every capability that
-opens network access, mutates configuration, writes on-camera hardware settings, or captures camera
-frames defaults to `false`.
+All MCP server settings live in the existing `config.toml` under `[mcp]`. Every capability that opens network access, mutates configuration, writes on-camera hardware settings, captures camera frames, or captures raw camera traffic defaults to `false`.
 
 Stop KeepPeek before editing `config.toml` manually, add `[mcp]`, and restart the server:
 
@@ -60,6 +58,10 @@ enabled = true
 allow_writes = false
 allow_snapshots = false
 allow_camera_device_writes = false
+allow_camera_debugging = false
+debug_camera_ids = []
+max_debug_capture_bytes = 67108864
+max_debug_storage_bytes = 536870912
 max_concurrent_requests = 4
 max_response_bytes = 65536
 request_timeout_seconds = 15
@@ -68,18 +70,24 @@ max_snapshot_dimension = 1280
 snapshot_min_interval_seconds = 5
 ```
 
-| Field                           | Type    | Default  | Allowed range     | Meaning                                                                                               |
-| ------------------------------- | ------- | -------- | ----------------- | ----------------------------------------------------------------------------------------------------- |
-| `enabled`                       | `bool`  | `false`  | `true`/`false`    | Enable the embedded Streamable HTTP endpoint at `POST /mcp` (and loopback `/mcp/secret-entry`).       |
-| `allow_writes`                  | `bool`  | `false`  | `true`/`false`    | Permit Administrator KeepPeek configuration write tools after explicit approval.                      |
-| `allow_snapshots`               | `bool`  | `false`  | `true`/`false`    | Permit privacy-gated single-frame snapshots via `get_camera_snapshot`.                                |
-| `allow_camera_device_writes`    | `bool`  | `false`  | `true`/`false`    | Permit live on-camera hardware writes via `update_camera_device_settings` (`dry_run: false`).         |
-| `max_concurrent_requests`       | `usize` | `4`      | `1..=32`          | Maximum simultaneous in-flight MCP requests.                                                          |
-| `max_response_bytes`            | `usize` | `65536`  | `4096..=262144`   | Maximum serialized JSON-RPC response size in bytes (`get_camera_snapshot` uses `max_snapshot_bytes`). |
-| `request_timeout_seconds`       | `u64`   | `15`     | `1..=60`          | Server-side deadline per MCP request, in seconds.                                                     |
-| `max_snapshot_bytes`            | `usize` | `262144` | `16384..=1048576` | Maximum encoded JPEG size for `get_camera_snapshot`, in bytes (base64 + metadata overhead is added).  |
-| `max_snapshot_dimension`        | `u32`   | `1280`   | `160..=1920`      | Maximum width or height of returned snapshot frames, in pixels.                                       |
-| `snapshot_min_interval_seconds` | `u64`   | `5`      | `1..=300`         | Minimum interval between snapshot captures per camera, in seconds.                                    |
+> **Security warning:** Setting `[mcp].allow_camera_debugging = true` grants Administrator MCP clients and AI assistants **full raw access to live video bitstreams, audio streams, decrypted network captures (PCAPNG), and camera credentials** for `debug_camera_ids` (or all configured cameras when empty). KeepPeek emits a prominent `tracing::warn!` on startup and adds a `warning` issue to `ServerHealthResponse` whenever both `enabled` and `allow_camera_debugging` are `true`. Enable it only during active protocol debugging and set `allow_camera_debugging = false` afterward.
+
+| Field                           | Type          | Default     | Allowed range           | Meaning                                                                                                                         |
+| ------------------------------- | ------------- | ----------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`                       | `bool`        | `false`     | `true`/`false`          | Enable the embedded Streamable HTTP endpoint at `POST /mcp` (and loopback `/mcp/secret-entry`).                                 |
+| `allow_writes`                  | `bool`        | `false`     | `true`/`false`          | Permit Administrator KeepPeek configuration write tools after explicit approval.                                                |
+| `allow_snapshots`               | `bool`        | `false`     | `true`/`false`          | Permit privacy-gated single-frame snapshots via `get_camera_snapshot`.                                                          |
+| `allow_camera_device_writes`    | `bool`        | `false`     | `true`/`false`          | Permit live on-camera hardware writes via `update_camera_device_settings` (`dry_run: false`).                                   |
+| `allow_camera_debugging`        | `bool`        | `false`     | `true`/`false`          | Permit Administrator live camera packet/bitstream capture and repro-fixture export via `camera_debugging`.                      |
+| `debug_camera_ids`              | `Vec<String>` | `[]`        | `<= 256` IDs            | Optional camera ID allowlist for `camera_debugging` (empty allows all cameras; each trimmed non-empty ASCII ID `<= 128` bytes). |
+| `max_debug_capture_bytes`       | `usize`       | `67108864`  | `1048576..=268435456`   | Maximum capture artifact size in bytes (1 MiB..=256 MiB; default 64 MiB).                                                       |
+| `max_debug_storage_bytes`       | `u64`         | `536870912` | `16777216..=4294967296` | Total disk budget under `<config-dir>/camera-debug/` in bytes (16 MiB..=4 GiB; default 512 MiB, 24h TTL, FIFO eviction).        |
+| `max_concurrent_requests`       | `usize`       | `4`         | `1..=32`                | Maximum simultaneous in-flight MCP requests.                                                                                    |
+| `max_response_bytes`            | `usize`       | `65536`     | `4096..=262144`         | Maximum serialized JSON-RPC response size in bytes (`get_camera_snapshot` uses `max_snapshot_bytes`).                           |
+| `request_timeout_seconds`       | `u64`         | `15`        | `1..=60`                | Server-side deadline per MCP request, in seconds.                                                                               |
+| `max_snapshot_bytes`            | `usize`       | `262144`    | `16384..=1048576`       | Maximum encoded JPEG size for `get_camera_snapshot`, in bytes (base64 + metadata overhead is added).                            |
+| `max_snapshot_dimension`        | `u32`         | `1280`      | `160..=1920`            | Maximum width or height of returned snapshot frames, in pixels.                                                                 |
+| `snapshot_min_interval_seconds` | `u64`         | `5`         | `1..=300`               | Minimum interval between snapshot captures per camera, in seconds.                                                              |
 
 See [Configuration reference](./configuration-reference.md#mcp-server) for validation rules and
 file ownership details.
@@ -239,7 +247,7 @@ http://127.0.0.1:<port>/mcp/secret-entry?token=<256-bit-single-use-token>
 - Form responses enforce `Cache-Control: no-store`, `Referrer-Policy: same-origin`,
   `X-Frame-Options: DENY`, and a strict Content Security Policy.
 
-## Available MCP tools (27 total)
+## Available MCP tools (28 total)
 
 ### Read-only, dry-run, onboarding, and secret-handoff tools (18)
 
@@ -306,6 +314,23 @@ application (`dry_run: false`) requires all three conditions:
 | --------------------- | ------------ | ------------------------------------------------------------------------------------------------------------ |
 | `get_camera_snapshot` | User         | Capture one privacy-gated, downscaled JPEG frame for a permitted camera when `[mcp].allow_snapshots = true`. |
 
+### Opt-in camera debugging tool (1)
+
+`camera_debugging` is **Administrator-only** and fails closed unless `[mcp].allow_camera_debugging = true`. When `[mcp].debug_camera_ids` is non-empty, requests for cameras outside the allowlist are rejected. Mutating/capture actions (`capture`, `compare_transports`, `delete_capture`) reject `--read-only` sessions (`X-KeepPeek-MCP-Read-Only: true`).
+
+| Tool               | Minimum role  | Purpose                                                                                                                                                  |
+| ------------------ | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `camera_debugging` | Administrator | Inspect camera ingest pipelines, capture decrypted PCAPNG and raw bitstreams, compare transports, export sanitized repro fixtures, or clean up captures. |
+
+Supported `camera_debugging` actions:
+
+- `inspect_pipeline`: Inspect active camera backend, stream state, health, and profile configuration from live `ServerState`.
+- `capture`: Run a bounded capture (`duration_seconds` `1..=60`, `max_bytes` `65536..=268435456`, `stream`: `"main" | "sub" | "both"`) collecting requested `artifacts` (`"pcapng"`, `"video_bitstream"`, `"audio_bitstream"`, `"muxed_mp4"`, `"protocol_transcript"`) across `protocols` (`"rtsp"`, `"audio"`, `"onvif"`, `"isapi"`, `"reolink_http"`, `"reo_proto"`).
+- `compare_transports`: Compare `mode: "media_transports"` or `mode: "event_channels"` side-by-side for a camera.
+- `export_repro_fixture`: Export a `keeppeek.camera-repro.v1` JSON fixture (`strip_credentials` default `true`, `anonymize_network` default `true`, `trim_media`: `"headers_and_minimal_failing_slice" | "synthetic_payloads" | "keep_raw_frames"`) with a `sharing_safety_report`.
+- `list_captures`: List saved captures under `<config-dir>/camera-debug/<capture-id>/` with byte sizes and 24-hour TTL metadata.
+- `delete_capture`: Delete one `capture_id` or all saved captures (`delete_all: true`).
+
 ## Multi-candidate stream probing and on-camera hardware support
 
 ### Pre-populated `secrets.toml` multi-candidate probing
@@ -337,6 +362,15 @@ unsupported sections honestly per protocol:
 **Hard security exclusions:** `update_camera_device_settings` permanently refuses firmware upload or
 flashing, factory reset or default restore, camera reboot, password/user/credential modifications,
 and IP/network/DHCP/gateway/DNS/port reassignment with HTTP `403`, even when `dry_run: true`.
+
+## Deep camera protocol debugging and offline replay
+
+When standard health and log tools are not enough to diagnose an RTSP, RTP, ONVIF, ISAPI, or Reolink Baichuan (`reo_proto`) interoperability defect, enable `[mcp].allow_camera_debugging = true` temporarily and export the `keeppeek-camera-debug` skill (`keeppeek mcp skill camera-debug`).
+
+1. **Capture on the running server:** Run `camera_debugging` (`inspect_pipeline` -> `capture` -> `compare_transports`). KeepPeek writes bounded artifacts under `<config-dir>/camera-debug/<capture-id>/` (`capture.pcapng` with Ethernet/IP/TCP/UDP framing around decrypted payloads, raw `.h264`/`.h265` and audio elementary streams, `muxed.mp4`, `sdp.txt`, `protocol_transcript.json`, and `capture.json`) with a 24-hour TTL and FIFO eviction at `max_debug_storage_bytes`.
+2. **Triage locally with standard tools:** Inspect `capture.pcapng` with `tshark` (`-Y "rtsp || rtp || http || xml"`, `-z follow,tcp,ascii,0`, `-T fields -e rtp.seq -e rtp.timestamp -e h264.nal_unit_type`), `ffprobe -show_packets -show_frames muxed.mp4`, and `ffmpeg -v error -i video.h264 -f null -`.
+3. **Export a sanitized fixture and reproduce offline:** Call `camera_debugging` (`action: "export_repro_fixture"`, `strip_credentials: true`, `anonymize_network: true`) and verify `sharing_safety_report.safe_to_share_publicly` is `true` (RFC 5737 `192.0.2.x` addresses and stripped credentials). Reproduce deterministically using `ReplayCameraServer` in `crates/test-camera/src/replay.rs` (`keeppeek.camera-repro.v1`) or interactively via `keeppeek-camera replay --fixture <PATH>`. Build and test fixes locally with `cargo nextest` and `cargo run --bin keeppeek` against a test configuration (live binary hot-swap via `keeppeek-supervisor` is coming separately).
+4. **Clean up and re-lock:** Delete local captures with `camera_debugging` (`action: "delete_capture"`), stop KeepPeek, set `allow_camera_debugging = false` in `config.toml`, and restart KeepPeek.
 
 ## Safe configuration workflow
 
@@ -389,15 +423,12 @@ credential.
 
 ### Secret redaction
 
-Every MCP response, configuration snapshot, dry-run diff, probe diagnostic, log search result, and
-error passes through serialization-layer secret redaction before leaving KeepPeek:
+Every MCP response, configuration snapshot, dry-run diff, probe diagnostic, log search result, and error passes through serialization-layer secret redaction before leaving KeepPeek:
 
 - Raw values loaded from `secrets.toml` (including URL percent-encoded variants) are scrubbed.
-- Fields with credential-like names (`password`, `secret`, `token`, `access_key`, `verifier`,
-  `cookie`, `authorization`, `api_key`, `private_key`) are redacted unless they are already
-  `{secret:KEY}` or `{secret:KEY|url}` references.
-- Embedded URL credentials (`scheme://user:pass@host`) are scrubbed while `{secret:KEY}` and
-  `{secret:KEY|url}` tokens remain visible for safe editing.
+- Fields with credential-like names (`password`, `secret`, `token`, `access_key`, `verifier`, `cookie`, `authorization`, `api_key`, `private_key`) are redacted unless they are already `{secret:KEY}` or `{secret:KEY|url}` references.
+- Embedded URL credentials (`scheme://user:pass@host`) are scrubbed while `{secret:KEY}` and `{secret:KEY|url}` tokens remain visible for safe editing.
+- **Explicit `camera_debugging` boundary:** When `[mcp].allow_camera_debugging = true`, `camera_debugging` may return unredacted capture data only when explicitly requested (`capture` with `include_raw_auth: true`, or `export_repro_fixture` with `strip_credentials: false`). `SecretRedactor` remains strictly enforced on all other 27 MCP tools and whenever `export_repro_fixture` runs with `strip_credentials: true`.
 
 ### DNS rebinding and cross-origin protection
 
@@ -440,16 +471,17 @@ automated assistant cannot starve camera ingest, recording, or live playback.
 
 ## Troubleshooting
 
-| Symptom                                          | Check                                                                                                                           |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /mcp` or `/mcp/secret-entry` returns `404` | Confirm `[mcp].enabled = true` in `config.toml` and restart KeepPeek.                                                           |
-| `POST /mcp` returns `403`                        | Check whether `Origin` is missing from `[direct_card].allowed_origins`, `Host` is non-local for local trust, or role is User.   |
-| `/mcp/secret-entry` returns `403` or `410`       | Open the link directly from loopback without a reverse proxy, and verify the single-use token has not expired or been consumed. |
-| `POST /mcp` returns `426`                        | Remote plain HTTP is blocked by `[access].require_secure_remote = true`. Use HTTPS via a trusted proxy or a private VPN.        |
-| Configuration write tool is denied               | Confirm `[mcp].allow_writes = true`, an Administrator credential, and that `--read-only` is not set.                            |
-| On-camera hardware write is denied (`403`)       | Confirm `[mcp].allow_camera_device_writes = true`, `--read-only` is not set, and no excluded security field was requested.      |
-| `probe_camera_streams` rejects input             | Replace any raw password or inline RTSP credentials with `{secret:KEY}` refs and keep `credential_candidates` to at most 5.     |
-| `get_camera_snapshot` is denied                  | Confirm `[mcp].allow_snapshots = true`, camera view permission, inactive privacy mode, and the per-camera interval limit.       |
-| Request returns `429` or `503` or times out      | Too many simultaneous MCP calls (`max_concurrent_requests`), camera rate-limit/lockout, or slow probe exceeding timeout.        |
-| `apply_configuration_plan` fails conflict        | Configuration changed after the plan was created. Call `get_configuration` and generate a fresh plan.                           |
-| `keeppeek mcp` fails to connect remotely         | Confirm `KEEPPEEK_ACCESS_KEY` or `--credential-file` is set and readable, and verify `--server` points to the HTTPS origin.     |
+| Symptom                                          | Check                                                                                                                                                       |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /mcp` or `/mcp/secret-entry` returns `404` | Confirm `[mcp].enabled = true` in `config.toml` and restart KeepPeek.                                                                                       |
+| `POST /mcp` returns `403`                        | Check whether `Origin` is missing from `[direct_card].allowed_origins`, `Host` is non-local for local trust, or role is User.                               |
+| `/mcp/secret-entry` returns `403` or `410`       | Open the link directly from loopback without a reverse proxy, and verify the single-use token has not expired or been consumed.                             |
+| `POST /mcp` returns `426`                        | Remote plain HTTP is blocked by `[access].require_secure_remote = true`. Use HTTPS via a trusted proxy or a private VPN.                                    |
+| Configuration write tool is denied               | Confirm `[mcp].allow_writes = true`, an Administrator credential, and that `--read-only` is not set.                                                        |
+| On-camera hardware write is denied (`403`)       | Confirm `[mcp].allow_camera_device_writes = true`, `--read-only` is not set, and no excluded security field was requested.                                  |
+| `probe_camera_streams` rejects input             | Replace any raw password or inline RTSP credentials with `{secret:KEY}` refs and keep `credential_candidates` to at most 5.                                 |
+| `get_camera_snapshot` is denied                  | Confirm `[mcp].allow_snapshots = true`, camera view permission, inactive privacy mode, and the per-camera interval limit.                                   |
+| `camera_debugging` is denied                     | Confirm `[mcp].allow_camera_debugging = true`, an Administrator credential, `debug_camera_ids` scope, and no `--read-only` flag for capture/delete actions. |
+| Request returns `429` or `503` or times out      | Too many simultaneous MCP calls (`max_concurrent_requests`), camera rate-limit/lockout, or slow probe exceeding timeout.                                    |
+| `apply_configuration_plan` fails conflict        | Configuration changed after the plan was created. Call `get_configuration` and generate a fresh plan.                                                       |
+| `keeppeek mcp` fails to connect remotely         | Confirm `KEEPPEEK_ACCESS_KEY` or `--credential-file` is set and readable, and verify `--server` points to the HTTPS origin.                                 |
