@@ -30,6 +30,8 @@ enum Command {
     Config(keeppeek_backup::BackupArgs),
     /// Run the KeepPeek MCP stdio bridge or export the bundled MCP agent skill.
     Mcp(keeppeek::mcp::stdio::McpArgs),
+    /// Manage private entries in secrets.toml without passing secret values on the command line.
+    Secret(keeppeek::mcp::secret_cli::SecretArgs),
 }
 
 fn main() -> std::process::ExitCode {
@@ -45,6 +47,7 @@ fn main() -> std::process::ExitCode {
 enum MainError {
     Server(anyhow::Error),
     Backup(keeppeek_backup::BackupCliError),
+    Secret(keeppeek::mcp::secret_cli::SecretCliError),
 }
 
 impl MainError {
@@ -52,6 +55,7 @@ impl MainError {
         match self {
             Self::Server(_) => 1,
             Self::Backup(error) => error.exit_code(),
+            Self::Secret(error) => error.exit_code(),
         }
     }
 }
@@ -61,6 +65,7 @@ impl std::fmt::Display for MainError {
         match self {
             Self::Server(error) => error.fmt(formatter),
             Self::Backup(error) => error.fmt(formatter),
+            Self::Secret(error) => error.fmt(formatter),
         }
     }
 }
@@ -73,6 +78,9 @@ fn run() -> Result<(), MainError> {
         }
         Some(Command::Mcp(args)) => {
             return keeppeek::mcp::stdio::run(args).map_err(MainError::Server);
+        }
+        Some(Command::Secret(args)) => {
+            return keeppeek::mcp::secret_cli::run(args).map_err(MainError::Secret);
         }
         None => {}
     }

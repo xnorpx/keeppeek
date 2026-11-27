@@ -40,10 +40,6 @@ const TIMEOUT_SECONDS_MAX: u64 = 15;
 const DIAGNOSTIC_TEXT_MAX_BYTES: usize = 256;
 
 /// Searches the embedded camera catalog and attaches optional RTSP stream hints.
-#[allow(
-    dead_code,
-    reason = "wired into MCP tool dispatch during post-#431 integration"
-)]
 pub(super) fn search_camera_catalog(
     state: &ServerState,
     _router_tx: &FacadeSender<RouterMessage>,
@@ -97,10 +93,6 @@ pub(super) fn search_camera_catalog(
 }
 
 /// Probes ONVIF and RTSP camera streams using bounded secret-reference candidates.
-#[allow(
-    dead_code,
-    reason = "wired into MCP tool dispatch during post-#431 integration"
-)]
 pub(super) fn probe_camera_streams(
     state: &ServerState,
     _router_tx: &FacadeSender<RouterMessage>,

@@ -58,6 +58,9 @@ pub struct McpConfig {
     /// Allows Administrator write tools through MCP when set to `true`.
     #[serde(default)]
     pub allow_writes: bool,
+    /// Allows Administrator on-camera hardware device setting writes through MCP when set to `true`.
+    #[serde(default)]
+    pub allow_camera_device_writes: bool,
     /// Allows camera snapshot tools through MCP when set to `true`.
     #[serde(default)]
     pub allow_snapshots: bool,
@@ -86,6 +89,7 @@ impl Default for McpConfig {
         Self {
             enabled: false,
             allow_writes: false,
+            allow_camera_device_writes: false,
             allow_snapshots: false,
             max_concurrent_requests: DEFAULT_MAX_CONCURRENT_REQUESTS,
             max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
@@ -103,6 +107,7 @@ impl McpConfig {
     pub const fn is_default(&self) -> bool {
         !self.enabled
             && !self.allow_writes
+            && !self.allow_camera_device_writes
             && !self.allow_snapshots
             && self.max_concurrent_requests == DEFAULT_MAX_CONCURRENT_REQUESTS
             && self.max_response_bytes == DEFAULT_MAX_RESPONSE_BYTES
@@ -215,6 +220,7 @@ mod tests {
         let config = McpConfig::default();
         assert!(!config.enabled);
         assert!(!config.allow_writes);
+        assert!(!config.allow_camera_device_writes);
         assert!(!config.allow_snapshots);
         assert!(config.is_default());
         assert!(config.validate().is_ok());
@@ -225,6 +231,7 @@ mod tests {
         let valid_min = McpConfig {
             enabled: true,
             allow_writes: true,
+            allow_camera_device_writes: true,
             allow_snapshots: true,
             max_concurrent_requests: MIN_MAX_CONCURRENT_REQUESTS,
             max_response_bytes: MIN_MAX_RESPONSE_BYTES,
@@ -239,6 +246,7 @@ mod tests {
         let valid_max = McpConfig {
             enabled: true,
             allow_writes: false,
+            allow_camera_device_writes: false,
             allow_snapshots: false,
             max_concurrent_requests: MAX_MAX_CONCURRENT_REQUESTS,
             max_response_bytes: MAX_MAX_RESPONSE_BYTES,

@@ -1,4 +1,4 @@
-//! Complete MCP JSON Schema definitions for all 21 KeepPeek MCP tools.
+//! Complete MCP JSON Schema definitions for all 27 KeepPeek MCP tools.
 //!
 //! Every tool declares explicit parameter properties, types, bounds, enums, and
 //! secret-reference constraints so LLM clients can construct valid requests
@@ -8,6 +8,7 @@ use crate::mcp::protocol::{ToolAnnotations, ToolDefinition};
 use serde_json::{Value, json};
 
 const SECRET_REF_PATTERN: &str = r"^\{secret:[A-Z_][A-Z0-9_]*(\|url)?\}$";
+const SECRET_KEY_PATTERN: &str = r"^[A-Z_][A-Z0-9_]*$";
 
 /// Returns the tool definitions visible to the caller's role.
 pub(super) fn tool_definitions(is_admin: bool) -> Vec<ToolDefinition> {
@@ -17,6 +18,7 @@ pub(super) fn tool_definitions(is_admin: bool) -> Vec<ToolDefinition> {
     }
     tools.extend(admin_read_tool_definitions());
     tools.extend(admin_diagnostics_tool_definitions());
+    tools.extend(admin_onboarding_tool_definitions());
     tools.extend(admin_config_write_tool_definitions());
     tools.extend(admin_management_write_tool_definitions());
     tools
@@ -219,6 +221,179 @@ fn admin_diagnostics_tool_definitions() -> Vec<ToolDefinition> {
             ToolAnnotations::read_only(),
         ),
     ]
+}
+
+fn admin_onboarding_tool_definitions() -> Vec<ToolDefinition> {
+    let open_world_read = ToolAnnotations {
+        read_only_hint: true,
+        destructive_hint: false,
+        idempotent_hint: true,
+        open_world_hint: true,
+    };
+    let secret_request_annotations = ToolAnnotations {
+        read_only_hint: false,
+        destructive_hint: false,
+        idempotent_hint: false,
+        open_world_hint: false,
+    };
+    let device_write_annotations = ToolAnnotations {
+        read_only_hint: false,
+        destructive_hint: true,
+        idempotent_hint: false,
+        open_world_hint: true,
+    };
+    vec![
+        tool_def(
+            "search_camera_catalog",
+            "Search the embedded camera catalog by brand or model and optionally attach credential-free RTSP stream hints for a camera IP.",
+            search_camera_catalog_schema(),
+            ToolAnnotations::read_only(),
+        ),
+        tool_def(
+            "probe_camera_streams",
+            "Probe ONVIF and RTSP camera streams using single {secret:KEY} references or up to 5 credential_candidates; stops on first auth match or lockout.",
+            probe_camera_streams_schema(),
+            open_world_read,
+        ),
+        tool_def(
+            "request_secret_entry",
+            "Create a bounded single-use loopback secret entry handoff link and CLI commands without passing secret values through MCP.",
+            request_secret_entry_schema(),
+            secret_request_annotations,
+        ),
+        tool_def(
+            "get_secret_entry_status",
+            "Check the value-free status and configured key names of a pending or completed secret entry handoff.",
+            single_string_arg_schema("handoff_id", 128),
+            ToolAnnotations::read_only(),
+        ),
+        tool_def(
+            "get_camera_device_settings",
+            "Inspect live on-camera hardware settings and supported sections via Reolink, Hikvision ISAPI, or ONVIF.",
+            single_string_arg_schema("camera_id", 256),
+            open_world_read,
+        ),
+        tool_def(
+            "update_camera_device_settings",
+            "Preview (dry_run defaults to true) or apply bounded on-camera hardware setting updates when [mcp].allow_camera_device_writes is true; excludes firmware, factory reset, password, and network changes.",
+            update_camera_device_settings_schema(),
+            device_write_annotations,
+        ),
+    ]
+}
+
+fn single_string_arg_schema(field: &str, max_length: u64) -> Value {
+    json!({
+        "type": "object",
+        "required": [field],
+        "properties": {
+            field: { "type": "string", "minLength": 1, "maxLength": max_length }
+        },
+        "additionalProperties": false
+    })
+}
+
+fn search_camera_catalog_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+            "query": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "ip": { "type": "string", "description": "Optional camera IPv4 or IPv6 address for credential-free RTSP stream hints." },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 25 }
+        },
+        "additionalProperties": false
+    })
+}
+
+fn probe_camera_streams_schema() -> Value {
+    let candidate = json!({
+        "type": "object",
+        "required": ["username_secret_reference", "password_secret_reference"],
+        "properties": {
+            "username_secret_reference": secret_ref_string_schema(),
+            "password_secret_reference": secret_ref_string_schema(),
+            "uid_secret_reference": secret_ref_string_schema()
+        },
+        "additionalProperties": false
+    });
+    json!({
+        "type": "object",
+        "required": ["ip"],
+        "properties": {
+            "ip": { "type": "string", "description": "Private-network or configured camera IPv4 or IPv6 address." },
+            "onvif_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "main_rtsp_url": { "type": "string", "description": "Optional RTSP URL without embedded credentials." },
+            "sub_rtsp_url": { "type": "string", "description": "Optional RTSP URL without embedded credentials." },
+            "transport": { "type": "string", "enum": ["tcp", "udp"] },
+            "query_onvif": { "type": "boolean" },
+            "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 15 },
+            "username_secret_reference": secret_ref_string_schema(),
+            "password_secret_reference": secret_ref_string_schema(),
+            "uid_secret_reference": secret_ref_string_schema(),
+            "credential_candidates": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 5,
+                "items": candidate
+            }
+        },
+        "additionalProperties": false
+    })
+}
+
+fn request_secret_entry_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["keys"],
+        "properties": {
+            "keys": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 16,
+                "items": {
+                    "type": "object",
+                    "required": ["key", "purpose"],
+                    "properties": {
+                        "key": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": SECRET_KEY_PATTERN },
+                        "purpose": { "type": "string", "minLength": 1, "maxLength": 160 }
+                    },
+                    "additionalProperties": false
+                }
+            },
+            "ttl_seconds": { "type": "integer", "minimum": 60, "maximum": 300 }
+        },
+        "additionalProperties": false
+    })
+}
+
+fn update_camera_device_settings_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["camera_id", "settings"],
+        "properties": {
+            "camera_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "dry_run": {
+                "type": "boolean",
+                "description": "Defaults to true. Set false only after explicit operator approval when [mcp].allow_camera_device_writes is true."
+            },
+            "settings": {
+                "type": "object",
+                "description": "Bounded hardware setting sections (encoder, imaging, lighting, motion, osd, time, ptz). Factory reset, reboot, firmware, credentials, and network changes are prohibited.",
+                "properties": {
+                    "encoder": { "type": "object" },
+                    "imaging": { "type": "object" },
+                    "lighting": { "type": "object" },
+                    "motion": { "type": "object" },
+                    "osd": { "type": "object" },
+                    "time": { "type": "object" },
+                    "ptz": { "type": "object" }
+                },
+                "additionalProperties": false
+            }
+        },
+        "additionalProperties": false
+    })
 }
 
 fn admin_config_write_tool_definitions() -> Vec<ToolDefinition> {

@@ -99,7 +99,7 @@ display_name = "Front Door"
         RecordingDemand::new(Duration::from_secs(5)),
         WebRtc::new(),
     )
-    .with_camera_config_path(config_path);
+    .with_camera_config_path(config_path.clone());
     let (_router, router_tx) = Router::new().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
@@ -143,11 +143,104 @@ display_name = "Front Door"
         .collect();
     assert_eq!(frames.len(), 3);
     assert_eq!(frames[0]["result"]["protocolVersion"], "2025-03-26");
-    assert_eq!(frames[1]["result"]["tools"].as_array().unwrap().len(), 21);
+    assert_eq!(frames[1]["result"]["tools"].as_array().unwrap().len(), 27);
     assert_eq!(
         frames[2]["result"]["structuredContent"]["keys"],
         serde_json::json!(["CAMERA_PASSWORD", "KEEPPEEK_ACCESS_KEY"])
     );
+
+    // Live reload: add a new secret via `keeppeek secret set --stdin` while the server is running.
+    let live_sentinel = "LIVE-RELOAD-CLI-SENTINEL-774411";
+    let mut set_child = Command::new(BIN)
+        .args([
+            "secret",
+            "set",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--stdin",
+            "LIVE_NEW_SECRET",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn keeppeek secret set");
+    set_child
+        .stdin
+        .as_mut()
+        .expect("secret stdin")
+        .write_all(format!("{live_sentinel}\n").as_bytes())
+        .unwrap();
+    let set_out = set_child.wait_with_output().expect("wait secret set");
+    assert!(
+        set_out.status.success(),
+        "keeppeek secret set failed: {}",
+        String::from_utf8_lossy(&set_out.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&set_out.stdout).contains(live_sentinel));
+    assert!(!String::from_utf8_lossy(&set_out.stderr).contains(live_sentinel));
+
+    let list_out = Command::new(BIN)
+        .args(["secret", "list", "--config", config_path.to_str().unwrap()])
+        .output()
+        .expect("spawn keeppeek secret list");
+    assert!(list_out.status.success());
+    let list_stdout = String::from_utf8(list_out.stdout).unwrap();
+    assert!(list_stdout.contains("LIVE_NEW_SECRET"));
+    assert!(!list_stdout.contains(live_sentinel));
+    assert!(!list_stdout.contains(SENTINEL));
+
+    // Running MCP server sees LIVE_NEW_SECRET immediately without restart.
+    let mut check_child = Command::new(BIN)
+        .args(["mcp", "--server", &format!("http://{addr}")])
+        .env("KEEPPEEK_ACCESS_KEY", ACCESS_KEY)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn keeppeek mcp live reload check");
+    check_child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"list_secret_keys\",\"arguments\":{}}}\n")
+        .unwrap();
+    let check_out = check_child.wait_with_output().expect("wait live check");
+    assert!(check_out.status.success());
+    let check_stdout = String::from_utf8(check_out.stdout).unwrap();
+    assert!(!check_stdout.contains(live_sentinel));
+    let check_frame: Value = serde_json::from_str(check_stdout.trim()).unwrap();
+    assert_eq!(
+        check_frame["result"]["structuredContent"]["keys"],
+        serde_json::json!(["CAMERA_PASSWORD", "KEEPPEEK_ACCESS_KEY", "LIVE_NEW_SECRET"])
+    );
+
+    // Invalid key fails with usage exit code 2; remove cleans up cleanly.
+    let bad_key = Command::new(BIN)
+        .args([
+            "secret",
+            "set",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--stdin",
+            "invalid-key",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn invalid secret key");
+    assert_eq!(bad_key.status.code(), Some(2));
+
+    let rm_out = Command::new(BIN)
+        .args([
+            "secret",
+            "remove",
+            "--config",
+            config_path.to_str().unwrap(),
+            "LIVE_NEW_SECRET",
+        ])
+        .output()
+        .expect("spawn keeppeek secret remove");
+    assert!(rm_out.status.success());
 
     // Verify missing credentials fail authentication cleanly when local_networks is empty.
     let mut unauth = Command::new(BIN)

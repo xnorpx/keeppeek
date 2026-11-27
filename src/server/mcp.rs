@@ -9,11 +9,11 @@ use super::{
     AuthenticatedApiRequest, CameraSettingsUpdate, ControlCommandError,
     MAX_NOTIFICATION_RULE_JSON_BYTES, ServerState, api_status, authenticate_api_bearer,
     authenticated_api_request, camera_access, camera_configuration_revision, configuration,
-    current_config, delete_camera_settings, get_logging_settings, logging, mcp_diagnostics,
-    mcp_schemas, mcp_snapshot, notification_command_error, proto_notification_rule_record,
-    record_access_audit, restore_notification_destinations, runtime_configuration,
-    save_camera_settings, server_health, service_error, state_store, unix_time_ms,
-    validate_client_id,
+    current_config, delete_camera_settings, get_logging_settings, logging, mcp_catalog_probe,
+    mcp_device_settings, mcp_diagnostics, mcp_schemas, mcp_secret_handoff, mcp_snapshot,
+    notification_command_error, proto_notification_rule_record, record_access_audit,
+    restore_notification_destinations, runtime_configuration, save_camera_settings, server_health,
+    service_error, state_store, unix_time_ms, validate_client_id,
 };
 use crate::{
     access::AccessRole,
@@ -69,6 +69,7 @@ pub(super) struct Runtime {
     active_requests: Arc<AtomicUsize>,
     secrets: Arc<RwLock<CachedSecrets>>,
     snapshot_limiter: Arc<mcp_snapshot::SnapshotRateLimiter>,
+    handoffs: Arc<mcp_secret_handoff::HandoffStore>,
 }
 
 impl Runtime {
@@ -81,6 +82,7 @@ impl Runtime {
                 secrets,
             })),
             snapshot_limiter: Arc::new(mcp_snapshot::SnapshotRateLimiter::new()),
+            handoffs: Arc::new(mcp_secret_handoff::HandoffStore::new()),
         }
     }
 
@@ -94,6 +96,10 @@ impl Runtime {
 
     pub(super) fn snapshot_limiter(&self) -> &mcp_snapshot::SnapshotRateLimiter {
         &self.snapshot_limiter
+    }
+
+    pub(super) fn handoffs(&self) -> &mcp_secret_handoff::HandoffStore {
+        &self.handoffs
     }
 
     fn secrets_snapshot(&self, config_path: Option<&std::path::Path>) -> Secrets {
@@ -135,7 +141,7 @@ impl Runtime {
             .clone()
     }
 
-    fn refresh_secrets(&self, config_path: &std::path::Path, secrets: Secrets) {
+    pub(super) fn refresh_secrets(&self, config_path: &std::path::Path, secrets: Secrets) {
         let stamp = std::fs::metadata(config::secrets_path(config_path))
             .ok()
             .and_then(|meta| meta.modified().ok().map(|modified| (modified, meta.len())));
@@ -188,6 +194,7 @@ pub(super) struct McpContext<'a> {
     pub(super) router_tx: &'a FacadeSender<RouterMessage>,
     pub(super) identity: &'a AuthenticatedApiRequest,
     pub(super) read_only_header: bool,
+    pub(super) host_port: Option<u16>,
     pub(super) deadline: Instant,
 }
 
@@ -425,11 +432,15 @@ fn handle_authenticated_post(
         }
     };
     let response_limit = response_byte_limit(state.mcp.config(), &parsed);
+    let host_port = parse_host_header(request)
+        .ok()
+        .and_then(|url| url.port_or_known_default());
     let ctx = McpContext {
         state,
         router_tx,
         identity: &identity,
         read_only_header: read_only_header_enabled(request),
+        host_port,
         deadline: Instant::now() + Duration::from_secs(state.mcp.config().request_timeout_seconds),
     };
     dispatch_json_rpc(&ctx, parsed).map_or_else(
@@ -743,6 +754,27 @@ fn dispatch_tool(
             mcp_diagnostics::list_runtime_profiles,
             &args,
         ),
+        _ => dispatch_onboarding_or_write_tool(ctx, name, args),
+    }
+}
+
+fn dispatch_onboarding_or_write_tool(
+    ctx: &McpContext<'_>,
+    name: &str,
+    args: Value,
+) -> Result<ToolCallResult, ToolError> {
+    match name {
+        "search_camera_catalog" => dispatch_diagnostic(
+            ctx,
+            "mcp_search_camera_catalog",
+            mcp_catalog_probe::search_camera_catalog,
+            &args,
+        ),
+        "probe_camera_streams" => tool_probe_camera_streams(ctx, args),
+        "request_secret_entry" => tool_request_secret_entry(ctx, args),
+        "get_secret_entry_status" => tool_get_secret_entry_status(ctx, args),
+        "get_camera_device_settings" => tool_get_camera_device_settings(ctx, args),
+        "update_camera_device_settings" => tool_update_camera_device_settings(ctx, args),
         "apply_configuration_plan" => tool_apply_configuration_plan(ctx, args),
         "update_runtime_configuration" => tool_update_runtime_configuration(ctx, args),
         "manage_configuration_template" => tool_manage_configuration_template(ctx, args),
@@ -783,6 +815,108 @@ fn dispatch_diagnostic(
             Err(ToolError::from_control(error))
         }
     }
+}
+
+fn tool_probe_camera_streams(
+    ctx: &McpContext<'_>,
+    args: Value,
+) -> Result<ToolCallResult, ToolError> {
+    match mcp_catalog_probe::probe_camera_streams(
+        ctx.state,
+        ctx.router_tx,
+        &ctx.identity.principal,
+        &args,
+        Some(ctx.deadline),
+    ) {
+        Ok(value) => {
+            ctx.audit("mcp_probe_camera_streams", None, "success");
+            Ok(ToolCallResult::json(value))
+        }
+        Err(error) => {
+            if ctx.is_admin() {
+                ctx.audit("mcp_probe_camera_streams", None, "failed");
+            }
+            Err(ToolError::from_control(error))
+        }
+    }
+}
+
+fn tool_request_secret_entry(
+    ctx: &McpContext<'_>,
+    args: Value,
+) -> Result<ToolCallResult, ToolError> {
+    let payload = mcp_secret_handoff::request_secret_entry(
+        ctx.state,
+        &ctx.identity.principal,
+        ctx.host_port,
+        &args,
+    )
+    .map_err(ToolError::from_control)?;
+    Ok(ToolCallResult::json(payload))
+}
+
+fn tool_get_secret_entry_status(
+    ctx: &McpContext<'_>,
+    args: Value,
+) -> Result<ToolCallResult, ToolError> {
+    let payload =
+        mcp_secret_handoff::get_secret_entry_status(ctx.state, &ctx.identity.principal, &args)
+            .map_err(ToolError::from_control)?;
+    Ok(ToolCallResult::json(payload))
+}
+
+fn tool_get_camera_device_settings(
+    ctx: &McpContext<'_>,
+    args: Value,
+) -> Result<ToolCallResult, ToolError> {
+    let camera_id = args
+        .get("camera_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::invalid_params("get_camera_device_settings requires camera_id"))?
+        .to_owned();
+    let payload = mcp_device_settings::get_camera_device_settings(
+        ctx.state,
+        ctx.router_tx,
+        &ctx.identity.principal,
+        &camera_id,
+        &args,
+        ctx.deadline,
+    )
+    .map_err(ToolError::from_control)?;
+    ctx.audit(
+        "mcp_get_camera_device_settings",
+        Some(&camera_id),
+        "success",
+    );
+    Ok(ToolCallResult::json(payload))
+}
+
+fn tool_update_camera_device_settings(
+    ctx: &McpContext<'_>,
+    args: Value,
+) -> Result<ToolCallResult, ToolError> {
+    let camera_id = args
+        .get("camera_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            ToolError::invalid_params("update_camera_device_settings requires camera_id")
+        })?
+        .to_owned();
+    let policy = mcp_device_settings::McpDeviceWritePolicy {
+        allow_camera_device_writes: ctx.state.mcp.config().allow_camera_device_writes,
+    };
+    let payload = mcp_device_settings::update_camera_device_settings(
+        ctx.state,
+        ctx.router_tx,
+        &ctx.identity.principal,
+        &camera_id,
+        &args,
+        policy,
+        ctx.read_only_header,
+        ctx.deadline,
+    )
+    .map_err(ToolError::from_control)?;
+    Ok(ToolCallResult::json(payload))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1806,8 +1940,18 @@ fn validate_secret_ref_field(value: Option<&str>, field: &str) -> Result<(), Too
 }
 
 const RTSP_SENSITIVE_QUERY_KEYS: &[&str] = &[
-    "user", "username", "pass", "password", "passwd", "pwd", "token", "auth", "secret", "key",
-    "apikey", "api_key",
+    "user",
+    "username",
+    "pass",
+    "password",
+    "passwd",
+    "pwd",
+    "token",
+    "auth",
+    "secret",
+    "access_key",
+    "apikey",
+    "api_key",
 ];
 
 fn validate_rtsp_url_secret_policy(url: &str, field: &str) -> Result<(), ToolError> {
@@ -2967,6 +3111,16 @@ display_name = "Front Door"
             long_term_path: dir.join("recordings"),
             ..crate::storage::StorageConfig::default()
         };
+        static TEST_CATALOG: std::sync::OnceLock<Arc<crate::camera_database::CameraDatabase>> =
+            std::sync::OnceLock::new();
+        let catalog = TEST_CATALOG
+            .get_or_init(|| {
+                Arc::new(
+                    crate::camera_database::CameraDatabase::load_embedded()
+                        .expect("load embedded camera catalog"),
+                )
+            })
+            .clone();
         let state = ServerState::new(
             &cfg,
             &cameras,
@@ -2975,7 +3129,8 @@ display_name = "Front Door"
             crate::storage::RecordingDemand::new(Duration::from_secs(5)),
             crate::webrtc::WebRtc::new(),
         )
-        .with_camera_config_path(config_path);
+        .with_camera_config_path(config_path)
+        .with_camera_database(catalog);
         let (_router, router_tx) = Router::new().unwrap();
         (dir, state, router_tx)
     }
@@ -3710,7 +3865,7 @@ display_name = "Front Door"
         assert_eq!(lines[0]["result"]["protocolVersion"], "2025-03-26");
 
         let tools = lines[1]["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 21);
+        assert_eq!(tools.len(), 27);
         let tool_names: Vec<&str> = tools
             .iter()
             .map(|tool| tool["name"].as_str().unwrap())
@@ -3730,6 +3885,12 @@ display_name = "Front Door"
             "discover_cameras",
             "get_runtime_configuration",
             "list_runtime_profiles",
+            "search_camera_catalog",
+            "probe_camera_streams",
+            "request_secret_entry",
+            "get_secret_entry_status",
+            "get_camera_device_settings",
+            "update_camera_device_settings",
             "apply_configuration_plan",
             "update_runtime_configuration",
             "manage_configuration_template",
@@ -4639,6 +4800,680 @@ display_name = "Front Door"
         assert!(active.max_gap_ms <= MAX_GOP_GAP_MS);
         assert!(mcp_count >= 50);
         assert!(active.max_response_bytes <= state.mcp.config().max_response_bytes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mcp_secret_handoff_end_to_end_live_reload_and_security_gates() {
+        let secret_sentinel = "HANDOFF-LIVE-SENTINEL-665544";
+        let (dir, state, router_tx) = temp_config_fixture(
+            McpConfig {
+                enabled: true,
+                allow_writes: true,
+                ..McpConfig::default()
+            },
+            "EXISTING-CAM-SENTINEL-111",
+        );
+
+        let req_resp = super::super::handle_request(
+            &mcp_post_request(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "request_secret_entry",
+                        "arguments": {
+                            "keys": [
+                                { "key": "NEW_CAM_USER", "purpose": "Front camera username" },
+                                { "key": "NEW_CAM_PASS", "purpose": "Front camera password" }
+                            ],
+                            "ttl_seconds": 120
+                        }
+                    }
+                }),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        let req_json = read_response_json(req_resp);
+        let structured = &req_json["result"]["structuredContent"];
+        let handoff_id = structured["handoff_id"].as_str().unwrap().to_owned();
+        let local_url = structured["local_ui_url"].as_str().unwrap().to_owned();
+        assert!(local_url.starts_with("http://127.0.0.1:8081/mcp/secret-entry?token="));
+        assert!(!local_url.contains("[REDACTED]"));
+        let token = local_url.split("token=").nth(1).unwrap().to_owned();
+        assert!(token.len() >= 40);
+
+        // Status starts pending.
+        let status_resp = super::super::handle_request(
+            &mcp_post_request(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "get_secret_entry_status",
+                        "arguments": { "handoff_id": handoff_id }
+                    }
+                }),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(
+            read_response_json(status_resp)["result"]["structuredContent"]["status"],
+            "pending"
+        );
+
+        // Non-loopback, proxied, non-loopback Host, cross-origin POST, and unsupported method must fail.
+        let non_loopback = Request::fake_http_from(
+            "198.51.100.10:50000".parse().unwrap(),
+            "GET",
+            format!("/mcp/secret-entry?token={token}"),
+            vec![("Host".into(), "127.0.0.1:8081".into())],
+            Vec::new(),
+        );
+        assert_eq!(
+            super::super::handle_request(&non_loopback, &router_tx, &state).status_code,
+            403
+        );
+        let proxied = Request::fake_http_from(
+            "127.0.0.1:50000".parse().unwrap(),
+            "GET",
+            format!("/mcp/secret-entry?token={token}"),
+            vec![
+                ("Host".into(), "127.0.0.1:8081".into()),
+                ("X-Forwarded-For".into(), "198.51.100.10".into()),
+            ],
+            Vec::new(),
+        );
+        assert_eq!(
+            super::super::handle_request(&proxied, &router_tx, &state).status_code,
+            403
+        );
+        let bad_host = Request::fake_http_from(
+            "127.0.0.1:50000".parse().unwrap(),
+            "GET",
+            format!("/mcp/secret-entry?token={token}"),
+            vec![("Host".into(), "evil.example:8081".into())],
+            Vec::new(),
+        );
+        assert_eq!(
+            super::super::handle_request(&bad_host, &router_tx, &state).status_code,
+            403
+        );
+        let bad_origin = Request::fake_http_from(
+            "127.0.0.1:50000".parse().unwrap(),
+            "POST",
+            "/mcp/secret-entry",
+            vec![
+                ("Host".into(), "127.0.0.1:8081".into()),
+                ("Origin".into(), "http://evil.example:8081".into()),
+                ("Content-Type".into(), "application/json".into()),
+            ],
+            b"{}".to_vec(),
+        );
+        assert_eq!(
+            super::super::handle_request(&bad_origin, &router_tx, &state).status_code,
+            403
+        );
+        let unsupported = Request::fake_http_from(
+            "127.0.0.1:50000".parse().unwrap(),
+            "DELETE",
+            "/mcp/secret-entry",
+            vec![("Host".into(), "127.0.0.1:8081".into())],
+            Vec::new(),
+        );
+        assert_eq!(
+            super::super::handle_request(&unsupported, &router_tx, &state).status_code,
+            405
+        );
+
+        // GET renders self-contained HTML form with strict security headers.
+        let get_form = Request::fake_http_from(
+            "127.0.0.1:50000".parse().unwrap(),
+            "GET",
+            format!("/mcp/secret-entry?token={token}"),
+            vec![("Host".into(), "127.0.0.1:8081".into())],
+            Vec::new(),
+        );
+        let form_resp = super::super::handle_request(&get_form, &router_tx, &state);
+        assert_eq!(form_resp.status_code, 200);
+        let has_header = |resp: &Response, key: &str, needle: &str| {
+            resp.headers.iter().any(|(k, v)| {
+                k.eq_ignore_ascii_case(key)
+                    && v.to_ascii_lowercase()
+                        .contains(&needle.to_ascii_lowercase())
+            })
+        };
+        assert!(has_header(&form_resp, "Cache-Control", "no-store"));
+        assert!(has_header(&form_resp, "Referrer-Policy", "no-referrer"));
+        assert!(has_header(&form_resp, "X-Frame-Options", "deny"));
+        assert!(has_header(
+            &form_resp,
+            "Content-Security-Policy",
+            "default-src 'none'"
+        ));
+
+        // Submit secrets over loopback POST; verify zero value echo and live reload.
+        let form_body = format!(
+            "token={token}&secret_NEW_CAM_USER=onboard_admin&secret_NEW_CAM_PASS={secret_sentinel}"
+        );
+        let post_form = Request::fake_http_from(
+            "127.0.0.1:50000".parse().unwrap(),
+            "POST",
+            "/mcp/secret-entry",
+            vec![
+                ("Host".into(), "127.0.0.1:8081".into()),
+                ("Origin".into(), "http://127.0.0.1:8081".into()),
+                (
+                    "Content-Type".into(),
+                    "application/x-www-form-urlencoded".into(),
+                ),
+            ],
+            form_body.into_bytes(),
+        );
+        let post_resp = super::super::handle_request(&post_form, &router_tx, &state);
+        assert_eq!(post_resp.status_code, 200);
+        let (mut reader, _) = post_resp.data.into_reader_and_size();
+        let mut confirm_html = String::new();
+        reader.read_to_string(&mut confirm_html).unwrap();
+        assert!(confirm_html.contains("NEW_CAM_PASS"));
+        assert!(!confirm_html.contains(secret_sentinel));
+
+        // Status is completed with zero secret values.
+        let done_status = super::super::handle_request(
+            &mcp_post_request(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "get_secret_entry_status",
+                        "arguments": { "handoff_id": handoff_id }
+                    }
+                }),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        let done_json = read_response_json(done_status);
+        assert!(
+            !serde_json::to_string(&done_json)
+                .unwrap()
+                .contains(secret_sentinel)
+        );
+        assert_eq!(
+            done_json["result"]["structuredContent"]["status"],
+            "completed"
+        );
+        assert_eq!(
+            done_json["result"]["structuredContent"]["configured_keys"],
+            json!(["NEW_CAM_PASS", "NEW_CAM_USER"])
+        );
+
+        // Replay must be rejected immediately.
+        let replay = Request::fake_http_from(
+            "127.0.0.1:50000".parse().unwrap(),
+            "POST",
+            "/mcp/secret-entry",
+            vec![
+                ("Host".into(), "127.0.0.1:8081".into()),
+                ("Content-Type".into(), "application/json".into()),
+            ],
+            serde_json::to_vec(&json!({ "token": token, "secrets": { "NEW_CAM_PASS": "x" } }))
+                .unwrap(),
+        );
+        assert_eq!(
+            super::super::handle_request(&replay, &router_tx, &state).status_code,
+            403
+        );
+
+        // Newly stored {secret:NEW_CAM_PASS} works immediately in manage_camera without restart.
+        let cfg_resp = super::super::handle_request(
+            &mcp_post_request(
+                &json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_configuration","arguments":{}}}),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        let revision =
+            read_response_json(cfg_resp)["result"]["structuredContent"]["configuration_revision"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+        let cam_resp = super::super::handle_request(
+            &mcp_post_request(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 5,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "manage_camera",
+                        "arguments": {
+                            "action": "upsert",
+                            "ip": "192.0.2.77",
+                            "expected_configuration_revision": revision,
+                            "username": "{secret:NEW_CAM_USER}",
+                            "password": "{secret:NEW_CAM_PASS}"
+                        }
+                    }
+                }),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        let cam_json = read_response_json(cam_resp);
+        assert!(
+            !serde_json::to_string(&cam_json)
+                .unwrap()
+                .contains(secret_sentinel)
+        );
+        assert_eq!(
+            cam_json["result"]["structuredContent"]["camera"]["ip"],
+            "192.0.2.77"
+        );
+
+        // Audit records never contain the submitted secret value.
+        let audits = state.access_manager.list_audit(64);
+        assert!(
+            audits
+                .iter()
+                .any(|event| event.action == "mcp_secret_entry_completed"
+                    && event.result == "success")
+        );
+        assert!(
+            !serde_json::to_string(&audits)
+                .unwrap()
+                .contains(secret_sentinel)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mcp_onboarding_wire_catalog_probe_and_device_settings_e2e() {
+        let (dir, state, router_tx) = temp_config_fixture(
+            McpConfig {
+                enabled: true,
+                allow_writes: false,
+                allow_camera_device_writes: false,
+                ..McpConfig::default()
+            },
+            "ONBOARD-WIRE-SENTINEL-2233",
+        );
+
+        let catalog_resp = super::super::handle_request(
+            &mcp_post_request(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "search_camera_catalog",
+                        "arguments": { "query": "reolink", "ip": "192.0.2.10", "limit": 5 }
+                    }
+                }),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        let catalog_json = read_response_json(catalog_resp);
+        assert!(
+            catalog_json["result"]["structuredContent"]["count"]
+                .as_u64()
+                .unwrap_or(0)
+                >= 1
+        );
+
+        // probe_camera_streams rejects raw plaintext passwords and >5 candidates.
+        let raw_probe = super::super::handle_request(
+            &mcp_post_request(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "probe_camera_streams",
+                        "arguments": { "ip": "192.0.2.10", "password": "raw-password" }
+                    }
+                }),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(
+            read_response_json(raw_probe)["error"]["code"],
+            ERROR_INVALID_PARAMS
+        );
+
+        let too_many = (0..6)
+            .map(|_| {
+                json!({
+                    "username_secret_reference": "{secret:CAMERA_PASSWORD}",
+                    "password_secret_reference": "{secret:CAMERA_PASSWORD}"
+                })
+            })
+            .collect::<Vec<_>>();
+        let too_many_resp = super::super::handle_request(
+            &mcp_post_request(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "probe_camera_streams",
+                        "arguments": { "ip": "192.0.2.10", "credential_candidates": too_many }
+                    }
+                }),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(
+            read_response_json(too_many_resp)["error"]["code"],
+            ERROR_INVALID_PARAMS
+        );
+
+        // get_camera_device_settings reports rtsp_only honestly for an RTSP-only fixture camera.
+        let dev_get = super::super::handle_request(
+            &mcp_post_request(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 4,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "get_camera_device_settings",
+                        "arguments": { "camera_id": "192.0.2.10" }
+                    }
+                }),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        let dev_json = read_response_json(dev_get);
+        assert_eq!(
+            dev_json["result"]["structuredContent"]["protocol"],
+            "rtsp_only"
+        );
+
+        // update_camera_device_settings blocks dry_run=false when allow_camera_device_writes=false
+        // and blocks prohibited security fields even on dry_run=true.
+        let dev_write_blocked = super::super::handle_request(
+            &mcp_post_request(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 5,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "update_camera_device_settings",
+                        "arguments": {
+                            "camera_id": "192.0.2.10",
+                            "dry_run": false,
+                            "settings": { "osd": { "text": "Front" } }
+                        }
+                    }
+                }),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(
+            read_response_json(dev_write_blocked)["error"]["code"],
+            ERROR_FORBIDDEN
+        );
+
+        let excluded_field = super::super::handle_request(
+            &mcp_post_request(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 6,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "update_camera_device_settings",
+                        "arguments": {
+                            "camera_id": "192.0.2.10",
+                            "dry_run": true,
+                            "settings": { "factory_reset": true }
+                        }
+                    }
+                }),
+                Vec::new(),
+                "127.0.0.1:50000",
+            ),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(
+            read_response_json(excluded_field)["error"]["code"],
+            ERROR_FORBIDDEN
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mcp_432_onboarding_performance_and_ingest_isolation_benchmark() {
+        use crate::storage::{
+            MediaFrame, RecordingCatalog, RecordingFrame, StorageConfig, StorageEngine, VideoCodec,
+            VideoFrame, nal::annexb_to_avcc,
+        };
+        use std::sync::atomic::AtomicBool;
+        use test_frame::{EncodedFrame, TestFrameConfig, TestFrameSource};
+
+        let (dir, state, router_tx) = temp_config_fixture(
+            McpConfig {
+                enabled: true,
+                allow_writes: false,
+                max_concurrent_requests: 4,
+                max_response_bytes: 65_536,
+                ..McpConfig::default()
+            },
+            "BENCH-432-SENTINEL-887766",
+        );
+
+        // 1. Measure >= 30 search_camera_catalog calls.
+        let mut catalog_us = Vec::with_capacity(40);
+        for iter in 0..40 {
+            let query = if iter % 2 == 0 {
+                "reolink"
+            } else {
+                "hikvision"
+            };
+            let req = mcp_post_request(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": iter + 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "search_camera_catalog",
+                        "arguments": { "query": query, "ip": "192.0.2.10", "limit": 10 }
+                    }
+                }),
+                Vec::new(),
+                "127.0.0.1:50000",
+            );
+            let started = Instant::now();
+            let resp = super::super::handle_request(&req, &router_tx, &state);
+            let elapsed_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+            assert_eq!(resp.status_code, 200);
+            let body = read_response_json(resp);
+            assert!(
+                body["result"]["structuredContent"]["count"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    >= 1,
+                "expected catalog match for query={query}: {body}"
+            );
+            catalog_us.push(elapsed_us);
+        }
+        catalog_us.sort_unstable();
+        let catalog_p50_ms = catalog_us[catalog_us.len() / 2] as f64 / 1000.0;
+        let catalog_p95_ms = catalog_us[(catalog_us.len() * 95) / 100] as f64 / 1000.0;
+
+        // 2. Measure >= 30 live secrets.toml reload cycles.
+        let secrets_path = config::secrets_path(state.camera_config_path.as_deref().unwrap());
+        let mut reload_us = Vec::with_capacity(30);
+        for _ in 0..30 {
+            let started = Instant::now();
+            let loaded = config::secrets_store::load_secrets_file_with_lock(
+                &secrets_path,
+                &state.config_update,
+            )
+            .unwrap();
+            state
+                .mcp
+                .refresh_secrets(state.camera_config_path.as_deref().unwrap(), loaded);
+            reload_us.push(u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX));
+        }
+        reload_us.sort_unstable();
+        let reload_p50_ms = reload_us[reload_us.len() / 2] as f64 / 1000.0;
+        let reload_p95_ms = reload_us[(reload_us.len() * 95) / 100] as f64 / 1000.0;
+
+        // 3. Real-time 5 s 30 fps H.264 ingest alongside 3 concurrent onboarding MCP workers.
+        const FPS: u64 = 30;
+        const FRAMES_SENT: usize = 150;
+        const FRAME_INTERVAL_NS: u64 = 1_000_000_000 / FPS;
+        let (tx, rx) = std::sync::mpsc::sync_channel::<EncodedFrame>(40);
+        let source = TestFrameSource::start(
+            TestFrameConfig {
+                width: 320,
+                height: 240,
+                fps: 30,
+                codec: test_frame::Codec::H264,
+                keyframe_interval: 15,
+                bitrate_bps: 500_000,
+            },
+            move |frame| {
+                let _ = tx.send(frame);
+            },
+        )
+        .expect("start deterministic H.264 test source");
+        let mut template_frames = Vec::with_capacity(30);
+        while template_frames.len() < 30 {
+            template_frames.push(rx.recv_timeout(Duration::from_secs(5)).expect("frame"));
+        }
+        source.stop();
+
+        let rec_dir = dir.join("rec");
+        std::fs::create_dir_all(&rec_dir).unwrap();
+        let catalog = RecordingCatalog::open(&rec_dir.join("recordings.db")).unwrap();
+        let catalog_handle = catalog.handle();
+        let engine = StorageEngine::start_with_catalog(
+            StorageConfig {
+                medium_term_path: rec_dir.clone(),
+                long_term_path: rec_dir.clone(),
+                recording_catalog_path: rec_dir.join("recordings.db"),
+                event_thumbnail_path: rec_dir.join(".event-thumbnails"),
+                short_term_duration: Duration::from_secs(2),
+                medium_term_duration: Duration::from_secs(5),
+                flush_interval: Duration::from_secs(1),
+                write_buffer_bytes: 8 * 1024,
+                long_term_max_bytes: 0,
+                minimum_free_bytes: 0,
+                ..StorageConfig::default()
+            },
+            catalog_handle.clone(),
+        );
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut workers = Vec::new();
+        for worker in 0..3_usize {
+            let worker_state = state.clone();
+            let worker_router = router_tx.clone();
+            let worker_stop = stop.clone();
+            workers.push(std::thread::spawn(move || {
+                let requests = [
+                    json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_camera_catalog","arguments":{"query":"reolink","ip":"192.0.2.10","limit":10}}}),
+                    json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_camera_device_settings","arguments":{"camera_id":"192.0.2.10"}}}),
+                    json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_secret_keys","arguments":{}}}),
+                ];
+                let mut calls = 0usize;
+                while !worker_stop.load(Ordering::Acquire) {
+                    let payload = &requests[(worker + calls) % 3];
+                    let req = mcp_post_request(payload, Vec::new(), "127.0.0.1:50000");
+                    let resp = super::super::handle_request(&req, &worker_router, &worker_state);
+                    assert_eq!(resp.status_code, 200);
+                    calls += 1;
+                }
+                calls
+            }));
+        }
+
+        let phase_start = Instant::now();
+        for idx in 0..FRAMES_SENT {
+            let offset = Duration::from_nanos(idx as u64 * FRAME_INTERVAL_NS);
+            let target = phase_start + offset;
+            let now = Instant::now();
+            if now < target {
+                std::thread::sleep(target - now);
+            }
+            let template = &template_frames[idx % template_frames.len()];
+            engine.ingest(
+                "192.0.2.10",
+                RecordingFrame {
+                    source_rtp: None,
+                    received_at: Instant::now(),
+                    timestamp: Some(offset),
+                    frame: MediaFrame::Video(VideoFrame {
+                        codec: VideoCodec::H264,
+                        is_keyframe: template.is_keyframe,
+                        width: template.width,
+                        height: template.height,
+                        data: annexb_to_avcc(&template.data).into(),
+                    }),
+                },
+            );
+        }
+        stop.store(true, Ordering::Release);
+        let total_mcp_calls: usize = workers.into_iter().map(|h| h.join().unwrap()).sum();
+        engine.flush_all();
+        engine.shutdown();
+
+        let fragments = catalog_handle
+            .media_fragments_in_range("192.0.2.10", i64::MIN + 1, i64::MAX)
+            .unwrap();
+        let unique_paths: std::collections::BTreeSet<String> = fragments
+            .iter()
+            .map(|fragment| fragment.path.clone())
+            .collect();
+        let mut frames_recorded = 0usize;
+        for path in &unique_paths {
+            let reader = mp4::read_mp4(std::fs::File::open(path).unwrap()).unwrap();
+            frames_recorded += reader
+                .tracks()
+                .values()
+                .filter(|track| track.track_type().ok() == Some(mp4::TrackType::Video))
+                .map(|track| track.sample_count() as usize)
+                .sum::<usize>();
+        }
+        drop(catalog_handle);
+        catalog.shutdown();
+
+        eprintln!(
+            "ISSUE #432 PERF METRICS: catalog_calls=40 catalog_p50_ms={catalog_p50_ms:.3} catalog_p95_ms={catalog_p95_ms:.3} reload_calls=30 reload_p50_ms={reload_p50_ms:.3} reload_p95_ms={reload_p95_ms:.3} ingest_frames_sent={FRAMES_SENT} ingest_frames_recorded={frames_recorded} concurrent_mcp_calls={total_mcp_calls}"
+        );
+        assert_eq!(frames_recorded, FRAMES_SENT);
+        assert!(total_mcp_calls >= 50);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

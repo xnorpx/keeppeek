@@ -315,6 +315,13 @@ allowing absent `Origin` headers for native CLI clients). Write tools additional
 JSON-RPC response and error passes through serialization-layer secret redaction while
 preserving `{secret:KEY}` references.
 
+`GET /mcp/secret-entry` and `POST /mcp/secret-entry` provide a loopback-only single-use
+secret entry handoff for MCP camera onboarding (disabled `404` when `[mcp].enabled = false`).
+The routes reject non-loopback peers, proxy-forwarded headers, non-loopback `Host` headers,
+and cross-origin `POST` requests with `403`, verify the 256-bit single-use token in constant
+time, write submitted keys atomically to `secrets.toml` with live reload, invalidate the token
+immediately, and never echo secret values in responses, logs, or audit entries.
+
 ## Guest evidence review
 
 Administrator sharing policy, immutable export preview, one-time grant creation and

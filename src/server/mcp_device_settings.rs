@@ -4,11 +4,6 @@
 //! fail-closed policy enforcement, dry-run validation, read-back verification,
 //! hard security exclusions, and non-sensitive audit logging.
 
-#![allow(
-    dead_code,
-    reason = "MCP dispatch wiring lands after PR #431 integration; covered by unit tests meanwhile"
-)]
-
 use super::{
     ApiPrincipal, CameraEntry, ControlCommandError, ReolinkClient, ServerState,
     record_access_audit, unix_time_ms,
