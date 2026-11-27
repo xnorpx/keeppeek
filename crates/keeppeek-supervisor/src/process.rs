@@ -181,7 +181,7 @@ impl ManagedChild {
         }
         configure_platform_command(&mut command, spec.hide_console_window);
 
-        let mut child = command.spawn().map_err(|source| ProcessError::Spawn {
+        let child = command.spawn().map_err(|source| ProcessError::Spawn {
             path: spec.binary_path.clone(),
             source,
         })?;
@@ -191,6 +191,7 @@ impl ManagedChild {
         let job_guard = match WindowsJobGuard::attach(&child) {
             Ok(guard) => guard,
             Err(error) => {
+                let mut child = child;
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(error);
