@@ -842,6 +842,111 @@ paths:
           $ref: "#/components/responses/UpgradeRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
+  /mcp/secret-entry:
+    get:
+      operationId: mcpSecretEntryForm
+      summary: Render the loopback-only single-use secret entry form
+      description: >-
+        Disabled by default; returns 404 unless [mcp].enabled is true in
+        config.toml. Restricted strictly to loopback clients with a localhost
+        or loopback IP Host header and no proxy-forwarded headers. Validates
+        the 256-bit single-use token in constant time and serves a
+        self-contained HTML form with strict no-store, same-origin
+        Referrer-Policy, X-Frame-Options DENY, and CSP headers.
+      parameters:
+        - name: token
+          in: query
+          required: true
+          description: Single-use 256-bit handoff token returned by request_secret_entry.
+          schema:
+            type: string
+            minLength: 32
+            maxLength: 128
+      responses:
+        "200":
+          description: Self-contained HTML secret entry form.
+          content:
+            text/html:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The MCP endpoint is disabled in server configuration.
+        "405":
+          description: Only GET and POST are supported on /mcp/secret-entry.
+        "410":
+          description: The single-use secret entry link expired or was already used.
+    post:
+      operationId: mcpSecretEntrySubmit
+      summary: Submit requested secret values over loopback to secrets.toml
+      description: >-
+        Disabled by default; returns 404 unless [mcp].enabled is true in
+        config.toml. Restricted strictly to loopback clients with a loopback
+        Host header, matching same-origin Origin header (when present), and no
+        proxy-forwarded headers. Validates the single-use token in constant
+        time, writes requested keys atomically to secrets.toml with live reload,
+        invalidates the token immediately, and never echoes secret values.
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+          application/json:
+            schema:
+              type: object
+              required: [token, secrets]
+              properties:
+                token:
+                  type: string
+                secrets:
+                  type: object
+                  additionalProperties:
+                    type: string
+      responses:
+        "200":
+          description: Secrets saved to secrets.toml and reloaded; response never echoes secret values.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, handoff_id, configured_keys]
+                properties:
+                  status:
+                    type: string
+                    const: completed
+                  handoff_id:
+                    type: string
+                  configured_keys:
+                    type: array
+                    items:
+                      type: string
+            text/html:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The MCP endpoint is disabled in server configuration.
+        "405":
+          description: Only GET and POST are supported on /mcp/secret-entry.
+        "409":
+          description: secrets.toml persistence is unavailable.
+        "410":
+          description: The single-use secret entry link expired or was already used.
+        "413":
+          description: Secret entry submission exceeds 32 KiB.
+        "415":
+          description: Request Content-Type must be application/x-www-form-urlencoded or application/json.
 components:
   parameters:
     GuestSession:

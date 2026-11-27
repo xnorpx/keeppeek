@@ -124,7 +124,7 @@ impl SecretRedactor {
         redacted
     }
 
-    fn redact_opaque_id_value(&self, value: &mut Value) {
+    fn redact_opaque_id_value(&self, value: &mut Value, depth: usize) {
         if let Value::String(text) = value {
             if text.is_empty() || is_secret_reference(text) {
                 return;
@@ -134,7 +134,7 @@ impl SecretRedactor {
             redacted = redact_inline_assignments(&redacted);
             *text = redacted;
         } else {
-            self.redact_value_at_depth(value, 1, false, RedactionPath::Other);
+            self.redact_value_at_depth(value, depth, false, RedactionPath::Other);
         }
     }
 
@@ -183,7 +183,7 @@ impl SecretRedactor {
                         continue;
                     }
                     if is_opaque_id_key(key) {
-                        self.redact_opaque_id_value(entry_value);
+                        self.redact_opaque_id_value(entry_value, depth + 1);
                         continue;
                     }
                     let next_path = match (path, key.as_str()) {
@@ -305,7 +305,9 @@ fn redact_inline_assignments(text: &str) -> String {
                 })
                 .map_or(redacted.len(), |offset| value_start + offset);
             let candidate = &redacted[value_start..value_end];
-            if is_secret_reference(candidate) {
+            if is_secret_reference(candidate)
+                || (*marker == "token=" && is_loopback_secret_entry_url_prefix(&redacted[..start]))
+            {
                 search_from = value_end;
             } else {
                 redacted.replace_range(value_start..value_end, REDACTED_PLACEHOLDER);
@@ -317,6 +319,22 @@ fn redact_inline_assignments(text: &str) -> String {
         }
     }
     redacted
+}
+
+fn is_loopback_secret_entry_url_prefix(prefix: &str) -> bool {
+    let suffix = "/mcp/secret-entry?";
+    let Some(before_path) = prefix.strip_suffix(suffix) else {
+        return false;
+    };
+    let Some(scheme_pos) = before_path.rfind("http://") else {
+        return false;
+    };
+    let authority = &before_path[scheme_pos + "http://".len()..];
+    let host = authority
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once(']').map(|(ipv6, _)| ipv6))
+        .unwrap_or_else(|| authority.split(':').next().unwrap_or(authority));
+    host == "127.0.0.1" || host == "::1" || host.eq_ignore_ascii_case("localhost")
 }
 
 fn apply_log_hub_preserving_secret_refs(hub: &LogHub, text: &str) -> String {
@@ -523,5 +541,24 @@ mod tests {
             structured["detail"],
             "cable leaked [REDACTED] near label ab"
         );
+    }
+
+    #[test]
+    fn preserves_loopback_secret_entry_url_while_redacting_other_tokens() {
+        let redactor = SecretRedactor::new(&Secrets::default(), Vec::new(), None);
+        let loopback = "http://127.0.0.1:8081/mcp/secret-entry?token=AbCdEf1234567890";
+        assert_eq!(redactor.redact_str(loopback), loopback);
+
+        let localhost = "http://localhost:8081/mcp/secret-entry?token=AbCdEf1234567890";
+        assert_eq!(redactor.redact_str(localhost), localhost);
+
+        let remote = "https://evil.example/mcp/secret-entry?token=AbCdEf1234567890";
+        assert_eq!(
+            redactor.redact_str(remote),
+            "https://evil.example/mcp/secret-entry?token=[REDACTED]"
+        );
+
+        let inline = "token=AbCdEf1234567890";
+        assert_eq!(redactor.redact_str(inline), "token=[REDACTED]");
     }
 }

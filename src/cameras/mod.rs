@@ -16,7 +16,9 @@ use onvif::{
     discovery,
     soap::client::{AuthType, ClientBuilder, Credentials},
 };
-use schema::{devicemgmt, media as onvif_media, onvif as onvif_xsd};
+use schema::{
+    devicemgmt, media as onvif_media, onvif as onvif_xsd, transport::Error as SoapTransportError,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
@@ -28,7 +30,7 @@ use std::{
         mpsc,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use url::Url;
 
@@ -909,43 +911,229 @@ fn query_event_service(
     }
 }
 
+/// Typed failure kind for bounded ONVIF camera probes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OnvifProbeFailureKind {
+    LockoutOrRateLimited,
+    AuthFailed,
+    RejectedEndpoint,
+    Timeout,
+    Unreachable,
+}
+
+impl OnvifProbeFailureKind {
+    const fn priority(self) -> u8 {
+        match self {
+            Self::LockoutOrRateLimited => 5,
+            Self::AuthFailed => 4,
+            Self::RejectedEndpoint => 3,
+            Self::Timeout => 2,
+            Self::Unreachable => 1,
+        }
+    }
+}
+
+/// Structured error returned by [`probe_onvif_camera_with_deadline`].
+#[derive(Debug, Clone)]
+pub(crate) struct OnvifProbeError {
+    pub(crate) kind: OnvifProbeFailureKind,
+    pub(crate) port: Option<u16>,
+    pub(crate) message: String,
+}
+
+impl OnvifProbeError {
+    fn new(kind: OnvifProbeFailureKind, port: Option<u16>, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            port,
+            message: message.into(),
+        }
+    }
+
+    fn from_soap(operation: &str, port: u16, error: &SoapTransportError) -> Self {
+        Self::new(
+            classify_soap_error(error),
+            Some(port),
+            format!("ONVIF {operation}: {error}"),
+        )
+    }
+}
+
+impl fmt::Display for OnvifProbeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for OnvifProbeError {}
+
+const fn normalize_ip_addr(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => IpAddr::V6(v6),
+        },
+        IpAddr::V4(v4) => IpAddr::V4(v4),
+    }
+}
+
+/// Validates that a camera-supplied ONVIF endpoint URL stays pinned to `camera_ip`.
+///
+/// Rejects non-HTTP(S) schemes, embedded credentials, fragments, DNS hostnames, and foreign IPs.
+/// Rewrites unspecified hosts (`0.0.0.0` or `::`) to `camera_ip`.
+pub(crate) fn validate_pinned_onvif_endpoint(raw: &str, camera_ip: IpAddr) -> anyhow::Result<Url> {
+    let mut endpoint = Url::parse(raw.trim())?;
+    if !matches!(endpoint.scheme(), "http" | "https") {
+        anyhow::bail!("ONVIF endpoint must use HTTP or HTTPS");
+    }
+    if !endpoint.username().is_empty() || endpoint.password().is_some() {
+        anyhow::bail!("ONVIF endpoint must not contain credentials");
+    }
+    if endpoint.fragment().is_some() {
+        anyhow::bail!("ONVIF endpoint must not contain a fragment");
+    }
+    let host_str = endpoint
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("ONVIF endpoint has no host"))?;
+    let trimmed_host = host_str
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(host_str);
+    let endpoint_ip = normalize_ip_addr(
+        trimmed_host
+            .parse::<IpAddr>()
+            .map_err(|_| anyhow::anyhow!("ONVIF endpoint host must be an IP literal"))?,
+    );
+    let target_ip = normalize_ip_addr(camera_ip);
+    if endpoint_ip.is_unspecified() {
+        endpoint
+            .set_ip_host(target_ip)
+            .map_err(|()| anyhow::anyhow!("failed to rewrite unspecified ONVIF endpoint host"))?;
+    } else if endpoint_ip != target_ip {
+        anyhow::bail!("ONVIF endpoint host does not match the camera IP address");
+    }
+    Ok(endpoint)
+}
+
+fn classify_soap_error(error: &SoapTransportError) -> OnvifProbeFailureKind {
+    match error {
+        SoapTransportError::Authorization(_) => OnvifProbeFailureKind::AuthFailed,
+        SoapTransportError::Redirection(_) => OnvifProbeFailureKind::RejectedEndpoint,
+        SoapTransportError::Timeout(_) => OnvifProbeFailureKind::Timeout,
+        SoapTransportError::Other(msg) => {
+            let trimmed = msg.trim_start();
+            let lower = trimmed.to_ascii_lowercase();
+            if trimmed.starts_with("429")
+                || lower.contains("too many requests")
+                || lower.contains("locked")
+                || lower.contains("lockout")
+                || lower.contains("rate limit")
+            {
+                OnvifProbeFailureKind::LockoutOrRateLimited
+            } else if trimmed.starts_with("401") || trimmed.starts_with("403") {
+                OnvifProbeFailureKind::AuthFailed
+            } else {
+                OnvifProbeFailureKind::Unreachable
+            }
+        }
+        SoapTransportError::Connection(_)
+        | SoapTransportError::Protocol(_)
+        | SoapTransportError::Serialization(_)
+        | SoapTransportError::Deserialization(_) => OnvifProbeFailureKind::Unreachable,
+    }
+}
+
+fn onvif_call_timeout(deadline: Option<Instant>, port: u16) -> Result<Duration, OnvifProbeError> {
+    const MAX_CALL_TIMEOUT: Duration = Duration::from_secs(10);
+    let Some(deadline) = deadline else {
+        return Ok(MAX_CALL_TIMEOUT);
+    };
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(OnvifProbeError::new(
+            OnvifProbeFailureKind::Timeout,
+            Some(port),
+            "ONVIF probe deadline reached",
+        ));
+    }
+    Ok(remaining.min(MAX_CALL_TIMEOUT))
+}
+
+fn build_pinned_soap_client(
+    url: &Url,
+    creds: Option<Credentials>,
+    deadline: Option<Instant>,
+    port: u16,
+) -> Result<onvif::soap::client::Client, OnvifProbeError> {
+    let timeout = onvif_call_timeout(deadline, port)?;
+    Ok(ClientBuilder::new(url)
+        .credentials(creds)
+        .auth_type(AuthType::Any)
+        .timeout(timeout)
+        .follow_redirects(false)
+        .build())
+}
+
 fn query_onvif_services(
-    client: &onvif::soap::client::Client,
-) -> anyhow::Result<devicemgmt::GetServicesResponse> {
-    devicemgmt::get_services(
-        client,
+    url: &Url,
+    creds: Option<Credentials>,
+    deadline: Option<Instant>,
+    port: u16,
+) -> Result<devicemgmt::GetServicesResponse, OnvifProbeError> {
+    let client = build_pinned_soap_client(url, creds.clone(), deadline, port)?;
+    match devicemgmt::get_services(
+        &client,
         &devicemgmt::GetServices {
             include_capability: true,
         },
-    )
-    .or_else(|_| {
-        devicemgmt::get_services(
-            client,
-            &devicemgmt::GetServices {
-                include_capability: false,
-            },
-        )
-    })
-    .map_err(|error| anyhow::anyhow!("ONVIF get_services: {error}"))
+    ) {
+        Ok(resp) => Ok(resp),
+        Err(first_err) => {
+            let kind = classify_soap_error(&first_err);
+            // Never retry GetServices on auth, lockout, redirect, or timeout errors.
+            if matches!(
+                kind,
+                OnvifProbeFailureKind::AuthFailed
+                    | OnvifProbeFailureKind::LockoutOrRateLimited
+                    | OnvifProbeFailureKind::RejectedEndpoint
+                    | OnvifProbeFailureKind::Timeout
+            ) {
+                return Err(OnvifProbeError::from_soap("get_services", port, &first_err));
+            }
+            let retry_client = build_pinned_soap_client(url, creds, deadline, port)?;
+            devicemgmt::get_services(
+                &retry_client,
+                &devicemgmt::GetServices {
+                    include_capability: false,
+                },
+            )
+            .map_err(|error| OnvifProbeError::from_soap("get_services", port, &error))
+        }
+    }
 }
 
 fn query_onvif(config: &CameraConfig) -> anyhow::Result<Camera> {
+    query_onvif_with_deadline(config, None).map_err(anyhow::Error::new)
+}
+
+fn query_onvif_with_deadline(
+    config: &CameraConfig,
+    deadline: Option<Instant>,
+) -> Result<Camera, OnvifProbeError> {
     let port = config.onvif_port.unwrap_or(8000);
     let address = SocketAddr::new(config.ip, port);
-    let url = Url::parse(&format!("http://{address}/onvif/device_service"))?;
-
+    let url = Url::parse(&format!("http://{address}/onvif/device_service")).map_err(|error| {
+        OnvifProbeError::new(
+            OnvifProbeFailureKind::Unreachable,
+            Some(port),
+            error.to_string(),
+        )
+    })?;
     let creds = Some(Credentials {
         username: config.username.clone(),
         password: config.password.clone(),
     });
-    let client = ClientBuilder::new(&url)
-        .credentials(creds.clone())
-        .auth_type(AuthType::Any)
-        .timeout(Duration::from_secs(10))
-        .build();
-
-    let services_resp = query_onvif_services(&client)?;
-
+    let services_resp = query_onvif_services(&url, creds.clone(), deadline, port)?;
     let mut ports = CameraPorts {
         onvif: Some(port),
         ..CameraPorts::default()
@@ -953,53 +1141,11 @@ fn query_onvif(config: &CameraConfig) -> anyhow::Result<Camera> {
     for service in &services_resp.service {
         record_endpoint_port(&mut ports, &service.x_addr);
     }
-
+    let dev_client = build_pinned_soap_client(&url, creds.clone(), deadline, port)?;
     let dev_resp =
-        devicemgmt::get_device_information(&client, &devicemgmt::GetDeviceInformation {})
-            .map_err(|e| anyhow::anyhow!("ONVIF get_device_information: {e}"))?;
-
-    let mac_address =
-        devicemgmt::get_network_interfaces(&client, &devicemgmt::GetNetworkInterfaces {})
-            .ok()
-            .and_then(|response| {
-                response
-                    .network_interfaces
-                    .into_iter()
-                    .find_map(|interface| {
-                        interface
-                            .info
-                            .map(|info| info.hw_address.0)
-                            .filter(|address| !address.trim().is_empty())
-                    })
-            });
-
-    let hostname = devicemgmt::get_hostname(&client, &devicemgmt::GetHostname {})
-        .ok()
-        .and_then(|r| {
-            let name = r.hostname_information.name;
-            match name {
-                Some(n) if !n.is_empty() => Some(n),
-                _ => None,
-            }
-        });
-
-    let scope_name = devicemgmt::get_scopes(&client, &devicemgmt::GetScopes {})
-        .ok()
-        .and_then(|r| {
-            for scope in &r.scopes {
-                let uri = &scope.scope_item;
-                if let Some(name) = uri.strip_prefix("onvif://www.onvif.org/name/") {
-                    let decoded = name.replace("%20", " ");
-                    if !decoded.is_empty() {
-                        return Some(decoded);
-                    }
-                }
-            }
-            None
-        });
-
-    let hostname = scope_name.or(hostname);
-
+        devicemgmt::get_device_information(&dev_client, &devicemgmt::GetDeviceInformation {})
+            .map_err(|error| OnvifProbeError::from_soap("get_device_information", port, &error))?;
+    let (mac_address, hostname) = query_optional_device_meta(&url, creds.clone(), deadline, port);
     let device = DeviceInfo {
         manufacturer: Some(dev_resp.manufacturer),
         model: Some(dev_resp.model),
@@ -1008,120 +1154,19 @@ fn query_onvif(config: &CameraConfig) -> anyhow::Result<Camera> {
         hardware_id: Some(dev_resp.hardware_id),
         p2p_uid: None,
     };
-
-    let media_url = services_resp
-        .service
-        .iter()
-        .find(|s| s.namespace.contains("media/wsdl"))
-        .map(|s| s.x_addr.clone());
-
-    let mut profiles = Vec::new();
-
-    if let Some(ref media_url_str) = media_url {
-        let parsed = Url::parse(media_url_str)?;
-        let media_client = ClientBuilder::new(&parsed)
-            .credentials(creds)
-            .auth_type(AuthType::Any)
-            .timeout(Duration::from_secs(10))
-            .build();
-
-        if let Ok(resp) = onvif_media::get_profiles(&media_client, &onvif_media::GetProfiles {}) {
-            for p in &resp.profiles {
-                let token = p.token.0.clone();
-                let name = p.name.0.clone();
-
-                let video = p.video_encoder_configuration.as_ref().map(|v| {
-                    let encoding = match v.encoding {
-                        onvif_xsd::VideoEncoding::Jpeg => VideoEncoding::JPEG,
-                        onvif_xsd::VideoEncoding::Mpeg4 => VideoEncoding::MPEG4,
-                        onvif_xsd::VideoEncoding::H264 => VideoEncoding::H264,
-                        onvif_xsd::VideoEncoding::__Unknown__(ref s) => {
-                            if s.to_lowercase().contains("265") {
-                                VideoEncoding::H265
-                            } else {
-                                VideoEncoding::Unknown(s.clone())
-                            }
-                        }
-                    };
-                    let (fps, bitrate) = v
-                        .rate_control
-                        .as_ref()
-                        .map(|rc| (rc.frame_rate_limit as f64, Some(rc.bitrate_limit as u32)))
-                        .unwrap_or((0.0, None));
-
-                    let gov_length = v.h264.as_ref().map(|h| h.gov_length as u32);
-                    let h264_profile = v.h264.as_ref().map(|h| format!("{:?}", h.h264_profile));
-
-                    VideoConfig {
-                        encoding,
-                        width: v.resolution.width as u32,
-                        height: v.resolution.height as u32,
-                        framerate: fps,
-                        bitrate_kbps: bitrate,
-                        quality: Some(v.quality),
-                        gov_length,
-                        h264_profile,
-                    }
-                });
-
-                let audio = p.audio_encoder_configuration.as_ref().map(|a| {
-                    let encoding = match a.encoding {
-                        onvif_xsd::AudioEncoding::G711 => AudioEncoding::G711,
-                        onvif_xsd::AudioEncoding::G726 => AudioEncoding::G726,
-                        onvif_xsd::AudioEncoding::Aac => AudioEncoding::AAC,
-                        onvif_xsd::AudioEncoding::__Unknown__(ref s) => {
-                            AudioEncoding::Unknown(s.clone())
-                        }
-                    };
-                    AudioConfig {
-                        encoding,
-                        sample_rate: onvif_audio_rate_hz(a.sample_rate),
-                        bitrate_kbps: Some(a.bitrate as u32),
-                    }
-                });
-
-                let stream_uri = onvif_media::get_stream_uri(
-                    &media_client,
-                    &onvif_media::GetStreamUri {
-                        stream_setup: onvif_xsd::StreamSetup {
-                            stream: onvif_xsd::StreamType::RtpUnicast,
-                            transport: onvif_xsd::Transport {
-                                protocol: onvif_xsd::TransportProtocol::Rtsp,
-                                tunnel: vec![],
-                            },
-                        },
-                        profile_token: onvif_xsd::ReferenceToken(token.clone()),
-                    },
-                )
-                .ok()
-                .map(|r| r.media_uri.uri);
-
-                if let Some(stream_uri) = &stream_uri {
-                    record_endpoint_port(&mut ports, stream_uri);
-                }
-
-                let snapshot_uri = onvif_media::get_snapshot_uri(
-                    &media_client,
-                    &onvif_media::GetSnapshotUri {
-                        profile_token: onvif_xsd::ReferenceToken(token.clone()),
-                    },
-                )
-                .ok()
-                .map(|r| r.media_uri.uri);
-
-                profiles.push(MediaProfile {
-                    token,
-                    name,
-                    stream_uri,
-                    snapshot_uri,
-                    video,
-                    audio,
-                });
-            }
-        }
-    }
-
-    let event_service = query_event_service(config, &services_resp.service);
+    let profiles = query_onvif_media_profiles(
+        config.ip,
+        port,
+        &services_resp.service,
+        creds,
+        deadline,
+        &mut ports,
+    )?;
+    let event_service = if deadline.is_none() {
+        query_event_service(config, &services_resp.service)
+    } else {
+        None
+    };
     Ok(Camera {
         config: config.clone(),
         reported_manufacturer: device.manufacturer.clone(),
@@ -1140,6 +1185,202 @@ fn query_onvif(config: &CameraConfig) -> anyhow::Result<Camera> {
         is_reolink: false,
         ptz: None,
         imaging: None,
+    })
+}
+
+fn query_optional_device_meta(
+    url: &Url,
+    creds: Option<Credentials>,
+    deadline: Option<Instant>,
+    port: u16,
+) -> (Option<String>, Option<String>) {
+    let Ok(client) = build_pinned_soap_client(url, creds.clone(), deadline, port) else {
+        return (None, None);
+    };
+    let mac_address =
+        devicemgmt::get_network_interfaces(&client, &devicemgmt::GetNetworkInterfaces {})
+            .ok()
+            .and_then(|response| {
+                response
+                    .network_interfaces
+                    .into_iter()
+                    .find_map(|interface| {
+                        interface
+                            .info
+                            .map(|info| info.hw_address.0)
+                            .filter(|address| !address.trim().is_empty())
+                    })
+            });
+    let Ok(client) = build_pinned_soap_client(url, creds.clone(), deadline, port) else {
+        return (mac_address, None);
+    };
+    let hostname = devicemgmt::get_hostname(&client, &devicemgmt::GetHostname {})
+        .ok()
+        .and_then(|r| r.hostname_information.name.filter(|n| !n.is_empty()));
+    let Ok(client) = build_pinned_soap_client(url, creds, deadline, port) else {
+        return (mac_address, hostname);
+    };
+    let scope_name = devicemgmt::get_scopes(&client, &devicemgmt::GetScopes {})
+        .ok()
+        .and_then(|r| {
+            r.scopes.iter().find_map(|scope| {
+                scope
+                    .scope_item
+                    .strip_prefix("onvif://www.onvif.org/name/")
+                    .map(|name| name.replace("%20", " "))
+                    .filter(|decoded| !decoded.is_empty())
+            })
+        });
+    (mac_address, scope_name.or(hostname))
+}
+
+fn query_onvif_media_profiles(
+    camera_ip: IpAddr,
+    port: u16,
+    services: &[devicemgmt::Service],
+    creds: Option<Credentials>,
+    deadline: Option<Instant>,
+    ports: &mut CameraPorts,
+) -> Result<Vec<MediaProfile>, OnvifProbeError> {
+    let Some(media_url_str) = services
+        .iter()
+        .find(|s| s.namespace.contains("media/wsdl"))
+        .map(|s| s.x_addr.as_str())
+    else {
+        return Ok(Vec::new());
+    };
+    let parsed = validate_pinned_onvif_endpoint(media_url_str, camera_ip).map_err(|error| {
+        OnvifProbeError::new(
+            OnvifProbeFailureKind::RejectedEndpoint,
+            Some(port),
+            error.to_string(),
+        )
+    })?;
+    let media_client = build_pinned_soap_client(&parsed, creds.clone(), deadline, port)?;
+    let resp = match onvif_media::get_profiles(&media_client, &onvif_media::GetProfiles {}) {
+        Ok(resp) => resp,
+        Err(error) => {
+            let mapped = OnvifProbeError::from_soap("get_profiles", port, &error);
+            if matches!(
+                mapped.kind,
+                OnvifProbeFailureKind::AuthFailed
+                    | OnvifProbeFailureKind::LockoutOrRateLimited
+                    | OnvifProbeFailureKind::RejectedEndpoint
+                    | OnvifProbeFailureKind::Timeout
+            ) {
+                return Err(mapped);
+            }
+            return Ok(Vec::new());
+        }
+    };
+    let mut profiles = Vec::new();
+    for p in &resp.profiles {
+        profiles.push(build_onvif_media_profile(
+            &parsed,
+            creds.clone(),
+            deadline,
+            port,
+            p,
+            ports,
+        )?);
+    }
+    Ok(profiles)
+}
+
+fn build_onvif_media_profile(
+    media_url: &Url,
+    creds: Option<Credentials>,
+    deadline: Option<Instant>,
+    port: u16,
+    p: &onvif_xsd::Profile,
+    ports: &mut CameraPorts,
+) -> Result<MediaProfile, OnvifProbeError> {
+    let token = p.token.0.clone();
+    let name = p.name.0.clone();
+    let video = p.video_encoder_configuration.as_ref().map(|v| {
+        let encoding = match v.encoding {
+            onvif_xsd::VideoEncoding::Jpeg => VideoEncoding::JPEG,
+            onvif_xsd::VideoEncoding::Mpeg4 => VideoEncoding::MPEG4,
+            onvif_xsd::VideoEncoding::H264 => VideoEncoding::H264,
+            onvif_xsd::VideoEncoding::__Unknown__(ref s) => {
+                if s.to_lowercase().contains("265") {
+                    VideoEncoding::H265
+                } else {
+                    VideoEncoding::Unknown(s.clone())
+                }
+            }
+        };
+        let (fps, bitrate) = v
+            .rate_control
+            .as_ref()
+            .map(|rc| (rc.frame_rate_limit as f64, Some(rc.bitrate_limit as u32)))
+            .unwrap_or((0.0, None));
+        VideoConfig {
+            encoding,
+            width: v.resolution.width as u32,
+            height: v.resolution.height as u32,
+            framerate: fps,
+            bitrate_kbps: bitrate,
+            quality: Some(v.quality),
+            gov_length: v.h264.as_ref().map(|h| h.gov_length as u32),
+            h264_profile: v.h264.as_ref().map(|h| format!("{:?}", h.h264_profile)),
+        }
+    });
+    let audio = p.audio_encoder_configuration.as_ref().map(|a| {
+        let encoding = match a.encoding {
+            onvif_xsd::AudioEncoding::G711 => AudioEncoding::G711,
+            onvif_xsd::AudioEncoding::G726 => AudioEncoding::G726,
+            onvif_xsd::AudioEncoding::Aac => AudioEncoding::AAC,
+            onvif_xsd::AudioEncoding::__Unknown__(ref s) => AudioEncoding::Unknown(s.clone()),
+        };
+        AudioConfig {
+            encoding,
+            sample_rate: onvif_audio_rate_hz(a.sample_rate),
+            bitrate_kbps: Some(a.bitrate as u32),
+        }
+    });
+    let uri_client = build_pinned_soap_client(media_url, creds.clone(), deadline, port)?;
+    let stream_uri = onvif_media::get_stream_uri(
+        &uri_client,
+        &onvif_media::GetStreamUri {
+            stream_setup: onvif_xsd::StreamSetup {
+                stream: onvif_xsd::StreamType::RtpUnicast,
+                transport: onvif_xsd::Transport {
+                    protocol: onvif_xsd::TransportProtocol::Rtsp,
+                    tunnel: vec![],
+                },
+            },
+            profile_token: onvif_xsd::ReferenceToken(token.clone()),
+        },
+    )
+    .ok()
+    .map(|r| r.media_uri.uri);
+    if let Some(stream_uri) = &stream_uri {
+        record_endpoint_port(ports, stream_uri);
+    }
+    let snapshot_uri = if deadline.is_none() {
+        build_pinned_soap_client(media_url, creds, deadline, port)
+            .ok()
+            .and_then(|snap_client| {
+                onvif_media::get_snapshot_uri(
+                    &snap_client,
+                    &onvif_media::GetSnapshotUri {
+                        profile_token: onvif_xsd::ReferenceToken(token.clone()),
+                    },
+                )
+                .ok()
+                .map(|r| r.media_uri.uri)
+            })
+    } else {
+        None
+    };
+    Ok(MediaProfile {
+        token,
+        name,
+        stream_uri,
+        snapshot_uri,
+        video,
+        audio,
     })
 }
 
@@ -1249,35 +1490,38 @@ fn retain_discovered_rtsp_urls(camera: &mut Camera) {
 }
 
 pub(crate) fn probe_onvif_camera(config: &CameraConfig) -> anyhow::Result<ProbedOnvifCamera> {
+    probe_onvif_camera_with_deadline(config, None).map_err(anyhow::Error::new)
+}
+
+pub(crate) fn probe_onvif_camera_with_deadline(
+    config: &CameraConfig,
+    deadline: Option<Instant>,
+) -> Result<ProbedOnvifCamera, OnvifProbeError> {
     let candidate_ports = candidate_stream_probe_ports(config.onvif_port);
     if let [port] = candidate_ports.as_slice() {
-        return probe_onvif_streams_on_port(config, *port);
+        return probe_onvif_streams_on_port(config, *port, deadline);
     }
 
-    tracing::debug!(
-        ip = %config.ip,
-        ports = ?candidate_ports,
-        "probing candidate ONVIF service ports"
-    );
     let worker_count = candidate_ports
         .len()
         .min(MAX_CONCURRENT_CANDIDATE_STREAM_PROBES);
     let ports = Mutex::new(VecDeque::from(candidate_ports));
     let result = Mutex::new(None);
+    let best_error: Mutex<Option<OnvifProbeError>> = Mutex::new(None);
+    let stop = AtomicBool::new(false);
     let failed_ports = Mutex::new(Vec::new());
 
     thread::scope(|scope| {
         for _ in 0..worker_count {
             let ports = &ports;
             let result = &result;
+            let best_error = &best_error;
+            let stop = &stop;
             let failed_ports = &failed_ports;
             scope.spawn(|| {
-                loop {
-                    if result
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .is_some()
-                    {
+                while !stop.load(Ordering::Acquire) {
+                    if deadline.is_some_and(|d| Instant::now() >= d) {
+                        stop.store(true, Ordering::Release);
                         return;
                     }
                     let Some(port) = ports
@@ -1287,29 +1531,28 @@ pub(crate) fn probe_onvif_camera(config: &CameraConfig) -> anyhow::Result<Probed
                     else {
                         return;
                     };
-
-                    match probe_onvif_streams_on_port(config, port) {
+                    match probe_onvif_streams_on_port(config, port, deadline) {
                         Ok(streams) => {
-                            let mut result = result
+                            let mut guard = result
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            if result.is_none() {
-                                tracing::debug!(
-                                    ip = %config.ip,
-                                    onvif_port = port,
-                                    "candidate ONVIF service responded"
-                                );
-                                *result = Some(streams);
+                            if guard.is_none() {
+                                *guard = Some(streams);
                             }
+                            stop.store(true, Ordering::Release);
                             return;
                         }
                         Err(error) => {
-                            tracing::debug!(
-                                ip = %config.ip,
-                                onvif_port = port,
-                                %error,
-                                "candidate ONVIF service probe failed"
-                            );
+                            record_best_probe_error(best_error, &error);
+                            if matches!(
+                                error.kind,
+                                OnvifProbeFailureKind::LockoutOrRateLimited
+                                    | OnvifProbeFailureKind::AuthFailed
+                                    | OnvifProbeFailureKind::RejectedEndpoint
+                                    | OnvifProbeFailureKind::Timeout
+                            ) {
+                                stop.store(true, Ordering::Release);
+                            }
                             failed_ports
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1321,22 +1564,46 @@ pub(crate) fn probe_onvif_camera(config: &CameraConfig) -> anyhow::Result<Probed
         }
     });
 
-    let result = result
+    if let Some(streams) = result
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    {
+        return Ok(streams);
+    }
+    if let Some(err) = best_error
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        && err.kind != OnvifProbeFailureKind::Unreachable
+    {
+        return Err(err);
+    }
+    let failed_ports = failed_ports
         .into_inner()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    result.ok_or_else(|| {
-        let failed_ports = failed_ports
-            .into_inner()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        anyhow::anyhow!(
+    Err(OnvifProbeError::new(
+        OnvifProbeFailureKind::Unreachable,
+        None,
+        format!(
             "ONVIF service did not respond on candidate ports {}",
             failed_ports
                 .iter()
                 .map(u16::to_string)
                 .collect::<Vec<_>>()
                 .join(", ")
-        )
-    })
+        ),
+    ))
+}
+
+fn record_best_probe_error(slot: &Mutex<Option<OnvifProbeError>>, candidate: &OnvifProbeError) {
+    let mut guard = slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let replace = guard
+        .as_ref()
+        .is_none_or(|existing| candidate.kind.priority() > existing.kind.priority());
+    if replace {
+        *guard = Some(candidate.clone());
+    }
 }
 
 fn candidate_stream_probe_ports(onvif_port: Option<u16>) -> Vec<u16> {
@@ -1346,10 +1613,11 @@ fn candidate_stream_probe_ports(onvif_port: Option<u16>) -> Vec<u16> {
 fn probe_onvif_streams_on_port(
     config: &CameraConfig,
     port: u16,
-) -> anyhow::Result<ProbedOnvifCamera> {
+    deadline: Option<Instant>,
+) -> Result<ProbedOnvifCamera, OnvifProbeError> {
     let mut probe_config = config.clone();
     probe_config.onvif_port = Some(port);
-    let camera = query_onvif(&probe_config)?;
+    let camera = query_onvif_with_deadline(&probe_config, deadline)?;
     let streams = probed_stream_urls(&camera.profiles);
     Ok(ProbedOnvifCamera {
         onvif_port: port,
@@ -1737,16 +2005,12 @@ mod tests {
                 .unwrap();
             }
             let url = Url::parse(&format!("{}/onvif/device_service", fake.origin())).unwrap();
-            let client = ClientBuilder::new(&url)
-                .credentials(Some(Credentials {
-                    username: "test".to_owned(),
-                    password: "test".to_owned(),
-                }))
-                .auth_type(AuthType::Digest)
-                .timeout(Duration::from_secs(1))
-                .build();
-
-            let response = query_onvif_services(&client);
+            let creds = Some(Credentials {
+                username: "test".to_owned(),
+                password: "test".to_owned(),
+            });
+            let port = url.port_or_known_default().unwrap_or(80);
+            let response = query_onvif_services(&url, creds, None, port);
 
             if failures < 2 {
                 assert!(response.unwrap().service.iter().any(|service| {

@@ -101,11 +101,32 @@ impl VideoContinuity {
     }
 }
 
+/// Typed RTSP non-2xx status error preserved through `anyhow::Error` for structured callers.
+#[derive(Debug, Clone)]
+pub struct RtspStatusError {
+    pub method: &'static str,
+    pub status_code: u16,
+    pub reason: String,
+}
+
+impl std::fmt::Display for RtspStatusError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "RTSP {} failed with {} {}",
+            self.method, self.status_code, self.reason
+        )
+    }
+}
+
+impl std::error::Error for RtspStatusError {}
+
 struct BlockingRtsp {
     client: RtspClient,
     shutdown: Shutdown,
     connection: Option<(TcpConnectionId, TcpStream)>,
     deadline: Option<Instant>,
+    op_deadline: Option<Instant>,
     items: VecDeque<CodecItem>,
     read_buffer: Vec<u8>,
     udp_streams: HashMap<usize, UdpSockets>,
@@ -122,6 +143,15 @@ impl BlockingRtsp {
         credentials: Credentials,
         shutdown: Shutdown,
     ) -> anyhow::Result<Self> {
+        Self::describe_with_shutdown_and_deadline(url, credentials, shutdown, None)
+    }
+
+    fn describe_with_shutdown_and_deadline(
+        url: Url,
+        credentials: Credentials,
+        shutdown: Shutdown,
+        op_deadline: Option<Instant>,
+    ) -> anyhow::Result<Self> {
         let mut driver = Self {
             client: RtspClient::new(ClientOptions {
                 credentials: Some(credentials),
@@ -130,6 +160,7 @@ impl BlockingRtsp {
             shutdown,
             connection: None,
             deadline: None,
+            op_deadline,
             items: VecDeque::new(),
             read_buffer: vec![0; TCP_READ_BUFFER_SIZE],
             udp_streams: HashMap::new(),
@@ -238,6 +269,9 @@ impl BlockingRtsp {
             if self.shutdown.is_cancelled() {
                 anyhow::bail!("RTSP operation cancelled")
             }
+            if self.op_deadline.is_some_and(|d| Instant::now() >= d) {
+                anyhow::bail!("RTSP operation timed out before deadline")
+            }
             match self.client.state() {
                 state if state == expected => return Ok(()),
                 state @ (ClientState::Failed | ClientState::Closed) => {
@@ -291,14 +325,17 @@ impl BlockingRtsp {
     }
 
     fn connect_tcp(&self, host: &str, port: u16) -> anyhow::Result<TcpStream> {
-        let deadline = Instant::now() + TCP_CONNECT_TIMEOUT;
+        let mut deadline = Instant::now() + TCP_CONNECT_TIMEOUT;
+        if let Some(op_deadline) = self.op_deadline {
+            deadline = deadline.min(op_deadline);
+        }
         let mut last_error = None;
         for address in (host, port).to_socket_addrs()? {
             if self.shutdown.is_cancelled() {
                 anyhow::bail!("RTSP operation cancelled")
             }
             let Some(timeout) = deadline.checked_duration_since(Instant::now()) else {
-                break;
+                anyhow::bail!("RTSP TCP connect timed out before deadline");
             };
             match TcpStream::connect_timeout(&address, timeout) {
                 Ok(stream) => {
@@ -323,21 +360,21 @@ impl BlockingRtsp {
                 if !response.status_code.is_success()
                     && self.client.state() == ClientState::Failed =>
             {
-                anyhow::bail!(
-                    "RTSP DESCRIBE failed with {} {}",
-                    response.status_code,
-                    response.reason_phrase
-                );
+                return Err(anyhow::Error::new(RtspStatusError {
+                    method: "DESCRIBE",
+                    status_code: u16::from(response.status_code),
+                    reason: response.reason_phrase,
+                }));
             }
             Event::SetupResponse { response, .. }
                 if !response.status_code.is_success()
                     && self.client.state() == ClientState::Failed =>
             {
-                anyhow::bail!(
-                    "RTSP SETUP failed with {} {}",
-                    response.status_code,
-                    response.reason_phrase
-                );
+                return Err(anyhow::Error::new(RtspStatusError {
+                    method: "SETUP",
+                    status_code: u16::from(response.status_code),
+                    reason: response.reason_phrase,
+                }));
             }
             Event::UdpSetup {
                 stream,
@@ -367,11 +404,11 @@ impl BlockingRtsp {
                 if !response.status_code.is_success()
                     && self.client.state() == ClientState::Failed =>
             {
-                anyhow::bail!(
-                    "RTSP PLAY failed with {} {}",
-                    response.status_code,
-                    response.reason_phrase
-                );
+                return Err(anyhow::Error::new(RtspStatusError {
+                    method: "PLAY",
+                    status_code: u16::from(response.status_code),
+                    reason: response.reason_phrase,
+                }));
             }
             Event::TcpConnectFailed { error, .. } => {
                 anyhow::bail!("RTSP TCP connection failed: {error}")
@@ -389,8 +426,11 @@ impl BlockingRtsp {
         if self.pump_udp()? {
             return Ok(());
         }
-        let timeout = self
-            .deadline
+        let effective_deadline = match (self.deadline, self.op_deadline) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let timeout = effective_deadline
             .map(|deadline| deadline.saturating_duration_since(Instant::now()))
             .map(|timeout| timeout.min(SOCKET_POLL_INTERVAL))
             .unwrap_or(SOCKET_POLL_INTERVAL)
@@ -518,13 +558,15 @@ pub fn probe_rtsp_video(
     url.set_username("").ok();
     url.set_password(None).ok();
     let started = Instant::now();
-    let mut driver = BlockingRtsp::describe_with_shutdown(
+    let deadline = started + timeout;
+    let mut driver = BlockingRtsp::describe_with_shutdown_and_deadline(
         url,
         Credentials {
             username: username.to_owned(),
             password: password.to_owned(),
         },
         Shutdown::new(),
+        Some(deadline),
     )?;
     let video_stream = driver
         .streams()
@@ -551,7 +593,6 @@ pub fn probe_rtsp_video(
     };
     driver.setup(video_stream, transport)?;
     driver.play()?;
-    let deadline = Instant::now() + timeout;
     let shutdown = Shutdown::new();
     let mut frames_received = 0_u32;
     while let Some(item) = driver.next_item(&shutdown, Some(deadline))? {

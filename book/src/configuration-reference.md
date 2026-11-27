@@ -693,19 +693,20 @@ Outbox and deduplication state live in memory and reset on restart; the retired 
 
 **Type:** `McpConfig` | **Section:** `[mcp]` | **Ownership:** Operator | **Apply:** Restart | **Sources:** [src/config/mcp.rs](https://github.com/xnorpx/keeppeek/blob/main/src/config/mcp.rs), [src/server/mcp.rs](https://github.com/xnorpx/keeppeek/blob/main/src/server/mcp.rs)
 
-The embedded Streamable HTTP endpoint (`POST /mcp`), configuration writes, and single-frame camera snapshots default to disabled. The canonical writer omits `[mcp]` when all fields stay at defaults.
+The embedded Streamable HTTP endpoint (`POST /mcp`), configuration writes, on-camera hardware writes, and single-frame camera snapshots default to disabled. The canonical writer omits `[mcp]` when all fields stay at defaults.
 
-| Field                           | Type    | Default  | Limits and notes                                                                                           |
-| ------------------------------- | ------- | -------- | ---------------------------------------------------------------------------------------------------------- |
-| `enabled`                       | `bool`  | `false`  | Enable `POST /mcp`; returns `404` when `false`.                                                            |
-| `allow_writes`                  | `bool`  | `false`  | Enable opt-in Administrator configuration mutation tools unless overridden by a read-only client.          |
-| `allow_snapshots`               | `bool`  | `false`  | Enable opt-in privacy-gated single-frame snapshots via `get_camera_snapshot` (camera hardware masks only). |
-| `max_concurrent_requests`       | `usize` | `4`      | `1..=32` concurrent in-flight MCP requests.                                                                |
-| `max_response_bytes`            | `usize` | `65536`  | `4096..=262144` bytes serialized JSON-RPC payload (`get_camera_snapshot` uses `max_snapshot_bytes`).       |
-| `request_timeout_seconds`       | `u64`   | `15`     | `1..=60` seconds server deadline per request.                                                              |
-| `max_snapshot_bytes`            | `usize` | `262144` | `16384..=1048576` bytes encoded JPEG snapshot size (response adds base64 and metadata envelope overhead).  |
-| `max_snapshot_dimension`        | `u32`   | `1280`   | `160..=1920` px maximum snapshot width or height.                                                          |
-| `snapshot_min_interval_seconds` | `u64`   | `5`      | `1..=300` seconds minimum interval between snapshots per camera.                                           |
+| Field                           | Type    | Default  | Limits and notes                                                                                                   |
+| ------------------------------- | ------- | -------- | ------------------------------------------------------------------------------------------------------------------ |
+| `enabled`                       | `bool`  | `false`  | Enable `POST /mcp` (and loopback `/mcp/secret-entry`); returns `404` when `false`.                                 |
+| `allow_writes`                  | `bool`  | `false`  | Enable opt-in Administrator configuration mutation tools unless overridden by a read-only client.                  |
+| `allow_snapshots`               | `bool`  | `false`  | Enable opt-in privacy-gated single-frame snapshots via `get_camera_snapshot` (camera hardware masks only).         |
+| `allow_camera_device_writes`    | `bool`  | `false`  | Enable opt-in live on-camera hardware writes via `update_camera_device_settings` (`dry_run: false`) when writable. |
+| `max_concurrent_requests`       | `usize` | `4`      | `1..=32` concurrent in-flight MCP requests.                                                                        |
+| `max_response_bytes`            | `usize` | `65536`  | `4096..=262144` bytes serialized JSON-RPC payload (`get_camera_snapshot` uses `max_snapshot_bytes`).               |
+| `request_timeout_seconds`       | `u64`   | `15`     | `1..=60` seconds server deadline per request.                                                                      |
+| `max_snapshot_bytes`            | `usize` | `262144` | `16384..=1048576` bytes encoded JPEG snapshot size (response adds base64 and metadata envelope overhead).          |
+| `max_snapshot_dimension`        | `u32`   | `1280`   | `160..=1920` px maximum snapshot width or height.                                                                  |
+| `snapshot_min_interval_seconds` | `u64`   | `5`      | `1..=300` seconds minimum interval between snapshots per camera.                                                   |
 
 Out-of-range values fail startup and configuration-planning validation. `POST /mcp` enforces `[access]` policy, Bearer header authentication, `localhost`/IP `Host` checks for unauthenticated local requests, `[direct_card].allowed_origins` plus mandatory Bearer auth for browser `Origin` headers, serialization-layer secret redaction, and fail-closed camera privacy schedules for snapshots. See [MCP server and LLM configuration](./mcp.md).
 

@@ -116,8 +116,11 @@ mod guest_review;
 mod health_snapshot;
 mod logging;
 mod mcp;
+mod mcp_catalog_probe;
+mod mcp_device_settings;
 mod mcp_diagnostics;
 mod mcp_schemas;
+mod mcp_secret_handoff;
 mod mcp_snapshot;
 mod mqtt_integration;
 mod native_events;
@@ -10855,6 +10858,9 @@ fn handle_request(
     if request_path == "/mcp" && !matches!(request.method(), "POST" | "OPTIONS") {
         return mcp::handle_unsupported_method(state);
     }
+    if request_path == "/mcp/secret-entry" && !matches!(request.method(), "GET" | "POST") {
+        return mcp_secret_handoff::handle_unsupported_method(state);
+    }
     if request_path == "/api/backups" || request_path.starts_with("/api/backups/") {
         return service_error(404, "not found");
     }
@@ -10937,6 +10943,12 @@ fn handle_request(
         },
         (OPTIONS) (/mcp) => {
             mcp::handle_options(request, state)
+        },
+        (GET) (/mcp/secret-entry) => {
+            mcp_secret_handoff::handle_get(request, state)
+        },
+        (POST) (/mcp/secret-entry) => {
+            mcp_secret_handoff::handle_post(request, state)
         },
         _ => serve_ui(request)
     )

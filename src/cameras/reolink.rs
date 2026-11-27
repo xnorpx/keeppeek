@@ -595,6 +595,7 @@ pub struct ReolinkClient {
     ip: IpAddr,
     base_url: String,
     token: Option<String>,
+    deadline: Option<Instant>,
 }
 
 impl ReolinkClient {
@@ -625,7 +626,14 @@ impl ReolinkClient {
             ip,
             base_url,
             token: None,
+            deadline: None,
         }
+    }
+
+    /// Bounds every subsequent HTTP API call to the remaining budget until `deadline`.
+    pub const fn with_deadline(mut self, deadline: Instant) -> Self {
+        self.deadline = Some(deadline);
+        self
     }
 
     fn api_call(&self, cmd: &str, param: Option<Value>) -> anyhow::Result<Value> {
@@ -642,11 +650,16 @@ impl ReolinkClient {
             "param": param.unwrap_or_else(|| Value::Object(Default::default())),
         }]);
 
-        let response = self
-            .client
-            .post(url.as_str())
-            .config()
-            .max_redirects(0)
+        let mut config = self.client.post(url.as_str()).config().max_redirects(0);
+        if let Some(deadline) = self.deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            anyhow::ensure!(
+                !remaining.is_zero(),
+                "{cmd} camera request exceeded deadline"
+            );
+            config = config.timeout_global(Some(remaining));
+        }
+        let response = config
             .build()
             .header("Content-Type", "application/json")
             .send(body.to_string())

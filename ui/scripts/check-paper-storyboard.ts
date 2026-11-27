@@ -609,7 +609,7 @@ const expectedAuthenticationHttpPaths = [
 const expectedBackupHttpPaths = ['/config/export', '/config/apply'];
 const expectedInternalHttpPaths = ['/recording-coverage'];
 const expectedReportingHttpPaths = ['/reporting/status', '/reporting/grants', '/reporting/audit'];
-const expectedMcpHttpPaths = ['/mcp'];
+const expectedMcpHttpPaths = ['/mcp', '/mcp/secret-entry'];
 if (positioningContract.httpPaths.join('|') !== expectedHttpPaths.join('|')) {
 	throw new Error('Board 01 HTTP boundary changed');
 }
