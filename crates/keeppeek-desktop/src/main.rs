@@ -25,6 +25,15 @@ struct Cli {
     /// Connect to a specific KeepPeek server URL instead of the configured default.
     #[arg(long, value_name = "URL")]
     server_url: Option<String>,
+    /// Opt in to supervising a local `keeppeek` child process from KeepPeek Desktop.
+    #[arg(long)]
+    manage_local_server: bool,
+    /// Override the supervisor root directory used in managed local server mode.
+    #[arg(long, value_name = "DIR")]
+    supervisor_root: Option<PathBuf>,
+    /// Override the fallback `keeppeek` executable path used in managed local server mode.
+    #[arg(long, value_name = "PATH")]
+    server_bin: Option<PathBuf>,
     /// Open the connection launcher instead of connecting automatically on startup.
     #[arg(long)]
     no_autoconnect: bool,
@@ -41,10 +50,12 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let config_path = cli.config.unwrap_or_else(config_store::default_config_path);
     let env_override = std::env::var(SERVER_URL_ENV).ok();
-    let target = match config_store::resolve_target(
+    let target = match config_store::resolve_target_with_options(
         &config_path,
         cli.server_url.as_deref(),
         env_override.as_deref(),
+        cli.manage_local_server,
+        cli.supervisor_root.as_deref(),
     ) {
         Ok(target) => target,
         Err(error) => {
@@ -58,6 +69,7 @@ fn main() -> ExitCode {
         let options = desktop_app::LaunchOptions {
             target,
             auto_connect: !cli.no_autoconnect,
+            server_bin: cli.server_bin,
             diagnostics_file: cli.diagnostics_file,
             smoke_exit_ms: cli.smoke_exit_ms,
         };
@@ -70,7 +82,12 @@ fn main() -> ExitCode {
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        let _ = (cli.no_autoconnect, cli.diagnostics_file, cli.smoke_exit_ms);
+        let _ = (
+            cli.no_autoconnect,
+            cli.server_bin,
+            cli.diagnostics_file,
+            cli.smoke_exit_ms,
+        );
         eprintln!(
             "KeepPeek Desktop targets Windows and macOS only. Open {} in a browser on this platform.",
             target.origin

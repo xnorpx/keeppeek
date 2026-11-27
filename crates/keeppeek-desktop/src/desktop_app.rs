@@ -4,10 +4,12 @@ use std::time::{Duration, Instant};
 
 use keeppeek_desktop::{
     config_store::{self, ResolvedTarget, TargetSource},
+    managed_server::{self, DEFAULT_LOCAL_READY_TIMEOUT_MS, ManagedLocalServer},
     navigation::{self, NavigationDecision},
     probe::{self, ProbeOptions, ServerProbeResult},
     server_url::ServerOrigin,
 };
+use keeppeek_supervisor::supervisor::SupervisorSnapshot;
 use serde::Serialize;
 #[cfg(target_os = "macos")]
 use tauri::WindowEvent;
@@ -23,6 +25,7 @@ const MAIN_WINDOW_LABEL: &str = "main";
 const MENU_SWITCH_SERVER: &str = "connection_switch_server";
 const MENU_RECONNECT: &str = "connection_reconnect";
 const MENU_RELOAD: &str = "connection_reload";
+const MENU_RESTART_LOCAL_SERVER: &str = "connection_restart_local_server";
 const MENU_QUIT: &str = "connection_quit";
 const MAX_SMOKE_EXIT_MS: u64 = 600_000;
 
@@ -31,6 +34,7 @@ const MAX_SMOKE_EXIT_MS: u64 = 600_000;
 pub struct LaunchOptions {
     pub target: ResolvedTarget,
     pub auto_connect: bool,
+    pub server_bin: Option<PathBuf>,
     pub diagnostics_file: Option<PathBuf>,
     pub smoke_exit_ms: Option<u64>,
 }
@@ -43,6 +47,9 @@ pub struct DesktopStateSnapshot {
     pub saved_server_url: Option<String>,
     pub active_origin: Option<String>,
     pub auto_connect: bool,
+    pub manage_local_server: bool,
+    pub supervisor_root: String,
+    pub managed_server: Option<SupervisorSnapshot>,
     pub last_error: Option<String>,
     pub blocked_navigation_count: u64,
     pub os: &'static str,
@@ -78,6 +85,11 @@ struct DesktopRuntimeState {
     active_origin: Option<ServerOrigin>,
     launcher_url: Url,
     auto_connect: bool,
+    manage_local_server: bool,
+    supervisor_root: PathBuf,
+    server_bin_override: Option<PathBuf>,
+    managed_supervisor_starting: bool,
+    managed_supervisor: Option<ManagedLocalServer>,
     last_error: Option<String>,
     blocked_navigation_count: u64,
     launcher_loaded_ms: Option<u64>,
@@ -102,6 +114,11 @@ impl DesktopRuntimeState {
             active_origin: None,
             launcher_url: default_launcher_url(),
             auto_connect: options.auto_connect,
+            manage_local_server: options.target.manage_local_server,
+            supervisor_root: options.target.supervisor_root,
+            server_bin_override: options.server_bin,
+            managed_supervisor_starting: false,
+            managed_supervisor: None,
             last_error: None,
             blocked_navigation_count: 0,
             launcher_loaded_ms: None,
@@ -133,6 +150,12 @@ impl DesktopRuntimeState {
                 .as_ref()
                 .map(|origin| origin.as_str().to_owned()),
             auto_connect: self.auto_connect,
+            manage_local_server: self.manage_local_server,
+            supervisor_root: self.supervisor_root.display().to_string(),
+            managed_server: self
+                .managed_supervisor
+                .as_ref()
+                .map(ManagedLocalServer::snapshot),
             last_error: self.last_error.clone(),
             blocked_navigation_count: self.blocked_navigation_count,
             os: std::env::consts::OS,
@@ -183,6 +206,8 @@ pub fn run(options: LaunchOptions) -> Result<(), String> {
             get_desktop_state,
             connect_server,
             save_server_url,
+            set_manage_local_server,
+            restart_managed_server,
             record_launcher_probe_failure,
         ])
         .setup(|app| {
@@ -212,6 +237,8 @@ async fn connect_server(
     save_default: bool,
 ) -> Result<ConnectResponse, String> {
     let origin = ServerOrigin::parse_user_input(&server_url).map_err(|error| error.to_string())?;
+    ensure_managed_local_server_if_opted_in(&state, &origin).await?;
+
     let probe_origin = origin.clone();
     let probe_result = tauri::async_runtime::spawn_blocking(move || {
         probe::probe_server(&probe_origin, ProbeOptions::default())
@@ -291,6 +318,179 @@ fn save_server_url(
     guard.saved_server_url = Some(origin);
     guard.source = TargetSource::ConfigDesktop;
     Ok(guard.snapshot())
+}
+
+#[tauri::command]
+async fn set_manage_local_server(
+    state: State<'_, ManagedDesktopState>,
+    enabled: bool,
+) -> Result<DesktopStateSnapshot, String> {
+    let config_path = state.lock().config_path.clone();
+    config_store::save_manage_local_server(&config_path, enabled)
+        .map_err(|error| error.to_string())?;
+    let to_stop = {
+        let mut guard = state.lock();
+        guard.manage_local_server = enabled;
+        if !enabled {
+            guard.managed_supervisor.take()
+        } else {
+            None
+        }
+    };
+    if let Some(mut managed) = to_stop {
+        let _ = tauri::async_runtime::spawn_blocking(move || managed.stop()).await;
+    }
+    Ok(state.lock().snapshot())
+}
+
+#[tauri::command]
+async fn restart_managed_server(
+    state: State<'_, ManagedDesktopState>,
+) -> Result<DesktopStateSnapshot, String> {
+    let prior_restarts = {
+        let guard = state.lock();
+        let Some(managed) = guard.managed_supervisor.as_ref() else {
+            return Err(
+                "No desktop-managed local KeepPeek server is currently running.".to_owned(),
+            );
+        };
+        let count = managed.snapshot().core.restart_count;
+        if !managed.restart_core() {
+            return Err("Unable to trigger managed local KeepPeek restart.".to_owned());
+        }
+        count
+    };
+
+    let deadline = Instant::now() + Duration::from_millis(DEFAULT_LOCAL_READY_TIMEOUT_MS);
+    while Instant::now() < deadline {
+        let done = {
+            let guard = state.lock();
+            if guard.quitting {
+                return Err("KeepPeek Desktop is exiting.".to_owned());
+            }
+            guard.managed_supervisor.as_ref().map_or_else(
+                || {
+                    Some(Err(
+                        "Managed local KeepPeek server stopped during restart.".to_owned()
+                    ))
+                },
+                |managed| {
+                    let core = managed.snapshot().core;
+                    if core.restart_count > prior_restarts
+                        && core.phase == keeppeek_supervisor::supervisor::ComponentPhase::Running
+                    {
+                        Some(Ok(guard.snapshot()))
+                    } else if core.phase == keeppeek_supervisor::supervisor::ComponentPhase::Failed
+                    {
+                        Some(Err(core.last_error.unwrap_or_else(|| {
+                            "Managed local KeepPeek server failed during restart.".to_owned()
+                        })))
+                    } else {
+                        None
+                    }
+                },
+            )
+        };
+        if let Some(result) = done {
+            return result;
+        }
+        tauri::async_runtime::spawn_blocking(|| {
+            std::thread::sleep(Duration::from_millis(100));
+        })
+        .await
+        .map_err(|error| format!("Restart wait interrupted: {error}."))?;
+    }
+    Err("Timed out waiting for managed local KeepPeek server to restart.".to_owned())
+}
+
+async fn ensure_managed_local_server_if_opted_in(
+    state: &State<'_, ManagedDesktopState>,
+    origin: &ServerOrigin,
+) -> Result<(), String> {
+    let startup_params = {
+        let mut guard = state.lock();
+        if !guard.manage_local_server || !origin.is_loopback() || guard.managed_supervisor.is_some()
+        {
+            return Ok(());
+        }
+        if guard.managed_supervisor_starting {
+            return Err(
+                "Managed local KeepPeek server is already starting. Wait a moment and retry."
+                    .to_owned(),
+            );
+        }
+        guard.managed_supervisor_starting = true;
+        (
+            guard.supervisor_root.clone(),
+            guard.config_path.clone(),
+            guard.server_bin_override.clone(),
+        )
+    };
+
+    // If an external local KeepPeek server is already reachable on this origin, reuse it.
+    let pre_probe_origin = origin.clone();
+    let already_running = tauri::async_runtime::spawn_blocking(move || {
+        probe::probe_server(
+            &pre_probe_origin,
+            ProbeOptions {
+                timeout_ms: 800,
+                ..ProbeOptions::default()
+            },
+        )
+        .is_ok()
+    })
+    .await
+    .unwrap_or(false);
+    if already_running {
+        state.lock().managed_supervisor_starting = false;
+        return Ok(());
+    }
+
+    let (supervisor_root, config_path, server_bin_override) = startup_params;
+    let spawn_result = tauri::async_runtime::spawn_blocking(move || {
+        let desktop_exe = std::env::current_exe().ok();
+        let config = managed_server::build_desktop_supervisor_config(
+            &supervisor_root,
+            &config_path,
+            server_bin_override.as_deref(),
+            desktop_exe.as_deref(),
+        );
+        let mut server = ManagedLocalServer::start(config)
+            .map_err(|error| format!("Unable to start managed local KeepPeek server: {error}."))?;
+        if let Err(error) = server.wait_ready(DEFAULT_LOCAL_READY_TIMEOUT_MS) {
+            server.stop();
+            return Err(format!(
+                "Managed local KeepPeek server did not become ready: {error}."
+            ));
+        }
+        Ok::<ManagedLocalServer, String>(server)
+    })
+    .await
+    .map_err(|error| format!("Managed local server startup task failed: {error}."));
+
+    let managed = match spawn_result {
+        Ok(Ok(server)) => server,
+        Ok(Err(message)) | Err(message) => {
+            state.lock().managed_supervisor_starting = false;
+            return Err(message);
+        }
+    };
+
+    let abort_server = {
+        let mut guard = state.lock();
+        guard.managed_supervisor_starting = false;
+        if guard.quitting || !guard.manage_local_server {
+            Some(managed)
+        } else {
+            guard.managed_supervisor = Some(managed);
+            None
+        }
+    };
+    if let Some(mut server) = abort_server {
+        let _ = tauri::async_runtime::spawn_blocking(move || server.stop()).await;
+        return Err("KeepPeek Desktop stopped managed local server startup.".to_owned());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -400,6 +600,13 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         Some("CmdOrCtrl+Shift+R"),
     )?;
     let reload = MenuItem::with_id(app, MENU_RELOAD, "Reload", true, Some("CmdOrCtrl+R"))?;
+    let restart_local = MenuItem::with_id(
+        app,
+        MENU_RESTART_LOCAL_SERVER,
+        "Restart Local Server",
+        true,
+        Some("CmdOrCtrl+Alt+R"),
+    )?;
     let quit = MenuItem::with_id(
         app,
         MENU_QUIT,
@@ -416,6 +623,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             &switch_server,
             &reconnect,
             &reload,
+            &restart_local,
             &PredefinedMenuItem::separator(app)?,
             &quit,
         ],
@@ -446,6 +654,18 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         MENU_RELOAD => {
             if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
                 let _ = window.reload();
+            }
+        }
+        MENU_RESTART_LOCAL_SERVER => {
+            let state = app.state::<ManagedDesktopState>();
+            let restarted = state
+                .lock()
+                .managed_supervisor
+                .as_ref()
+                .is_some_and(ManagedLocalServer::restart_core);
+            if restarted {
+                info!("triggered restart of desktop-managed local KeepPeek server");
+                navigate_to_launcher(app, false);
             }
         }
         MENU_QUIT => {
@@ -513,11 +733,19 @@ fn handle_run_event(app: &AppHandle, event: RunEvent) {
             }
         }
         RunEvent::ExitRequested { .. } => {
-            let state = app.state::<ManagedDesktopState>();
-            let mut guard = state.lock();
-            guard.quitting = true;
-            write_diagnostics_if_configured(&guard);
-            info!("KeepPeek Desktop exiting; external KeepPeek servers remain unaffected");
+            let managed_to_stop = {
+                let state = app.state::<ManagedDesktopState>();
+                let mut guard = state.lock();
+                guard.quitting = true;
+                write_diagnostics_if_configured(&guard);
+                guard.managed_supervisor.take()
+            };
+            if let Some(mut managed) = managed_to_stop {
+                info!("KeepPeek Desktop exiting; stopping desktop-managed local KeepPeek server");
+                managed.stop();
+            } else {
+                info!("KeepPeek Desktop exiting; external KeepPeek servers remain unaffected");
+            }
         }
         _ => {}
     }

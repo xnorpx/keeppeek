@@ -36,12 +36,20 @@ enum Command {
 
 fn main() -> std::process::ExitCode {
     match run() {
-        Ok(()) => std::process::ExitCode::SUCCESS,
+        Ok(RunOutcome::Finished) => std::process::ExitCode::SUCCESS,
+        Ok(RunOutcome::SupervisedRestart) => {
+            std::process::ExitCode::from(keeppeek_supervisor::EXIT_CODE_RESTART_REQUESTED)
+        }
         Err(error) => {
             eprintln!("{error}");
             std::process::ExitCode::from(error.exit_code())
         }
     }
+}
+
+enum RunOutcome {
+    Finished,
+    SupervisedRestart,
 }
 
 enum MainError {
@@ -70,17 +78,23 @@ impl std::fmt::Display for MainError {
     }
 }
 
-fn run() -> Result<(), MainError> {
+fn run() -> Result<RunOutcome, MainError> {
     let cli = Cli::parse();
     match cli.command {
         Some(Command::Config(args)) => {
-            return keeppeek_backup::run(args).map_err(MainError::Backup);
+            return keeppeek_backup::run(args)
+                .map(|()| RunOutcome::Finished)
+                .map_err(MainError::Backup);
         }
         Some(Command::Mcp(args)) => {
-            return keeppeek::mcp::stdio::run(args).map_err(MainError::Server);
+            return keeppeek::mcp::stdio::run(args)
+                .map(|()| RunOutcome::Finished)
+                .map_err(MainError::Server);
         }
         Some(Command::Secret(args)) => {
-            return keeppeek::mcp::secret_cli::run(args).map_err(MainError::Secret);
+            return keeppeek::mcp::secret_cli::run(args)
+                .map(|()| RunOutcome::Finished)
+                .map_err(MainError::Secret);
         }
         None => {}
     }
@@ -88,7 +102,7 @@ fn run() -> Result<(), MainError> {
     run_server(cli.tui).map_err(MainError::Server)
 }
 
-fn run_server(tui: keeppeek::tui::DashboardMode) -> anyhow::Result<()> {
+fn run_server(tui: keeppeek::tui::DashboardMode) -> anyhow::Result<RunOutcome> {
     let (cfg, config_path) = config::load()?;
     let logging = initialize_global_logging(&config_path)?;
 
@@ -106,11 +120,18 @@ fn run_server(tui: keeppeek::tui::DashboardMode) -> anyhow::Result<()> {
     .map_err(|error| anyhow::anyhow!("unable to install shutdown signal handler: {error}"))?;
 
     if keeppeek::app::run_with_dashboard(cfg, &config_path, logging, shutdown, restart, tui)? {
+        if keeppeek_supervisor::is_supervised_process() {
+            tracing::info!(
+                exit_code = keeppeek_supervisor::EXIT_CODE_RESTART_REQUESTED,
+                "exiting so parent supervisor can cleanly restart or upgrade KeepPeek"
+            );
+            return Ok(RunOutcome::SupervisedRestart);
+        }
         tracing::info!("restarting to apply camera configuration");
         restart_current_process()?;
     }
 
-    Ok(())
+    Ok(RunOutcome::Finished)
 }
 
 #[cfg(windows)]

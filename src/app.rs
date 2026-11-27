@@ -446,7 +446,13 @@ pub fn run_with_dashboard(
         (None, None)
     };
 
+    let supervisor_stop_file = keeppeek_supervisor::stop_file_from_env();
     while !shutdown.is_cancelled() && !router.is_shutting_down() {
+        if keeppeek_supervisor::stop_requested(supervisor_stop_file.as_deref()) {
+            tracing::info!("supervisor requested graceful shutdown");
+            shutdown.cancel();
+            break;
+        }
         if let Some(result) = camera_start_rx
             .as_ref()
             .map(std::sync::mpsc::Receiver::try_recv)
@@ -455,6 +461,13 @@ pub fn run_with_dashboard(
                 Ok(Ok(())) => {
                     if let Err(error) = mark_pending_restore_healthy(config_path) {
                         startup_error = Some(error);
+                        shutdown.cancel();
+                    } else if let Err(error) =
+                        keeppeek_supervisor::signal_ready_from_env(env!("CARGO_PKG_VERSION"))
+                    {
+                        startup_error = Some(anyhow::anyhow!(
+                            "unable to signal supervisor readiness: {error}"
+                        ));
                         shutdown.cancel();
                     }
                     camera_start_rx = None;

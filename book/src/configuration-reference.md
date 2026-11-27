@@ -168,9 +168,11 @@ Default `local_networks`: `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168
 
 **Type:** `DesktopConfig` (`deny_unknown_fields`) | **Section:** `[desktop]` | **Ownership:** Operator / KeepPeek Desktop | **Apply:** Desktop launch
 
-| Field        | Type              | Default | Limits and notes                                                                                                                                                                                                                                         |
-| ------------ | ----------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `server_url` | Optional `String` | Absent  | Canonical exact HTTP(S) origin (`1..=512` UTF-8 bytes, e.g., `"http://127.0.0.1:8081"`, `"https://nvr.example"`). Rejects credentials, path, query, fragment, trailing slash, control chars, port `0`, and unspecified bind addresses (`0.0.0.0`, `::`). |
+| Field                 | Type              | Default | Limits and notes                                                                                                                                                                                                                                         |
+| --------------------- | ----------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server_url`          | Optional `String` | Absent  | Canonical exact HTTP(S) origin (`1..=512` UTF-8 bytes, e.g., `"http://127.0.0.1:8081"`, `"https://nvr.example"`). Rejects credentials, path, query, fragment, trailing slash, control chars, port `0`, and unspecified bind addresses (`0.0.0.0`, `::`). |
+| `manage_local_server` | `bool`            | `false` | Opt-in flag enabling `keeppeek-desktop` to embed `keeppeek-supervisor` and manage a local loopback `keeppeek` child process. Omitted from `config.toml` when `false` to preserve compatibility with older `keeppeek` servers.                            |
+| `supervisor_root`     | Optional `String` | Absent  | Optional directory override (`1..=1,024` UTF-8 bytes, non-blank, no control chars) for the desktop supervisor's `supervisor-state.json` and A/B slots. Defaults to `<config_dir>/supervisor`.                                                            |
 
 ## Guest review deployment policy
 

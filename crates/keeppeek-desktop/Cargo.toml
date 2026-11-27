@@ -16,6 +16,7 @@ clap = { version = "4.6.6", default-features = false, features = [
   "help",
   "usage",
 ] }
+keeppeek-supervisor = { workspace = true }
 mimalloc = { version = "0.1.52" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

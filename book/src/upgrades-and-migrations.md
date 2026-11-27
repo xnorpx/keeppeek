@@ -54,9 +54,20 @@ sc.exe start KeepPeekService
 
 Resolve any failure to stop the old service before retrying the installer. Service logs default to `keeppeek-service.log` beside the service account's `config.toml`; `[logging] service = "event_log"` writes to the Windows Application event log once the source is registered. See the [Windows service guide](https://github.com/xnorpx/keeppeek/blob/main/docs/windows-service.md).
 
-### Standalone binary
+### Standalone binary and slim supervisor
 
 Stop the running process, replace the executable, and start it with the same `--config <path>` flag and environment. `--config` selects both the TOML file and sibling `secrets.toml`. A fresh config initializes named storage beside itself; an existing metadata binding keeps its recorded owner.
+
+For bare-metal deployments preparing for offline staged A/B binary swaps and automatic rollback, KeepPeek also provides the offline `keeppeek-supervisor` crate and three slim parent hosts (`keeppeek-supervisor` CLI, `keeppeek-service.exe` on Windows, and opt-in managed local server mode in `keeppeek-desktop`). The supervisor stores immutable executables under `<supervisor_root>/versions/<version>/keeppeek[.exe]` (and optional independent `<supervisor_root>/vision/<version>/keeppeek-vision[.exe]`) alongside an atomic `supervisor-state.json` journal:
+
+```sh
+keeppeek-supervisor stage --root <dir> --manifest manifest.json --binary keeppeek --key-id <id> --public-key-hex <64-hex>
+keeppeek-supervisor status --root <dir>
+keeppeek-supervisor run --root <dir> --config <path/to/config.toml>
+keeppeek-supervisor rollback --root <dir> --component core
+```
+
+Online release polling and automatic background downloading remain intentionally disabled; `stage` verifies offline Ed25519 manifest signatures, SHA-256 digests, anti-downgrade version floors, and `expand_contract` vs. `breaking` schema compatibility before publishing a pending slot. On Linux `systemd` deployments, retain the default `KillMode=control-group` so hard supervisor termination also cleans up supervised child processes.
 
 ## What startup migrates
 

@@ -3373,6 +3373,7 @@ dependencies = [
  "ipnet",
  "isapi",
  "jsonwebtoken",
+ "keeppeek-supervisor",
  "mimalloc",
  "mime",
  "mp4",
@@ -3434,6 +3435,7 @@ name = "keeppeek-desktop"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "keeppeek-supervisor",
  "mimalloc",
  "serde",
  "serde_json",
@@ -3444,6 +3446,23 @@ dependencies = [
  "tracing-subscriber",
  "ureq",
  "url",
+]
+
+[[package]]
+name = "keeppeek-supervisor"
+version = "0.1.0"
+dependencies = [
+ "aws-lc-rs",
+ "clap",
+ "ctrlc",
+ "mimalloc",
+ "rustix 1.1.6",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tracing",
+ "tracing-subscriber",
+ "windows 0.62.2",
 ]
 
 [[package]]

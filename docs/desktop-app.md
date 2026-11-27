@@ -4,12 +4,13 @@
 
 ## Architecture and deployment boundary
 
-`keeppeek-desktop` is a connect-to-existing-server client:
+By default, `keeppeek-desktop` is a connect-to-existing-server client:
 
-- It never spawns, supervises, or terminates `keeppeek`, `keeppeek-service`, or the macOS `com.keeppeek` LaunchAgent.
-- It reads and writes only `[desktop].server_url` inside the existing canonical `config.toml` (see `src/config.rs` and `crates/keeppeek-desktop/src/config_store.rs`), preserving all other sections and `{secret:...}` references.
+- In default connect-only mode, it never spawns, supervises, or terminates `keeppeek`, `keeppeek-service`, or the macOS `com.keeppeek` LaunchAgent.
+- When an operator explicitly opts in via `--manage-local-server`, `[desktop].manage_local_server = true`, or the local launcher toggle, trusted Rust code embeds `crates/keeppeek-supervisor` to supervise a local `keeppeek` child process (using versioned A/B slots under `[desktop].supervisor_root` or `<config_dir>/supervisor`, falling back to sibling `keeppeek[.exe]`), connects once ready, and stops only its own supervised child on quit.
+- It reads and writes only `[desktop]` keys (`server_url`, `manage_local_server`, `supervisor_root`) inside the existing canonical `config.toml` (see `src/config.rs` and `crates/keeppeek-desktop/src/config_store.rs`), preserving all other sections and `{secret:...}` references.
 - It validates and probes `<origin>/auth/session` with explicit timeouts (5 s default), zero redirects, and a 64 KiB body cap before navigating the main webview to `<origin>/`.
-- On Linux, the crate builds and executes all platform-independent tests (`server_url`, `navigation`, `config_store`, `probe`, and Tauri configuration security checks) without requiring WebKitGTK, while gating the `tauri` runtime behind `cfg(any(target_os = "windows", target_os = "macos"))`.
+- On Linux, the crate builds and executes all platform-independent tests (`server_url`, `navigation`, `config_store`, `managed_server`, `probe`, and Tauri configuration security checks) without requiring WebKitGTK, while gating the `tauri` runtime behind `cfg(any(target_os = "windows", target_os = "macos"))`.
 
 ## Security invariants
 
