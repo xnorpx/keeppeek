@@ -33,24 +33,25 @@ html[data-demo='true'] [data-visual-fixture-notice] {
 	display: none;
 }
 
-html[data-demo='true']:not([data-demo-asset='cameras.desktop.catalog-guided-setup']),
-html[data-demo='true']:not([data-demo-asset='cameras.desktop.catalog-guided-setup']) body {
+html[data-demo='true'][data-demo-asset='peek.desktop.history-keep'],
+html[data-demo='true'][data-demo-asset='peek.desktop.history-keep'] body {
 	width: 928px;
 	height: 524px;
 	overflow: hidden;
 }
 
-html[data-demo='true']:not([data-demo-asset='cameras.desktop.catalog-guided-setup']) #app {
+html[data-demo='true'][data-demo-asset='peek.desktop.history-keep'] #app {
 	width: 464px;
 	height: 262px;
 	transform: scale(2);
 	transform-origin: top left;
 }
 
-html[data-demo-asset='cameras.desktop.catalog-guided-setup'],
-html[data-demo-asset='cameras.desktop.catalog-guided-setup'] body,
-html[data-demo-asset='cameras.desktop.catalog-guided-setup'] #app {
-	width: 1280px;
-	height: 800px;
+html[data-demo='true']:not([data-demo-asset='peek.desktop.history-keep']),
+html[data-demo='true']:not([data-demo-asset='peek.desktop.history-keep']) body,
+html[data-demo='true']:not([data-demo-asset='peek.desktop.history-keep']) #app {
+	width: 100%;
+	height: 100%;
+	margin: 0;
 	overflow: hidden;
 }

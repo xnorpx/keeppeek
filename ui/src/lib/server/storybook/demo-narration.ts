@@ -1,4 +1,8 @@
-import type { DemoNarration, StoryScenarioMetadata } from '../../storybook/demo';
+import {
+	escapeWebVttText,
+	type DemoNarration,
+	type StoryScenarioMetadata
+} from '../../storybook/demo';
 import type { NarratedDemoPlan } from './demo-video';
 
 export type DemoNarrationManifestCue = {
@@ -93,7 +97,7 @@ export function createNarratedDemoWebVtt(narration: DemoNarration, plan: Narrate
 	const cues = narration.cues.map((cue, index) => {
 		const segment = plan.segments[index]!;
 		const endMs = segment.outputStartMs + segment.audioDurationMs;
-		return `${index + 1}\n${formatWebVttTime(segment.outputStartMs)} --> ${formatWebVttTime(endMs)}\n${cue.text}`;
+		return `${index + 1}\n${formatWebVttTime(segment.outputStartMs)} --> ${formatWebVttTime(endMs)}\n${escapeWebVttText(cue.text)}`;
 	});
 	return `WEBVTT\n\n${cues.join('\n\n')}\n`;
 }

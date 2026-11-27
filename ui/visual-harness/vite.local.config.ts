@@ -11,6 +11,9 @@ export default defineConfig({
 	resolve: {
 		alias: {
 			$lib: fileURLToPath(new URL('../src/lib', import.meta.url)),
+			'$app/navigation': fileURLToPath(
+				new URL('./stories/sveltekit-navigation.ts', import.meta.url)
+			),
 			'$app/paths': fileURLToPath(new URL('./stories/sveltekit-paths.ts', import.meta.url))
 		}
 	},

@@ -7,16 +7,20 @@ import { demoAssetId, validateStoryScenarioMetadata } from '../src/lib/storybook
 import { demoScenarios } from '../visual-harness/demo-scenarios';
 
 type ScenarioManifest = {
-	scenarios: Array<{ id: string; kind: string; storybookStoryId: string | null }>;
+	scenarios: Array<{ id: string; boardId: string; kind: string; storybookStoryId: string | null }>;
 };
 
 const manifest = JSON.parse(
 	await readFile(resolve('design/paper/keeppeek-nvr-v34/scenarios.json'), 'utf8')
 ) as ScenarioManifest;
 const scenariosById = new Map(manifest.scenarios.map((scenario) => [scenario.id, scenario]));
-const storyIds = new Set<string>();
-const scenarioIds = new Set<string>();
-const assetIds = new Set<string>();
+const storyIds = new Set<string>([cameraLifecycleStory.storyId, nineCameraLiveStory.storyId]);
+const realServerAssetIds = new Set<string>([
+	demoAssetId(cameraLifecycleStory),
+	demoAssetId(nineCameraLiveStory)
+]);
+const assetIds = new Set<string>(realServerAssetIds);
+const storybookAssetIds = new Set<string>();
 
 for (const definition of demoScenarios) {
 	const issues = validateStoryScenarioMetadata(definition.metadata);
@@ -31,14 +35,18 @@ for (const definition of demoScenarios) {
 	storyIds.add(definition.metadata.storyId);
 	const scenarioId = definition.metadata.paper.scenarioId;
 	const assetId = demoAssetId(definition.metadata);
-	if (scenarioIds.has(scenarioId)) throw new Error(`Duplicate demo scenario ID: ${scenarioId}`);
-	scenarioIds.add(scenarioId);
 	if (assetIds.has(assetId)) throw new Error(`Duplicate demo asset ID: ${assetId}`);
 	assetIds.add(assetId);
+	storybookAssetIds.add(assetId);
 	const manifestScenario = scenariosById.get(scenarioId);
 	if (!manifestScenario) throw new Error(`Demo has no Paper scenario: ${scenarioId}`);
-	if (manifestScenario.kind !== 'interaction') {
-		throw new Error(`Demo scenario must be an interaction: ${scenarioId}`);
+	if (manifestScenario.kind !== 'interaction' && manifestScenario.kind !== 'screen') {
+		throw new Error(`Demo scenario must be an interaction or screen: ${scenarioId}`);
+	}
+	if (definition.metadata.paper.boardId !== manifestScenario.boardId) {
+		throw new Error(
+			`Demo boardId ${definition.metadata.paper.boardId} does not match ${scenarioId} (${manifestScenario.boardId})`
+		);
 	}
 	if (definition.previewScenarioId !== scenarioId) {
 		throw new Error(`Demo preview and Paper scenario must match: ${scenarioId}`);
@@ -149,9 +157,9 @@ if (
 }
 
 const previewSource = await readFile(resolve('visual-harness/local-preview.ts'), 'utf8');
-for (const scenarioId of scenarioIds) {
-	if (!previewSource.includes(`scenarioId === '${scenarioId}'`)) {
-		throw new Error(`Local preview does not mount demo scenario: ${scenarioId}`);
+for (const assetId of storybookAssetIds) {
+	if (!previewSource.includes(`'${assetId}':`)) {
+		throw new Error(`Local preview does not mount demo asset: ${assetId}`);
 	}
 }
 if (
@@ -235,11 +243,7 @@ for (const requiredText of [
 
 const bookGallery = await readFile(resolve('..', 'book/src/demo-videos.md'), 'utf8');
 
-for (const assetId of [
-	...assetIds,
-	demoAssetId(cameraLifecycleStory),
-	demoAssetId(nineCameraLiveStory)
-]) {
+for (const assetId of assetIds) {
 	if (!bookGallery.includes(`${assetId}.mp4`) || !bookGallery.includes(`${assetId}.vtt`)) {
 		throw new Error(`Book demo gallery is missing video or captions for: ${assetId}`);
 	}

@@ -33,6 +33,18 @@ const validScenario: StoryScenarioMetadata = {
 				kind: 'click',
 				atMs: 2_500,
 				selector: '[data-peek-history]'
+			},
+			{
+				kind: 'fill',
+				atMs: 3_500,
+				selector: '[data-demo-input]',
+				value: 'front-door'
+			},
+			{
+				kind: 'select',
+				atMs: 4_500,
+				selector: '[data-demo-select]',
+				value: 'tcp'
 			}
 		],
 		completionSignal: { selector: '[data-demo-landed-in-keep]', state: 'visible' },
@@ -70,6 +82,10 @@ describe('Storybook demo metadata', () => {
 				...validScenario.demo!,
 				assetId: 'Not a valid asset ID',
 				title: ' ',
+				actions: [
+					{ kind: 'fill', atMs: 1_000, selector: '', value: 'test' },
+					{ kind: 'select', atMs: 2_000, selector: 'select', value: '' }
+				],
 				captions: [
 					{ atMs: 4_000, text: 'Later' },
 					{ atMs: 3_000, endMs: 10_000, text: '' }
@@ -82,6 +98,8 @@ describe('Storybook demo metadata', () => {
 				{ path: 'storyId', message: 'must be a stable lowercase identifier' },
 				{ path: 'demo.assetId', message: 'must be a stable lowercase identifier' },
 				{ path: 'demo.title', message: 'must not be empty' },
+				{ path: 'demo.actions[0].selector', message: 'must not be empty' },
+				{ path: 'demo.actions[1].value', message: 'must not be empty' },
 				{ path: 'demo.captions[1].atMs', message: 'must be later than the previous caption' },
 				{ path: 'demo.captions[1].endMs', message: 'must end after the caption starts' },
 				{ path: 'demo.captions[1].text', message: 'must not be empty' }
@@ -140,5 +158,11 @@ History opens Keep for one focused camera.
 00:00:06.500 --> 00:00:09.000
 Navigate recorded time in Keep.
 `);
+		expect(
+			createDemoWebVtt({
+				...validScenario.demo!,
+				captions: [{ atMs: 0, text: 'Stories & <calendar> check' }]
+			})
+		).toContain('Stories &amp; &lt;calendar> check');
 	});
 });
