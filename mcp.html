@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-a637d17c.js";
+            window.path_to_searchindex_js = "searchindex-9755dc13.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-515efa10.js"></script>
@@ -385,6 +385,34 @@ enables <code>[mcp].allow_writes = true</code> or <code>[mcp].allow_camera_devic
 <p>When exposing <code>POST /mcp</code> beyond loopback, keep <code>[access].require_secure_remote = true</code> and
 terminate HTTPS at a trusted reverse proxy listed in <code>[access].trusted_proxies</code>, or reach KeepPeek
 over a private VPN. Direct plain HTTP from a remote-classified address is rejected with HTTP <code>426</code>.</p>
+<h3 id="fast-local-development-and-agentic-mcp-loop"><a class="header" href="#fast-local-development-and-agentic-mcp-loop">Fast local development and agentic MCP loop</a></h3>
+<p>Because <code>POST /mcp</code> is stateless, AI agents testing local KeepPeek changes can stay connected
+across live supervised binary swaps without restarting the agent or editing MCP client config:</p>
+<ol>
+<li>
+<p>Start the supervisor once with local channel opt-in and a short probation window:</p>
+<pre><code class="language-sh">keeppeek-supervisor run --root &lt;dev-supervisor-root&gt; --config &lt;path/to/config.toml&gt; --allow-local --probation-ms 500
+</code></pre>
+</li>
+<li>
+<p>Point the MCP client directly at Streamable HTTP (<code>http://127.0.0.1:8081/mcp</code>). On Windows,
+prefer Streamable HTTP (or a copied <code>keeppeek.exe</code> outside <code>target/</code>) over running
+<code>target/debug/keeppeek.exe mcp</code> directly so Cargo can relink <code>target/debug/keeppeek.exe</code>
+without a file lock.</p>
+</li>
+<li>
+<p>After editing Rust code, rebuild and hot-swap the running child in one command:</p>
+<pre><code class="language-sh">cargo build --bin keeppeek
+keeppeek-supervisor update --root &lt;dev-supervisor-root&gt; --channel local --binary target/debug/keeppeek --apply --wait --json
+</code></pre>
+</li>
+<li>
+<p>Confirm the new child PID/executable via <code>get_server_health</code> (<code>system.process.pid</code> and
+<code>system.process.executable</code>) or <code>keeppeek-supervisor status --root &lt;dev-supervisor-root&gt; --json</code>.
+If the new binary crashes or fails probation, the supervisor automatically rolls back to the
+previous working slot and reports <code>rolled_back: true</code>.</p>
+</li>
+</ol>
 <h2 id="manage-secrets-without-plaintext-chat-keeppeek-secret-and-loopback-ui-handoff"><a class="header" href="#manage-secrets-without-plaintext-chat-keeppeek-secret-and-loopback-ui-handoff">Manage secrets without plaintext chat (<code>keeppeek secret</code> and loopback UI handoff)</a></h2>
 <p>KeepPeek never accepts raw camera passwords or webhook secrets through MCP tool arguments, and
 assistants should never ask you to paste passwords into chat. Store secrets in <code>secrets.toml</code>

@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-a637d17c.js";
+            window.path_to_searchindex_js = "searchindex-9755dc13.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-515efa10.js"></script>
@@ -221,13 +221,14 @@
 <tr><td><code>[runtime_profiles]</code></td><td><code>ProfileRegistry</code></td><td>Runtime camera policy profiles and selection</td><td>Server-managed</td><td>Live (UI/API)</td><td><a href="#runtime-profiles">Runtime profiles</a></td></tr>
 <tr><td><code>[state_store]</code></td><td><code>server::state_store_settings</code></td><td>Settings-backed <code>StateStore</code> adapter namespaces</td><td>Server-managed</td><td>Live (API)</td><td><a href="#settings-backed-state-store">Settings-backed state store</a></td></tr>
 <tr><td><code>[storage_migration]</code></td><td><code>StorageMigration</code></td><td>Staged legacy storage-path move journal</td><td>Server-managed</td><td>Startup migration</td><td><a href="#pending-storage-migration">Pending storage migration</a></td></tr>
+<tr><td><code>[updates]</code></td><td><code>UpdatesConfig</code></td><td>Host-operator supervisor update channel and mode</td><td>Host operator</td><td>Supervisor launch / check</td><td><a href="#supervisor-update-policy">Supervisor update policy</a></td></tr>
 <tr><td><code>[homekit]</code></td><td>None (reserved)</td><td>Reserved placeholder; not an implemented schema</td><td>Reserved (unimplemented)</td><td>N/A</td><td>—</td></tr>
 </tbody>
 </table>
 </div>
 <p><strong>Namespace and parsing rules:</strong></p>
 <ul>
-<li>Every top-level table <strong>not</strong> listed among the 28 reserved keys above (<code>access</code>, <code>sharing</code>, <code>reporting</code>, <code>usage_reporting</code>, <code>cloud_notifications</code>, <code>external_auth</code>, <code>external_identities</code>, <code>access_credentials</code>, <code>storage</code>, <code>battery_wake</code>, <code>direct_card</code>, <code>desktop</code>, <code>mcp</code>, <code>homekit</code>, <code>logging</code>, <code>operational_events</code>, <code>analytics</code>, <code>event_forwarder</code>, <code>notifications</code>, <code>peek_layouts</code>, <code>saved_event_searches</code>, <code>configuration_templates</code>, <code>runtime_profiles</code>, <code>isapi_callbacks</code>, <code>camera_defaults</code>, <code>privacy</code>, <code>state_store</code>, <code>storage_migration</code>) is parsed as a <strong>camera namespace</strong> (<code>cameras</code> is conventional, not required). Do not use <code>homekit</code> as a camera namespace. A typo in a reserved section name is therefore parsed as a camera namespace.</li>
+<li>Every top-level table <strong>not</strong> listed among the 29 reserved keys above (<code>access</code>, <code>sharing</code>, <code>reporting</code>, <code>usage_reporting</code>, <code>cloud_notifications</code>, <code>external_auth</code>, <code>external_identities</code>, <code>access_credentials</code>, <code>storage</code>, <code>battery_wake</code>, <code>direct_card</code>, <code>desktop</code>, <code>updates</code>, <code>mcp</code>, <code>homekit</code>, <code>logging</code>, <code>operational_events</code>, <code>analytics</code>, <code>event_forwarder</code>, <code>notifications</code>, <code>peek_layouts</code>, <code>saved_event_searches</code>, <code>configuration_templates</code>, <code>runtime_profiles</code>, <code>isapi_callbacks</code>, <code>camera_defaults</code>, <code>privacy</code>, <code>state_store</code>, <code>storage_migration</code>) is parsed as a <strong>camera namespace</strong> (<code>cameras</code> is conventional, not required). Do not use <code>homekit</code> as a camera namespace. A typo in a reserved section name is therefore parsed as a camera namespace.</li>
 <li>Some structs ignore unknown fields while strict sections (<code>#[serde(deny_unknown_fields)]</code>, noted per section) reject them. Successful TOML parsing alone does not prove an unrecognized key has an effect.</li>
 <li><code>Config.source</code> and <code>Config.secrets_snapshot</code> are in-memory <code>#[serde(skip)]</code> fields; neither is a writable file key.</li>
 <li>Sources: <a href="https://github.com/xnorpx/keeppeek/blob/main/src/config.rs">src/config.rs</a>, <a href="https://github.com/xnorpx/keeppeek/blob/main/src/cameras/mod.rs">src/cameras/mod.rs</a>, and the subsystem sources linked in each section.</li>
@@ -366,6 +367,19 @@ password = "{secret:MQTT_PASSWORD}"
 <tr><td><code>server_url</code></td><td>Optional <code>String</code></td><td>Absent</td><td>Canonical exact HTTP(S) origin (<code>1..=512</code> UTF-8 bytes, e.g., <code>"http://127.0.0.1:8081"</code>, <code>"https://nvr.example"</code>). Rejects credentials, path, query, fragment, trailing slash, control chars, port <code>0</code>, and unspecified bind addresses (<code>0.0.0.0</code>, <code>::</code>).</td></tr>
 <tr><td><code>manage_local_server</code></td><td><code>bool</code></td><td><code>false</code></td><td>Opt-in flag enabling <code>keeppeek-desktop</code> to embed <code>keeppeek-supervisor</code> and manage a local loopback <code>keeppeek</code> child process. Omitted from <code>config.toml</code> when <code>false</code> to preserve compatibility with older <code>keeppeek</code> servers.</td></tr>
 <tr><td><code>supervisor_root</code></td><td>Optional <code>String</code></td><td>Absent</td><td>Optional directory override (<code>1..=1,024</code> UTF-8 bytes, non-blank, no control chars) for the desktop supervisor’s <code>supervisor-state.json</code> and A/B slots. Defaults to <code>&lt;config_dir&gt;/supervisor</code>.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="supervisor-update-policy"><a class="header" href="#supervisor-update-policy">Supervisor update policy</a></h3>
+<p><strong>Type:</strong> <code>UpdatesConfig</code> (<code>deny_unknown_fields</code>) | <strong>Section:</strong> <code>[updates]</code> | <strong>Ownership:</strong> Host operator (never overwritten by child settings saves or <code>POST /config/apply</code> restores) | <strong>Apply:</strong> Supervisor launch / update commands | <strong>Source:</strong> <a href="https://github.com/xnorpx/keeppeek/blob/main/src/config.rs">src/config.rs</a></p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Limits and notes</th></tr>
+</thead>
+<tbody>
+<tr><td><code>channel</code></td><td>Optional <code>UpdatesChannel</code></td><td>Absent</td><td>Allowed values: <code>"release"</code> (stable SemVer releases on the current major line) or <code>"main"</code> (rolling <code>main</code> builds under the <code>master</code> prerelease tag). <code>"local"</code> is rejected from <code>config.toml</code> and requires the CLI flag <code>--allow-local</code>.</td></tr>
+<tr><td><code>mode</code></td><td><code>UpdatesMode</code></td><td><code>"notify"</code></td><td>Allowed values: <code>"notify"</code> (default; check only without automatic application) or <code>"auto"</code> (reserved for future opt-in automatic scheduling). Omitted from <code>config.toml</code> when unset/default.</td></tr>
 </tbody>
 </table>
 </div>

@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-a637d17c.js";
+            window.path_to_searchindex_js = "searchindex-9755dc13.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-515efa10.js"></script>
@@ -2046,13 +2046,14 @@ through the redacted Administrator <strong>Report a bug</strong> review flow.</p
 <tr><td><code>[runtime_profiles]</code></td><td><code>ProfileRegistry</code></td><td>Runtime camera policy profiles and selection</td><td>Server-managed</td><td>Live (UI/API)</td><td><a href="#runtime-profiles">Runtime profiles</a></td></tr>
 <tr><td><code>[state_store]</code></td><td><code>server::state_store_settings</code></td><td>Settings-backed <code>StateStore</code> adapter namespaces</td><td>Server-managed</td><td>Live (API)</td><td><a href="#settings-backed-state-store">Settings-backed state store</a></td></tr>
 <tr><td><code>[storage_migration]</code></td><td><code>StorageMigration</code></td><td>Staged legacy storage-path move journal</td><td>Server-managed</td><td>Startup migration</td><td><a href="#pending-storage-migration">Pending storage migration</a></td></tr>
+<tr><td><code>[updates]</code></td><td><code>UpdatesConfig</code></td><td>Host-operator supervisor update channel and mode</td><td>Host operator</td><td>Supervisor launch / check</td><td><a href="#supervisor-update-policy">Supervisor update policy</a></td></tr>
 <tr><td><code>[homekit]</code></td><td>None (reserved)</td><td>Reserved placeholder; not an implemented schema</td><td>Reserved (unimplemented)</td><td>N/A</td><td>—</td></tr>
 </tbody>
 </table>
 </div>
 <p><strong>Namespace and parsing rules:</strong></p>
 <ul>
-<li>Every top-level table <strong>not</strong> listed among the 28 reserved keys above (<code>access</code>, <code>sharing</code>, <code>reporting</code>, <code>usage_reporting</code>, <code>cloud_notifications</code>, <code>external_auth</code>, <code>external_identities</code>, <code>access_credentials</code>, <code>storage</code>, <code>battery_wake</code>, <code>direct_card</code>, <code>desktop</code>, <code>mcp</code>, <code>homekit</code>, <code>logging</code>, <code>operational_events</code>, <code>analytics</code>, <code>event_forwarder</code>, <code>notifications</code>, <code>peek_layouts</code>, <code>saved_event_searches</code>, <code>configuration_templates</code>, <code>runtime_profiles</code>, <code>isapi_callbacks</code>, <code>camera_defaults</code>, <code>privacy</code>, <code>state_store</code>, <code>storage_migration</code>) is parsed as a <strong>camera namespace</strong> (<code>cameras</code> is conventional, not required). Do not use <code>homekit</code> as a camera namespace. A typo in a reserved section name is therefore parsed as a camera namespace.</li>
+<li>Every top-level table <strong>not</strong> listed among the 29 reserved keys above (<code>access</code>, <code>sharing</code>, <code>reporting</code>, <code>usage_reporting</code>, <code>cloud_notifications</code>, <code>external_auth</code>, <code>external_identities</code>, <code>access_credentials</code>, <code>storage</code>, <code>battery_wake</code>, <code>direct_card</code>, <code>desktop</code>, <code>updates</code>, <code>mcp</code>, <code>homekit</code>, <code>logging</code>, <code>operational_events</code>, <code>analytics</code>, <code>event_forwarder</code>, <code>notifications</code>, <code>peek_layouts</code>, <code>saved_event_searches</code>, <code>configuration_templates</code>, <code>runtime_profiles</code>, <code>isapi_callbacks</code>, <code>camera_defaults</code>, <code>privacy</code>, <code>state_store</code>, <code>storage_migration</code>) is parsed as a <strong>camera namespace</strong> (<code>cameras</code> is conventional, not required). Do not use <code>homekit</code> as a camera namespace. A typo in a reserved section name is therefore parsed as a camera namespace.</li>
 <li>Some structs ignore unknown fields while strict sections (<code>#[serde(deny_unknown_fields)]</code>, noted per section) reject them. Successful TOML parsing alone does not prove an unrecognized key has an effect.</li>
 <li><code>Config.source</code> and <code>Config.secrets_snapshot</code> are in-memory <code>#[serde(skip)]</code> fields; neither is a writable file key.</li>
 <li>Sources: <a href="https://github.com/xnorpx/keeppeek/blob/main/src/config.rs">src/config.rs</a>, <a href="https://github.com/xnorpx/keeppeek/blob/main/src/cameras/mod.rs">src/cameras/mod.rs</a>, and the subsystem sources linked in each section.</li>
@@ -2191,6 +2192,19 @@ password = "{secret:MQTT_PASSWORD}"
 <tr><td><code>server_url</code></td><td>Optional <code>String</code></td><td>Absent</td><td>Canonical exact HTTP(S) origin (<code>1..=512</code> UTF-8 bytes, e.g., <code>"http://127.0.0.1:8081"</code>, <code>"https://nvr.example"</code>). Rejects credentials, path, query, fragment, trailing slash, control chars, port <code>0</code>, and unspecified bind addresses (<code>0.0.0.0</code>, <code>::</code>).</td></tr>
 <tr><td><code>manage_local_server</code></td><td><code>bool</code></td><td><code>false</code></td><td>Opt-in flag enabling <code>keeppeek-desktop</code> to embed <code>keeppeek-supervisor</code> and manage a local loopback <code>keeppeek</code> child process. Omitted from <code>config.toml</code> when <code>false</code> to preserve compatibility with older <code>keeppeek</code> servers.</td></tr>
 <tr><td><code>supervisor_root</code></td><td>Optional <code>String</code></td><td>Absent</td><td>Optional directory override (<code>1..=1,024</code> UTF-8 bytes, non-blank, no control chars) for the desktop supervisor’s <code>supervisor-state.json</code> and A/B slots. Defaults to <code>&lt;config_dir&gt;/supervisor</code>.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="supervisor-update-policy"><a class="header" href="#supervisor-update-policy">Supervisor update policy</a></h3>
+<p><strong>Type:</strong> <code>UpdatesConfig</code> (<code>deny_unknown_fields</code>) | <strong>Section:</strong> <code>[updates]</code> | <strong>Ownership:</strong> Host operator (never overwritten by child settings saves or <code>POST /config/apply</code> restores) | <strong>Apply:</strong> Supervisor launch / update commands | <strong>Source:</strong> <a href="https://github.com/xnorpx/keeppeek/blob/main/src/config.rs">src/config.rs</a></p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Limits and notes</th></tr>
+</thead>
+<tbody>
+<tr><td><code>channel</code></td><td>Optional <code>UpdatesChannel</code></td><td>Absent</td><td>Allowed values: <code>"release"</code> (stable SemVer releases on the current major line) or <code>"main"</code> (rolling <code>main</code> builds under the <code>master</code> prerelease tag). <code>"local"</code> is rejected from <code>config.toml</code> and requires the CLI flag <code>--allow-local</code>.</td></tr>
+<tr><td><code>mode</code></td><td><code>UpdatesMode</code></td><td><code>"notify"</code></td><td>Allowed values: <code>"notify"</code> (default; check only without automatic application) or <code>"auto"</code> (reserved for future opt-in automatic scheduling). Omitted from <code>config.toml</code> when unset/default.</td></tr>
 </tbody>
 </table>
 </div>
@@ -3373,13 +3387,40 @@ sc.exe start KeepPeekService
 <p>Resolve any failure to stop the old service before retrying the installer. Service logs default to <code>keeppeek-service.log</code> beside the service account’s <code>config.toml</code>; <code>[logging] service = "event_log"</code> writes to the Windows Application event log once the source is registered. See the <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/windows-service.md">Windows service guide</a>.</p>
 <h3 id="standalone-binary-and-slim-supervisor"><a class="header" href="#standalone-binary-and-slim-supervisor">Standalone binary and slim supervisor</a></h3>
 <p>Stop the running process, replace the executable, and start it with the same <code>--config &lt;path&gt;</code> flag and environment. <code>--config</code> selects both the TOML file and sibling <code>secrets.toml</code>. A fresh config initializes named storage beside itself; an existing metadata binding keeps its recorded owner.</p>
-<p>For bare-metal deployments preparing for offline staged A/B binary swaps and automatic rollback, KeepPeek also provides the offline <code>keeppeek-supervisor</code> crate and three slim parent hosts (<code>keeppeek-supervisor</code> CLI, <code>keeppeek-service.exe</code> on Windows, and opt-in managed local server mode in <code>keeppeek-desktop</code>). The supervisor stores immutable executables under <code>&lt;supervisor_root&gt;/versions/&lt;version&gt;/keeppeek[.exe]</code> (and optional independent <code>&lt;supervisor_root&gt;/vision/&lt;version&gt;/keeppeek-vision[.exe]</code>) alongside an atomic <code>supervisor-state.json</code> journal:</p>
-<pre><code class="language-sh">keeppeek-supervisor stage --root &lt;dir&gt; --manifest manifest.json --binary keeppeek --key-id &lt;id&gt; --public-key-hex &lt;64-hex&gt;
-keeppeek-supervisor status --root &lt;dir&gt;
-keeppeek-supervisor run --root &lt;dir&gt; --config &lt;path/to/config.toml&gt;
-keeppeek-supervisor rollback --root &lt;dir&gt; --component core
+<p>KeepPeek also provides the <code>keeppeek-supervisor</code> crate and three slim parent hosts (<code>keeppeek-supervisor</code> CLI, <code>keeppeek-service.exe</code> on Windows, and opt-in managed local server mode in <code>keeppeek-desktop</code>). The supervisor stores immutable content-addressed executables under <code>&lt;supervisor_root&gt;/versions/&lt;slot_id&gt;/keeppeek[.exe]</code> (and optional independent <code>&lt;supervisor_root&gt;/vision/&lt;slot_id&gt;/keeppeek-vision[.exe]</code>) alongside an atomic <code>supervisor-state.json</code> journal and <code>&lt;supervisor_root&gt;/runtime/</code> live control files (<code>supervisor.lock</code>, <code>supervisor-status.json</code>, <code>control-&lt;component&gt;.json</code>):</p>
+<ul>
+<li><strong>Three explicit update channels:</strong>
+<ul>
+<li><code>release</code>: latest compatible SemVer release on GitHub Releases (<code>xnorpx/keeppeek</code>). Enforces Ed25519 Manifest v2 signatures pinned to the release channel key set.</li>
+<li><code>main</code>: rolling <code>main</code> branch builds published under the <code>master</code> prerelease tag. Uses Manifest v2 signatures pinned to a separate <code>main</code>-channel key set (or explicit dev-only <code>--allow-unsigned-sha256</code> + <code>--allow-unsigned-main</code> opt-in).</li>
+<li><code>local</code>: local developer builds staged directly from disk (<code>target/debug/keeppeek[.exe]</code> or <code>target/release/keeppeek[.exe]</code>). Requires explicit runtime opt-in (<code>--allow-local</code>) and is never persisted in <code>config.toml</code>.</li>
+</ul>
+</li>
+<li><strong>SemVer major-version fresh-install policy:</strong>
+<ul>
+<li>Pre-1.0 (<code>0.x.y</code>): breaking API/schema changes may land within <code>0.x.y</code>, and in-place updates are allowed across <code>0.x.y</code>.</li>
+<li>Post-1.0 (<code>&gt;= 1.0.0</code>): minor and patch updates are additive and allowed in place on the same major line.</li>
+<li>Any major version increment (<code>0.x -&gt; 1.0</code>, <code>1.x -&gt; 2.0</code>, etc.): blocked in place (<code>MajorUpgradeRequiresFreshInstall</code>) because the supervisor executable itself must be updated via a fresh install. <code>keeppeek-supervisor check</code> surfaces both the latest compatible in-place version and any newer major version requiring a fresh install.</li>
+</ul>
+</li>
+<li><strong>Security and lifecycle guarantees:</strong> Every supervisor launch validates owner-only ACLs on <code>&lt;supervisor_root&gt;</code> (when <code>--enforce-root-acl</code> or <code>--allow-local</code> is active, and unconditionally in <code>keeppeek-service.exe</code>), re-verifies Manifest v2 Ed25519 signatures and binary digests at launch time (without expiry bricking), automatically rolls back across probation failures, and garbage-collects unreferenced slots down to the 2 most recent.</li>
+</ul>
+<pre><code class="language-sh"># Check for compatible updates (and surface newer major versions requiring fresh install)
+keeppeek-supervisor check --root &lt;dir&gt; --channel release --json
+
+# Stage and live-apply a signed release or main update into a running supervisor
+keeppeek-supervisor update --root &lt;dir&gt; --channel release --apply --wait --json
+keeppeek-supervisor update --root &lt;dir&gt; --channel main --apply --wait --json
+
+# Fast local developer build hot-swap loop (requires --allow-local on the running supervisor)
+keeppeek-supervisor run --root &lt;dir&gt; --config &lt;path/to/config.toml&gt; --allow-local --probation-ms 500
+keeppeek-supervisor update --root &lt;dir&gt; --channel local --binary target/debug/keeppeek --apply --wait --json
+
+# Inspect persisted + live state, or manually roll back
+keeppeek-supervisor status --root &lt;dir&gt; --json
+keeppeek-supervisor rollback --root &lt;dir&gt; --component core --apply --wait
 </code></pre>
-<p>Online release polling and automatic background downloading remain intentionally disabled; <code>stage</code> verifies offline Ed25519 manifest signatures, SHA-256 digests, anti-downgrade version floors, and <code>expand_contract</code> vs. <code>breaking</code> schema compatibility before publishing a pending slot. On Linux <code>systemd</code> deployments, retain the default <code>KillMode=control-group</code> so hard supervisor termination also cleans up supervised child processes.</p>
+<p>Background auto-polling remains disabled by default (<code>[updates].mode = "notify"</code>). On Linux <code>systemd</code> deployments, retain the default <code>KillMode=control-group</code> so hard supervisor termination also cleans up supervised child processes.</p>
 <h2 id="what-startup-migrates"><a class="header" href="#what-startup-migrates">What startup migrates</a></h2>
 <p>Startup automatically imports supported legacy sidecar files into <code>config.toml</code> when the corresponding current section is absent, writes <code>config.toml</code> atomically, and removes the retired input on success. Keep an offline pre-upgrade copy if you need original inputs.</p>
 <div class="table-wrapper">
@@ -4324,6 +4365,34 @@ enables <code>[mcp].allow_writes = true</code> or <code>[mcp].allow_camera_devic
 <p>When exposing <code>POST /mcp</code> beyond loopback, keep <code>[access].require_secure_remote = true</code> and
 terminate HTTPS at a trusted reverse proxy listed in <code>[access].trusted_proxies</code>, or reach KeepPeek
 over a private VPN. Direct plain HTTP from a remote-classified address is rejected with HTTP <code>426</code>.</p>
+<h3 id="fast-local-development-and-agentic-mcp-loop"><a class="header" href="#fast-local-development-and-agentic-mcp-loop">Fast local development and agentic MCP loop</a></h3>
+<p>Because <code>POST /mcp</code> is stateless, AI agents testing local KeepPeek changes can stay connected
+across live supervised binary swaps without restarting the agent or editing MCP client config:</p>
+<ol>
+<li>
+<p>Start the supervisor once with local channel opt-in and a short probation window:</p>
+<pre><code class="language-sh">keeppeek-supervisor run --root &lt;dev-supervisor-root&gt; --config &lt;path/to/config.toml&gt; --allow-local --probation-ms 500
+</code></pre>
+</li>
+<li>
+<p>Point the MCP client directly at Streamable HTTP (<code>http://127.0.0.1:8081/mcp</code>). On Windows,
+prefer Streamable HTTP (or a copied <code>keeppeek.exe</code> outside <code>target/</code>) over running
+<code>target/debug/keeppeek.exe mcp</code> directly so Cargo can relink <code>target/debug/keeppeek.exe</code>
+without a file lock.</p>
+</li>
+<li>
+<p>After editing Rust code, rebuild and hot-swap the running child in one command:</p>
+<pre><code class="language-sh">cargo build --bin keeppeek
+keeppeek-supervisor update --root &lt;dev-supervisor-root&gt; --channel local --binary target/debug/keeppeek --apply --wait --json
+</code></pre>
+</li>
+<li>
+<p>Confirm the new child PID/executable via <code>get_server_health</code> (<code>system.process.pid</code> and
+<code>system.process.executable</code>) or <code>keeppeek-supervisor status --root &lt;dev-supervisor-root&gt; --json</code>.
+If the new binary crashes or fails probation, the supervisor automatically rolls back to the
+previous working slot and reports <code>rolled_back: true</code>.</p>
+</li>
+</ol>
 <h2 id="manage-secrets-without-plaintext-chat-keeppeek-secret-and-loopback-ui-handoff"><a class="header" href="#manage-secrets-without-plaintext-chat-keeppeek-secret-and-loopback-ui-handoff">Manage secrets without plaintext chat (<code>keeppeek secret</code> and loopback UI handoff)</a></h2>
 <p>KeepPeek never accepts raw camera passwords or webhook secrets through MCP tool arguments, and
 assistants should never ask you to paste passwords into chat. Store secrets in <code>secrets.toml</code>
