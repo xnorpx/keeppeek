@@ -116,6 +116,7 @@ mod guest_review;
 mod health_snapshot;
 mod logging;
 mod mcp;
+mod mcp_device_settings;
 mod mcp_diagnostics;
 mod mcp_schemas;
 mod mcp_snapshot;
