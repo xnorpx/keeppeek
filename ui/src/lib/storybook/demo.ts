@@ -39,6 +39,18 @@ export type DemoAction =
 			selector: string;
 	  }
 	| {
+			kind: 'fill';
+			atMs: number;
+			selector: string;
+			value: string;
+	  }
+	| {
+			kind: 'select';
+			atMs: number;
+			selector: string;
+			value: string;
+	  }
+	| {
 			kind: 'press';
 			atMs: number;
 			key: string;
@@ -210,6 +222,11 @@ export function validateStoryScenarioMetadata(
 		let actionEndMs = action.atMs;
 		if (action.kind === 'click') {
 			requireText(issues, `${path}.selector`, action.selector);
+		} else if (action.kind === 'fill') {
+			requireText(issues, `${path}.selector`, action.selector);
+		} else if (action.kind === 'select') {
+			requireText(issues, `${path}.selector`, action.selector);
+			requireText(issues, `${path}.value`, action.value);
 		} else if (action.kind === 'press') {
 			requireText(issues, `${path}.key`, action.key);
 			if (action.selector !== undefined) requireText(issues, `${path}.selector`, action.selector);
@@ -273,6 +290,10 @@ function formatWebVttTime(timeMs: number): string {
 		.padStart(3, '0')}`;
 }
 
+export function escapeWebVttText(text: string): string {
+	return text.replaceAll('&', '&amp;').replaceAll('<', '&lt;');
+}
+
 export function createDemoWebVtt(metadata: DemoMetadata): string {
 	const issues = validateStoryScenarioMetadata({
 		storyId: 'demo.validation',
@@ -292,7 +313,7 @@ export function createDemoWebVtt(metadata: DemoMetadata): string {
 	const cues = metadata.captions.map((caption, index) => {
 		const nextCaption = metadata.captions[index + 1];
 		const endMs = caption.endMs ?? nextCaption?.atMs ?? metadata.durationMs;
-		return `${index + 1}\n${formatWebVttTime(caption.atMs)} --> ${formatWebVttTime(endMs)}\n${caption.text}`;
+		return `${index + 1}\n${formatWebVttTime(caption.atMs)} --> ${formatWebVttTime(endMs)}\n${escapeWebVttText(caption.text)}`;
 	});
 
 	return `WEBVTT\n\n${cues.join('\n\n')}\n`;

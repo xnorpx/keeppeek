@@ -1,99 +1,84 @@
 # Backup and restore
 
-KeepPeek can create and validate a configuration bundle while recording continues. A format-3 ZIP
-contains exactly `config.toml` and plaintext `secrets.toml`; it contains no database or media.
+This chapter defines KeepPeek's configuration backup lifecycle, restart persistence boundaries, crash-safe staged activation and rollback rules, and CLI private-file enforcement. Configuration backup and restore require **Administrator** access (with host-operator access for service restarts and offline media backups); a configuration ZIP covers `config.toml` and plaintext `secrets.toml` only—never the recording catalog, state databases, or media files.
 
-For a step-by-step walkthrough, see
-[Export and import configuration](./configuration-export-import.md).
+For step-by-step UI, CLI, and HTTP instructions, see [Export and import configuration](./configuration-export-import.md).
 
-Open **Settings → Backup and restore** as an Administrator. **Export ZIP** downloads the two files
-directly. Select a **Configuration ZIP**, confirm replacement, and choose **Apply configuration**.
-After the upload succeeds, choose **Restart to apply**.
+## Video walkthrough
 
-The HTTP surface is `GET /config/export` for download and `POST /config/apply` for a ZIP upload.
-There are no retained server backups, upload reservations, or separate dry-run requests. The old
-`/api/backups` routes are retired.
+Watch configuration ZIP backup export, staged restore confirmation, and safe restart activation in **Settings → Backup and restore**.
 
-## Secrets and media
+<video controls crossorigin="anonymous" preload="metadata" playsinline style="width: 100%; height: auto">
+  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/settings.desktop.config-zip.mp4" type="video/mp4">
+  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/settings.desktop.config-zip.vtt" kind="captions" srclang="en" label="English">
+  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/settings.desktop.config-zip.mp4">Download the backup and restore demo</a>.
+</video>
 
-The ZIP includes the complete file-backed `secrets.toml` in plaintext. It may contain camera
-passwords, access keys, MQTT credentials, webhook URLs, and notification-provider destinations.
-Restrict the ZIP like the live secrets file and delete copies that are no longer needed. Environment
-secret overrides are not copied into the bundle.
+## Backup lifecycle and boundaries
 
-The catalog, MP4 recordings, thumbnail JPEGs, sessions, caches, audit activity, and in-memory
-notification/MQTT work are excluded. The target recorder retains its named volumes, placement,
-and metadata authority during restore. Private root references stay in configuration; the uploaded
-secrets must resolve them to the same target owners. Conflicting or missing references reject the
-apply before mutation. Finish or cancel a pending metadata handoff before importing configuration.
-Protect all owned volume roots with a separate archive policy when they need recovery.
+KeepPeek exposes a stateless two-endpoint Administrator surface (`GET /config/export` and `POST /config/apply`, gated by `keeppeek.backup.v1`). There are no retained server-side backups, upload reservations, section selectors, path-mapping requests, or separate HTTP dry-run routes; the retired `/api/backups` routes return `404`.
+
+| Phase                 | Trigger                                                          | Live-file impact                                       | Guarantees and guards                                                                                                                                                                                                                     |
+| --------------------- | ---------------------------------------------------------------- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Export**            | **Export ZIP** / `GET /config/export`                            | None; recording continues                              | Snapshots `config.toml` + plaintext `secrets.toml` under the shared configuration lock; embeds format-3 manifest and checksums in the ZIP comment.                                                                                        |
+| **Remote inspection** | **Inspect restore archive** (remote browser sessions)            | None                                                   | Streams the ZIP over the active remote control session to inspect authentication changes and require fresh replacement Administrator verification before lockout-risk changes. Local sessions retain the server's lockout guard directly. |
+| **Stage**             | **Apply configuration** / `POST /config/apply`                   | None; returns `202` (`RESTORE_STATE_AWAITING_RESTART`) | Validates ZIP structure, checksums, merged TOML, permissions, free space, preserved target storage owners, and pending-handoff locks, then stages owner-only copies and a crash-recovery journal.                                         |
+| **Activate**          | **Restart to apply** / service restart                           | Atomic pair replacement before DB/config owners open   | Verifies before-image digests, installs the pair, and requires healthy config, HTTP, and camera-worker startup to finalize.                                                                                                               |
+| **Rollback**          | Startup health failure (automatic) or apply earlier ZIP (manual) | Restores prior `config.toml` + `secrets.toml`          | Automatic on startup failure; no separate HTTP rollback endpoint once a restore completes cleanly.                                                                                                                                        |
+
+### Secrets, storage ownership, and archive fencing
+
+- **Plaintext secrets:** Format-3 ZIPs carry file-backed `secrets.toml` unencrypted (camera passwords, access keys, MQTT credentials, webhook URLs, notification destinations, cloud signing seeds). Restrict archive storage like live secrets; environment overrides (`KEEPPEEK_SECRET_*`) are never copied into the bundle.
+- **Preserved target storage:** Apply keeps the target recorder's `[storage.named_volumes]`, `[storage.metadata]`, and legacy media/catalog/thumbnail paths. Secret references inside those preserved roots stay in configuration and must resolve via the uploaded `secrets.toml` to the exact same target owners, or apply rejects before mutation. Finish or cancel any pending metadata handoff before applying.
+- **Local archive round-trip and restore fence:** `[storage.archive]` settings and raw `{secret:...}` references round-trip through export, apply, and restart activation, while replica files and catalog bindings remain outside the ZIP. While a configuration restore is staged, archive deletion checks that the staged bundle neither replaces the database nor disables/changes the active `[storage.archive]` target ID or root.
 
 ## What survives a restart
 
-| State                                                                                                                   | Persistence and recovery boundary                                                                                                                                                                |
-| ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Camera settings, access credentials and grants, dashboards and selections, templates, notification rules, MQTT settings | Durable configuration in `config.toml`; included in a configuration ZIP.                                                                                                                         |
-| File-backed secrets                                                                                                     | Durable sibling `secrets.toml`; included in plaintext. Environment overrides remain outside the ZIP.                                                                                             |
-| Recording metadata, events, coverage and maintenance intent                                                             | Recording catalog data; recover with a consistent catalog and media archive.                                                                                                                     |
-| MP4 recordings and event images                                                                                         | Files in configured storage locations; not part of a configuration ZIP.                                                                                                                          |
-| Fourth-tier local archive replicas                                                                                      | Replica files at the archive root plus manifests, bindings, and receipts in the catalog; excluded from the ZIP. `[storage.archive]` settings and raw secret references persist in `config.toml`. |
-| Evidence-export history and artifacts                                                                                   | History belongs to the metadata volume; artifacts belong to export volumes, with separate expiry; not part of the ZIP.                                                                           |
-| Diagnostic log filter                                                                                                   | The existing sibling `log-filter` file persists separately and is not in the two-TOML ZIP.                                                                                                       |
-| Notification delivery jobs, retries, inbox/history, cooldowns and delivery counters                                     | Runtime memory; reset on restart. Saved rule drafts and active rules remain.                                                                                                                     |
-| MQTT pending publications, retries and deduplication history                                                            | Runtime memory; reset on restart. Stored source events are not an automatic replay queue.                                                                                                        |
-| Access audit, credential last-use activity and active sessions                                                          | Runtime memory; reset on restart. Durable identities and grants remain.                                                                                                                          |
-| Browser sign-in key, media handles and active wake lock                                                                 | Page/browser runtime state; reload or reconnect as required. Saved dashboard wake-lock intent remains configuration.                                                                             |
+Restart always interrupts active recording and resets in-memory queues and audit trails—even when every durable setting returns intact. Collect needed audit and delivery evidence before shutting down.
 
-An evidence guest link has its own durable authorization store on the target metadata volume.
-Applying a configuration ZIP to an existing named metadata volume preserves its current grants,
-revocations and counters. A replacement target with an empty guest store needs newly issued links.
-See [Recover guest links](./recording-archive-recovery.md#recover-guest-links) when restoring
-an entire metadata volume.
+| State                                                                                                                                                                                                                  | Storage location                                                              | Survives restart?                                  | In configuration ZIP?                                                               |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Cameras (`profile_identity`), access verifiers/grants, dashboards, templates, `[runtime_profiles]`, notification rules, `[cloud_notifications]`, MQTT, `[sharing]`, `[storage.archive]`, settings-backed `state_store` | `config.toml`                                                                 | Yes                                                | Yes                                                                                 |
+| File-backed secrets                                                                                                                                                                                                    | Sibling `secrets.toml`                                                        | Yes                                                | Yes (**plaintext**)                                                                 |
+| Environment secret overrides (`KEEPPEEK_SECRET_*`)                                                                                                                                                                     | Host process environment                                                      | Depends on service unit                            | No                                                                                  |
+| Recording catalog, events, playable coverage, maintenance intent, analytics rollups                                                                                                                                    | `recordings.db` or bound `catalog-<uuid>.db`                                  | Yes                                                | No                                                                                  |
+| MP4 recordings and event thumbnails                                                                                                                                                                                    | Configured primary/named volume roots                                         | Yes                                                | No                                                                                  |
+| Fourth-tier local archive replicas                                                                                                                                                                                     | Local archive root + catalog manifests/bindings/receipts                      | Yes                                                | No (`[storage.archive]` settings only)                                              |
+| Evidence-export history and artifacts                                                                                                                                                                                  | Metadata volume (`exports-<uuid>.json`) + export volumes (independent expiry) | Yes                                                | No                                                                                  |
+| Guest review grants, revocations, and view/download counters                                                                                                                                                           | Metadata volume (`guest-review/grants.db`)                                    | Yes (active guest sessions end)                    | No (see [Recover guest links](./recording-archive-recovery.md#recover-guest-links)) |
+| Generic runtime state store (desired-state docs, leases, revisions)                                                                                                                                                    | Long-term storage (`state-store.db`)                                          | Yes (overdue TTL leases purged on open)            | No                                                                                  |
+| Cloud mobile push signaling state (aliases, intents, rolling rate windows)                                                                                                                                             | Long-term storage (`cloud-notifications.db`)                                  | Yes                                                | No                                                                                  |
+| Diagnostic log filter                                                                                                                                                                                                  | Sibling `log-filter` file                                                     | Yes                                                | No                                                                                  |
+| Notification delivery jobs, retries, inbox/history, cooldowns, counters                                                                                                                                                | Process memory                                                                | **No** (saved rules survive)                       | No                                                                                  |
+| MQTT pending publications, retries, deduplication history                                                                                                                                                              | Process memory                                                                | **No** (events do not auto-replay)                 | No                                                                                  |
+| Access audit history, credential last-use, active sessions                                                                                                                                                             | Process memory                                                                | **No** (durable identities survive)                | No                                                                                  |
+| Browser sign-in key, media handles, active wake lock                                                                                                                                                                   | Browser runtime                                                               | **No** (saved dashboard wake-lock intent survives) | No                                                                                  |
 
-Restart is therefore a recording interruption and a runtime-state reset, even when every saved
-setting returns correctly. Collect required audit and delivery evidence before restart. A queue
-that was pending before shutdown is not proof of later provider delivery.
-
-See [Recording archive recovery](./recording-archive-recovery.md) for consistent offline copies and
-recovery rehearsals, and [Upgrades and migrations](./upgrades-and-migrations.md) for version changes.
+Applying a configuration ZIP to an existing named metadata volume preserves its `guest-review/grants.db` grants, revocations, and counters; a replacement host with an empty guest store requires newly issued links. For consistent offline catalog/media backups, see [Recording archive recovery](./recording-archive-recovery.md); for version changes, see [Upgrades and migrations](./upgrades-and-migrations.md).
 
 ## Safe activation
 
-Apply accepts a current format-3 ZIP, including its manifest comment, and validates paths, checksums,
-both TOMLs, permissions, and capacity before staging. It returns `202` with
-`RESTORE_STATE_AWAITING_RESTART`; this is not an immediate replacement of the live files.
+1. **Pre-stage validation:** `POST /config/apply` enforces format-3 structure, manifest comment checksums, exact two-member layout (≤16 MiB per TOML, ≤1 GiB compressed/expanded), valid merged configuration and secrets, target file permissions, free disk space, and remote lockout-guard authorization when applicable.
+2. **Owner-only staging:** On validation success, KeepPeek writes owner-only `.staged` copies beside both targets, records exact before-image SHA-256 digests in `.backups/restore-journal.json`, and returns HTTP `202` with `RESTORE_STATE_AWAITING_RESTART`. Live files remain untouched.
+3. **Pre-open activation:** On restart, recovery runs **before** configuration or database owners open. It verifies target before-image digests (refusing stale targets), reconciles any interrupted swap, writes `.rollback` before-images, and installs the staged pair.
+4. **Health-gated completion or automatic rollback:** Completion requires healthy configuration loading, HTTP startup, and camera-worker startup. If startup health fails, KeepPeek automatically restores the prior `config.toml` and `secrets.toml` pair and records the rollback outcome.
+5. **Single-pending lock:** An unfinished apply blocks any second upload with HTTP `409`. Once a restore finishes healthy, a subsequent validated apply supersedes the prior recovery point.
 
-Staging writes owner-only copies beside both target files. Recovery runs before configuration or
-databases open, and completion requires successful configuration, HTTP, and camera-worker startup.
-KeepPeek restores the prior pair automatically if startup health fails. A pending apply blocks a
-second upload from replacing it; a healthy completed restore can be superseded by the next apply.
-To return to an older configuration, apply a ZIP exported before the change.
+**Do not edit, move, or delete `.backups/restore-journal.json`, `.staged`, or `.rollback` files manually.** If startup reports that both activation and rollback failed, preserve the complete configuration directory and service logs before manual recovery.
 
-Do not edit `.backups/restore-journal.json` or its staging files manually. The detailed HTTP, limit,
-crash-recovery, and CLI contract is in the
-[backup and restore engineering guide](https://github.com/xnorpx/keeppeek/blob/main/docs/backup-and-restore.md).
+## Automation and private-file hardening
 
-## Automation
-
-The `keeppeek config` commands call the same Administrator-only HTTP endpoints. Commands print
-machine-readable JSON to stdout. Supply remote authentication only through
-`KEEPPEEK_ACCESS_KEY`; never put it in a URL or command argument.
-
-CLI exports create a new private file before writing archive bytes. On Unix, the file mode is
-`0600`. On Windows, a protected access list permits the current user, SYSTEM, and Administrators;
-the CLI verifies that protection before writing. A destination that cannot provide this protection
-is rejected. Existing files and Windows alternate data streams are not export destinations.
-Browser downloads use the browser's destination permissions; restrict those copies separately.
+The `keeppeek config` CLI automates `GET /config/export` and `POST /config/apply`, emits one JSON object on stdout, requires `KEEPPEEK_ACCESS_KEY` over HTTPS for non-loopback hosts, and enforces explicit exit codes (`1` output failure, `2` usage, `3` server 4xx, `4` transport/protocol/5xx). Pass `--server` explicitly: new recorders default to port `8081`, whereas the CLI defaults to `http://localhost:3000`.
 
 ```sh
 keeppeek config --server http://localhost:8081 export --output keeppeek-config.zip
 keeppeek config --server http://localhost:8081 apply keeppeek-config.zip --confirm
 ```
 
-Use your recorder's configured port if it differs from the default `8081`. Export does not overwrite
-an existing file. Apply does not restart the recorder automatically; check its exit status and
-`RESTORE_STATE_AWAITING_RESTART` result before restarting. Exit code `2` means invalid CLI usage,
-`3` means a stable server 4xx rejection, and `4` means a transport, protocol, or server failure.
+Because exported ZIPs contain plaintext secrets, `keeppeek config export` creates and verifies a private destination **before writing any archive bytes**, and refuses existing files:
 
-Keep `--server` explicit in automation: the config CLI currently uses port `3000` if it is omitted,
-which differs from a new recorder's default listener port.
+- **Unix:** Creates the output file exclusively with mode `0600`.
+- **Windows:** Rejects Windows alternate data streams and creates the file with a protected DACL permitting only the current user, `SYSTEM`, and `Administrators`. Before writing, KeepPeek queries the open file's live security descriptor and verifies owner SID, a non-null valid DACL, exact 3-ACE count via `GetAclInformation(AclSizeInformation)`, and null-checked `GetAce` / `IsValidSid` matching. Any destination whose protection cannot be verified is rejected.
+- **Browser / direct HTTP clients:** Do not inherit CLI file creation; protect downloaded files separately on the client filesystem.
+
+For exact error codes, staging invariants, and release benchmark commands, see the [backup and restore engineering guide](https://github.com/xnorpx/keeppeek/blob/main/docs/backup-and-restore.md).

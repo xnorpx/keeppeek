@@ -1,47 +1,44 @@
 # Groups and two-way audio: current status
 
-**Live participant groups are not operational in the current server and browser runtime.**
-Settings includes **Groups & two-way audio**, but its directory reports unavailable. The generated
-protocol defines list, join, and leave messages; the running implementation does not handle those
-commands. There are no real group names, participant counts, join sessions, or participant
-recording states to display. Creation and administration controls explain this limitation.
+**Live participant groups are not operational in the current KeepPeek server and browser runtime.** This page records that unavailability boundary, distinguishes the three different uses of "group" across KeepPeek, and separates planned client-to-client participant groups from shipped camera talkback.
 
-Do not add an invented `[groups]` section to `config.toml` or infer support from generated types.
-The [configuration reference](./configuration-reference.md) lists the supported settings.
+## Current status
+
+| Surface / layer                                    | Current state                                                                                               |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| **Settings → Groups** (**Groups & two-way audio**) | Displays **Group directory unavailable**; management actions explain the missing runtime handler.           |
+| Generated protobuf contract (`api/`)               | Declares `GroupCommand` (`ListGroups`, `JoinGroup`, `LeaveGroup`), `GroupCapability`, and `GroupState`.     |
+| Running server & browser runtime                   | Does **not** handle `GroupCommand`; no group names, participant counts, join sessions, or recordings exist. |
+| `config.toml`                                      | No `[groups]` section exists. Do not invent one or infer runtime support from generated types.              |
+
+Consult the [configuration reference](./configuration-reference.md) for all supported `config.toml` sections.
 
 ## Three different uses of grouping
 
-| Concept                               | Current purpose                                                                                                             | What it does not grant                                                      |
-| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| Camera group labels and access grants | Organize cameras and define which cameras an identity may access.                                                           | Membership in a voice or conference session.                                |
-| Saved dashboards and their audience   | Share a camera layout and its wall presentation settings with selected viewers.                                             | Permission to see cameras outside the viewer's grants.                      |
-| Live participant groups               | A protocol and design model for named camera collections with optional participant audio/video. The runtime is unavailable. | A working walkie-talkie, conference, or group administration feature today. |
+| Concept                               | Shipped today | Purpose                                                                            | What it does **not** grant                                     |
+| ------------------------------------- | :-----------: | ---------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| Camera group labels and access grants |      Yes      | Organize cameras via TOML namespaces (e.g. `outdoor`) and scope **User** access    | Membership in any voice, walkie-talkie, or conference session  |
+| Saved dashboards and their audience   |      Yes      | Share a live-wall layout (`peek_layouts`) with selected viewers                    | Access to cameras outside the viewer's own camera grants       |
+| Live participant groups               |      No       | Planned named camera collections with optional live participant audio/video fanout | Any working walkie-talkie, conference, or group admin UI today |
 
-Use [Authentication and access control](./authentication.md) for camera grants and
-[Live wall](./live-wall.md) for saved layouts. These implemented features work independently of
-live participant groups.
+Use [Authentication and access control](./authentication.md#camera-and-dashboard-access) for camera group grants and [Live wall](./live-wall.md) for saved dashboards. Both work independently of live participant groups.
 
-## What the group design describes
+## Camera talkback vs live participant groups
 
-The [group client scenarios](https://github.com/xnorpx/keeppeek/blob/main/docs/groups.md) describe
-server-owned definitions with static camera stream members, optional passwords, and optional live
-participants. Participant media would have a server-assigned identity and its own stream and
-recording policy. Camera membership would not change a camera's ordinary recording policy.
+Support for one does not imply support for the other:
 
-The design is full duplex: it has no floor control, moderator, or server-enforced speaking turn.
-Push-to-talk means a client gates its own microphone while keeping its publication ready. It is
-not a server command or a promise that the current browser includes a working radio console.
+| Feature                 | Direction & target                                      | Shipped today | Where to configure / read more          |
+| ----------------------- | ------------------------------------------------------- | :-----------: | --------------------------------------- |
+| Browser **Talk**        | Administrator microphone → physical camera speaker      |      Yes      | [Camera controls](./camera-controls.md) |
+| **Broadcast talkback**  | Administrator microphone → all or camera-group speakers |      Yes      | [Camera controls](./camera-controls.md) |
+| Live participant groups | Browser/client ↔ client media fanout via KeepPeek       |      No       | Planned design only (see below)         |
 
-Those scenarios explain the intended contract, including reconnect and per-participant recording
-behavior. They are not evidence that the handler, client capture, directory, or recording path has
-been implemented and qualified. A future implementation needs runtime and device evidence before
-this chapter can provide operational setup instructions.
+## Planned group design contract
 
-## Camera talkback is separate
+The [group client scenarios](https://github.com/xnorpx/keeppeek/blob/main/docs/groups.md) document the intended protocol contract for a future implementation:
 
-Talkback sends audio to a supported physical camera. A live participant group would exchange media
-between clients through KeepPeek. Support for one does not imply support for the other.
+- **Server-owned definitions:** Named collections of static camera streams (never client publications), optional join password (never returned in list/state responses), and optional live audio/video capability. Group definitions are intentionally excluded from `ServerCapabilities`.
+- **Full-duplex media without floor control:** All joined participants could publish simultaneously with no moderator or speaking-turn arbitration; push-to-talk would only gate local client microphone capture while keeping the publication warm.
+- **Per-participant virtual sources and recording:** Each joined participant would receive a server-assigned virtual `source_id` with independent audio/video recording policy (`DISABLED`, `INHERIT`, `REQUIRED`, `PROHIBITED`) without altering static camera recording policies.
 
-Browser Talk to a camera speaker is available for supported cameras. Consult
-[Camera controls](./camera-controls.md) for its requirements and the availability reason shown for
-the selected device.
+These scenarios specify intended contract behavior only—they are not evidence that the server handler, client capture path, directory, or participant recording pipeline is implemented or qualified.

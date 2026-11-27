@@ -1,190 +1,153 @@
 # Get started
 
-> **Status:** KeepPeek is in Alpha qualification and is not yet production-ready.
-> The active [Alpha gate](https://github.com/xnorpx/keeppeek/issues/145) tracks promotion evidence.
+This chapter covers installing KeepPeek on Linux (Docker or binary), macOS, or Windows, monitoring a foreground server in the terminal dashboard, completing `/setup`, backing up configuration, and verifying your first camera. First-run setup requires Administrator access (granted automatically from trusted local networks by default).
 
-Choose the installation that fits the host. Linux has first-class Docker support; macOS and Windows
-use native packages and service integration. On Windows and macOS, you can also install
-[KeepPeek Desktop](./desktop-app.md) to open an existing local or remote KeepPeek server in a
-dedicated desktop window.
+> **Alpha status:** KeepPeek is in Alpha qualification and is not yet production-ready. Track promotion evidence in the [Alpha gate](https://github.com/xnorpx/keeppeek/issues/145).
 
-## Before installation
+## Choose an installation path
 
-Choose a host with enough disk capacity for the camera bitrates and retention you need. KeepPeek
-stores camera media without transcoding; a browser still needs to support the selected codec.
-Start with a small camera set and measure it before increasing the workload.
+Select a host with enough disk capacity for your camera bitrates and retention policy. KeepPeek records and streams camera media without transcoding, so viewing browsers must support the camera's codec. Download builds and checksums from the [releases page](https://github.com/xnorpx/keeppeek/releases) and record the version and `.sha256` digest.
 
-Use the [release page](https://github.com/xnorpx/keeppeek/releases) to select a build for the host.
-Record that version and retain its checksum information. By default, clients on private and local
-networks receive Administrator access without signing in; review
-[the access policy](./authentication.md) before exposing the listener to other devices.
+| Platform | Package / artifact                                                   | Architectures        | Runtime / service                           | Default config & secrets directory            |
+| -------- | -------------------------------------------------------------------- | -------------------- | ------------------------------------------- | --------------------------------------------- |
+| Docker   | `ghcr.io/xnorpx/keeppeek:<tag>`                                      | `amd64`, `arm64`     | Non-root UID `65532`, port `8081`           | `/config/keeppeek/`                           |
+| Linux    | `keeppeek-<version>-linux-<arch>.tar.gz`                             | `x86_64`, `aarch64`  | Foreground `keeppeek` binary                | `${XDG_CONFIG_HOME:-$HOME/.config}/keeppeek/` |
+| macOS    | `keeppeek-<version>-macos-aarch64.dmg`                               | `aarch64`            | `KeepPeek.app` + `com.keeppeek` LaunchAgent | `~/Library/Application Support/keeppeek/`     |
+| Windows  | `keeppeek-<version>-windows-<arch>-installer.exe`, standalone `.exe` | `x86_64`, `aarch64`  | `keeppeek.exe` or `KeepPeekService` (SCM)   | `%APPDATA%\keeppeek\`                         |
+| Desktop  | Windows unified installer / `.exe`; macOS desktop `.dmg`             | Win x64/arm64, macOS | Native Tauri client only (no server)        | Reads/writes `[desktop]` in `config.toml`     |
 
-## Monitor a foreground server
+On Windows and macOS, you can optionally install [KeepPeek Desktop](./desktop-app.md) to open an existing local or remote KeepPeek server in a dedicated window.
 
-Run `keeppeek` in an interactive terminal to see server health and stream statistics. The default
-`--tui auto` opens the dashboard when the terminal supports it and all three standard streams are
-attached. Use `keeppeek --tui never` to show plain logs. With `--tui always`, KeepPeek prints a
-diagnostic and continues with logs if it cannot open the dashboard. Services, redirected output
-and unattended containers use plain logs. For interactive Docker or SSH sessions, allocate a TTY.
-
-Use the arrow keys or Page Up and Page Down to select a stream. Press **q** to return to logs
-while the recorder keeps running. Press **Ctrl+C** to request a graceful server shutdown and
-finalize recordings. Resizing the terminal changes the visible rows. After a hard kill, opening
-a new terminal restores the normal display. On Unix you can also run `reset` in the affected shell.
-
-| Environment                                                   | Default (`--tui auto`) | Notes                                                                                       |
-| ------------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------- |
-| Linux, macOS, Windows Terminal / PowerShell foreground TTY    | Dashboard              | Requires interactive stdin, stdout, and stderr (`TERM` set and not `dumb` on Unix).         |
-| SSH with TTY (`ssh -t`) or Docker with TTY (`docker run -it`) | Dashboard              | Interactive pseudo-terminals run the dashboard; pass `--tui never` for plain logs.          |
-| SSH or Docker without TTY, pipes, redirected stdio            | Plain logs             | No terminal escape sequences are emitted; `--tui always` logs one diagnostic and continues. |
-| `keeppeek config ...`, `--help`, `--version`                  | Plain output           | Subcommands and help/version never enter alternate screen even with `--tui always`.         |
-| `keeppeek-service` (Windows) and macOS launch agent           | Plain/service logs     | Service entry points never start the terminal dashboard.                                    |
+> **Security default:** Clients on private and local networks receive **Administrator** access without signing in. Review [Authentication and access control](./authentication.md) before exposing port `8081` beyond trusted devices.
 
 ## Linux with Docker
 
-The published image supports `linux/amd64` and `linux/arm64`. It runs KeepPeek directly as the
-non-root user `65532` and listens on port `8081`.
+The container image supports `linux/amd64` and `linux/arm64`, runs KeepPeek as non-root user `65532`, and listens on port `8081`. Configuration, owner-only `secrets.toml`, recordings, `recordings.db`, thumbnails, and logging settings live under `/config/keeppeek`.
 
-KeepPeek stores configuration, owner-only secrets, recordings, the recording catalog, thumbnails,
-and logging settings under `/config/keeppeek` in the container. Mount `/config` from the host so
-that data survives container replacement:
+1. Create a host data directory owned by UID/GID `65532` (for a new directory; adjust permissions if reusing existing storage):
 
 ```sh
 mkdir -p keeppeek-data
 sudo chown 65532:65532 keeppeek-data
-docker run --rm --name keeppeek -p 8081:8081 \
-	-v "$(pwd)/keeppeek-data:/config" \
-	ghcr.io/xnorpx/keeppeek:latest
 ```
 
-The ownership command is for the newly created Linux directory. Use the permissions appropriate
-to your existing storage if the directory already contains data. This example runs in the foreground
-and removes the container when it stops; the mounted host data remains. Configure your deployment's
-restart policy for unattended operation. Select an explicit release tag or digest instead of the
-moving `latest` tag when you need to reproduce the installation.
+2. Run the container with `/config` mounted from the host:
 
-Open `http://localhost:8081` after startup. If the container cannot create its configuration or
-recordings, check the host mount and permissions for user `65532`.
+```sh
+docker run --rm --name keeppeek -p 8081:8081 \
+  -v "$(pwd)/keeppeek-data:/config" \
+  ghcr.io/xnorpx/keeppeek:latest
+```
+
+3. Open `http://localhost:8081`.
+
+Use an explicit release tag or digest instead of `latest` for reproducible deployments, and add a restart policy (such as `--restart unless-stopped`) for unattended operation. If the container cannot write configuration or recordings, verify host mount permissions for UID `65532`. For native Linux hosts without Docker, extract `keeppeek-<version>-linux-<arch>.tar.gz`, verify its `.sha256` file, and run `./keeppeek`.
 
 ## macOS
 
-macOS packages target Apple Silicon (`arm64`). Download the release DMG and its matching `.sha256`
-file, then verify the checksum:
+macOS releases target Apple Silicon (`arm64`) only.
+
+1. Download `keeppeek-<version>-macos-aarch64.dmg` and its `.sha256` file, then verify the checksum:
 
 ```sh
 shasum -a 256 -c keeppeek-<version>-macos-aarch64.dmg.sha256
 ```
 
-Replace `<version>` with the downloaded version. Drag `KeepPeek.app` into `/Applications` and open
-it once. The application installs and starts the per-user `com.keeppeek` launch agent, which starts
-after that user logs in. Open `http://localhost:8081` in a browser.
+2. Open the DMG, drag `KeepPeek.app` to `/Applications`, and launch it once. It installs and starts the per-user `com.keeppeek` `launchd` agent, which starts at user login.
+3. Open `http://localhost:8081`.
 
-Signing and notarization depend on the release workflow's configured credentials; check the chosen
-artifact rather than assuming every DMG has both. The
-[macOS installation guide](https://github.com/xnorpx/keeppeek/blob/main/docs/macos-installation.md)
-explains packaging and service logs. Use [Upgrades and migrations](./upgrades-and-migrations.md#macos)
-when replacing an existing installation.
+Code signing and notarization depend on the release workflow's configured credentials; verify the downloaded artifact rather than assuming both are present. See the [macOS installation guide](https://github.com/xnorpx/keeppeek/blob/main/docs/macos-installation.md) for service logs and [Upgrades and migrations](./upgrades-and-migrations.md#macos) before replacing an existing app.
 
 ## Windows
 
-Windows releases provide Authenticode-signed, RFC 3161 timestamped x86-64 and ARM64 binaries and a single unified signed installer (every published executable, including the installer's `uninstall.exe`, is signed and timestamped):
+Official Windows releases publish Authenticode-signed, RFC 3161 timestamped `x86_64` and `aarch64` executables (including `uninstall.exe`), each with a `.sha256` file:
 
-- **Unified installer (`keeppeek-<version>-windows-<arch>-installer.exe`):** lets you select at least one of **KeepPeek Desktop** (`keeppeek-desktop.exe`), **KeepPeek Server with TUI** (`keeppeek.exe`), and **KeepPeek Windows Service** (`keeppeek-service.exe` / `KeepPeekService`).
-- **Standalone signed binaries and server ZIP:** `keeppeek-<version>-windows-<arch>.exe` (server with TUI), `keeppeek-service-<version>-windows-<arch>.exe` (Windows service), `keeppeek-desktop-<version>-windows-<arch>.exe` (Tauri desktop UI), and `keeppeek-<version>-windows-<arch>.zip`, each with a matching `.sha256` file.
+- **Unified installer:** `keeppeek-<version>-windows-<arch>-installer.exe` — select at least one of **KeepPeek Desktop** (`keeppeek-desktop.exe`), **KeepPeek Server with TUI** (`keeppeek.exe`), and **KeepPeek Windows Service** (`keeppeek-service.exe` / `KeepPeekService`).
+- **Standalone assets:** `keeppeek-<version>-windows-<arch>.exe`, `keeppeek-service-<version>-windows-<arch>.exe`, `keeppeek-desktop-<version>-windows-<arch>.exe`, and server archive `keeppeek-<version>-windows-<arch>.zip`.
 
-Choose the architecture that matches the host and run `keeppeek-<version>-windows-<arch>-installer.exe`. Select **KeepPeek Desktop** for the [native desktop UI](./desktop-app.md), **KeepPeek Server with TUI** to run `keeppeek.exe` interactively, and/or **KeepPeek Windows Service** for background operation through the Service Control Manager (`KeepPeekService`). For unattended installs, combine `/S` with `/DESKTOP`, `/SERVER`, `/SERVICE`, `/NO_DESKTOP`, `/NO_SERVER`, or `/NO_SERVICE` (at least one component must remain selected).
+1. Download the unified installer for your host architecture and verify its `.sha256` hash and Authenticode signature (`Get-AuthenticodeSignature`).
+2. Run the installer and select your desired components. For silent installs, combine `/S` with `/DESKTOP`, `/SERVER`, `/SERVICE`, `/NO_DESKTOP`, `/NO_SERVER`, or `/NO_SERVICE` (at least one component must remain enabled, or the installer exits with status `2`).
+3. Open `http://localhost:8081` after startup.
 
-Open `http://localhost:8081` after startup. To inspect the service from PowerShell:
+Inspect the Windows service from PowerShell:
 
 ```powershell
 sc.exe query KeepPeekService
 sc.exe qc KeepPeekService
 ```
 
-The service reads configuration in its own process account's environment, which can differ from
-your interactive `%APPDATA%`. Inspect the service identity and actual configuration location before
-moving data between standalone and service operation. See
-[Upgrades and migrations](./upgrades-and-migrations.md#windows) and the
-[Windows service guide](https://github.com/xnorpx/keeppeek/blob/main/docs/windows-service.md) for
-service lifecycle and logging.
+`KeepPeekService` reads configuration from its own service account's profile, which may differ from your interactive `%APPDATA%`. Check the service identity and active data paths before migrating between standalone and service runs. See [Upgrades and migrations](./upgrades-and-migrations.md#windows) and the [Windows service guide](https://github.com/xnorpx/keeppeek/blob/main/docs/windows-service.md) for lifecycle and logging details.
 
-## Configuration and secrets
+## Foreground terminal dashboard (TUI)
 
-The first start creates the KeepPeek configuration directory for the selected installation. Reusable
-private values belong in owner-only `secrets.toml` beside `config.toml`:
+Running `keeppeek` in an interactive terminal opens a read-only live health dashboard by default (`--tui auto`). It polls server health every 2 seconds (marking samples `STALE` after 5 seconds and keeping the last snapshot if a check fails) and shows process CPU, RSS, viewer count, storage pressure, warnings, and per-stream rows (`Camera`, `Source` at >=115 columns, `Stream`, `Health`, `Codec`/`Resolution`/`FPS`/`Recording` at >=100 columns, `Recv kbit/s`, and `Age`) with a 4-line selected-stream detail pane.
 
-| Installation | Default secrets path                                      |
-| ------------ | --------------------------------------------------------- |
-| macOS        | `~/Library/Application Support/keeppeek/secrets.toml`     |
-| Linux        | `${XDG_CONFIG_HOME:-$HOME/.config}/keeppeek/secrets.toml` |
-| Windows      | `%APPDATA%\keeppeek\secrets.toml`                         |
-| Docker       | `/config/keeppeek/secrets.toml`                           |
+| Flag / environment                                           | Behavior             | Notes                                                                             |
+| ------------------------------------------------------------ | -------------------- | --------------------------------------------------------------------------------- |
+| Foreground TTY (Linux, macOS, Windows Terminal / PowerShell) | Dashboard            | Default `--tui auto`; needs interactive stdin, stdout, stderr (`TERM != dumb`).   |
+| Interactive SSH (`ssh -t`) or Docker (`docker run -it`)      | Dashboard            | Pass `--tui never` to emit plain logs instead.                                    |
+| Non-TTY SSH/Docker, pipes, redirected stdio                  | Plain logs           | No escape sequences emitted; `--tui always` logs one diagnostic and keeps logs.   |
+| `keeppeek config ...`, `--help`, `--version`                 | Plain output         | Subcommands and metadata flags never enter alternate screen, even `--tui always`. |
+| `keeppeek-service` (Windows) and `com.keeppeek` (macOS)      | Plain / service logs | Background service entry points never start the terminal dashboard.               |
 
-Never add `secrets.toml` to source control, logs, screenshots, support bundles, or command
-arguments. Enter camera credentials and other private values directly on the machine running
-KeepPeek. See the
-[configuration reference](./configuration-reference.md#passwords-and-secret-references) for references,
-precedence, and migration behavior.
+**Controls:** `Up`/`Down` or `Page Up`/`Page Down` select a stream row; `q` detaches to plain logs while recording continues; `Ctrl+C` requests a graceful shutdown and finalizes active recordings. After a hard kill, open a new terminal or run `reset` on Unix.
 
-These paths belong to the account running KeepPeek. `--config <path>` selects a different
-configuration file with `secrets.toml` beside it. Inspect the effective recording paths separately;
-omitted storage paths still use the operating system's default KeepPeek directory.
+## First-run setup (`/setup`)
 
-On first startup, use a trusted-local browser to retrieve and save the **Initial Administrator** key
-if you need remote access. The browser shows it once. Create named credentials for individual remote
-users or integrations in **Settings > Access & roles**. See
-[Authentication and access control](./authentication.md#first-run).
+Open `http://localhost:8081/setup` from a trusted-local browser to complete the evidence-based first-run check:
 
-## Create a recovery backup
+1. **Where footage goes:** Confirm `storage.medium_term_path`, observed free capacity, and a `WRITE PROOF VERIFIED` status. Use **Verify storage again** to re-test or **Change recording storage** (`/settings?edit=storage#storage`) to pick another path.
+2. **What time it is here:** Verify the browser-detected time zone. The server does not expose a timezone configuration command, so host OS time remains authoritative.
+3. **Remote Administrator credential:** If you need remote access, select **Retrieve initial key**, save it with **Copy** or **Download** (`keeppeek-initial-administrator-key.txt`), then select **Hide permanently**. The key is displayed once and remote access stays unready until it is retrieved. Create named credentials per person or integration in **Settings → Access**; see [Authentication and access control](./authentication.md#first-run).
+4. Select **Continue to camera setup** (enabled once storage write proof passes) to open `/cameras/new` (or `/cameras` if cameras already exist).
 
-Review **Settings** storage and retention values before relying on the recorder. Confirm the actual
-recording, catalog, and thumbnail paths, available space, and retention policy. Defaults are starting
-values, not a sizing recommendation for every camera fleet.
+This walkthrough verifies first-run storage proof, browser time zone, and the one-time **Initial Administrator** key claim on `/setup`:
 
-Open **Settings → Backup and restore** as an Administrator and create a validated configuration
-bundle before relying on the recorder. Download the ZIP and retain it separately from the recorder.
-The ZIP contains exactly `config.toml` and plaintext `secrets.toml`, so handle it as sensitive data.
-It intentionally omits `recordings.db`, sessions, MP4 recordings, and thumbnail JPEG bytes.
+<video controls crossorigin="anonymous" preload="metadata" playsinline style="width: 100%; height: auto">
+  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/setup.desktop.first-run.mp4" type="video/mp4">
+  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/setup.desktop.first-run.vtt" kind="captions" srclang="en" label="English">
+  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/setup.desktop.first-run.mp4">Download the first-run setup demo</a>.
+</video>
 
-Test recovery on an isolated installation. Export uses `GET /config/export`; apply uses
-`POST /config/apply` with the ZIP body. Apply validates both files, capacity, and target paths before
-staging. Live files change only after a controlled restart. See
-[Backup and restore](./backup-and-restore.md) for the complete workflow and limits.
+## Configuration, secrets, and recovery backup
 
-For footage recovery, also create and test a
-[separate catalog and media archive](./recording-archive-recovery.md). A successful ZIP export alone
-does not prove recordings can be recovered after disk loss.
+First startup creates `config.toml` and owner-only companion `secrets.toml` in the installation's default directory. Passing `-c <path>` / `--config <path>` selects a custom `config.toml` and looks for `secrets.toml` beside it; omitted storage paths still fall back to the OS default KeepPeek directory.
 
-## Add the first camera
+Never commit `secrets.toml` to source control or attach it to logs, screenshots, or support bundles. See [Passwords and secret references](./configuration-reference.md#passwords-and-secret-references) for `{secret:KEY}` syntax, precedence, and full configuration schemas.
 
-With no cameras configured, an Administrator can select **Add camera** directly from the
-Dashboard's **No cameras yet** message. The same wizard is available from **Cameras → Add camera**.
-KeepPeek discovers common cameras where possible and keeps manual RTSP entry available. Do not
-trust discovery alone: authentication, the requested main or sub streams, keyframes, finalized MP4
-recordings, and playback all need to validate.
+Before relying on the recorder:
 
-Edit an existing camera from its **Camera** page. Use **Settings** only for server-wide
-configuration. Camera-specific credentials and stream choices belong with the camera.
+1. Review **Settings → Storage & retention** to confirm recording, catalog, and thumbnail paths, free space, and retention caps. Built-in defaults are starting values, not fleet sizing recommendations.
+2. Open **Settings → Backup and restore** as an Administrator and export a validated configuration ZIP (`GET /config/export`, or `keeppeek config export --output <file>`). Store the ZIP securely off-host—it contains exactly `config.toml` and plaintext `secrets.toml` and omits `recordings.db`, sessions, MP4 footage, and thumbnails.
+3. Verify restoration on an isolated instance (`POST /config/apply` or `keeppeek config apply <file> --confirm`). Apply validates files, capacity, and paths before staging; live files switch only on controlled restart. See [Backup and restore](./backup-and-restore.md).
+4. Set up a separate media and catalog backup if footage must survive disk loss; see [Recording archive recovery](./recording-archive-recovery.md).
 
-Set a recording policy that matches the footage you need: the built-in default is `event-boost`, not
-continuous recording of both streams. Open live view, then review a new finalized interval in
-**Keep**. An incompatible browser codec is different from absent footage; retain a compatible
-substream when the camera provides one.
+## Add and verify the first camera
 
-The [Users and design choices](./users-and-design-choices.md#cameras-brands-and-protocols) chapter
-describes supported vendor paths and the pragmatic camera compatibility policy.
+With zero cameras configured, select **Add camera** from the Dashboard's **No cameras yet** prompt, or open **Cameras → Add camera** (`/cameras/new`).
 
-After the first stream is verified, continue with [Camera and stream health](./camera-health.md) and
-[Recording and evidence](./recording-and-evidence.md). Review
-[Release readiness and known limitations](./release-readiness.md) before relying on the installation
-for evidence.
+1. Run subnet discovery, enter an IPv4 or `rtsp://` address manually, or match your model in the embedded **CCTV Database** catalog.
+2. Provide camera credentials (or use server defaults) and run **Verify streams**—KeepPeek requires authenticated video and a keyframe on every stream needed by the selected recording policy before saving.
+3. Choose a recording policy that fits your workload (the default is `event-boost`, not continuous dual-stream recording) and save.
+4. Edit per-camera settings on its **Camera** page (`/camera`); reserve **Settings** (`/settings`) for server-wide configuration.
 
-## Complete the first-use check
+See [Camera controls](./camera-controls.md) for the full wizard and control details, and [Cameras, brands, and protocols](./users-and-design-choices.md#cameras-brands-and-protocols) for vendor paths and compatibility boundaries.
 
-- Verify live view, recorded playback, recording integrity, and a small downloaded evidence export.
-- Test each remote credential from an address that is not trusted-local. Check allowed and denied
-  cameras, and the separate dashboard audience.
-- If you enable native events, external analysis, notifications, or MQTT, test a controlled event
-  through its intended destination and inspect failures.
-- Restart once and confirm recording resumes, durable settings remain, and remote users can sign
-  in again. Pending notification and MQTT work does not survive that restart.
+This walkthrough shows adding and verifying a camera through the production UI:
+
+<video controls crossorigin="anonymous" preload="metadata" playsinline style="width: 100%; height: auto">
+  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.add-wizard.mp4" type="video/mp4">
+  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.add-wizard.vtt" kind="captions" srclang="en" label="English">
+  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.add-wizard.mp4">Download the add-camera wizard demo</a>.
+</video>
+
+## First-use verification checklist
+
+Before trusting an installation, verify all four checks:
+
+1. **Media and evidence:** Confirm live playback, a newly finalized interval in **Keep** (`/keep`), and a small downloaded evidence export. Keep a browser-compatible H.264 substream available when main streams use unsupported codecs.
+2. **Remote access boundary:** Test a disposable **User** credential from a non-local address across allowed cameras, denied cameras, and a shared dashboard audience.
+3. **Events and integrations:** If you enabled native events, external analysis, notifications, or MQTT, trigger one controlled event and verify end-to-end delivery.
+4. **Restart durability:** Restart KeepPeek once and confirm recording resumes, durable settings persist, and remote users can sign in again. Pending notification and MQTT deliveries do not survive a restart.
+
+Next steps: [Camera and stream health](./camera-health.md), [Recording and evidence](./recording-and-evidence.md), and [Release readiness and known limitations](./release-readiness.md).

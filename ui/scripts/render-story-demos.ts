@@ -142,7 +142,9 @@ async function renderScenario(
 		);
 	}
 
-	for (const action of demo.actions) await performAction(page, action, demoStartAt);
+	for (const [index, action] of demo.actions.entries()) {
+		await performAction(page, action, demoStartAt, scenarioId, index);
+	}
 	await waitUntil(page, demoStartAt, demo.durationMs);
 	await page.locator(demo.completionSignal.selector).waitFor({
 		state: demo.completionSignal.state,
@@ -210,36 +212,56 @@ async function renderScenario(
 	);
 }
 
-async function performAction(page: Page, action: DemoAction, demoStartAt: number): Promise<void> {
+async function performAction(
+	page: Page,
+	action: DemoAction,
+	demoStartAt: number,
+	scenarioId: string,
+	actionIndex: number
+): Promise<void> {
 	await waitUntil(page, demoStartAt, action.atMs);
+	const startDriftMs = Math.round(performance.now() - demoStartAt - action.atMs);
+	if (startDriftMs > 750) {
+		throw new Error(
+			`${scenarioId} action ${actionIndex} (${action.kind}) started ${startDriftMs}ms late past ${action.atMs}ms`
+		);
+	}
 	if (action.kind === 'click') {
 		await page.locator(action.selector).click();
-		return;
-	}
-	if (action.kind === 'press') {
+	} else if (action.kind === 'fill') {
+		await page.locator(action.selector).fill(action.value);
+	} else if (action.kind === 'select') {
+		await page.locator(action.selector).selectOption(action.value);
+	} else if (action.kind === 'press') {
 		if (action.selector) await page.locator(action.selector).press(action.key);
 		else await page.keyboard.press(action.key);
+	} else {
+		const target = page.locator(action.selector);
+		await target.waitFor({ state: 'visible' });
+		const bounds = await target.boundingBox();
+		if (!bounds) throw new Error(`Unable to resolve drag target: ${action.selector}`);
+		const startX = bounds.x + bounds.width / 2;
+		const startY = bounds.y + bounds.height / 2;
+		const steps = action.steps ?? 20;
+		await page.mouse.move(startX, startY);
+		await page.mouse.down();
+		for (let step = 1; step <= steps; step += 1) {
+			await page.mouse.move(
+				startX + (action.deltaX * step) / steps,
+				startY + (action.deltaY * step) / steps
+			);
+			await page.waitForTimeout(action.durationMs / steps);
+		}
+		if (action.holdAfterMs) await page.waitForTimeout(action.holdAfterMs);
+		await page.mouse.up();
 		return;
 	}
-
-	const target = page.locator(action.selector);
-	await target.waitFor({ state: 'visible' });
-	const bounds = await target.boundingBox();
-	if (!bounds) throw new Error(`Unable to resolve drag target: ${action.selector}`);
-	const startX = bounds.x + bounds.width / 2;
-	const startY = bounds.y + bounds.height / 2;
-	const steps = action.steps ?? 20;
-	await page.mouse.move(startX, startY);
-	await page.mouse.down();
-	for (let step = 1; step <= steps; step += 1) {
-		await page.mouse.move(
-			startX + (action.deltaX * step) / steps,
-			startY + (action.deltaY * step) / steps
+	const driftMs = Math.round(performance.now() - demoStartAt - action.atMs);
+	if (driftMs > 750) {
+		throw new Error(
+			`${scenarioId} action ${actionIndex} (${action.kind}) drifted by ${driftMs}ms past ${action.atMs}ms`
 		);
-		await page.waitForTimeout(action.durationMs / steps);
 	}
-	if (action.holdAfterMs) await page.waitForTimeout(action.holdAfterMs);
-	await page.mouse.up();
 }
 
 async function waitUntil(page: Page, demoStartAt: number, targetMs: number): Promise<void> {

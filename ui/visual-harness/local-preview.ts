@@ -1,5 +1,5 @@
 import './local-preview.css';
-import { mount } from 'svelte';
+import { mount, type Component } from 'svelte';
 import Board04KeepTimelineStory from './stories/Board04KeepTimelineStory.svelte';
 import Board06PeekLiveWallStory from './stories/Board06PeekLiveWallStory.svelte';
 import Board07CameraPageStory from './stories/Board07CameraPageStory.svelte';
@@ -22,6 +22,21 @@ import Board33StatesStory from './stories/Board33StatesStory.svelte';
 import Board31HistoryStory from './stories/Board31HistoryStory.svelte';
 import DemoHistoryStory from './stories/DemoHistoryStory.svelte';
 import DemoCameraCatalogWizardStory from './stories/DemoCameraCatalogWizardStory.svelte';
+import DemoFirstRunStory from './stories/DemoFirstRunStory.svelte';
+import DemoAccessStory from './stories/DemoAccessStory.svelte';
+import DemoCameraControlsStory from './stories/DemoCameraControlsStory.svelte';
+import DemoLiveWallEditorStory from './stories/DemoLiveWallEditorStory.svelte';
+import DemoDigitalZoomStory from './stories/DemoDigitalZoomStory.svelte';
+import DemoKeepTimelineStory from './stories/DemoKeepTimelineStory.svelte';
+import DemoEventsSearchStory from './stories/DemoEventsSearchStory.svelte';
+import DemoGuestReviewStory from './stories/DemoGuestReviewStory.svelte';
+import DemoHealthDiagnosisStory from './stories/DemoHealthDiagnosisStory.svelte';
+import DemoFleetConfigStory from './stories/DemoFleetConfigStory.svelte';
+import DemoConfigZipStory from './stories/DemoConfigZipStory.svelte';
+import DemoRecordingMaintenanceStory from './stories/DemoRecordingMaintenanceStory.svelte';
+import DemoNotificationsMqttStory from './stories/DemoNotificationsMqttStory.svelte';
+import DemoHomeAssistantCardStory from './stories/DemoHomeAssistantCardStory.svelte';
+import DemoLogsDiagnosticsStory from './stories/DemoLogsDiagnosticsStory.svelte';
 import ExportLifecycleStory from './stories/ExportLifecycleStory.svelte';
 import LightThemePeekStory from './stories/LightThemePeekStory.svelte';
 import Board27MobileAdministrationStory from './stories/Board27MobileAdministrationStory.svelte';
@@ -62,7 +77,31 @@ const board33States = {
 	'cameras.waiting.fleet-skeleton': 'fleet-skeleton'
 } as const;
 
-if (scenarioId === 'keep.performance.timeline') {
+const demoComponents: Record<string, Component> = {
+	'peek.desktop.history-keep': DemoHistoryStory,
+	'cameras.desktop.catalog-guided-setup': DemoCameraCatalogWizardStory,
+	'setup.desktop.first-run': DemoFirstRunStory,
+	'settings.desktop.access': DemoAccessStory,
+	'camera.desktop.details-ptz': DemoCameraControlsStory,
+	'peek.desktop.layout-editor': DemoLiveWallEditorStory,
+	'viewer.desktop.digital-zoom': DemoDigitalZoomStory,
+	'keep.desktop.timeline-export': DemoKeepTimelineStory,
+	'events.desktop.search-review': DemoEventsSearchStory,
+	'share.desktop.guest-review': DemoGuestReviewStory,
+	'health.desktop.triage-diagnosis': DemoHealthDiagnosisStory,
+	'cameras.desktop.fleet-config': DemoFleetConfigStory,
+	'settings.desktop.config-zip': DemoConfigZipStory,
+	'recordings.desktop.maintenance': DemoRecordingMaintenanceStory,
+	'settings.desktop.notifications-mqtt': DemoNotificationsMqttStory,
+	'home-assistant.desktop.card': DemoHomeAssistantCardStory,
+	'settings.desktop.logs-diagnostics': DemoLogsDiagnosticsStory
+};
+
+if (demoMode && demoAssetId && demoAssetId in demoComponents) {
+	document.documentElement.classList.add('dark');
+	document.documentElement.dataset.theme = 'dark';
+	mount(demoComponents[demoAssetId], { target });
+} else if (scenarioId === 'keep.performance.timeline') {
 	document.documentElement.classList.add('dark');
 	document.documentElement.dataset.theme = 'dark';
 	const startedAtMs = performance.now();
@@ -128,11 +167,7 @@ if (scenarioId === 'keep.performance.timeline') {
 } else if (scenarioId === 'cameras.desktop.add-wizard') {
 	document.documentElement.classList.add('dark');
 	document.documentElement.dataset.theme = 'dark';
-	if (demoMode && demoAssetId === 'cameras.desktop.catalog-guided-setup') {
-		mount(DemoCameraCatalogWizardStory, { target });
-	} else {
-		mount(Board12AddCameraStory, { target });
-	}
+	mount(Board12AddCameraStory, { target });
 } else if (scenarioId === 'settings.desktop.storage-retention') {
 	document.documentElement.classList.add('dark');
 	document.documentElement.dataset.theme = 'dark';
@@ -244,8 +279,7 @@ if (scenarioId === 'keep.performance.timeline') {
 } else if (scenarioId === 'peek.desktop.history-keep') {
 	document.documentElement.classList.add('dark');
 	document.documentElement.dataset.theme = 'dark';
-	if (demoMode) mount(DemoHistoryStory, { target });
-	else mount(Board31HistoryStory, { target, props: { state: 'keep' } });
+	mount(Board31HistoryStory, { target, props: { state: 'keep' } });
 } else if (scenarioId === 'peek.desktop.light-theme') {
 	document.documentElement.classList.remove('dark');
 	document.documentElement.dataset.theme = 'light';

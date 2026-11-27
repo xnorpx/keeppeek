@@ -149,8 +149,10 @@ jobs:
             jq -e '.recording.audioCodec == "aac" and
               .recording.streamCount == 2 and
               (.recording.narration.cues | length > 0) and
-              any(.recording.narration.cues[]; .freezeDurationMs > 0)' "$metadata" >/dev/null
+              all(.recording.narration.cues[]; .freezeDurationMs >= 0 and .durationMs > 0)' "$metadata" >/dev/null
           done < <(find test-results/demo-videos/assets -maxdepth 1 -name '*.json' -print)
+          jq -s -e 'any(.[]; any(.recording.narration.cues[]; .freezeDurationMs > 0))' \
+            test-results/demo-videos/assets/*.json >/dev/null
           jq -e '.schemaVersion == 1 and (.videos | length > 0)' \
             test-results/demo-videos/manifest.json >/dev/null
 

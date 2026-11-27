@@ -1,108 +1,79 @@
 # Configuration reference
 
-KeepPeek stores settings in one application configuration file, named `config.toml` by default.
-The existing companion `secrets.toml` holds reusable private strings. Layouts, notification rules,
-credential metadata, and camera templates belong in the application configuration, not in separate
-settings files. Media files and recording catalogs are data, not additional settings stores.
+This chapter is the canonical reference for every supported on-disk section, serialized Rust struct, field, type, default, limit, ownership boundary, apply mode, and secret-reference rule in `config.toml` and its companion `secrets.toml`. KeepPeek stores all durable settings—including layouts, notification rules, credential records, templates, runtime profiles, and saved searches—in `config.toml` rather than separate settings files; media files and catalog databases are data, not settings stores.
 
-[Live-wall display settings](./live-wall.md) belong to each saved dashboard in `[peek_layouts]`.
-Shape, fit, gap, corner radius, streaming mode, stream ceiling, and wake-lock intent are stored
-on the server and included in configuration and layout exchange. Browser permission and active
-media/wake-lock handles remain runtime state.
+Use [visual configuration](./configuration-management.md) for routine UI administration and [configuration exchange](./configuration-export-import.md) for validated export and import.
 
-This chapter describes the supported on-disk sections and their serialized Rust types. It is not
-a list of every API response or runtime struct. Use [visual configuration](./configuration-management.md)
-for normal administration and [configuration exchange](./configuration-export-import.md) for
-validated export and import.
+## Quick section index
+
+| TOML section                                | Rust type                                | Purpose                                            | Ownership                            | Apply mode                              | Reference                                                                       |
+| ------------------------------------------- | ---------------------------------------- | -------------------------------------------------- | ------------------------------------ | --------------------------------------- | ------------------------------------------------------------------------------- |
+| Root fields                                 | `Config`                                 | HTTP listener and initial access key               | Operator                             | Restart                                 | [Root settings](#root-settings)                                                 |
+| `[access]`                                  | `AccessConfig`                           | Network trust, rate limits, session bounds         | Operator                             | Restart                                 | [Access policy](#access-policy)                                                 |
+| `[direct_card]`                             | `DirectCardConfig`                       | Exact browser-origin allowlist                     | Operator                             | Restart                                 | [Direct card origins](#direct-card-origins)                                     |
+| `[desktop]`                                 | `DesktopConfig`                          | Default server URL for KeepPeek Desktop            | Operator                             | Desktop launch                          | [Desktop client settings](#desktop-client-settings)                             |
+| `[mcp]`                                     | `McpConfig`                              | Opt-in MCP server, write, and snapshot policy      | Operator                             | Restart                                 | [MCP server](#mcp-server)                                                       |
+| `[sharing]`                                 | `sharing::SharingConfig`                 | Isolated guest review deployment policy            | Operator (server revision)           | Live (UI/API) / Restart (file)          | [Guest review deployment policy](#guest-review-deployment-policy)               |
+| `[external_auth]`                           | `access::external::Config`               | OIDC and identity-proxy login policy               | Operator                             | Live (plan/apply) / Restart (file)      | [External authentication configuration](#external-authentication-configuration) |
+| `[external_identities]`                     | `access::identities::Directory`          | Provisioned external user records                  | Server-managed                       | Live (runtime)                          | [Durable external identities](#durable-external-identities)                     |
+| `[camera_defaults]`                         | `CameraCredentialDefaults`               | Shared camera credentials and policy defaults      | Operator                             | Live (plan/apply) / Restart (file)      | [Shared camera defaults](#shared-camera-defaults)                               |
+| `[<namespace>.<camera-key>]`                | `CameraConfig`                           | Per-camera connection, streams, recording          | Operator (server `profile_identity`) | Live (UI/API) / Restart (file)          | [Camera entries](#camera-entries)                                               |
+| `[<namespace>.<camera-key>.live_audio]`     | `LiveAudioSettings`                      | Live listener A/V timing offset                    | Operator                             | Live (no ingress restart)               | [Live audio timing](#live-audio-timing)                                         |
+| `[<namespace>.<camera-key>.recorded_audio]` | `RecordedAudioSettings`                  | Recorded playback and export audio offset          | Operator                             | Live (no ingress restart)               | [Recorded-audio timing](#recorded-audio-timing)                                 |
+| `[<namespace>.<camera-key>.events]`         | `EventConfig`                            | File-only camera-native event transport/filters    | Operator (file-only)                 | Restart                                 | [Native camera events](#native-camera-events)                                   |
+| `[isapi_callbacks]`                         | `isapi::callbacks::Config`               | Dedicated Hikvision ISAPI callback listener        | Operator                             | Restart                                 | [ISAPI event callbacks](#isapi-event-callbacks)                                 |
+| `[storage]`                                 | `StorageToml`                            | Recording paths, budgets, safety, pre-roll         | Operator                             | Restart (paths/budgets) / Live (policy) | [Recording storage](#recording-storage)                                         |
+| `[storage.retention]`                       | `storage::retention::settings::Settings` | Time-based recording lifetime rules                | Operator                             | Restart / activation sweep              | [Recording retention rules](#recording-retention-rules)                         |
+| `[storage.named_volumes]`                   | `storage::volumes::VolumeConfiguration`  | Named storage roots and placement rules            | Operator                             | Restart                                 | [Named storage volumes](#named-storage-volumes)                                 |
+| `[storage.metadata]`                        | `MetadataBinding`                        | Authoritative catalog and export-history binding   | Server-managed                       | Confirmed restart handoff               | [Named storage volumes](#named-storage-volumes)                                 |
+| `[storage.metadata_pending]`                | `config::metadata::pending::Pending`     | Staged metadata relocation handoff                 | Server-managed                       | Startup migration                       | [Named storage volumes](#named-storage-volumes)                                 |
+| `[storage.archive]`                         | `storage::archive::settings::Settings`   | Fourth-tier local archive replica target           | Operator                             | Restart / runtime worker                | [Fourth-tier local archive](#fourth-tier-local-archive)                         |
+| `[battery_wake]`                            | `BatteryWakeConfig`                      | Reolink battery-camera wake middleman              | Operator                             | Restart                                 | [Battery wake](#battery-wake)                                                   |
+| `[logging]`                                 | `LoggingConfig`                          | Windows service log destination                    | Operator                             | Restart                                 | [Logging](#logging)                                                             |
+| `[reporting]`                               | `reporting::Settings`                    | Optional HTTPS bug reporting service               | Operator                             | Restart                                 | [Bug reporting service](#bug-reporting-service)                                 |
+| `[usage_reporting]`                         | `usage_reporting::UsageReportingConfig`  | Opt-in privacy-preserving usage reporting          | Operator                             | Live (UI/API) / Restart (file)          | [Usage reporting](#usage-reporting)                                             |
+| `[cloud_notifications]`                     | `cloud_notifications::Settings`          | Optional Keeppeek Service mobile push signaling    | Operator (server revision)           | Live (UI/API) / Restart (file)          | [Cloud notifications](#cloud-notifications)                                     |
+| `[operational_events]`                      | `OperationalEventsConfig`                | Global and per-camera health-event timing          | Operator                             | Restart                                 | [Operational events](#operational-events)                                       |
+| `[privacy]`                                 | `PrivacyConfig`                          | Default and per-camera recurring privacy schedules | Operator                             | Live (plan/apply) / Restart (file)      | [Privacy schedules](#privacy-schedules)                                         |
+| `[analytics]`                               | `AnalyticsConfig`                        | Activity summary defaults and rollup quota         | Operator                             | Restart                                 | [Activity analytics](#activity-analytics)                                       |
+| `[event_forwarder.mqtt]`                    | `MqttForwarderConfig`                    | MQTT broker connection and forwarding policy       | Operator (server revision)           | Live (UI/API) / Restart (file)          | [MQTT event forwarding](#mqtt-event-forwarding)                                 |
+| `[access_credentials]`                      | `PersistedAccessCatalog`                 | Named bearer credential records and grants         | Server-managed                       | Live (UI/API)                           | [Credential records](#credential-records)                                       |
+| `[saved_event_searches]`                    | `server::saved_searches::StoredRegistry` | Owner-scoped saved event search ASTs               | Server-managed                       | Live (UI/API)                           | [Saved event searches](#saved-event-searches)                                   |
+| `[peek_layouts]`                            | `server::peek_layouts::StoredRegistry`   | Live-wall dashboards, display settings, selections | Server-managed                       | Live (UI/API)                           | [Peek layout registry](#peek-layout-registry)                                   |
+| `[configuration_templates]`                 | `StoredTemplateDocument`                 | Versioned camera configuration templates           | Server-managed                       | Live (UI/API)                           | [Camera templates](#camera-templates)                                           |
+| `[notifications]`                           | `NotificationConfiguration`              | Notification rule drafts and active rules          | Server-managed                       | Live (UI/API)                           | [Notification rules](#notification-rules)                                       |
+| `[runtime_profiles]`                        | `ProfileRegistry`                        | Runtime camera policy profiles and selection       | Server-managed                       | Live (UI/API)                           | [Runtime profiles](#runtime-profiles)                                           |
+| `[state_store]`                             | `server::state_store_settings`           | Settings-backed `StateStore` adapter namespaces    | Server-managed                       | Live (API)                              | [Settings-backed state store](#settings-backed-state-store)                     |
+| `[storage_migration]`                       | `StorageMigration`                       | Staged legacy storage-path move journal            | Server-managed                       | Startup migration                       | [Pending storage migration](#pending-storage-migration)                         |
+| `[homekit]`                                 | None (reserved)                          | Reserved placeholder; not an implemented schema    | Reserved (unimplemented)             | N/A                                     | —                                                                               |
+
+**Namespace and parsing rules:**
+
+- Every top-level table **not** listed among the 28 reserved keys above (`access`, `sharing`, `reporting`, `usage_reporting`, `cloud_notifications`, `external_auth`, `external_identities`, `access_credentials`, `storage`, `battery_wake`, `direct_card`, `desktop`, `mcp`, `homekit`, `logging`, `operational_events`, `analytics`, `event_forwarder`, `notifications`, `peek_layouts`, `saved_event_searches`, `configuration_templates`, `runtime_profiles`, `isapi_callbacks`, `camera_defaults`, `privacy`, `state_store`, `storage_migration`) is parsed as a **camera namespace** (`cameras` is conventional, not required). Do not use `homekit` as a camera namespace. A typo in a reserved section name is therefore parsed as a camera namespace.
+- Some structs ignore unknown fields while strict sections (`#[serde(deny_unknown_fields)]`, noted per section) reject them. Successful TOML parsing alone does not prove an unrecognized key has an effect.
+- `Config.source` and `Config.secrets_snapshot` are in-memory `#[serde(skip)]` fields; neither is a writable file key.
+- Sources: [src/config.rs](https://github.com/xnorpx/keeppeek/blob/main/src/config.rs), [src/cameras/mod.rs](https://github.com/xnorpx/keeppeek/blob/main/src/cameras/mod.rs), and the subsystem sources linked in each section.
 
 ## Location and editing
 
-| Environment | Default application configuration                        |
+| Environment | Default `config.toml` path                               |
 | ----------- | -------------------------------------------------------- |
 | macOS       | `~/Library/Application Support/keeppeek/config.toml`     |
 | Linux       | `${XDG_CONFIG_HOME:-$HOME/.config}/keeppeek/config.toml` |
 | Windows     | `%APPDATA%\keeppeek\config.toml`                         |
 | Docker      | `/config/keeppeek/config.toml`                           |
 
-`--config <path>`, `--config=<path>`, or `-c <path>` selects another file. Its companion secrets
-file is always named `secrets.toml` in the same directory. These flags do not create a second
-settings store.
-
-Default paths belong to the account running the process. A Windows service can resolve a different
-`%APPDATA%` from an interactive launch; the macOS package runs a per-user launch agent. Confirm the
-service identity and effective paths before transferring an installation. See
-[Upgrades and migrations](./upgrades-and-migrations.md).
-
-Use the UI and typed configuration operations while KeepPeek runs. Stop the server before manual
-edits so a concurrent settings update cannot overwrite them. Server writers validate candidates,
-preserve unrelated sections and secret references, and replace the file atomically under the shared
-configuration-update lock. Some changes apply live; listener or storage changes can require the
-restart or migration reported by the configuration plan.
-
-On Unix, KeepPeek creates its default private directory with mode `0700` and private files with
-mode `0600`. Restrict the directory to the service account on every platform. Secret values are
-plaintext at rest, not encrypted by TOML.
-
-In the tables below, `optional` means omit the field when unset: TOML has no `null`. Integer types
-refer to the Rust model; values must also fit TOML's integer representation. `Vec<T>` is an array,
-and a map is a table keyed by the indicated identity. Byte limits and character limits are different.
-Root fields must appear before a table header or they belong to that table.
-
-## Section index
-
-| TOML section                                       | Owning type                                         | Ownership                                             |
-| -------------------------------------------------- | --------------------------------------------------- | ----------------------------------------------------- |
-| Root fields                                        | `Config`                                            | Operator settings                                     |
-| `[sharing]`                                        | `sharing::SharingConfig`                            | Guest review deployment policy; server-owned revision |
-| `[reporting]`                                      | `reporting::Settings`                               | Optional bug reporting service settings               |
-| `[usage_reporting]`                                | `usage_reporting::UsageReportingConfig`             | Opt-in privacy-preserving usage reporting consent     |
-| `[cloud_notifications]`                            | `cloud_notifications::Settings`                     | Optional Keeppeek Service mobile push signaling       |
-| `[access]`                                         | `AccessConfig`                                      | Administrator security policy                         |
-| `[direct_card]`                                    | `DirectCardConfig`                                  | Exact browser-origin allowlist                        |
-| `[desktop]`                                        | `DesktopConfig`                                     | Optional default server URL for KeepPeek Desktop      |
-| `[mcp]`                                            | `McpConfig`                                         | Opt-in MCP server, write, and snapshot policy         |
-| `[storage]`                                        | `StorageToml`                                       | Recording paths, retention, and safety                |
-| `[battery_wake]`                                   | `BatteryWakeConfig`                                 | Reolink battery-camera wake service                   |
-| `[logging]`                                        | `LoggingConfig`                                     | Service log destination                               |
-| `[operational_events]`                             | `OperationalEventsConfig`                           | Health-event timing                                   |
-| `[operational_events.cameras."<camera-id-or-ip>"]` | `OperationalEventOverride`                          | Per-camera timing overrides                           |
-| `[privacy.default]`                                | `PrivacySchedule`                                   | Inherited server-enforced recurring privacy           |
-| `[privacy.cameras."<camera-id-or-ip>"]`            | `PrivacySchedule`                                   | Per-camera server-enforced recurring privacy          |
-| `[event_forwarder.mqtt]`                           | `MqttForwarderConfig` inside `EventForwarderConfig` | MQTT configuration; server-owned revision             |
-| `[camera_defaults]`                                | `CameraCredentialDefaults`                          | Shared camera defaults                                |
-| `[<namespace>.<camera-key>]`                       | `CameraConfig`                                      | Camera settings                                       |
-| `[<namespace>.<camera-key>.events]`                | `EventConfig`                                       | Native camera event selection and filters             |
-| `[access_credentials]`                             | `PersistedAccessCatalog`                            | Server-managed credential records                     |
-| `[peek_layouts]`                                   | `StoredRegistry`                                    | Server-managed layouts and per-user selection         |
-| `[saved_event_searches]`                           | `StoredRegistry`                                    | Server-managed owner-scoped saved event searches      |
-| `[configuration_templates]`                        | `StoredTemplateDocument`                            | Server-managed camera templates                       |
-| `[notifications]`                                  | `NotificationConfiguration`                         | Server-managed rule drafts and active rules           |
-| `[runtime_profiles]`                               | `ProfileRegistry`                                   | Server-managed profile definitions and selection      |
-| `[storage_migration]`                              | `StorageMigration`                                  | Server-managed pending storage move                   |
-
-`homekit` is a reserved root section, not an implemented HomeKit configuration schema. Do not use
-it as a camera namespace. Every other non-reserved root table is interpreted as a camera namespace;
-`cameras` is the conventional name, not the only allowed one. A typo in a section name can therefore
-be interpreted as camera configuration. Some structs ignore unknown fields, so successful TOML
-parsing alone does not prove a field has an effect.
-
-`[runtime_profiles]` is server-managed configuration data. Its registry holds up to 32 named
-profiles, and each profile can target up to 127 cameras with sparse runtime-safe overrides. Do not
-edit this section manually. See [Runtime profiles](#runtime-profiles) for controls, permitted
-fields, failure handling, retry, and recovery behavior.
-
-Sources: [configuration](https://github.com/xnorpx/keeppeek/blob/main/src/config.rs),
-[cameras](https://github.com/xnorpx/keeppeek/blob/main/src/cameras/mod.rs), and the subsystem sources
-linked below. `Config.source` is an in-memory copy of the original TOML table, marked `serde(skip)`;
-there is no writable `source` field in the file.
+- **CLI selection:** `--config <path>`, `--config=<path>`, or `-c <path>` selects another config file; its companion secrets file is always `secrets.toml` in the same directory. `--access-key <uuid>` (or `--access-key=<uuid>`) supplies or updates the initial Administrator key stored into `secrets.toml`.
+- **Service account paths:** Default paths belong to the process user account (a Windows service can resolve a different `%APPDATA%` from interactive runs; the macOS package runs a per-user launch agent). Verify effective paths before migrating; see [Upgrades and migrations](./upgrades-and-migrations.md).
+- **Safe editing:** Use the UI or typed API while KeepPeek runs. Stop the server before manual edits so concurrent updates do not overwrite them. Server writers validate full candidates, preserve unrelated sections and secret references, and replace the file atomically under the shared configuration-update lock.
+- **File permissions:** On Unix, KeepPeek creates default directories with `0700` and private files with `0600`. Restrict the directory to the service account on every platform. Values in `secrets.toml` are plaintext at rest, not encrypted by TOML.
+- **Table conventions:** `Absent` in the Default column means omit the key when unset (TOML has no `null`). Integer types refer to the Rust model and must also fit TOML's signed 64-bit integer range (`i64`). `Vec<T>` is a TOML array; maps are TOML tables keyed by the noted identity. Byte limits and character limits differ. Place all root fields before the first `[table]` header.
 
 ## Passwords and secret references
 
-`Secrets` is a flat `BTreeMap<String, String>`. Its keys must match `[A-Z_][A-Z0-9_]*`.
-Nested tables, arrays, numbers, and booleans are not secret values. Enter real values directly on
-the server; do not put them in source control, screenshots, logs, or shell arguments.
+`Secrets` (`secrets.toml`) is a flat `BTreeMap<String, String>`. Keys must match `[A-Z_][A-Z0-9_]*`. Nested tables, arrays, numbers, and booleans are invalid. Enter real secrets directly on the host; never commit them to source control or place them in logs, screenshots, or shell arguments.
 
-Example companion secrets file, with placeholders that must be replaced locally:
+Example `secrets.toml` (replace placeholders locally):
 
 ```toml
 CAMERA_USERNAME = "replace-with-camera-user"
@@ -111,7 +82,7 @@ FRONT_CAMERA_PASSWORD = "replace-with-front-camera-password"
 MQTT_PASSWORD = "replace-with-broker-password"
 ```
 
-The application configuration refers to those keys:
+Example `config.toml` referencing those keys:
 
 ```toml
 host = "0.0.0.0"
@@ -134,311 +105,234 @@ username = "keeppeek"
 password = "{secret:MQTT_PASSWORD}"
 ```
 
-- `{secret:KEY}` substitutes the string directly. It can occupy the entire value or part of it.
-- `{secret:KEY|url}` percent-encodes a URL component. Use it for a password, username, or query
-  value embedded in a URL, not for an entire URL. Bytes other than RFC 3986 unreserved characters
-  are encoded, including `@`, `:`, `/`, spaces, and non-ASCII UTF-8 bytes.
-- `KEEPPEEK_SECRET_<KEY>` in the server process environment overrides the same key in the file.
-  A literal value does not consult either source.
-- A missing referenced key, malformed reference, unsupported modifier, or invalid secrets file
-  fails loading or the corresponding settings operation. Diagnostics identify the key without
-  including its value.
-- Resolution substitutes strings, not TOML syntax. It does not convert a quoted numeric secret
-  into an integer or expand table keys. Inserted secret values are not recursively expanded.
-- Reusing a key gives several cameras the same credential. A per-camera key overrides the shared
-  default. Rotate an ordinary secret in the companion file and restart KeepPeek to reconnect with
-  the new value.
+- `{secret:KEY}` substitutes the string verbatim (full value or substring).
+- `{secret:KEY|url}` percent-encodes a URL component (all bytes except RFC 3986 unreserved `A-Z`, `a-z`, `0-9`, `-`, `.`, `_`, `~`, including `@`, `:`, `/`, spaces, and non-ASCII UTF-8). Use for embedded credentials or query values, not entire URLs.
+- `KEEPPEEK_SECRET_<KEY>` in the server environment overrides the matching key in `secrets.toml`. Literal config values never consult either source.
+- Missing keys, malformed references, unknown modifiers, or invalid `secrets.toml` fail loading or the settings operation; diagnostics name the key without exposing its value.
+- Resolution substitutes strings only (never TOML numbers/tables) and is non-recursive.
+- Rotating a secret in `secrets.toml` requires restarting KeepPeek to reconnect with the new value.
 
 ### Reference boundaries
 
-| Setting                                                                                        | Supported resolution                                                                                                                                                           |
-| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Root settings, camera defaults, camera entries, and ordinary settings sections                 | String values and strings inside arrays/tables are resolved before typed deserialization. The resolved string must still satisfy the field's type and validation.              |
-| `[event_forwarder.mqtt].password`                                                              | Direct or referenced string. The MQTT settings writer stores a supplied password in the companion file under `MQTT_PASSWORD`.                                                  |
-| Notification `active.actions[].destination` and `draft.actions[].destination`                  | The notification loader explicitly resolves destination references. Non-browser destinations saved through the rule store use managed `KEEPPEEK_NOTIFICATION_...` secret keys. |
-| Camera-template `username_secret_reference` and `password_secret_reference`                    | Complete reference tokens only, not inline credentials or interpolated surrounding text. Values are resolved when applying camera configuration.                               |
-| `[access_credentials]`, `[peek_layouts]`, other notification fields, and other template fields | Not blanket-expanded as secret templates. These sections have dedicated loaders.                                                                                               |
-| `[storage_migration]`                                                                          | Concrete paths written by the server, not a secret-template interface.                                                                                                         |
+| Section / fields                                                                                                                                                                                                                                  | Secret-reference behavior                                                                                                                                                                                                                                                             |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Root settings, `[camera_defaults]`, camera entries (including `ip` and `.events`), `[storage]` (including `named_volumes` and `archive`), `[sharing].public_origin`, `[external_auth]`, and other ordinary sections                               | Strings (including inside arrays/tables) are resolved before typed deserialization; resolved values must still satisfy field types and bounds. `[external_auth]` secrets (`client_secret`, `shared_secret`) **must** be complete `{secret:...}` references (inline secrets rejected). |
+| `[isapi_callbacks].sources[].password`                                                                                                                                                                                                            | **Must** contain a `{secret:...}` reference in `config.toml` (inline passwords rejected before resolution). Other strings in `[isapi_callbacks]` also resolve before deserialization.                                                                                                 |
+| `[event_forwarder.mqtt].password`                                                                                                                                                                                                                 | Accepts literal or reference; the MQTT writer stores supplied passwords in `secrets.toml` under `MQTT_PASSWORD`.                                                                                                                                                                      |
+| `[reporting].credential` & `[cloud_notifications].signing_key`                                                                                                                                                                                    | Complete `{secret:KEY}` only (`<= 128`-byte key name, no `\|url`). Syntax-checked at load without resolving; resolved lazily only when issuing a report grant or signing a cloud signal.                                                                                              |
+| `[notifications]` `active.actions[].destination` & `draft.actions[].destination`                                                                                                                                                                  | Explicitly resolved by the notification loader. Non-browser destinations saved via the store are moved into managed `KEEPPEEK_NOTIFICATION_...` keys.                                                                                                                                 |
+| `[configuration_templates]` `username_secret_reference` & `password_secret_reference`                                                                                                                                                             | Complete reference tokens only (no inline credentials or surrounding text); resolved when applied to a camera.                                                                                                                                                                        |
+| `[access_credentials]`, `[external_identities]`, `[peek_layouts]`, `[saved_event_searches]`, `[runtime_profiles]`, `[state_store]`, other notification/template fields, `[storage_migration]`, numeric audio offsets, numeric retention durations | Not blanket-expanded as secret templates. Dedicated loaders or numeric types apply.                                                                                                                                                                                                   |
 
-Configuration responses and unrelated settings updates preserve existing reference tokens instead
-of returning or persisting resolved credentials. Inline camera credentials remain supported but
-are not automatically moved to the secret file. Intentionally replacing a camera credential in
-the editor can replace its reference with an inline value. Ordinary layout exchange must not
-include credentials, verifiers, or unrelated user state. Full recovery archives have a different
-security contract; see [backup and restore](./backup-and-restore.md).
+Settings responses and unrelated writes preserve existing reference tokens instead of writing resolved secrets back to `config.toml`. Inline camera credentials remain supported and are not auto-migrated; replacing a camera credential in the editor can replace a reference with an inline value. Ordinary layout exports exclude credentials, verifiers, and unrelated user state; full recovery archives have a separate security contract (see [Backup and restore](./backup-and-restore.md)).
 
-The first-run access key is generated as `KEEPPEEK_ACCESS_KEY` in the companion file and referenced
-from the root `access_key` field. Named credentials created later retain only verifiers in the
-application configuration and return their raw keys once. See
-[authentication](./authentication.md) and the
-[secret lifecycle guide](https://github.com/xnorpx/keeppeek/blob/main/docs/secrets.md).
+First-run startup generates `KEEPPEEK_ACCESS_KEY` in `secrets.toml` and references it from root `access_key`. Named credentials created later store only SHA-256 verifiers in `[access_credentials]` and show raw keys once. See [Authentication](./authentication.md) and [docs/secrets.md](https://github.com/xnorpx/keeppeek/blob/main/docs/secrets.md).
 
 ## Root settings
 
-Type: `Config`. Nested section fields are listed in the section index.
+**Type:** `Config` | **Section:** root (before any `[table]` header) | **Ownership:** Operator | **Apply:** Restart | **Source:** [src/config.rs](https://github.com/xnorpx/keeppeek/blob/main/src/config.rs)
 
-| Field        | Type        | Default                                  | Meaning                                                                                                                                                                        |
-| ------------ | ----------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `host`       | `String`    | `"0.0.0.0"`                              | HTTP listener bind address.                                                                                                                                                    |
-| `port`       | `u16`       | `8081`                                   | HTTP listener port.                                                                                                                                                            |
-| `access_key` | `AccessKey` | Unset in the model; generated on startup | Compatibility initial Administrator key: a UUID string, a reference resolving to a UUID, or integer `0` as the unset marker. `0` is not a switch that disables authentication. |
+| Field        | Type        | Default                     | Limits and notes                                                                                                                                                                  |
+| ------------ | ----------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `host`       | `String`    | `"0.0.0.0"`                 | HTTP listener bind address.                                                                                                                                                       |
+| `port`       | `u16`       | `8081`                      | HTTP listener port.                                                                                                                                                               |
+| `access_key` | `AccessKey` | Unset; generated on startup | Initial compatibility Administrator key: hyphenated UUID string, `{secret:KEY}` resolving to a UUID, or integer `0` as the unset marker. `0` does **not** disable authentication. |
 
 ## Access policy
 
-Type: `AccessConfig`, section `[access]`.
+**Type:** `AccessConfig` | **Section:** `[access]` | **Ownership:** Operator | **Apply:** Restart | **Source:** [src/config.rs](https://github.com/xnorpx/keeppeek/blob/main/src/config.rs)
 
-| Field                               | Type         | Default        | Validation and meaning                                                                                                                  |
-| ----------------------------------- | ------------ | -------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `local_networks`                    | `Vec<IpNet>` | Networks below | At most 64 CIDRs. Matches become trusted-local Administrators without sign-in. Setting the array replaces the defaults.                 |
-| `trusted_proxies`                   | `Vec<IpNet>` | `[]`           | At most 64 CIDRs, checked separately from `local_networks`. Only these peers can supply the supported forwarded-client header contract. |
-| `require_secure_remote`             | `bool`       | `true`         | Require the declared secure boundary for remote traffic.                                                                                |
-| `failed_authentication_limit`       | `u32`        | `5`            | Nonzero failed-attempt limit per address/window.                                                                                        |
-| `failed_authentication_window_secs` | `u64`        | `60`           | Nonzero authentication-rate window, in seconds.                                                                                         |
-| `session_idle_timeout_secs`         | `u64`        | `1800`         | Nonzero; cannot exceed the absolute timeout.                                                                                            |
-| `session_absolute_timeout_secs`     | `u64`        | `86400`        | Nonzero maximum session lifetime.                                                                                                       |
-| `max_sessions_per_principal`        | `u32`        | `64`           | Nonzero concurrent-session limit per identity.                                                                                          |
-| `max_sessions_per_address`          | `u32`        | `128`          | Nonzero concurrent-session limit per address.                                                                                           |
+| Field                               | Type         | Default                          | Limits and notes                                                                                                                                  |
+| ----------------------------------- | ------------ | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `local_networks`                    | `Vec<IpNet>` | 8 private/link-local CIDRs below | Max 64 CIDRs. Matching peers are trusted-local Administrators without sign-in. Setting this array replaces all defaults.                          |
+| `trusted_proxies`                   | `Vec<IpNet>` | `[]`                             | Max 64 CIDRs, checked separately from `local_networks`. Only these peers may supply the forwarded-client header (`X-Forwarded-For`, max 16 hops). |
+| `require_secure_remote`             | `bool`       | `true`                           | Requires the declared secure transport boundary for remote traffic.                                                                               |
+| `failed_authentication_limit`       | `u32`        | `5`                              | Nonzero failed attempts per address per window before rate limiting.                                                                              |
+| `failed_authentication_window_secs` | `u64`        | `60`                             | Nonzero authentication rate-limit window, in seconds.                                                                                             |
+| `session_idle_timeout_secs`         | `u64`        | `1800`                           | Nonzero; must be `<= session_absolute_timeout_secs`.                                                                                              |
+| `session_absolute_timeout_secs`     | `u64`        | `86400`                          | Nonzero maximum session lifetime, in seconds.                                                                                                     |
+| `max_sessions_per_principal`        | `u32`        | `64`                             | Nonzero concurrent session cap per identity.                                                                                                      |
+| `max_sessions_per_address`          | `u32`        | `128`                            | Nonzero concurrent session cap per client address.                                                                                                |
 
-Default local networks are `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`,
-`169.254.0.0/16`, `::1/128`, `fc00::/7`, and `fe80::/10`. A container bridge or VPN within those
-ranges is trusted unless the operator narrows the list. Forwarding headers and CORS do not replace
-authentication. Review [authentication and access control](./authentication.md) before exposing the
-listener.
+Default `local_networks`: `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `::1/128`, `fc00::/7`, `fe80::/10`. Container bridges or VPNs inside those ranges are trusted unless narrowed. Forwarding headers and CORS never replace authentication; review [Authentication and access control](./authentication.md) before exposing the listener.
 
 ### Direct card origins
 
-Type: `DirectCardConfig`, section `[direct_card]`.
+**Type:** `DirectCardConfig` | **Section:** `[direct_card]` | **Ownership:** Operator | **Apply:** Restart
 
-| Field             | Type          | Default | Validation and meaning                                                                                                                      |
-| ----------------- | ------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `allowed_origins` | `Vec<String>` | `[]`    | Unique canonical exact HTTP(S) origins, such as `"https://ha.example"`. No credentials, path, query, fragment, wildcard, or trailing slash. |
+| Field             | Type          | Default | Limits and notes                                                                                                                                                    |
+| ----------------- | ------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `allowed_origins` | `Vec<String>` | `[]`    | Unique canonical exact HTTP(S) origins (e.g., `"https://ha.example"`). No credentials, path, query, fragment, wildcard, trailing slash, control chars, or port `0`. |
 
 ### Desktop client settings
 
-Type: `DesktopConfig`, section `[desktop]`. Unknown fields in `[desktop]` are rejected. KeepPeek Desktop stores its saved server target here instead of creating a separate settings file.
+**Type:** `DesktopConfig` (`deny_unknown_fields`) | **Section:** `[desktop]` | **Ownership:** Operator / KeepPeek Desktop | **Apply:** Desktop launch
 
-| Field        | Type              | Default | Validation and meaning                                                                                                                                                        |
-| ------------ | ----------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `server_url` | optional `String` | Absent  | Canonical exact HTTP(S) origin, 1 to 512 UTF-8 bytes, such as `"http://127.0.0.1:8081"` or `"https://nvr.example"`. No credentials, path, query, fragment, or trailing slash. |
+| Field        | Type              | Default | Limits and notes                                                                                                                                                                                                                                         |
+| ------------ | ----------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server_url` | Optional `String` | Absent  | Canonical exact HTTP(S) origin (`1..=512` UTF-8 bytes, e.g., `"http://127.0.0.1:8081"`, `"https://nvr.example"`). Rejects credentials, path, query, fragment, trailing slash, control chars, port `0`, and unspecified bind addresses (`0.0.0.0`, `::`). |
 
 ## Guest review deployment policy
 
-Type: `sharing::SharingConfig`, section `[sharing]`. Guest sharing is disabled by default.
-These settings use the existing `config.toml`; they do not configure a tunnel, relay, DNS,
-TLS certificate or network exposure. An operator must provide the reachable HTTPS origin.
+**Type:** `sharing::SharingConfig` (`deny_unknown_fields`) | **Section:** `[sharing]` | **Ownership:** Operator (server-owned `revision`) | **Apply:** Live (Admin control command) / Restart (manual file edit) | **Source:** [src/config/sharing.rs](https://github.com/xnorpx/keeppeek/blob/main/src/config/sharing.rs)
 
-| Field           | Type              | Default | Validation and meaning                                                                                                                                                                |
-| --------------- | ----------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `enabled`       | `bool`            | `false` | Enables guest handoff only when the remaining origin, evidence, private metadata and transport checks succeed.                                                                        |
-| `public_origin` | optional `String` | Absent  | Canonical HTTPS origin, 1 to 512 UTF-8 bytes. No credentials, path, query, fragment or trailing slash; for example `"https://review.example"`. An enabled policy requires this value. |
-| `revision`      | `u64`             | `1`     | Server-owned optimistic-write revision. Must be positive and fit a TOML signed integer. Successful Administrator policy writes increment it; stale revisions are rejected.            |
+Guest sharing is disabled by default. These fields do not configure a tunnel, relay, DNS, TLS certificate, or network exposure—the operator must provide a reachable HTTPS origin.
 
-Unknown fields in `[sharing]` are rejected by the real configuration loader. A
-`public_origin` may use the existing `{secret:KEY}` resolver. Saving an unchanged effective
-origin preserves its original secret reference in `config.toml`; it does not rewrite the
-resolved value or modify `secrets.toml`. The effective origin is visible to Administrators
-because it is the public address used in guest links.
+| Field           | Type              | Default | Limits and notes                                                                                                                                                                                                                                                                                           |
+| --------------- | ----------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`       | `bool`            | `false` | Enables guest handoff only when origin, evidence, private metadata, and transport checks succeed. Requires `public_origin` when `true`.                                                                                                                                                                    |
+| `public_origin` | Optional `String` | Absent  | Canonical HTTPS origin (`1..=512` UTF-8 bytes, e.g., `"https://review.example"`). No credentials, path, query, fragment, trailing slash, or control chars. Accepts `{secret:KEY}`; saving an unchanged effective origin preserves the raw reference. Visible to Administrators because guest links use it. |
+| `revision`      | `u64`             | `1`     | Server-owned optimistic-write revision (`1..=i64::MAX`). Successful Admin saves increment it; stale writes are rejected.                                                                                                                                                                                   |
 
-A policy save invalidates guest sessions and stops active guest delivery. Delivered view
-and download counters remain durable. If an atomic settings write returns an error after
-its commit point, guest access stops until an Administrator saves the policy successfully.
-Reloading a camera configuration cannot silently enable that suspended policy. Manual file
-edits take effect on restart; live policy changes use the Administrator control command.
+**Lifecycle and operational bounds:**
 
-Grants, hashed token verifiers and audit counters are operational data under the private,
-identity-pinned metadata owner, in `guest-review/grants.db`; they are not a second settings
-file. The store requires private local filesystem ownership and rejects unsafe or unavailable
-roots. Guest sessions and active transfers do not survive restart. The dedicated guest cookie
-never becomes a normal KeepPeek principal, role or control-channel credential.
-
-The fixed grant limits are 256 active grants, 32 per creator, at most 24 hours and no later
-than the immutable export's expiry. Evidence is limited to two minutes and 512 MiB. Display
-names are limited to 128 UTF-8 bytes and notes to 512. There are at most eight media sessions
-globally and two per grant. Retention may remove evidence before a grant expires; sharing
-creates no evidence hold. Expired or revoked metadata disappears from management lists after
-30 days. On startup the recorder removes all overdue rows before serving grants, bounded by
-the 4,096-record history capacity. During normal operation a cleanup transaction removes at
-most 256 rows. A full batch schedules another pass, otherwise maintenance waits one minute.
-The recorder rejects new grants when its retained audit store reaches capacity.
+- Saving policy invalidates active guest sessions and stops active guest transfers while preserving durable view/download counters. If an atomic write returns an indeterminate persistence error after commit, guest access halts until an Administrator saves successfully; reloading camera config cannot silently re-enable it.
+- Grants, hashed token verifiers, and audit counters live in operational SQLite storage under the private, identity-pinned metadata owner (`guest-review/grants.db`), never in a second settings file. Guest sessions and active transfers do not survive restart, and guest cookies never elevate to a KeepPeek principal, role, or control-channel credential.
+- **Fixed limits:** max `256` active grants, `32` per creator, `<= 24` hours (bounded by export expiry); evidence max `2` minutes and `512 MiB`; display name `<= 128` UTF-8 bytes, notes `<= 512` bytes; max `8` concurrent media sessions globally and `2` per grant. Sharing creates no retention hold. Expired/revoked records drop from management lists after `30` days. Audit history caps at `4,096` records (new grants rejected at capacity); startup purges overdue rows, and runtime maintenance deletes up to `256` rows per pass (re-scheduling immediately on a full batch, otherwise waiting 1 minute).
 
 ## External authentication configuration
 
-Type: `access::external::Config`, optional section `[external_auth]`. Configured
-OIDC providers use browser authorization-code login with PKCE. Configured identity
-proxies use exact assertions from their immediate trusted transport peer. Both
-methods use revocable browser sessions and the existing server-side camera grants.
-Omitting the section preserves existing local and bearer behavior.
+**Type:** `access::external::Config` (`deny_unknown_fields`) | **Section:** `[external_auth]` (optional) | **Ownership:** Operator | **Apply:** Live (plan/apply) / Restart (file) | **Source:** [src/access/external.rs](https://github.com/xnorpx/keeppeek/blob/main/src/access/external.rs)
 
-| Field                        | Type            | Default  | Validation                                                                                                          |
-| ---------------------------- | --------------- | -------- | ------------------------------------------------------------------------------------------------------------------- |
-| `allowed_origins`            | `Vec<String>`   | Required | 1–16 unique canonical exact HTTPS origins, without credentials, path, query, fragment, wildcard, or trailing slash. |
-| `providers`                  | `Vec<Provider>` | Required | 1–4 providers with unique IDs.                                                                                      |
-| `bearer_enabled`             | `bool`          | `false`  | Mixed mode requires an explicit transition deadline.                                                                |
-| `bearer_transition_until_ms` | Optional `i64`  | Absent   | Positive Unix milliseconds; present if and only if `bearer_enabled` is true.                                        |
+Omitting `[external_auth]` preserves default local and bearer-key behavior. OIDC providers use browser authorization code + PKCE; identity proxies assert identities from immediate trusted transport peers. Both issue revocable browser sessions and enforce server-side camera grants. All structs in this section reject unknown fields.
 
-Each `[[external_auth.providers]]` has `id`, `name`, `mappings`, and a `method`
-table. IDs contain 1–64 ASCII letters, digits, underscores, or hyphens. Names
-contain 1–64 bytes without control characters and cannot be whitespace-only.
-At least one mapping is required per provider; there are at most 128 across all
-providers. Unknown fields are rejected.
+| Field                        | Type            | Default  | Limits and notes                                                                                                                                      |
+| ---------------------------- | --------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `allowed_origins`            | `Vec<String>`   | Required | `1..=16` unique canonical exact HTTPS origins (`<= 2,048` B each; no credentials, path, query, fragment, wildcard, trailing slash, or control chars). |
+| `providers`                  | `Vec<Provider>` | Required | `1..=4` `[[external_auth.providers]]` entries with unique `id`s.                                                                                      |
+| `bearer_enabled`             | `bool`          | `false`  | Enables mixed bearer + external transition mode; requires `bearer_transition_until_ms`.                                                               |
+| `bearer_transition_until_ms` | Optional `i64`  | Absent   | Positive Unix ms; must be present **if and only if** `bearer_enabled = true`.                                                                         |
 
-Each `[[external_auth.providers.mappings]]` contains `claim` (1–64 bytes), `value`
-(1–256 bytes), and `role` (`administrator` or `user`). Claim names and values cannot
-be whitespace-only or contain control characters. User mappings require an explicit
-`camera_access` table using the existing `all_cameras`, `camera_ids`, and `group_ids`
-fields and limits, with at most 128 camera and group IDs combined per external
-identity policy. Set `all_cameras` and `camera_ids` explicitly; `group_ids` defaults
-to an empty list. With `all_cameras = false`, empty camera and group lists grant
-no cameras. Administrator mappings must
-omit `camera_access` because Administrators are unrestricted. Unmapped identities
-and identities matching multiple rules are denied. Mapping claims must be strings
-or lists of at most 128 strings, each at most 256 bytes; the claims object is limited
-to 16 KiB serialized JSON.
+**Provider (`[[external_auth.providers]]`) & Mapping (`[[external_auth.providers.mappings]]`):**
 
-For `[external_auth.providers.method]` with `kind = "oidc"`:
+| Table / Field           | Type                    | Default                                            | Limits and notes                                                                                                                                                                                                                 |
+| ----------------------- | ----------------------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `provider.id`           | `String`                | Required                                           | Unique; `1..=64` ASCII `[A-Za-z0-9_-]`.                                                                                                                                                                                          |
+| `provider.name`         | `String`                | Required                                           | Nonblank `1..=64` bytes, no control chars.                                                                                                                                                                                       |
+| `provider.mappings`     | `Vec<Mapping>`          | Required                                           | `>= 1` per provider; max `128` mappings across all providers.                                                                                                                                                                    |
+| `provider.method`       | `Method`                | Required                                           | Tagged table `[external_auth.providers.method]` with `kind = "oidc"` or `kind = "proxy"`.                                                                                                                                        |
+| `mapping.claim`         | `String`                | Required                                           | Nonblank `1..=64` bytes, no control chars.                                                                                                                                                                                       |
+| `mapping.value`         | `String`                | Required                                           | Nonblank `1..=256` bytes, no control chars.                                                                                                                                                                                      |
+| `mapping.role`          | `AccessRole`            | Required                                           | `"administrator"` or `"user"`.                                                                                                                                                                                                   |
+| `mapping.camera_access` | Optional `CameraAccess` | Required for `user`; forbidden for `administrator` | Same schema as [Credential records](#credential-records) (`all_cameras` + `camera_ids` explicit; `group_ids` defaults to `[]`; max `128` combined camera + group IDs). With `all_cameras = false`, empty lists grant no cameras. |
 
-| Field                | Type              | Default      | Validation                                                                                                                                                          |
-| -------------------- | ----------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `issuer`             | `String`          | Required     | HTTPS URL without user-info, query, or fragment.                                                                                                                    |
-| `client_id`          | `String`          | Required     | 1–256 bytes, nonblank, no control characters.                                                                                                                       |
-| `client_secret`      | Optional `String` | Absent       | Complete `{secret:KEY}` or `{secret:KEY\|url}` reference; resolved value is nonblank, at most 4,096 bytes, without control characters. Inline secrets are rejected. |
-| `redirect_uri`       | `String`          | Required     | Allowed HTTPS origin with exactly `/auth/callback`, no query or fragment.                                                                                           |
-| `scopes`             | `Vec<String>`     | `["openid"]` | At most 16 unique OAuth scope tokens of 1–64 bytes; must include `openid`.                                                                                          |
-| `display_name_claim` | `String`          | `"name"`     | 1–64 bytes, nonblank, no control characters.                                                                                                                        |
-| `endpoint_origins`   | `Vec<String>`     | `[]`         | At most 16 unique canonical HTTPS origins for additional provider endpoints.                                                                                        |
-| `private_networks`   | `Vec<IpNet>`      | `[]`         | At most 64 explicitly permitted private issuer networks.                                                                                                            |
-| `logout_uri`         | Optional `String` | Absent       | HTTPS URL without user-info, query, or fragment.                                                                                                                    |
+Unmapped identities and identities matching more than one rule are denied. Evaluated claims must be a string or a list of `<= 128` strings (`<= 256` B each); serialized claims JSON is bounded to `16 KiB`.
 
-All external-authentication URLs are limited to 2,048 bytes. A configured URL does
-not authorize arbitrary discovery redirects or other network destinations.
+**OIDC method (`[external_auth.providers.method]`, `kind = "oidc"`):**
 
-For `[external_auth.providers.method]` with `kind = "proxy"`:
+| Field                | Type              | Default      | Limits and notes                                                                                                                                   |
+| -------------------- | ----------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `issuer`             | `String`          | Required     | HTTPS URL (`<= 2,048` B); no user-info, query, or fragment.                                                                                        |
+| `client_id`          | `String`          | Required     | Nonblank `1..=256` bytes, no control chars.                                                                                                        |
+| `client_secret`      | Optional `String` | Absent       | Complete `{secret:KEY}` or `{secret:KEY\|url}` reference only (inline secrets rejected). Resolved value: nonblank `1..=4,096` B, no control chars. |
+| `redirect_uri`       | `String`          | Required     | Allowed HTTPS origin with exact path `/auth/callback`; no query or fragment.                                                                       |
+| `scopes`             | `Vec<String>`     | `["openid"]` | Max `16` unique OAuth scope tokens (`1..=64` B each); must include `"openid"`.                                                                     |
+| `display_name_claim` | `String`          | `"name"`     | Nonblank `1..=64` bytes, no control chars.                                                                                                         |
+| `endpoint_origins`   | `Vec<String>`     | `[]`         | Max `16` unique canonical HTTPS origins for additional provider endpoints.                                                                         |
+| `private_networks`   | `Vec<IpNet>`      | `[]`         | Max `64` explicitly permitted private issuer networks.                                                                                             |
+| `logout_uri`         | Optional `String` | Absent       | HTTPS URL (`<= 2,048` B); no user-info, query, or fragment.                                                                                        |
 
-| Field            | Type              | Default  | Validation                                                                           |
-| ---------------- | ----------------- | -------- | ------------------------------------------------------------------------------------ |
-| `trusted_peers`  | `Vec<IpNet>`      | Required | 1–64 immediate transport-peer CIDRs, independent of forwarded-client classification. |
-| `subject_header` | `String`          | Required | Exact identity assertion header.                                                     |
-| `role_header`    | `String`          | Required | Exact role assertion header; values still require explicit mapping.                  |
-| `name_header`    | Optional `String` | Absent   | Optional display metadata header.                                                    |
-| `secret_header`  | Optional `String` | Absent   | Present if and only if `shared_secret` is present.                                   |
-| `shared_secret`  | Optional `String` | Absent   | Same reference and resolved-value rules as `client_secret`.                          |
+All external-auth URLs are bounded to `2,048` bytes and never authorize arbitrary discovery redirects or unconfigured destinations.
 
-Header names are distinct ignoring ASCII case, at most 64 ASCII letters, digits,
-or hyphens, start with `X-`, and cannot start with `X-Forwarded-`. Secret references
-remain unchanged in `config.toml`; only the runtime copy resolves them. Existing
-configuration validation rejects invalid candidates before the atomic writer runs.
+**Identity-proxy method (`[external_auth.providers.method]`, `kind = "proxy"`):**
 
-Trusted peer networks from different identity proxy providers must not overlap.
-KeepPeek checks the immediate peer after normalizing IPv4-mapped IPv6 addresses;
-configure IPv4 CIDRs for those peers.
+| Field            | Type              | Default  | Limits and notes                                                                                                                                                                                                 |
+| ---------------- | ----------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `trusted_peers`  | `Vec<IpNet>`      | Required | `1..=64` immediate transport-peer CIDRs, independent of `[access].trusted_proxies`. Networks across different proxy providers must not overlap. IPv4-mapped IPv6 peers normalize to IPv4 (configure IPv4 CIDRs). |
+| `subject_header` | `String`          | Required | Exact identity assertion header.                                                                                                                                                                                 |
+| `role_header`    | `String`          | Required | Exact role assertion header (still requires explicit mapping).                                                                                                                                                   |
+| `name_header`    | Optional `String` | Absent   | Optional display-name header.                                                                                                                                                                                    |
+| `secret_header`  | Optional `String` | Absent   | Present **if and only if** `shared_secret` is present.                                                                                                                                                           |
+| `shared_secret`  | Optional `String` | Absent   | Same complete-reference and resolved-value rules as `client_secret`.                                                                                                                                             |
+
+All proxy header names must be distinct (case-insensitive), `<= 64` ASCII `[A-Za-z0-9-]`, start with `X-`, and **not** start with `X-Forwarded-`. Secret references stay unexpanded in `config.toml`.
 
 ### Durable external identities
 
-`[external_identities]` has `version = 1` and at most 1,024 `records`. Each record
-contains `id` (non-nil UUID), `provider_id`, `subject_fingerprint` (64 lowercase
-hexadecimal characters), `display_name`, `role`, `camera_access`, positive
-`revision`, `enabled`, and nonnegative `created_at_ms`. Provider and display names
-are nonblank, at most 64 bytes, and contain no control characters. Subject
-fingerprints and IDs are unique. Administrator camera access is unrestricted.
+**Type:** `access::identities::Directory` (`deny_unknown_fields`) | **Section:** `[external_identities]` | **Ownership:** Server-managed | **Apply:** Live (runtime) | **Source:** [src/access/identities.rs](https://github.com/xnorpx/keeppeek/blob/main/src/access/identities.rs)
 
-The optional `admission_policy_fingerprint` is a 64-character lowercase hexadecimal
-digest of the resolved provider policy at successful authentication. KeepPeek
-updates it after ordinary or replacement-Administrator authentication. An absent
-or stale digest cannot count as a retained Administrator path; the identity must
-authenticate under the current policy first. Legacy records remain readable and
-still trigger lockout protection. Raw subjects, claims, and tokens are not stored.
+Top-level fields: `version: u32` (must be `1`) and `records: Vec<Identity>` (`[[external_identities.records]]`, max `1,024` records).
+
+| Field                          | Type              | Default  | Limits and notes                                                                                                                                                                                                                                              |
+| ------------------------------ | ----------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                           | `Uuid`            | Required | Unique non-nil UUID.                                                                                                                                                                                                                                          |
+| `provider_id`                  | `String`          | Required | Nonblank `1..=64` B, no control chars.                                                                                                                                                                                                                        |
+| `subject_fingerprint`          | `String`          | Required | Unique 64 lowercase hex SHA-256 digest of namespace + subject (raw subjects/claims/tokens are never stored).                                                                                                                                                  |
+| `admission_policy_fingerprint` | Optional `String` | Absent   | 64 lowercase hex SHA-256 digest of resolved provider policy at last successful login. Absent/stale digests cannot satisfy retained-Administrator lockout checks until the identity re-authenticates under the current policy; legacy records remain readable. |
+| `display_name`                 | `String`          | Required | Nonblank `1..=64` B, no control chars.                                                                                                                                                                                                                        |
+| `role`                         | `AccessRole`      | Required | `"administrator"` or `"user"`.                                                                                                                                                                                                                                |
+| `camera_access`                | `CameraAccess`    | Required | Unrestricted for Administrators; validated policy (`<= 128` combined IDs) for Users.                                                                                                                                                                          |
+| `revision`                     | `u64`             | Required | Positive monotonic revision.                                                                                                                                                                                                                                  |
+| `enabled`                      | `bool`            | Required | `false` revokes the identity.                                                                                                                                                                                                                                 |
+| `created_at_ms`                | `i64`             | Required | Nonnegative Unix milliseconds.                                                                                                                                                                                                                                |
 
 ## Camera defaults and camera entries
 
-Source: [camera types](https://github.com/xnorpx/keeppeek/blob/main/src/cameras/mod.rs) and
-the camera loader in [configuration](https://github.com/xnorpx/keeppeek/blob/main/src/config.rs).
+**Sources:** [src/cameras/mod.rs](https://github.com/xnorpx/keeppeek/blob/main/src/cameras/mod.rs) and [src/config.rs](https://github.com/xnorpx/keeppeek/blob/main/src/config.rs).
 
-Type: `CameraCredentialDefaults`, section `[camera_defaults]`.
+### Shared camera defaults
 
-| Field                               | Type                            | Default or inheritance                                                      |
-| ----------------------------------- | ------------------------------- | --------------------------------------------------------------------------- |
-| `username`                          | `String`                        | Empty string; accepts secret references.                                    |
-| `password`                          | `String`                        | Empty string; accepts secret references.                                    |
-| `backend`                           | Optional `CameraBackend`        | No shared override; camera model defaults to `"auto"`.                      |
-| `transport`                         | Optional `CameraTransport`      | No shared override; camera model defaults to `"tcp"`.                       |
-| `record_generic_motion_events`      | Optional `bool`                 | No shared override; camera model defaults to `false`.                       |
-| `recording_mode`                    | Optional `CameraRecordingMode`  | No shared override; camera model defaults to `"event-boost"`.               |
-| `event_recording_duration_secs`     | Optional `u64`                  | No shared override; camera model defaults to `60` seconds.                  |
-| `event_pre_recording_duration_secs` | Optional `u64`                  | No shared override; camera model defaults to `0`; range `0..30` seconds.    |
-| `event_recording_stream`            | Optional `EventRecordingStream` | No shared override; camera model defaults to `"main"`; `"main"` or `"sub"`. |
+**Type:** `CameraCredentialDefaults` | **Section:** `[camera_defaults]` | **Ownership:** Operator | **Apply:** Live (plan/apply) / Restart (file)
 
-Username and password fall back to their shared defaults when the per-camera resolved value is
-empty, including when the field is omitted. The other shared defaults apply only when the
-per-camera field is absent. Ports and RTSP URLs are not fields of `CameraCredentialDefaults`.
+| Field                               | Type                            | Default                                | Limits and notes                                                                                           |
+| ----------------------------------- | ------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `username`                          | `String`                        | `""`                                   | Shared fallback when a camera's resolved username is empty or omitted. Accepts secret refs.                |
+| `password`                          | `String`                        | `""`                                   | Shared fallback when a camera's resolved password is empty or omitted. Accepts secret refs.                |
+| `backend`                           | Optional `CameraBackend`        | Absent (model default `"auto"`)        | Inherited only when omitted on the camera.                                                                 |
+| `transport`                         | Optional `CameraTransport`      | Absent (model default `"tcp"`)         | Inherited only when omitted on the camera.                                                                 |
+| `record_generic_motion_events`      | Optional `bool`                 | Absent (model default `false`)         | Inherited only when omitted on the camera.                                                                 |
+| `recording_mode`                    | Optional `CameraRecordingMode`  | Absent (model default `"event-boost"`) | Inherited only when omitted on the camera.                                                                 |
+| `event_recording_duration_secs`     | Optional `u64`                  | Absent (model default `60`)            | Inherited only when omitted on the camera; `1..=3600` when `event-only` or pre-roll-enabled `event-boost`. |
+| `event_pre_recording_duration_secs` | Optional `u64`                  | Absent (model default `0`)             | Inherited only when omitted on the camera; `0..=30`.                                                       |
+| `event_recording_stream`            | Optional `EventRecordingStream` | Absent (model default `"main"`)        | Inherited only when omitted on the camera; `"main"` or `"sub"`.                                            |
 
-Type: `CameraConfig`, section `[<namespace>.<camera-key>]`, usually `[cameras.front_door]`.
+Ports, RTSP URLs, audio offsets, and `.events` are **not** fields of `[camera_defaults]`.
 
-Each camera table also contains the server-managed `profile_identity` string. It is a unique,
-canonical, 36-character UUID v4 assigned at startup or when the camera is created. It has no
-operator-supplied default and does not accept secret references. The configuration owner preserves
-it across ordinary camera edits; changing the IP in the same saved entry keeps profile references.
-Deleting the camera and adding another at the same IP assigns a new identity. Saved profile targets
-for the deleted identity remain unavailable until an Administrator explicitly removes or retargets
-them. Other camera controls and media source IDs continue to use their existing IP identities.
+### Camera entries
 
-Camera `ip` supports references such as `{secret:CAMERA_IP}`; the resolved value must be an IP
-address. Identity migration, the profile identity map and camera definitions use the same loaded
-disk `secrets.toml` snapshot. The raw reference stays in `config.toml` after migration instead of
-being replaced by the resolved address. Editing the secrets file does not change an already loaded
-configuration snapshot; the next configuration load uses the updated address and preserves the
-camera's saved `profile_identity`.
+**Type:** `CameraConfig` | **Section:** `[<namespace>.<camera-key>]` (e.g., `[cameras.front_door]`) | **Ownership:** Operator (server-managed `profile_identity`) | **Apply:** Live (UI/API reconnect) / Restart (file)
 
-On upgrade, KeepPeek assigns identities and converts existing IP-based profile references in one
-atomic configuration write before media starts. A current, unambiguous target becomes its saved
-identity. An absent target becomes an unavailable `missing-ip:<address>` reference that cannot bind
-to a later device at that address. Changed profile and registry revisions advance once, so stale
-clients must reload. Invalid or duplicate UUIDs and ambiguous active targets fail validation without
-writing the configuration. Keep the identity metadata when exporting or restoring the full
-configuration; do not edit it manually.
+| Field                               | Type                      | Default                           | Limits and notes                                                                                                                                                                              |
+| ----------------------------------- | ------------------------- | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ip`                                | `IpAddr`                  | Required                          | Camera IP address (not a DNS hostname). Supports `{secret:KEY}`; resolved value must parse as an IP.                                                                                          |
+| `profile_identity`                  | `String` (server-managed) | Assigned at startup/create        | Unique canonical 36-char UUID v4; no operator default or secret ref. Preserved across ordinary edits (including IP changes); deleting and re-adding assigns a new UUID. Do not edit manually. |
+| `name`                              | Optional `String`         | Camera table key                  | Replaced by the table key on load. Use `display_name` to rename in UI without changing storage identity.                                                                                      |
+| `display_name`                      | Optional `String`         | Falls back to `name`              | Human-readable UI label.                                                                                                                                                                      |
+| `manufacturer`                      | Optional `String`         | Absent                            | Nonempty trimmed value overrides discovered brand.                                                                                                                                            |
+| `username`                          | `String`                  | Shared default or `""`            | Literal or secret reference.                                                                                                                                                                  |
+| `password`                          | `String`                  | Shared default or `""`            | Literal or secret reference.                                                                                                                                                                  |
+| `onvif_port`                        | Optional `u16`            | `8000` when unset                 | ONVIF port; typed operations require `1..=65535`.                                                                                                                                             |
+| `http_port`                         | Optional `u16`            | `80` when unset                   | Direct camera HTTP control port; typed operations require `1..=65535`.                                                                                                                        |
+| `main_rtsp_url`                     | Optional `String`         | Discover via ONVIF                | Explicit main-stream RTSP URL (blank values ignored). Use `{secret:KEY\|url}` in URL credentials.                                                                                             |
+| `sub_rtsp_url`                      | Optional `String`         | Discover via ONVIF                | Explicit sub-stream RTSP URL.                                                                                                                                                                 |
+| `uid`                               | Optional `String`         | Absent                            | Reolink P2P UID for direct BCUDP discovery.                                                                                                                                                   |
+| `backend`                           | `CameraBackend`           | Shared default or `"auto"`        | `"auto"`, `"retina"`, or `"reo-proto"`.                                                                                                                                                       |
+| `transport`                         | `CameraTransport`         | Shared default or `"tcp"`         | `"tcp"` or `"udp"`.                                                                                                                                                                           |
+| `record_generic_motion_events`      | `bool`                    | Shared default or `false`         | Opt-in for supported generic motion events (independent of `events.mode`).                                                                                                                    |
+| `recording_mode`                    | `CameraRecordingMode`     | Shared default or `"event-boost"` | `"off"`, `"sub"`, `"main"`, `"both"`, `"event-boost"`, or `"event-only"`.                                                                                                                     |
+| `event_recording_duration_secs`     | `u64`                     | Shared default or `60`            | Event recording duration in seconds; `1..=3600` required for typed ops and TOML load when `event-only` or pre-roll-enabled `event-boost`.                                                     |
+| `event_pre_recording_duration_secs` | `u64`                     | Shared default or `0`             | `0..=30` seconds; `0` disables pre-roll allocation.                                                                                                                                           |
+| `event_recording_stream`            | `EventRecordingStream`    | Shared default or `"main"`        | `"main"` or `"sub"` for `event-only`; `event-boost` always boosts to main.                                                                                                                    |
+| `events`                            | `EventConfig`             | Defaults below                    | File-only native camera event policy; preserved by API edits.                                                                                                                                 |
+| `recorded_audio`                    | `RecordedAudioSettings`   | All inherit (`0`)                 | Recorded playback/export audio offset table.                                                                                                                                                  |
+| `live_audio`                        | `LiveAudioSettings`       | All inherit (`0`)                 | Live listener audio offset table.                                                                                                                                                             |
 
-A migrated `[runtime_profiles]` section carries server-managed `identity_schema = 1`. Keep it
-with the profile definitions. Earlier KeepPeek binaries reject this section rather than starting
-with UUID targets that they cannot apply; restoring an older binary requires restoring a
-compatible pre-migration configuration as well. Unknown identity schema versions fail validation.
+**Camera identity and discovery notes:**
 
-| Field                               | Type                    | Default                           | Meaning                                                                                                                                         |
-| ----------------------------------- | ----------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ip`                                | `IpAddr`                | Required                          | Camera IP address, not a DNS hostname.                                                                                                          |
-| `name`                              | Optional `String`       | Camera table key                  | The loader replaces this value with the table key. Use `display_name` to change the UI label without changing storage identity.                 |
-| `display_name`                      | Optional `String`       | Falls back to `name`              | Human-readable camera label.                                                                                                                    |
-| `manufacturer`                      | Optional `String`       | No override                       | Nonempty trimmed value takes precedence over discovery.                                                                                         |
-| `username`                          | `String`                | Shared default or empty           | Camera username; literal or secret reference.                                                                                                   |
-| `password`                          | `String`                | Shared default or empty           | Camera password; literal or secret reference.                                                                                                   |
-| `onvif_port`                        | Optional `u16`          | `8000` when unset                 | ONVIF service port. Typed configuration operations require `1..65535`.                                                                          |
-| `http_port`                         | Optional `u16`          | `80` when unset                   | Direct camera HTTP control port; typed operations require `1..65535`.                                                                           |
-| `main_rtsp_url`                     | Optional `String`       | Discover stream                   | Explicit main-stream RTSP URL takes precedence over ONVIF discovery. Blank values are not explicit URLs.                                        |
-| `sub_rtsp_url`                      | Optional `String`       | Discover stream                   | Explicit sub-stream RTSP URL. Use URL-escaped references in credential components.                                                              |
-| `uid`                               | Optional `String`       | None                              | Reolink P2P UID for direct BCUDP discovery.                                                                                                     |
-| `backend`                           | `CameraBackend`         | Shared default or `"auto"`        | `"auto"`, `"retina"`, or `"reo-proto"`.                                                                                                         |
-| `transport`                         | `CameraTransport`       | Shared default or `"tcp"`         | `"tcp"` or `"udp"`.                                                                                                                             |
-| `record_generic_motion_events`      | `bool`                  | Shared default or `false`         | Opt in to supported generic motion events.                                                                                                      |
-| `recording_mode`                    | `CameraRecordingMode`   | Shared default or `"event-boost"` | `"off"`, `"sub"`, `"main"`, `"both"`, `"event-boost"`, or `"event-only"`.                                                                       |
-| `event_recording_duration_secs`     | `u64`                   | Shared default or `60`            | Event-triggered recording duration; typed operations and TOML loading for event-only or pre-roll-enabled event-boost require `1..3600` seconds. |
-| `event_pre_recording_duration_secs` | `u64`                   | Shared default or `0`             | Range `0..30` seconds; `0` disables pre-roll allocation.                                                                                        |
-| `event_recording_stream`            | `EventRecordingStream`  | Shared default or `"main"`        | `"main"` or `"sub"`; selects the event-only recording stream. EventBoost always boosts to main.                                                 |
-| `events`                            | `EventConfig`           | Defaults below                    | Camera-native event policy, independent of video backend; configured through the file.                                                          |
-| `recorded_audio`                    | `RecordedAudioSettings` | All offsets inherit               | Recorded-media correction only; fields and bounds below.                                                                                        |
-| `live_audio`                        | `LiveAudioSettings`     | All offsets inherit               | Camera live listener correction. See values and bounds below.                                                                                   |
-
-These are stored configuration types, not promises that every camera supports every backend,
-transport, or recording capability. Discovery results such as `CameraCapabilities`, `CameraPorts`,
-`MediaProfile`, `VideoConfig`, and `AudioConfig` are not additional editable camera tables.
+- `profile_identity` migration runs once atomically at startup before media starts, converting legacy IP targets in `[runtime_profiles]` to UUIDs (or `missing-ip:<address>` for absent targets so later devices at that IP cannot bind), advancing changed revisions once, and stamping `identity_schema = 1`. Camera `ip` secret references stay raw in `config.toml`; identity maps and camera configs use the same `secrets.toml` snapshot. Invalid/duplicate UUIDs and ambiguous active IP targets fail validation without writing. Keep `profile_identity` and `identity_schema = 1` in full backups; downgrading to a pre-migration binary requires restoring a pre-migration config. Other camera controls and media source IDs continue using IP identities.
+- Stored fields do not guarantee a camera supports every backend, transport, or recording capability. Discovery outputs (`CameraCapabilities`, `CameraPorts`, `MediaProfile`, `VideoConfig`, `AudioConfig`) are runtime metadata, not editable config tables.
 
 ### Live audio timing
 
-The optional `[<namespace>.<camera-key>.live_audio]` table accepts signed whole
-milliseconds from −200 through +200. `default_offset_ms` defaults to zero.
-`main_offset_ms` and `sub_offset_ms` inherit that default when absent. An explicit
-zero disables correction for its stream. Positive values delay audio. Negative
-values delay video and add their absolute value to live video latency, including
-for muted listeners. These numeric fields cannot contain secret references.
+**Type:** `LiveAudioSettings` (`deny_unknown_fields`) | **Section:** `[<namespace>.<camera-key>.live_audio]` | **Apply:** Live (current listeners; no ingest or recording restart) | **Source:** [src/cameras/recorded_audio.rs](https://github.com/xnorpx/keeppeek/blob/main/src/cameras/recorded_audio.rs)
 
-For example, this setting delays Main audio by 80 ms and leaves Sub uncorrected:
+| Field               | Type           | Default                      | Limits and notes                                         |
+| ------------------- | -------------- | ---------------------------- | -------------------------------------------------------- |
+| `default_offset_ms` | Optional `i32` | `0` when absent              | Signed whole ms in `-200..=200`. No secret refs.         |
+| `main_offset_ms`    | Optional `i32` | Inherits `default_offset_ms` | `-200..=200`; explicit `0` disables correction for Main. |
+| `sub_offset_ms`     | Optional `i32` | Inherits `default_offset_ms` | `-200..=200`; explicit `0` disables correction for Sub.  |
+
+Positive values delay audio; negative values delay video and add `|offset|` to live video latency (including for muted listeners). In-page previews affect only the active viewer/stream.
 
 ```toml
 [cameras.front_door.live_audio]
@@ -446,151 +340,111 @@ default_offset_ms = 80
 sub_offset_ms = 0
 ```
 
-A timing-only camera settings update applies to current listeners without restarting
-ingest or recording writers. Previewing changes in the camera page only affects the
-selected viewer and stream. Recorded correction uses its own table.
-
 ### Recorded-audio timing
 
-Type: `RecordedAudioSettings`, section `[<namespace>.<camera-key>.recorded_audio]`, for example
-`[cameras.front_door.recorded_audio]`. Source:
-[recorded-audio settings](https://github.com/xnorpx/keeppeek/blob/main/src/cameras/recorded_audio.rs).
-These settings are independent of camera-native events and do not apply to live audio.
+**Type:** `RecordedAudioSettings` (`deny_unknown_fields`) | **Section:** `[<namespace>.<camera-key>.recorded_audio]` | **Apply:** Live (new playback opens & new exports; no ingest or recording restart) | **Source:** [src/cameras/recorded_audio.rs](https://github.com/xnorpx/keeppeek/blob/main/src/cameras/recorded_audio.rs)
 
-| Field               | Type           | Default         | Meaning                                                                  |
-| ------------------- | -------------- | --------------- | ------------------------------------------------------------------------ |
-| `default_offset_ms` | Optional `i32` | Zero when unset | Camera default correction in milliseconds.                               |
-| `main_offset_ms`    | Optional `i32` | Camera default  | Main-stream override; explicit zero disables correction for this stream. |
-| `sub_offset_ms`     | Optional `i32` | Camera default  | Sub-stream override; explicit zero disables correction for this stream.  |
+Independent of native events and live audio. No `[camera_defaults]` equivalent; no secret refs; rejects unknown keys, floats, and out-of-range values.
 
-Every provided offset must be an integer in the inclusive range `-5000..5000`. Positive values
-delay audio; negative values advance it. The editor warns when the magnitude exceeds 1000 ms.
-There is no `[camera_defaults]` audio offset. These numeric fields do not accept secret references.
-Unknown nested keys, fractional values, and out-of-range values fail validation before a save.
+| Field               | Type           | Default                      | Limits and notes                                                  |
+| ------------------- | -------------- | ---------------------------- | ----------------------------------------------------------------- |
+| `default_offset_ms` | Optional `i32` | `0` when absent              | Signed whole ms in `-5000..=5000` (editor warns above `1000` ms). |
+| `main_offset_ms`    | Optional `i32` | Inherits `default_offset_ms` | `-5000..=5000`; explicit `0` disables correction for Main.        |
+| `sub_offset_ms`     | Optional `i32` | Inherits `default_offset_ms` | `-5000..=5000`; explicit `0` disables correction for Sub.         |
 
 ```toml
 [cameras.front_door.recorded_audio]
 default_offset_ms = 125
 main_offset_ms = 0
-# The sub stream inherits the 125 ms camera default.
+# Sub stream inherits 125 ms.
 ```
 
-Saving only these settings does not restart camera ingress or recording writers. The typed camera
-update replaces the complete nested message: omission preserves it, and an empty message resets
-all overrides to inheritance. Ordinary camera edits and configuration plans preserve this table.
-Camera identity, secret references, profile state, source recordings, and catalog times remain
-unchanged.
-
-Recorded playback and newly created exports apply the resolved setting without re-encoding.
-Resolution follows the stream actually stored; EventBoost main-stream review uses the Sub
-recording and its offset. An export retry rejects a changed recording stream before retiring
-the previous attempt; create a new export for that source change.
-Negative corrections can clip complete leading audio samples; partial encoded-sample trimming is
-unsupported. Calibration previews belong to one playback cursor and do not change saved settings
-or export defaults. Export retries retain their original timing snapshot. Timing diagnostics refer
-to normalized container timestamps and do not prove camera/RTP clock accuracy or lip sync.
-Nonzero correction supports AAC with zero audio composition offset; other AAC composition
-offsets fail explicitly. Signed video composition offsets are supported. Corrected exports fetch
-neighboring audio and select complete packets by their corrected presentation start inside the
-selected video intervals. They do not partially trim a packet at the end. Export edge lookup is
-limited to 32 extra periods and 64 MiB of indexed edge ranges, with 512 total source periods.
-Nonzero corrected exports reject overlapping indexed source periods and conflicting metadata
-instead of merging overlapping recording files.
-
-To calibrate, open a recording in **Keep** and use **Recorded audio preview** to compare offsets
-while watching the same action. Reset the preview to compare against the captured saved value.
-An Administrator saves a permanent default or Main/Sub override in **Camera / Audio**. Reopen
-the recording after saving to use the updated setting. New exports capture the saved
-setting when created; a temporary preview does not affect them.
+- **Direction & update rules:** Positive delays audio; negative advances audio (may clip complete leading audio samples; partial encoded-sample trimming is unsupported). Typed camera updates replace the nested table when present (omission preserves; empty message resets all overrides to inheritance). Source recordings, catalog times, identity, secret references, and profile state stay unchanged.
+- **Playback & export constraints:** Applies without re-encoding to the stream actually stored (EventBoost main-stream review uses the Sub recording and its offset). Nonzero correction supports AAC with zero audio composition offset (nonzero AAC composition offsets fail explicitly); signed video composition offsets are supported. Export retries retain their original timing snapshot and reject a changed recording stream. Edge lookup is bounded to `32` extra periods, `64 MiB` indexed edge ranges, and `512` total source periods; nonzero corrected exports reject overlapping source periods or conflicting metadata. Timing diagnostics inspect container timestamps and do not prove camera/RTP clock accuracy.
+- **Calibration:** Compare offsets in **Keep → Recorded audio preview** (cursor-local, does not alter saved settings or exports), save permanently as an Administrator in **Camera / Audio**, and reopen the recording.
 
 ### Native camera events
 
-Type: `EventConfig`, section `[<namespace>.<camera-key>.events]`, for example
-`[cameras.front_door.events]`. Source:
-[camera event policy](https://github.com/xnorpx/keeppeek/blob/main/src/cameras/events.rs).
-These settings are not part of `CameraCredentialDefaults` and are not exposed by the fixed
-protobuf camera-settings form. Ordinary camera API edits preserve the saved event table.
+**Type:** `EventConfig` | **Section:** `[<namespace>.<camera-key>.events]` | **Ownership:** Operator (file-only; not exposed by fixed protobuf camera form; preserved by API edits) | **Apply:** Restart | **Source:** [src/cameras/events.rs](https://github.com/xnorpx/keeppeek/blob/main/src/cameras/events.rs)
 
-| Field               | Type              | Default                | Values and limits                                                                                                                                                                                                   |
-| ------------------- | ----------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mode`              | `EventMode`       | `"auto"`               | `"auto"`, `"vendor"`, `"onvif-pullpoint"`, `"rtsp-metadata"`, or `"disabled"`.                                                                                                                                      |
-| `metadata_stream`   | `MetadataMode`    | `"auto"`               | `"auto"`, `"enabled"`, or `"disabled"`. Enabling metadata does not override `vendor` or `disabled` event mode.                                                                                                      |
-| `event_service_url` | Optional `String` | None; discover service | HTTP(S) URL of at most 4,096 UTF-8 bytes using the exact configured camera IP. No hostname alias, wildcard/multicast address, port zero, credentials, query, fragment, backslash, whitespace, or control character. |
-| `source_tokens`     | `Vec<String>`     | `[]`                   | At most 32 exact opaque tokens, each at most 256 UTF-8 bytes. Empty or control-character entries are rejected.                                                                                                      |
-| `include_topics`    | `Vec<String>`     | `[]`                   | Expanded namespace root plus slash-separated local path. Up to 32 filters combined with exclusions, each at most 1,024 UTF-8 bytes.                                                                                 |
-| `exclude_topics`    | `Vec<String>`     | `[]`                   | Same syntax and shared count/byte limits as inclusions; exclusions take precedence.                                                                                                                                 |
-| `snapshots`         | `bool`            | `true`                 | Allow optional camera snapshots; a missing or failed image does not discard the event.                                                                                                                              |
+| Field               | Type              | Default           | Limits and notes                                                                                                                                                                                                |
+| ------------------- | ----------------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mode`              | `EventMode`       | `"auto"`          | `"auto"`, `"vendor"`, `"onvif-pullpoint"`, `"rtsp-metadata"`, or `"disabled"`.                                                                                                                                  |
+| `metadata_stream`   | `MetadataMode`    | `"auto"`          | `"auto"`, `"enabled"`, or `"disabled"`. Does not override `mode = "vendor"` or `"disabled"`.                                                                                                                    |
+| `event_service_url` | Optional `String` | Absent (discover) | HTTP(S) URL (`<= 4,096` UTF-8 B) using the exact configured camera IP. Rejects hostnames, wildcard/multicast IPs, port `0`, credentials, query, fragment, backslash, whitespace, and control chars.             |
+| `source_tokens`     | `Vec<String>`     | `[]`              | Max `32` exact opaque tokens, each `1..=256` UTF-8 B (nonblank, no control chars).                                                                                                                              |
+| `include_topics`    | `Vec<String>`     | `[]`              | Expanded `{namespace}Local/Path` syntax (e.g., `{http://www.onvif.org/ver10/topics}VideoSource/MotionAlarm`). Max `32` combined with `exclude_topics`, each `<= 1,024` UTF-8 B. Empty allows recognized topics. |
+| `exclude_topics`    | `Vec<String>`     | `[]`              | Same syntax and shared `32`-entry / `1,024`-B limits; exclusions take precedence.                                                                                                                               |
+| `snapshots`         | `bool`            | `true`            | Allow optional event snapshots; missing/failed snapshots do not drop events.                                                                                                                                    |
 
-An empty inclusion list permits recognized topics. An example filter is
-`{http://www.onvif.org/ver10/topics}VideoSource/MotionAlarm`; unstable document prefixes such as
-`tns1:VideoSource/MotionAlarm` are rejected. Source tokens retain their exact text. Filters require
-nonempty namespace and path segments without whitespace, embedded prefixes, or control characters.
+Unstable XML prefixes such as `tns1:VideoSource/MotionAlarm` are rejected; filters require nonempty namespace and slash-separated path segments without whitespace, embedded prefixes, or control chars. Secret references (`{secret:KEY}`, `{secret:KEY|url}`) resolve before validation without relaxing endpoint restrictions. No automatic file watcher exists. See [docs/onvif-events.md](https://github.com/xnorpx/keeppeek/blob/main/docs/onvif-events.md).
 
-The loader resolves supported `{secret:KEY}` and `{secret:KEY|url}` references in event strings
-before validation. Preserve those references in `config.toml` and keep reusable private values
-in `secrets.toml`; URL escaping does not relax endpoint restrictions. Direct file edits require
-the existing configuration activation/restart path; there is no automatic file watcher. Generic
-motion recording still requires `record_generic_motion_events = true`, independently of event mode.
-The [native event operator guide](https://github.com/xnorpx/keeppeek/blob/main/docs/onvif-events.md)
-describes transport selection, health evidence, and verification.
+### Event recording pre-roll
+
+- `event-only` stores only accepted event windows from `event_recording_stream` (`main` or `sub`). `event-boost` records `sub` continuously and promotes to `main` during event windows.
+- Setting `event_pre_recording_duration_secs > 0` (`1..=30`) allocates bounded encoded pre-roll history (governed globally by `[storage].pre_recording_stream_max_bytes` and `pre_recording_global_max_bytes`). In `event-boost`, persistence is delayed by up to the pre-roll duration so an event can replace pending `sub` footage with `main` footage; a crash can lose this uncommitted window. `0` keeps immediate admission.
+- Camera pre-roll changes use per-source restart when available (otherwise report restart required); `[storage]` memory-budget changes require an application restart. Whole-GOP eviction can shorten coverage under duration or memory pressure; privacy activation, stream discontinuities, and storage failures invalidate buffered pre-roll history.
+
+## ISAPI event callbacks
+
+**Type:** `isapi::callbacks::Config` & `Source` (`deny_unknown_fields`) | **Section:** `[isapi_callbacks]` (optional) | **Ownership:** Operator | **Apply:** Restart | **Source:** [src/isapi/callbacks.rs](https://github.com/xnorpx/keeppeek/blob/main/src/isapi/callbacks.rs)
+
+Starts a dedicated HTTP listener accepting Hikvision ISAPI alert `POST` requests at `/ISAPI/Event/notification/callback/<camera-ip>` authenticated via MD5 Digest (`qop="auth"`, realm `keeppeek-isapi`).
+
+| Field           | Type              | Default  | Limits and notes                                                                                                            |
+| --------------- | ----------------- | -------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `bind`          | `SocketAddr`      | Required | Dedicated listener `IP:port` (e.g., `"0.0.0.0:8082"`).                                                                      |
+| `trusted_proxy` | Optional `IpAddr` | Absent   | Optional proxy IP permitted to deliver callbacks instead of the camera's own peer IP; must not be unspecified or multicast. |
+| `sources`       | `Vec<Source>`     | Required | `1..=64` `[[isapi_callbacks.sources]]` entries.                                                                             |
+
+Each `[[isapi_callbacks.sources]]` entry:
+
+| Field      | Type     | Default  | Limits and notes                                                                                                                                  |
+| ---------- | -------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ip`       | `IpAddr` | Required | Unique camera IP; must not be unspecified or multicast.                                                                                           |
+| `channel`  | `u32`    | Required | Positive (`>= 1`) ISAPI channel ID; non-heartbeat payloads must match this channel.                                                               |
+| `username` | `String` | Required | Unique across sources; `1..=1,024` bytes, Digest quoted-value safe (no control chars or unsafe quotes).                                           |
+| `password` | `String` | Required | **Must** use a `{secret:...}` reference in `config.toml` (inline passwords rejected before resolution). Resolved value must be `1..=1,024` bytes. |
+
+Removing a camera through configuration APIs automatically removes matching `isapi_callbacks.sources` entries for that IP and removes `[isapi_callbacks]` when no sources remain. Runtime bounds: max `8 MiB` per callback body, `32 MiB` total concurrent ingress, `128` multipart parts, `64` events per request, `15`-second read deadline, and `Origin` headers rejected (`403`).
 
 ## Recording storage
 
-Type: `StorageToml`, section `[storage]`. Optional paths are resolved by the runtime when absent;
-inspect the effective settings instead of assuming an omitted path is the current directory.
+**Type:** `StorageToml` | **Section:** `[storage]` | **Ownership:** Operator (except server-managed `.metadata` / `.metadata_pending`) | **Apply:** Restart for paths and memory budgets; live/plan for eligible policies | **Sources:** [src/config.rs](https://github.com/xnorpx/keeppeek/blob/main/src/config.rs), [src/storage/engine.rs](https://github.com/xnorpx/keeppeek/blob/main/src/storage/engine.rs)
 
-Both recording directories default to `recordings/` under the default OS KeepPeek configuration
-directory, even when `--config` selects a configuration file elsewhere. An omitted catalog path
-becomes `recordings.db` under the effective long-term directory; the thumbnail directory defaults
-to `.event-thumbnails` under that same directory. See
-[StorageConfig::from_toml](https://github.com/xnorpx/keeppeek/blob/main/src/storage/engine.rs).
+When optional paths are omitted, `medium_term_path` and `long_term_path` default to `recordings/` under the default OS KeepPeek config directory (even when `--config` points elsewhere), `recording_catalog_path` defaults to `<long_term_path>/recordings.db`, and `event_thumbnail_path` defaults to `<long_term_path>/.event-thumbnails`. When `[storage.named_volumes]` and `[storage.metadata]` are active, effective media/thumbnail roots come from named volume defaults and catalog/history paths come from the metadata binding (shown read-only in the general storage editor).
 
-| Field                            | Type              | Default                 | Meaning                                                                                                                                                       |
-| -------------------------------- | ----------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `medium_term_path`               | Optional `String` | Runtime-selected        | Medium-term recording directory.                                                                                                                              |
-| `long_term_path`                 | Optional `String` | Runtime-selected        | Long-term recording directory.                                                                                                                                |
-| `recording_catalog_path`         | Optional `String` | Runtime-selected        | Recording catalog path.                                                                                                                                       |
-| `event_thumbnail_path`           | Optional `String` | Runtime-selected        | Event-thumbnail directory.                                                                                                                                    |
-| `event_thumbnail_max_mb`         | `u64`             | `1024`                  | Thumbnail storage budget, in MiB.                                                                                                                             |
-| `short_term_secs`                | `u64`             | `120`                   | Short-term retention, in seconds.                                                                                                                             |
-| `medium_term_secs`               | `u64`             | `1800`                  | Target recording segment duration in seconds. Rotation waits for a video keyframe and keeps intervening frames in the current segment.                        |
-| `flush_interval_secs`            | `u64`             | `60`                    | Recording flush interval, in seconds.                                                                                                                         |
-| `write_buffer_bytes`             | `usize`           | `8192`                  | Recording write-buffer size, in bytes.                                                                                                                        |
-| `long_term_max_gb`               | `u64`             | `1024`                  | Long-term storage budget, in GiB.                                                                                                                             |
-| `minimum_free_gb`                | `u64`             | `10`                    | Minimum-free-space safety threshold, in GiB.                                                                                                                  |
-| `maximum_used_percent`           | Optional `u8`     | No percentage threshold | When set, `1..99`; filesystem-used percentage threshold.                                                                                                      |
-| `warning_free_gb`                | `u64`             | `20`                    | Warning-free-space threshold, in GiB.                                                                                                                         |
-| `critical_free_gb`               | `u64`             | `10`                    | Critical-free-space threshold, in GiB.                                                                                                                        |
-| `cleanup_hysteresis_gb`          | `u64`             | `5`                     | Cleanup recovery margin, in GiB.                                                                                                                              |
-| `pre_recording_stream_max_bytes` | `u64`             | `67108864` (64 MiB)     | Positive encoded-byte limit per candidate stream; must not exceed the global limit.                                                                           |
-| `pre_recording_global_max_bytes` | `u64`             | `268435456` (256 MiB)   | Positive encoded-byte limit across all candidate streams, including pending replay; must fit the platform address space and TOML signed 64-bit integer range. |
+| Field                            | Type              | Default               | Limits and notes                                                                                                                              |
+| -------------------------------- | ----------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `medium_term_path`               | Optional `String` | Runtime-selected      | Legacy/fallback medium-term recording directory.                                                                                              |
+| `long_term_path`                 | Optional `String` | Runtime-selected      | Legacy/fallback long-term recording directory.                                                                                                |
+| `recording_catalog_path`         | Optional `String` | Runtime-selected      | Legacy catalog path; incompatible with `[storage.metadata]`.                                                                                  |
+| `event_thumbnail_path`           | Optional `String` | Runtime-selected      | Legacy/fallback event-thumbnail directory.                                                                                                    |
+| `event_thumbnail_max_mb`         | `u64`             | `1024`                | Thumbnail quota in MiB (applies only to catalog-referenced files; unindexed/temp files are untouched; missing files keep catalog references). |
+| `short_term_secs`                | `u64`             | `120`                 | Short-term buffer retention, in seconds.                                                                                                      |
+| `medium_term_secs`               | `u64`             | `1800`                | Target segment duration in seconds; rotation waits for a video keyframe.                                                                      |
+| `flush_interval_secs`            | `u64`             | `60`                  | Recording flush interval, in seconds.                                                                                                         |
+| `write_buffer_bytes`             | `usize`           | `8192`                | Recording write buffer size, in bytes.                                                                                                        |
+| `long_term_max_gb`               | `u64`             | `1024`                | Long-term storage budget, in GiB.                                                                                                             |
+| `minimum_free_gb`                | `u64`             | `10`                  | Minimum free-space floor, in GiB.                                                                                                             |
+| `maximum_used_percent`           | Optional `u8`     | Absent                | When set, `1..=99`; filesystem-used percentage ceiling.                                                                                       |
+| `warning_free_gb`                | `u64`             | `20`                  | Warning free-space threshold, in GiB.                                                                                                         |
+| `critical_free_gb`               | `u64`             | `10`                  | Critical free-space threshold, in GiB.                                                                                                        |
+| `cleanup_hysteresis_gb`          | `u64`             | `5`                   | Cleanup recovery margin, in GiB.                                                                                                              |
+| `pre_recording_stream_max_bytes` | `u64`             | `67108864` (64 MiB)   | Positive per-stream encoded pre-roll cap; must be `<= pre_recording_global_max_bytes`.                                                        |
+| `pre_recording_global_max_bytes` | `u64`             | `268435456` (256 MiB) | Positive global encoded pre-roll cap across all streams (including pending replay); must fit `usize` and `i64`.                               |
 
-The effective critical threshold is the greater of `critical_free_gb` and `minimum_free_gb`.
-If `warning_free_gb` is zero while the effective critical threshold is nonzero, the warning
-threshold is derived as critical plus hysteresis. Otherwise, warning must be at least critical.
-Effective media paths come from named owners, and catalog paths come from the metadata binding.
-Use named-volume move controls for stored objects and the confirmed metadata restart workflow
-for the catalog. The general storage editor displays these paths read-only.
+**Validation and runtime notes:**
 
-Each recording writer can hold up to 16 MiB of encoded media and frame metadata between video
-keyframes. If a camera exceeds this limit, KeepPeek commits the decodable prefix, reports the
-gap in recording health and resumes at the next usable video keyframe.
-
-These values are policy defaults, not a capacity guarantee. Storage budgets and free-space thresholds
-must suit the actual disks and camera bitrates. A configuration ZIP preserves the target's existing
-storage paths on apply; it does not move a recording archive. See
-[storage migration](./upgrades-and-migrations.md#move-storage-deliberately) and
-[recording archive recovery](./recording-archive-recovery.md).
-
-`event_thumbnail_max_mb` applies to catalog-referenced image files in the configured thumbnail
-directory. Unindexed images and temporary files are excluded from this quota and are not removed
-at startup. Missing image files retain their catalog references so that restoring an unavailable
-thumbnail directory does not require rebuilding event metadata.
+- Effective critical threshold = `max(critical_free_gb, minimum_free_gb)`. If `warning_free_gb == 0` while effective critical `> 0`, warning derives as `critical + cleanup_hysteresis_gb`; otherwise `warning_free_gb >= effective critical` is required.
+- Each recording writer buffers at most `16 MiB` between video keyframes; exceeding it commits the decodable prefix, reports a health gap, and resumes on the next keyframe.
+- Configuration ZIP apply preserves target storage paths (it never moves recording archives). See [Move storage deliberately](./upgrades-and-migrations.md#move-storage-deliberately) and [Recording archive recovery](./recording-archive-recovery.md).
 
 ### Recording retention rules
 
-Optional `[storage.retention]` rules set independent recording lifetimes in days.
-Without this section, recordings keep the existing capacity-based cleanup behavior.
+**Type:** `storage::retention::settings::Settings` (`deny_unknown_fields`) | **Section:** `[storage.retention]` (optional) | **Ownership:** Operator | **Apply:** Restart / activation sweep | **Source:** [src/storage/retention/settings.rs](https://github.com/xnorpx/keeppeek/blob/main/src/storage/retention/settings.rs)
+
+Omitting `[storage.retention]` keeps capacity-based cleanup only. When present, at least `default` or one camera override is required, and every effective policy must contain at least one rule. Numeric durations do not accept secret references.
 
 ```toml
 [storage.retention.default]
@@ -604,170 +458,67 @@ person = 30.0
 continuous_days = 0.0
 ```
 
-`default` supplies global rules. Each `cameras` entry overrides rules for the exact
-catalog camera identity, which is the camera IP address for RTSP recordings.
-Omitted fields inherit defaults; explicit zero disables that rule. Event entries
-use exact canonical event `kind` strings. Motion rules match canonical motion
-events. Stream-specific events apply to their matching logical recording stream;
-events without a stream apply to all recording streams for that camera.
+| Field                       | Type                          | Default | Limits and notes                                                                                                                                                                  |
+| --------------------------- | ----------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `default`                   | Optional `Lifetimes`          | Absent  | Global rule defaults (`[storage.retention.default]`).                                                                                                                             |
+| `cameras`                   | `BTreeMap<String, Lifetimes>` | `{}`    | Max `127` overrides keyed by exact catalog camera ID (camera IP for RTSP; `1..=256` nonblank bytes, no NUL). Omitted fields inherit `default`; explicit `0.0` disables that rule. |
+| `Lifetimes.continuous_days` | Optional `f64`                | Absent  | Finite nonnegative days resolving to whole ms `< i64::MAX`.                                                                                                                       |
+| `Lifetimes.motion_days`     | Optional `f64`                | Absent  | Same numeric bounds; matches canonical motion events.                                                                                                                             |
+| `Lifetimes.events`          | `BTreeMap<String, f64>`       | `{}`    | Exact canonical event `kind` keys (`1..=128` ASCII `[A-Za-z0-9_.-]`). Max `16` effective rules per camera (including `continuous_days` and `motion_days`).                        |
 
-Durations must be finite, nonnegative, and representable as whole milliseconds
-within a signed 64-bit lifetime. Settings allow at most 127 camera overrides and
-16 effective rules per camera. Event selectors contain 1–128 ASCII letters,
-digits, underscores, hyphens, or periods. Unknown fields are rejected.
-Numeric durations do not accept secret references.
-
-The longest matching rule sets a whole-file deadline from the recording end.
-Files can therefore retain unrelated footage beside a matching event. Protection
-blocks automatic deletion. Shorter settings, removed rules, or corrected events
-never shorten an already committed deadline. Files whose event evidence exceeds
-the bounded evaluation limit remain excluded from automatic cleanup until their
-evidence can be evaluated successfully.
-
-Apply file edits through the existing configuration activation/restart workflow;
-there is no file watcher or separate retention settings file. Activation persists
-a bounded catalog sweep and fences new cleanup admissions until evaluation
-finishes. Finalized recordings and event changes then receive automatic
-reevaluation. Expiry removes eligible whole files even when storage has spare
-capacity. Interrupted cleanup resumes through the existing storage owner.
-
-To diagnose activation, inspect structured log events `retention_started` and
-`retention_activation_ready`, correlated by `run_id`. The first reports whether
-retention is enabled and the settings request was accepted; the second reports
-whether initial evaluation encountered quarantined files. Per-file evaluation
-warnings identify the recording and cause. Expiry logs identify removed recordings
-and whole-file bytes. These answer whether activation finished, which evidence
-needs repair, and whether expiry made progress. The worker logs no serialized
-configuration or event payloads.
+- Stream-specific events match their logical stream; streamless events apply to all streams on that camera. The longest matching rule sets a whole-file deadline from recording end (so unrelated footage in the same file stays until expiry). Protection blocks deletion; shorter settings, removed rules, or edited events never shorten an already committed deadline. Files exceeding bounded evidence-evaluation limits are quarantined from automatic deletion until evaluable.
+- Activation runs a bounded catalog sweep (fencing new cleanup admissions until done); expiry deletes eligible whole files even when disk space is free. Diagnose via structured logs `retention_started` and `retention_activation_ready` (correlated by `run_id`), which omit serialized configs and event payloads.
 
 ### Named storage volumes
 
-`[storage.named_volumes]` stores volume and placement definitions in `config.toml`.
-A fresh installation creates four private roots beneath `storage/` beside the configuration:
-`media` for active and archived recordings, `exports`, `images` for thumbnails, and `metadata`
-for the catalog and export history. Global placement rules use these roots without fallback.
-The initial media and image caps use `long_term_max_gb` and `event_thumbnail_max_mb`;
-after initialization, edit each volume's byte cap directly.
+**Type:** `storage::volumes::VolumeConfiguration` (`deny_unknown_fields`) | **Section:** `[storage.named_volumes]` | **Ownership:** Operator (server-managed `[storage.metadata]` & `[storage.metadata_pending]`) | **Apply:** Restart | **Sources:** [src/storage/volumes.rs](https://github.com/xnorpx/keeppeek/blob/main/src/storage/volumes.rs), [src/storage/volumes/validation.rs](https://github.com/xnorpx/keeppeek/blob/main/src/storage/volumes/validation.rs), [src/config/metadata.rs](https://github.com/xnorpx/keeppeek/blob/main/src/config/metadata.rs)
 
-Saved volume and placement changes take effect after restart and affect future placement.
-Existing objects keep their catalog owner. Create custom root directories before enabling them.
-A missing bound root stays unavailable; startup does not recreate it or redirect writes.
+Fresh installs bootstrap four private roots under `storage/` beside `config.toml`: `media` (active/archive recordings, initial cap from `long_term_max_gb`), `exports`, `images` (thumbnails, initial cap from `event_thumbnail_max_mb`), and `metadata` (catalog + export history). Edit per-volume byte caps directly afterward. Saved volume/placement changes take effect after restart for future placement; existing objects keep their catalog owner. Missing bound roots remain unavailable and are never auto-recreated.
 
-The optional section has two arrays: `volumes` (at most 32) and `placement` (at most 256).
-Both default to empty. Ordinary settings updates that omit `named_volumes` preserve the section.
-An explicit empty section requests removal, subject to ownership and metadata checks.
-Unknown fields in this section and its entries are rejected.
+**Section limits:** `volumes` (`0..=32` entries) and `placement` (`0..=256` entries), both default empty. Omitting `named_volumes` in ordinary updates preserves it; an explicit empty section requests removal (subject to ownership/metadata checks). String fields (`id`, `root`, `sources`, `groups`, `source`, `group`, `candidates`) accept secret references; validation uses resolved values while persisted config preserves raw references. Paths are redacted in debug output.
 
-Administrator runtime settings carry these definitions in the optional protobuf `named_volumes`
-field. Updates that include it require the current configuration revision. String fields,
-including IDs, roots, selectors, and candidate IDs, support existing secret references.
-Validation uses resolved values; saved settings and responses retain the references.
+Each `[[storage.named_volumes.volumes]]` entry (`deny_unknown_fields`):
 
-Administrators can edit volumes under **Settings → Storage → Named storage volumes**.
-Byte limits use exact whole-byte values. Refreshing status or a failed save preserves unsaved
-inputs. Removing a saved volume definition requires confirmation. Root probes inspect existing
-configured roots without creating directories; a successful probe does not establish write
-permission. Individual move preview, confirmation, status, and cancellation appear only
-when a volume runtime is available. The same runtime controls let administrators stop new
-writes to a volume or clear that operator drain, after confirmation. Already admitted writes
-finish normally. Clearing an operator drain does not override a draining or read-only saved
-configuration. Operator drain survives restart and does not itself move existing media.
+| Field                 | Type                  | Default         | Limits and notes                                                                                                                                                                                                                            |
+| --------------------- | --------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                  | `VolumeId` (`String`) | Required        | Unique; `1..=64` lowercase `[a-z0-9_-]`; `legacy-` prefix reserved.                                                                                                                                                                         |
+| `root`                | `PathBuf`             | Required        | Absolute UTF-8 directory (`<= 4,096` B, `<= 64` components); no `..`, control chars, duplicate, or nested/overlapping roots. Windows requires a local drive path on NTFS (rejects ReFS, FAT, network shares, device names, reserved chars). |
+| `roles`               | `Vec<VolumeRole>`     | Required        | `1..=5` distinct roles: `"active"`, `"archive"`, `"export"`, `"thumbnail"`, `"metadata"`. Only one bound metadata owner is active; other metadata volumes can be relocation targets.                                                        |
+| `state`               | `VolumeState`         | `"enabled"`     | `"enabled"` (admits writes), `"read_only"` / `"draining"` (reads only, no new writes), `"disabled"` (root not opened).                                                                                                                      |
+| `priority`            | `u16`                 | `0`             | Lower ranks first under `"priority"` strategy.                                                                                                                                                                                              |
+| `capacity_bytes`      | Optional `u64`        | Absent (no cap) | Positive owned-data byte cap (`1..=i64::MAX`).                                                                                                                                                                                              |
+| `minimum_free_bytes`  | `u64`                 | `0`             | Minimum filesystem free bytes to retain (`<= i64::MAX`).                                                                                                                                                                                    |
+| `critical_free_bytes` | `u64`                 | `0`             | Placement enforces `max(minimum_free_bytes, critical_free_bytes)` (`<= i64::MAX`).                                                                                                                                                          |
+| `warning_free_bytes`  | `u64`                 | `0`             | Must be `>= max(minimum_free_bytes, critical_free_bytes)` and `<= i64::MAX`.                                                                                                                                                                |
+| `sources`, `groups`   | `Vec<String>`         | `[]`            | Max `256` unique exact selectors each (`1..=256` B, no control or surrounding whitespace). Empty allows all; when populated, matching either permits placement. Must be empty on `metadata` volumes.                                        |
 
-The move controls preview up to 16 objects from the loaded page and show exact file and byte
-totals before confirmation. Each confirmed object has a durable move job. Stop dispatch after
-the current request or cancel admitted work under **Move jobs**. Refresh jobs to inspect progress;
-refresh the object page after completed batches. A lost confirmation reply is checked against
-the same job identity before further work is admitted.
+Each `[[storage.named_volumes.placement]]` entry (`deny_unknown_fields`):
 
-Removing a bound definition requires stopped writes, zero owned and reserved bytes, and completed
-cleanup receipts. An offline enabled runtime must be stopped through operator drain, or disabled
-and restarted before removing an unbound definition. Remove archive-policy references and restart
-before removing their destination; already captured archive work must finish first. Removal keeps
-the catalog's immutable binding and completed history and does not delete files.
-The removal check inspects up to 1,024 pending archive policies; finish a larger backlog before
-retrying removal.
+| Field             | Type                | Default      | Limits and notes                                                                                                                    |
+| ----------------- | ------------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `role`            | `VolumeRole`        | Required     | One of the five volume roles.                                                                                                       |
+| `source`, `group` | Optional `String`   | Absent       | At most one may be set (same selector limits as above); both absent = role default. No duplicate `(role, source, group)` selectors. |
+| `candidates`      | `Vec<VolumeId>`     | Required     | `1..=8` distinct configured volume IDs supporting `role`.                                                                           |
+| `strategy`        | `PlacementStrategy` | `"priority"` | `"priority"` (smaller `priority` first) or `"free_space"` (most usable free bytes after reserve/cap). Ties break by `id`.           |
+| `allow_fallback`  | `bool`              | `false`      | `false` restricts selection to `candidates[0]`; `true` ranks all eligible candidates.                                               |
 
-`[storage.metadata]` is a server-managed binding, not an ordinary placement draft. It contains
-`volume_id`, `catalog_file`, `history_file`, `catalog_id`, `generation`, `filesystem`, and
-`root_identity`. The filenames use one shared canonical UUID with `catalog-<uuid>.db` and
-`exports-<uuid>.json`. The catalog ID is a UUID, generation is 1 through `i64::MAX`, and both
-filesystem identity strings contain 1–256 bytes without control characters. The volume must
-exist, have the metadata role, and be enabled; a separate `recording_catalog_path` override is
-incompatible with this binding. Startup verifies the saved directory and catalog authority.
-It does not create an empty replacement catalog if the selected owner is unavailable.
+Precedence is `source` > `group` > role default; failed overrides never fall through to broader rules. `metadata` placement requires one global candidate (`source`/`group` absent, `candidates.len() == 1`, `allow_fallback = false`). Placement is a pure proposal and never reserves capacity or moves existing objects.
 
-Ordinary settings cannot install, clear, disable, or relocate the metadata owner. Unrelated
-updates preserve its existing secret references. Use the administrator metadata preview and confirmation controls to schedule relocation;
-do not construct or edit this binding manually.
-The internal `[storage.metadata_pending]` restart record contains a 32-byte source-configuration
-digest and the target binding. It retains the previous effective paths until a stopped transfer
-verifies both the catalog snapshot and copied export history, then atomically commits the new
-binding. Failed or interrupted transfers retain their source files and pending state for retry.
-Pending handoffs reject effective storage-setting changes while allowing unrelated settings saves.
-Startup rechecks available space, the byte cap, and the larger minimum/critical free-space reserve
-before fencing the source. Managed export history must already exist, fit within 8 MiB, and contain
-valid, uniquely owned jobs; missing or invalid history is preserved and reported unavailable.
+**Runtime controls and removal** (**Settings → Storage → Named storage volumes**):
 
-In Settings, add and save a disabled volume with only the Metadata role, then use
-**Preview metadata move** to check its root and required space. **Confirm metadata move**
-saves the plan without interrupting recording. The service restart copies the latest catalog
-and export history before workers resume. Cancel a pending plan before restarting if needed.
-Returning to an earlier metadata volume uses the same workflow and a new catalog generation;
-never point the service at a retained old catalog. An interrupted startup leaves the plan available
-for retry after its reported storage problem is corrected.
+- Root probes inspect existing directories without creating them (and do not prove writability). Move controls preview up to `16` objects per page with exact file/byte totals before creating durable move jobs (cancellable under **Move jobs**; duplicate confirmation replies deduplicate by job identity). Operator drain stops new writes, survives restart, lets in-flight writes finish, and does not override saved `draining`/`read_only` state.
+- Removing a bound volume requires stopped writes, zero owned/reserved bytes, and completed cleanup receipts (removal checks inspect up to `1,024` pending archive policies); an offline enabled volume must first be operator-drained or disabled and restarted. Remove archive-policy references and restart before removing their destination. Removal preserves catalog history and deletes no files.
 
-Each `[[storage.named_volumes.volumes]]` entry has these fields:
+**Server-managed metadata binding (`[storage.metadata]` & `[storage.metadata_pending]`):**
 
-| Field                 | Type           | Default   | Meaning                                                                                                                                                                                                                                                                  |
-| --------------------- | -------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `id`                  | String         | Required  | 1–64 lowercase ASCII letters, digits, `_` or `-`; `legacy-` is reserved.                                                                                                                                                                                                 |
-| `root`                | Path string    | Required  | Absolute UTF-8 directory path, at most 4096 bytes and 64 components; no traversal, control characters, duplicate or nested roots. Windows requires a local drive path and rejects device names and reserved characters.                                                  |
-| `roles`               | Role array     | Required  | 1–5 distinct values: `active`, `archive`, `export`, `thumbnail`, `metadata`. Only one bound metadata owner is active; other metadata-capable volumes can be relocation targets.                                                                                          |
-| `state`               | State          | `enabled` | `enabled` admits new writes; `read_only` and `draining` retain reads but stop new writes; `disabled` does not open the root.                                                                                                                                             |
-| `priority`            | `u16`          | `0`       | Smaller values rank first for priority placement.                                                                                                                                                                                                                        |
-| `capacity_bytes`      | Optional `u64` | No cap    | Positive owned-data byte cap.                                                                                                                                                                                                                                            |
-| `minimum_free_bytes`  | `u64`          | `0`       | Minimum filesystem free space to retain.                                                                                                                                                                                                                                 |
-| `critical_free_bytes` | `u64`          | `0`       | Placement retains the larger of minimum and critical free space.                                                                                                                                                                                                         |
-| `warning_free_bytes`  | `u64`          | `0`       | Must be at least both minimum and critical free space.                                                                                                                                                                                                                   |
-| `sources`, `groups`   | String arrays  | Empty     | At most 256 unique exact selectors each, 1–256 bytes without control or surrounding whitespace. Empty lists allow all sources. When either list is populated, matching either a source or a group permits placement. Metadata volumes cannot restrict sources or groups. |
-
-All byte thresholds must fit a signed TOML 64-bit integer. A root can use the existing
-`{secret:KEY}` or `{secret:KEY|url}` resolver; unchanged root references are preserved during
-settings updates. Paths are redacted from the volume model's debug output. Lexical validation
-does not establish filesystem identity, writability, or protection against path replacement.
-
-On Windows, owned storage requires local NTFS volumes with persistent ACLs and directory
-metadata flushing. ReFS, FAT, and network shares are not qualified for owned writes or deletion;
-they remain unavailable rather than bypassing these checks. Keep the configuration directory
-on NTFS when using the automatically created default volumes. An unavailable bound root is
-never recreated.
-
-Each `[[storage.named_volumes.placement]]` entry contains:
-
-| Field             | Type            | Default    | Meaning                                                                                                                                 |
-| ----------------- | --------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `role`            | Role            | Required   | One of the roles above.                                                                                                                 |
-| `source`, `group` | Optional string | Absent     | Select either a source or a group, using the same string limits as volume allowlists. Absence selects the role default.                 |
-| `candidates`      | Volume ID array | Required   | 1–8 distinct configured volumes supporting the role.                                                                                    |
-| `strategy`        | Strategy        | `priority` | `priority` ranks smaller priorities first; `free_space` ranks usable free bytes after reserve and cap limits. Ties use volume ID order. |
-| `allow_fallback`  | Boolean         | `false`    | False limits selection to the first candidate. True permits ranking all eligible candidates in the explicit pool.                       |
-
-Source rules take precedence over group rules, which take precedence over role defaults. A failed
-override never falls through to a broader rule. Duplicate selectors for a role are invalid.
-Metadata placement requires one global candidate and forbids fallback. Selection is a pure proposal;
-it does not reserve capacity, authorize writes, or alter existing object locations.
-
-Source: [named-volume model](https://github.com/xnorpx/keeppeek/blob/main/src/storage/volumes.rs).
-Windows path validation follows the
-[Windows filename rules](https://learn.microsoft.com/windows/win32/fileio/naming-a-file).
+- `[storage.metadata]` (`MetadataBinding`, `deny_unknown_fields`): `volume_id`, `catalog_file` (`catalog-<uuid>.db`), `history_file` (`exports-<uuid>.json`, sharing the same canonical UUID), `catalog_id` (UUID), `generation` (`1..=i64::MAX`), `filesystem` and `root_identity` (`1..=256` B each, no control chars). The target volume must exist, be `enabled`, and have role `metadata`; incompatible with `recording_catalog_path`. Startup verifies directory and catalog authority and never fabricates an empty replacement catalog.
+- `[storage.metadata_pending]` (`Pending`, `deny_unknown_fields`): `source_digest` (32-byte SHA-256 of current `StorageToml`) and `target` (`MetadataBinding`). Created via **Preview metadata move** / **Confirm metadata move** against a saved disabled `metadata`-only volume; ordinary settings cannot edit `[storage.metadata]` or alter storage settings while a handoff is pending. On restart, KeepPeek rechecks space/caps/reserves, validates export history (`<= 8 MiB`, unique owned jobs), copies and verifies catalog + history before committing atomically (and switching volume states). Interrupted transfers retain source files and pending state for retry; returning to an old volume uses a new generation.
 
 ### Fourth-tier local archive
 
-Optional `[storage.archive]` configures one verified local replica destination. Omitting it disables
-this tier. It is separate from named-volume `archive` placement, which relocates the authoritative
-recording. A verified fourth-tier copy retires its primary only through an enabled eviction policy
-or an Administrator's confirmed per-job action. Local recording, live viewing and the first three tiers do not wait for archive
-availability.
+**Type:** `storage::archive::settings::Settings` (`deny_unknown_fields`) | **Section:** `[storage.archive]` (optional) | **Ownership:** Operator | **Apply:** Restart / worker probe | **Source:** [src/storage/archive/settings.rs](https://github.com/xnorpx/keeppeek/blob/main/src/storage/archive/settings.rs)
+
+Configures one verified local replica target (distinct from named-volume `archive` placement, which relocates the authoritative copy). Local recording and live viewing never block on archive availability. Cloud provider fields are unsupported and rejected.
 
 ```toml
 [storage.archive]
@@ -785,719 +536,429 @@ operation_timeout_secs = 120
 maximum_attempts = 3
 ```
 
-Optional `retention_days` accepts 1 through 4,294,967,295 whole days since durable archive
-verification. Omit it to retain copies indefinitely. Setting a period makes copies
-eligible for an Administrator's deletion preview. Deletion starts only after
-confirmation of a specific batch and independent verification of the surviving primary.
+| Field                    | Type           | Default                | Limits and notes                                                                                                                                                                                       |
+| ------------------------ | -------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `target_id`              | `String`       | Required               | Stable `VolumeId` (`1..=64` lowercase `[a-z0-9_-]`; `legacy-` reserved). Keep paired with its catalog root binding.                                                                                    |
+| `root`                   | `PathBuf`      | Required               | Absolute local path (`<= 4,096` B, `<= 64` components, named-volume path safety rules). Must already exist; cannot overlap named-volume or legacy media/thumbnail/metadata roots. Accepts secret refs. |
+| `enabled`                | `bool`         | `false`                | Enables archive worker (does not auto-create or bind `root`; test destination after startup).                                                                                                          |
+| `automatic`              | `bool`         | `false`                | Auto-admits finalized recordings when enabled.                                                                                                                                                         |
+| `source_ids`             | `Vec<String>`  | `[]`                   | Auto-selection filter; empty = all sources. Max `127` distinct nonblank IDs (`<= 256` B, no control or surrounding whitespace).                                                                        |
+| `minimum_age_secs`       | `u64`          | `0`                    | Minimum finalized recording age for auto-selection (`0..=315360000`, i.e., 10 years).                                                                                                                  |
+| `evict_after_archive`    | `bool`         | `false`                | Permits policy-driven primary eviction after verification (holds, leases, and durable indexes still enforced).                                                                                         |
+| `retention_days`         | Optional `u32` | Absent (indefinite)    | `1..=4294967295` days after verification before eligible for Admin-confirmed batch deletion (requires surviving primary verification).                                                                 |
+| `maximum_object_bytes`   | `u64`          | `4294967296` (4 GiB)   | `1..=68719476736` (64 GiB) and `<= maximum_pending_bytes`.                                                                                                                                             |
+| `maximum_pending_count`  | `u32`          | `256`                  | `1..=4096` retained pending jobs.                                                                                                                                                                      |
+| `maximum_pending_bytes`  | `u64`          | `68719476736` (64 GiB) | Positive and `<= i64::MAX`.                                                                                                                                                                            |
+| `operation_timeout_secs` | `u64`          | `120`                  | `1..=3600` seconds per archive operation.                                                                                                                                                              |
+| `maximum_attempts`       | `u32`          | `3`                    | `1..=10` attempts per durable job.                                                                                                                                                                     |
 
-| Field                    | Type          | Default          | Validation and meaning                                                                                                                                             |
-| ------------------------ | ------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `target_id`              | `String`      | Required         | Stable ID with 1–64 lowercase ASCII letters, digits, hyphens or underscores; `legacy-` is reserved.                                                                |
-| `root`                   | `PathBuf`     | Required         | Absolute local destination; at most 4,096 UTF-8 bytes and 64 path components. It must already exist when used. Named-volume path safety rules apply.               |
-| `enabled`                | `bool`        | `false`          | Enable archive work; configuration alone does not bind or create the destination.                                                                                  |
-| `automatic`              | `bool`        | `false`          | Admit eligible finalized recordings automatically when the archive worker is enabled.                                                                              |
-| `source_ids`             | `Vec<String>` | Empty            | Automatic-selection filter; empty selects all sources. At most 127 distinct, nonblank IDs, each at most 256 UTF-8 bytes without control or surrounding whitespace. |
-| `minimum_age_secs`       | `u64`         | `0`              | Minimum finalized recording age for automatic selection, at most 315,360,000 seconds (ten 365-day years).                                                          |
-| `evict_after_archive`    | `bool`        | `false`          | Explicitly permit policy-driven primary-copy eviction after verification; holds, leases and durable archive indexes still apply.                                   |
-| `retention_days`         | `Option<u32>` | Omitted          | Omit for indefinite retention. Values from 1 through 4,294,967,295 make verified copies eligible for Administrator-confirmed removal after that many days.         |
-| `maximum_object_bytes`   | `u64`         | `4,294,967,296`  | Per-object admission limit, from 1 byte through 64 GiB; cannot exceed the pending-byte limit.                                                                      |
-| `maximum_pending_count`  | `u32`         | `256`            | Retained pending jobs, from 1 through 4,096.                                                                                                                       |
-| `maximum_pending_bytes`  | `u64`         | `68,719,476,736` | Pending-byte admission ceiling, positive and at most `i64::MAX`.                                                                                                   |
-| `operation_timeout_secs` | `u64`         | `120`            | Finite archive operation deadline, from 1 through 3,600 seconds.                                                                                                   |
-| `maximum_attempts`       | `u32`         | `3`              | Maximum attempts for one durable job, from 1 through 10.                                                                                                           |
-
-Roots cannot overlap named-volume roots or legacy media, thumbnail and metadata directories.
-Lexical checks do not establish filesystem identity; the bounded owned-object write/read/delete
-probe and persisted catalog binding detect offline or replaced destinations without recreating
-their roots. Keep the stable target ID with its binding; changing a configured path must not adopt
-an old manifest under a different root identity.
-
-Destination availability requires a successful verified operation. Opening or binding the root
-alone does not establish availability; test the destination after startup and refresh its result.
-
-String settings support existing secret references. Validation uses resolved values; ordinary
-settings rewrites and configuration export/import preserve raw references and unrelated sections.
-Older runtime settings updates that omit archive settings preserve the accepted archive section.
-Unknown archive fields are rejected; cloud provider selectors and credentials are not supported by
-this local implementation. Job journals, manifests, root bindings and integrity metadata are
-operational catalog state, not extra settings files.
-
-Archive playback reuses the timeline and normal playback controls. Initial access and seeking may
-take longer than the first three tiers because target access and integrity checks can add work.
-Available local archive files can play directly without a full-file restore; unavailable or corrupt
-objects remain explicit errors. Restoring or removing a primary copy preserves the original media
-identity and archive timeline indexes.
+String settings support secret references (preserved on rewrites/imports); older runtime settings updates omitting `archive` preserve it. Job journals, manifests, root bindings, and integrity metadata live in catalog state. Available local archive files play directly on the standard timeline without full-file restore; unavailable or corrupt files return explicit errors.
 
 ## Battery wake
 
-Type: `BatteryWakeConfig`, section `[battery_wake]`. This is the Reolink wake middleman service,
-not a general Wake-on-LAN or scheduled privacy configuration.
+**Type:** `BatteryWakeConfig` | **Section:** `[battery_wake]` | **Ownership:** Operator | **Apply:** Restart | **Source:** [src/config.rs](https://github.com/xnorpx/keeppeek/blob/main/src/config.rs)
 
-| Field              | Type                | Default   | Validation and meaning                                          |
-| ------------------ | ------------------- | --------- | --------------------------------------------------------------- |
-| `enabled`          | `bool`              | `false`   | Enable the wake service.                                        |
-| `bind`             | Optional `Ipv4Addr` | Automatic | Local IPv4 binding selection.                                   |
-| `middleman_port`   | `u16`               | `9999`    | Nonzero middleman port.                                         |
-| `register_port`    | `u16`               | `58200`   | Nonzero registration port; must differ from the middleman port. |
-| `heartbeat_secs`   | `u64`               | `20`      | Nonzero heartbeat interval.                                     |
-| `stale_after_secs` | `u64`               | `80`      | Must cover at least one heartbeat interval.                     |
+Reolink battery-camera wake middleman service (not Wake-on-LAN or privacy scheduling).
+
+| Field              | Type                | Default            | Limits and notes                            |
+| ------------------ | ------------------- | ------------------ | ------------------------------------------- |
+| `enabled`          | `bool`              | `false`            | Enables the wake service.                   |
+| `bind`             | Optional `Ipv4Addr` | Absent (automatic) | Local IPv4 bind address.                    |
+| `middleman_port`   | `u16`               | `9999`             | Nonzero; must differ from `register_port`.  |
+| `register_port`    | `u16`               | `58200`            | Nonzero; must differ from `middleman_port`. |
+| `heartbeat_secs`   | `u64`               | `20`               | Nonzero heartbeat interval, in seconds.     |
+| `stale_after_secs` | `u64`               | `80`               | Must be `>= heartbeat_secs`.                |
 
 ## Logging
 
-Type: `LoggingConfig`, section `[logging]`.
+**Type:** `LoggingConfig` | **Section:** `[logging]` | **Ownership:** Operator | **Apply:** Restart | **Sources:** [src/config.rs](https://github.com/xnorpx/keeppeek/blob/main/src/config.rs), [src/logging.rs](https://github.com/xnorpx/keeppeek/blob/main/src/logging.rs)
 
-| Field     | Type                    | Default  | Meaning                                                                                                       |
-| --------- | ----------------------- | -------- | ------------------------------------------------------------------------------------------------------------- |
-| `service` | `ServiceLogDestination` | `"file"` | `"file"` or `"event_log"`; service logging destination, with Event Log relevant to Windows service operation. |
+| Field     | Type                    | Default  | Limits and notes                                                        |
+| --------- | ----------------------- | -------- | ----------------------------------------------------------------------- |
+| `service` | `ServiceLogDestination` | `"file"` | `"file"` or `"event_log"` (Windows Event Log for Windows service mode). |
 
-This section does not define arbitrary tracing filters, log payloads, or a diagnostics archive.
-
-The existing diagnostic log-filter control uses a separate sibling file named `log-filter`, not
-another TOML section. The logging service saves and reloads that filter atomically. At startup a
-valid saved filter takes precedence over `RUST_LOG`; the built-in fallback is
-`info,keeppeek=debug`. A bad saved or environment filter is reported and falls back to the next
-usable source. This diagnostic setting is outside the two-file configuration ZIP. Preserve it with
-the configuration directory if you need it during a recovery rehearsal. Source:
-[logging service](https://github.com/xnorpx/keeppeek/blob/main/src/logging.rs).
+**Diagnostic log filter (`log-filter` sibling file):** Live tracing filter directives are stored in a sibling file named `log-filter` beside `config.toml`, not inside TOML. Startup precedence is `log-filter` > `RUST_LOG` > built-in `info,keeppeek=debug` (invalid values report an error and fall back). `log-filter` is outside the two-file configuration ZIP; back it up separately with the config directory if needed.
 
 ## Bug reporting service
 
-The optional `[reporting]` section configures the recorder's HTTPS reporting service. Omit it to
-keep bug reports local-only. When configured, KeepPeek exposes service availability on
-`GET /reporting/status`, issues short-lived single-report upload grants on `POST /reporting/grants`,
-and records non-sensitive lifecycle audit events on `POST /reporting/audit`. Every reporting
-endpoint requires Administrator authorization and the existing secure remote-access classification.
+**Type:** `reporting::Settings` (`deny_unknown_fields`) | **Section:** `[reporting]` (optional) | **Ownership:** Operator | **Apply:** Restart | **Source:** [src/config/reporting.rs](https://github.com/xnorpx/keeppeek/blob/main/src/config/reporting.rs)
 
-| Field            | Type            | Default  | Meaning                                                                                     |
-| ---------------- | --------------- | -------- | ------------------------------------------------------------------------------------------- |
-| `origin`         | String          | Required | Canonical HTTPS origin up to 512 bytes, with an optional port.                              |
-| `credential`     | Optional string | Absent   | A single `{secret:KEY}` reference in `secrets.toml` when the service requires a credential. |
-| `retention_days` | `u8`            | `7`      | Requested retention for the private evidence, from 1 to 30 days.                            |
+Omit `[reporting]` to keep bug reports local-only. When configured, enables Admin-only endpoints `GET /reporting/status`, `POST /reporting/grants`, and `POST /reporting/audit` (subject to secure remote-access classification).
 
-Keep the reusable credential in `secrets.toml`. The loader preserves the reference in
-`config.toml` and validates its syntax without resolving it at recorder startup. The recorder
-resolves the secret only when forwarding a confirmed grant request to `POST {origin}/v1/reports`
-and registers both the resolved credential and issued grant token for log redaction.
+| Field            | Type              | Default  | Limits and notes                                                                                                                                                                                                                         |
+| ---------------- | ----------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `origin`         | `String`          | Required | Canonical HTTPS origin (`<= 512` B, optional port; no credentials, path, query, or fragment).                                                                                                                                            |
+| `credential`     | Optional `String` | Absent   | Complete `{secret:KEY}` only (`<= 128`-byte key name, no `\|url`). Syntax-checked at load without resolving; resolved only when forwarding `POST {origin}/v1/reports` and registered (along with issued grant tokens) for log redaction. |
+| `retention_days` | `u8`              | `7`      | `1..=30` days requested for private report evidence.                                                                                                                                                                                     |
 
 ## Usage reporting
 
-The optional `[usage_reporting]` section stores explicit Administrator opt-in consent for
-privacy-preserving usage reporting. Every category defaults to `false`, so fresh installations and
-upgrades generate no telemetry installation ID, start no recurring telemetry collection worker, and
-make zero receiver requests.
+**Type:** `usage_reporting::UsageReportingConfig` (`deny_unknown_fields`) | **Section:** `[usage_reporting]` (optional) | **Ownership:** Operator | **Apply:** Live (UI/API) / Restart (file) | **Sources:** [src/config/usage_reporting.rs](https://github.com/xnorpx/keeppeek/blob/main/src/config/usage_reporting.rs), [docs/usage-reporting.md](https://github.com/xnorpx/keeppeek/blob/main/docs/usage-reporting.md)
 
-| Field                           | Type            | Default | Meaning                                                                                     |
-| ------------------------------- | --------------- | ------- | ------------------------------------------------------------------------------------------- |
-| `basic`                         | `bool`          | `false` | Enable basic system data. Required before enabling any additional reporting category.       |
-| `camera_compatibility`          | `bool`          | `false` | Enable aggregated, normalized camera compatibility counts (requires `basic = true`).        |
-| `feature_adoption`              | `bool`          | `false` | Enable coarse recording-mode, storage/retention bucket, and integration adoption summaries. |
-| `consented_disclosure_revision` | `u32`           | `0`     | Disclosure revision accepted by an Administrator (`1` required when `basic = true`).        |
-| `receiver_origin`               | Optional string | Absent  | Canonical HTTPS origin (`<= 512` bytes, no path or credentials) for the telemetry receiver. |
+All categories default to `false`; fresh installs and upgrades create no telemetry ID, run no worker, and make zero network requests until an Administrator opts in.
 
-Dedicated telemetry installation identities, proof tokens, send schedules, and bounded pending
-deletions (`<= 16` entries) are persisted separately in the private application-owned runtime record
-(`.keeppeek-usage-reporting-state.json` beside `config.toml`) only after explicit opt-in. They are
-excluded from `config.toml` backups and from general `StateStore` namespaces so restores do not
-clone one installation's proof token across machines. See
-[usage reporting](https://github.com/xnorpx/keeppeek/blob/main/docs/usage-reporting.md).
+| Field                           | Type              | Default | Limits and notes                                                                                     |
+| ------------------------------- | ----------------- | ------- | ---------------------------------------------------------------------------------------------------- |
+| `basic`                         | `bool`            | `false` | Enables basic system metrics; required before enabling any other category.                           |
+| `camera_compatibility`          | `bool`            | `false` | Normalized camera compatibility counts; requires `basic = true`.                                     |
+| `feature_adoption`              | `bool`            | `false` | Coarse recording-mode, storage/retention bucket, and integration summaries; requires `basic = true`. |
+| `consented_disclosure_revision` | `u32`             | `0`     | Accepted disclosure revision (`1` required when `basic = true`; must be `<= 1`).                     |
+| `receiver_origin`               | Optional `String` | Absent  | Canonical HTTPS origin (`1..=512` B; no credentials, path, query, fragment, or control chars).       |
+
+Telemetry installation UUIDs, proof tokens, send schedules, and pending deletions (`<= 16` entries) live in `.keeppeek-usage-reporting-state.json` beside `config.toml` only after opt-in and are excluded from `config.toml` backups and `StateStore` so restores never clone proof tokens across hosts.
 
 ## Cloud notifications
 
-Type: `cloud_notifications::Settings`, section `[cloud_notifications]`.
+**Type:** `cloud_notifications::Settings` (`deny_unknown_fields`) | **Section:** `[cloud_notifications]` (optional) | **Ownership:** Operator (server-incremented `revision`) | **Apply:** Live (UI/API) / Restart (file) | **Source:** [src/config/cloud_notifications.rs](https://github.com/xnorpx/keeppeek/blob/main/src/config/cloud_notifications.rs)
 
-The optional `[cloud_notifications]` section configures bounded Keeppeek Service mobile push
-signaling behind capability `keeppeek.cloud-notifications.v1`. Both `enabled` and
-`image_previews_enabled` default to `false`. Enabling `image_previews_enabled` requires both
-`enabled = true` and a complete pairing configuration.
+Configures bounded Keeppeek Service mobile push signaling behind capability `keeppeek.cloud-notifications.v1`.
 
-| Field                    | Type            | Default | Validation and meaning                                                                                  |
-| ------------------------ | --------------- | ------- | ------------------------------------------------------------------------------------------------------- |
-| `revision`               | `u64`           | `0`     | Optimistic concurrency revision incremented on every settings mutation.                                 |
-| `enabled`                | `bool`          | `false` | Enables bounded Keeppeek Service signal emission when paired.                                           |
-| `image_previews_enabled` | `bool`          | `false` | Authoritative NVR gate allowing authenticated paired mobile clients to resolve still-image previews.    |
-| `service_origin`         | Optional string | Absent  | Canonical HTTPS origin up to 512 bytes (no path, query, fragment, or credentials); required if paired.  |
-| `nvr_id`                 | Optional string | Absent  | Service-assigned 16-byte opaque NVR UUID/hex identifier; required if paired.                            |
-| `signing_key_version`    | Optional `u32`  | Absent  | Nonzero Ed25519 signing key version (`>= 1`); required if paired.                                       |
-| `signing_key`            | Optional string | Absent  | Single `{secret:KEY}` reference in `secrets.toml` holding the 32-byte Ed25519 seed; required if paired. |
+| Field                    | Type              | Default | Limits and notes                                                                                                                                                                          |
+| ------------------------ | ----------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `revision`               | `u64`             | `0`     | Optimistic concurrency revision incremented on each mutation.                                                                                                                             |
+| `enabled`                | `bool`            | `false` | Enables Keeppeek Service signal emission when paired.                                                                                                                                     |
+| `image_previews_enabled` | `bool`            | `false` | Authoritative NVR gate allowing paired mobile clients to resolve still-image previews; requires `enabled = true` and complete pairing.                                                    |
+| `service_origin`         | Optional `String` | Absent  | Canonical HTTPS origin (`1..=512` B; no credentials, path, query, or fragment).                                                                                                           |
+| `nvr_id`                 | Optional `String` | Absent  | Service-assigned 16-byte opaque NVR UUID/hex ID.                                                                                                                                          |
+| `signing_key_version`    | Optional `u32`    | Absent  | Nonzero (`>= 1`) Ed25519 signing key version.                                                                                                                                             |
+| `signing_key`            | Optional `String` | Absent  | Complete `{secret:KEY}` only (`<= 128`-byte key name, no `\|url`) holding a 32-byte Ed25519 seed (base64, URL-safe base64, or 64-char hex). Never resolved during config parse/serialize. |
 
-The four pairing fields (`service_origin`, `nvr_id`, `signing_key_version`, `signing_key`) must be
-either all absent (unpaired) or all present (paired). KeepPeek never resolves `signing_key` during
-configuration parsing or serialization, and never returns `service_origin`, `nvr_id`, or signing
-keys in settings, status, logs, or Prometheus metrics. Durable runtime state (aliases, newest-only
-pending/claimed intents, exact rolling 120/hour and 500/day windows, 3/hour test windows, and
-monotonic clock floor) is persisted in `cloud-notifications.db` under `storage.long_term_path`.
+The four pairing fields (`service_origin`, `nvr_id`, `signing_key_version`, `signing_key`) must be **all absent** (unpaired) or **all present** (paired). `service_origin`, `nvr_id`, and signing keys are never exposed in settings responses, status, logs, or Prometheus metrics. Durable runtime state (aliases, newest-only pending/claimed intents, rolling `120`/hour and `500`/day limits, `3`/hour test limits, monotonic clock floor) lives in `cloud-notifications.db` under `storage.long_term_path`.
 
 ## Operational events
 
-Type: `OperationalEventsConfig`, section `[operational_events]`.
+**Type:** `OperationalEventsConfig` & `OperationalEventOverride` | **Sections:** `[operational_events]` & `[operational_events.cameras."<camera-id-or-ip>"]` | **Ownership:** Operator | **Apply:** Restart | **Source:** [src/config.rs](https://github.com/xnorpx/keeppeek/blob/main/src/config.rs)
 
-| Field                    | Type                              | Default | Meaning                                                          |
-| ------------------------ | --------------------------------- | ------- | ---------------------------------------------------------------- |
-| `warning_hold_down_secs` | `u64`                             | `15`    | Delay before recording a warning transition.                     |
-| `outage_hold_down_secs`  | `u64`                             | `60`    | Delay before recording an outage.                                |
-| `recovery_debounce_secs` | `u64`                             | `10`    | Stable-recovery debounce period.                                 |
-| `record_short_flaps`     | `bool`                            | `false` | Retain supported brief-flap transitions.                         |
-| `cameras`                | Map of `OperationalEventOverride` | Empty   | Overrides keyed by stable camera ID, with camera IP as fallback. |
-
-Type: `OperationalEventOverride`, section `[operational_events.cameras."<camera-id-or-ip>"]`.
-
-| Field                    | Type            | When absent                       |
-| ------------------------ | --------------- | --------------------------------- |
-| `warning_hold_down_secs` | Optional `u64`  | Inherit global warning hold-down. |
-| `outage_hold_down_secs`  | Optional `u64`  | Inherit global outage hold-down.  |
-| `recovery_debounce_secs` | Optional `u64`  | Inherit global recovery debounce. |
-| `record_short_flaps`     | Optional `bool` | Inherit the global flag.          |
-
-Each effective policy requires warning hold-down no greater than outage hold-down. Outage and
-recovery durations cannot exceed `86400` seconds. Override keys contain 1 to 256 bytes after the
-nonempty check. The stable camera ID takes precedence over an IP-keyed override.
+| Field                    | Type                                         | Default | Limits and notes                                                                                                                                                                                                                                                                                             |
+| ------------------------ | -------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `warning_hold_down_secs` | `u64`                                        | `15`    | Delay before recording a warning; must be `<= outage_hold_down_secs`.                                                                                                                                                                                                                                        |
+| `outage_hold_down_secs`  | `u64`                                        | `60`    | Delay before recording an outage (`<= 86400`).                                                                                                                                                                                                                                                               |
+| `recovery_debounce_secs` | `u64`                                        | `10`    | Stable-recovery debounce (`<= 86400`).                                                                                                                                                                                                                                                                       |
+| `record_short_flaps`     | `bool`                                       | `false` | Retain supported brief-flap transitions.                                                                                                                                                                                                                                                                     |
+| `cameras`                | `BTreeMap<String, OperationalEventOverride>` | `{}`    | Keys are `1..=256` nonblank bytes (stable camera ID takes precedence over IP). Each override accepts optional `warning_hold_down_secs`, `outage_hold_down_secs`, `recovery_debounce_secs`, and `record_short_flaps` (inheriting global defaults when absent; effective values must satisfy the same bounds). |
 
 ## Privacy schedules
 
-Type: `PrivacyConfig`, section `[privacy]`. The optional `[privacy.default]` schedule is inherited
-by cameras without a per-camera entry. Per-camera schedules are keyed by stable camera ID; an
-IP-keyed entry is accepted for migration and the runtime maps it to that camera ID.
-
-Types: `PrivacySchedule`, sections `[privacy.default]` and
-`[privacy.cameras."<camera-id-or-ip>"]`.
-
-| Field                   | Type                       | Default  | Meaning                                                             |
-| ----------------------- | -------------------------- | -------- | ------------------------------------------------------------------- |
-| `enabled`               | `bool`                     | `true`   | Retain the policy but disable its scheduled enforcement when false. |
-| `timezone`              | `String`                   | Required | IANA timezone used for recurring local windows.                     |
-| `windows`               | Array of `PrivacyWindow`   | Empty    | Half-open weekly privacy windows; at most 64.                       |
-| `temporary_override`    | Optional `PrivacyOverride` | None     | Bounded persisted override that suspends matching windows.          |
-| `keep_camera_connected` | `bool`                     | `true`   | Keep camera ingress warm while delivery is blocked.                 |
-
-Each `PrivacyWindow` has `weekdays` (ISO values 1 through 7), `start`, and `end` in `HH:MM`.
-Equal endpoints are rejected; an end earlier than the start is an overnight interval. Both
-occurrences of a repeated daylight-saving local time are protected. A `PrivacyOverride` requires
-nonempty `actor` and `reason`, RFC3339 `accepted_at` and `expires_at`, and expires within 24 hours.
-Control-channel configuration requests replace the override actor and acceptance time with the
-authenticated administrator and server time before the candidate configuration is validated.
-Invalid privacy policy data fails validation before the server accepts camera media.
-
-## MQTT event forwarding
-
-Types: `EventForwarderConfig` has one field, `mqtt: MqttForwarderConfig`. Section:
-`[event_forwarder.mqtt]`. Source:
-[MQTT configuration](https://github.com/xnorpx/keeppeek/blob/main/src/event_forwarder/config.rs).
-
-| Field           | Type               | Default                   | Validation and meaning                                                                     |
-| --------------- | ------------------ | ------------------------- | ------------------------------------------------------------------------------------------ |
-| `revision`      | `u64`              | `1`                       | Server-managed settings revision.                                                          |
-| `enabled`       | `bool`             | `false`                   | Enable forwarding.                                                                         |
-| `broker_url`    | `String`           | `"mqtt://127.0.0.1:1883"` | `mqtt` or `mqtts` URL with host; no user-info, non-root path, query, or fragment.          |
-| `client_id`     | `String`           | `"keeppeek"`              | Broker client ID.                                                                          |
-| `instance_id`   | `String`           | `"home-nvr"`              | KeepPeek instance identity.                                                                |
-| `forwarder_id`  | `String`           | `"mqtt"`                  | Forwarder identity.                                                                        |
-| `topic_prefix`  | `String`           | `"keeppeek"`              | 1 to 512 bytes; no leading/trailing slash, NUL, `+`, or `#`. Interior slashes are allowed. |
-| `username`      | Optional `String`  | None                      | Broker username, including supported references.                                           |
-| `password`      | Optional `String`  | None                      | Requires `username`; prefer a reference to the companion secret file.                      |
-| `tls_ca_path`   | Optional `PathBuf` | System trust              | Custom CA path; only valid with `mqtts`.                                                   |
-| `qos`           | `u8`               | `1`                       | `0`, `1`, or `2`.                                                                          |
-| `retain_events` | `bool`             | `false`                   | Retain event publications.                                                                 |
-| `retain_health` | `bool`             | `true`                    | Retain health publications.                                                                |
-| `outbox_max_mb` | `u64`              | `64`                      | 1 to 65536 MiB of bounded outbox storage.                                                  |
-| `retry_min_ms`  | `u64`              | `250`                     | Nonzero retry minimum, no greater than maximum.                                            |
-| `retry_max_ms`  | `u64`              | `30000`                   | Retry maximum, at most `3600000` ms.                                                       |
-
-Client, instance, and forwarder IDs each contain 1 to 128 bytes without NUL, `/`, `+`, or `#`.
-Do not embed credentials in `broker_url`; use the dedicated fields. MQTT's bounded outbox and
-deduplication state are in memory and reset on restart. `outbox_max_mb` is a runtime memory budget;
-it does not enable persistence. The retired `mqtt-forwarder.db` is removed during startup and is
-not replayed. See [Notifications and integrations](./notifications-and-integrations.md).
-
-## MCP server
-
-Type: `McpConfig`, optional section `[mcp]`. The embedded Streamable HTTP endpoint (`POST /mcp`),
-configuration writes, on-camera hardware writes, and single-frame camera snapshots are all disabled
-by default. When all fields remain at their default values, the canonical writer omits the section.
-
-| Field                           | Type    | Default  | Validation and meaning                                                                                                      |
-| ------------------------------- | ------- | -------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `enabled`                       | `bool`  | `false`  | Enable the embedded Streamable HTTP endpoint at `POST /mcp` (and loopback `/mcp/secret-entry`); returns `404` when false.   |
-| `allow_writes`                  | `bool`  | `false`  | Enable opt-in Administrator configuration mutation tools when not overridden by a read-only client.                         |
-| `allow_snapshots`               | `bool`  | `false`  | Enable opt-in privacy-gated single-frame snapshots via `get_camera_snapshot` (camera hardware masks only).                  |
-| `allow_camera_device_writes`    | `bool`  | `false`  | Enable opt-in live on-camera hardware writes via `update_camera_device_settings` (`dry_run: false`) when not read-only.     |
-| `max_concurrent_requests`       | `usize` | `4`      | Maximum concurrent in-flight MCP requests, from `1` through `32`.                                                           |
-| `max_response_bytes`            | `usize` | `65536`  | Maximum serialized JSON-RPC response payload in bytes (`4096..=262144`); `get_camera_snapshot` uses `max_snapshot_bytes`.   |
-| `request_timeout_seconds`       | `u64`   | `15`     | Maximum execution time per MCP request in seconds, from `1` through `60`.                                                   |
-| `max_snapshot_bytes`            | `usize` | `262144` | Maximum encoded JPEG snapshot size in bytes (`16384..=1048576`; response limit adds base64 and metadata envelope overhead). |
-| `max_snapshot_dimension`        | `u32`   | `1280`   | Maximum snapshot width or height in pixels, from `160` through `1920`.                                                      |
-| `snapshot_min_interval_seconds` | `u64`   | `5`      | Minimum interval between snapshots per camera in seconds, from `1` through `300`.                                           |
-
-Out-of-range values fail configuration validation during startup and configuration planning.
-`POST /mcp` enforces the existing `[access]` policy, Bearer header authentication, `localhost`/IP
-`Host` checks for unauthenticated local requests, `[direct_card].allowed_origins` allowlisting plus
-mandatory Bearer auth for browser `Origin` headers, serialization-layer secret redaction, and fail-closed camera privacy
-schedules for snapshots. Restart KeepPeek after manually editing `[mcp]`. See
-[MCP server and LLM configuration](./mcp.md).
-
-## Credential records
-
-Source: [access persistence](https://github.com/xnorpx/keeppeek/blob/main/src/access.rs).
-Use the Administrator credential controls, not hand-written verifiers or revision changes.
-
-Type: `PersistedAccessCatalog`, section `[access_credentials]`.
-
-| Field         | Type                    | Rule                                                 |
-| ------------- | ----------------------- | ---------------------------------------------------- |
-| `version`     | `u32`                   | Required; supported value is `1`.                    |
-| `credentials` | `Vec<StoredCredential>` | Required array, at most 128 records with unique IDs. |
-
-Type: `StoredCredential`, array `[[access_credentials.credentials]]`.
-
-| Field                    | Type                    | Rule                                                                                                                                      |
-| ------------------------ | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`                     | `Uuid`                  | Stable named-credential identity.                                                                                                         |
-| `name`                   | `String`                | 1 to 64 printable bytes after trimming.                                                                                                   |
-| `description`            | Optional `String`       | At most 256 printable bytes; empty descriptions normalize to absent.                                                                      |
-| `role`                   | `AccessRole`            | `"administrator"` or `"user"`.                                                                                                            |
-| `camera_access`          | Optional `CameraAccess` | Per-user group and camera policy. Absent is unrestricted; new credentials explicitly default to everything.                               |
-| `verifier`               | `AccessKeyFingerprint`  | SHA-256 fingerprint serialized as 32 byte-valued integers, not the raw access key. Treat it as sensitive authentication material.         |
-| `created_at_ms`          | `i64`                   | Creation time, Unix milliseconds.                                                                                                         |
-| `rotated_at_ms`          | Optional `i64`          | Last rotation time; absent if never rotated.                                                                                              |
-| `last_used_at_ms`        | Optional `i64`          | Accepted by the stored record type for compatibility, but cleared on load and omitted by the canonical writer. Activity is runtime state. |
-| `expires_at_ms`          | Optional `i64`          | Expiry time; expired credentials are denied.                                                                                              |
-| `disabled`               | `bool`                  | Disabled credentials cannot authenticate.                                                                                                 |
-| `revoked_at_ms`          | Optional `i64`          | Permanent revocation time.                                                                                                                |
-| `revision`               | `u64`                   | Nonzero credential revision used to invalidate stale sessions.                                                                            |
-| `legacy`                 | `bool`                  | Compatibility initial-credential marker.                                                                                                  |
-| `initial_secret_pending` | `bool`                  | Initial-key retrieval is still pending.                                                                                                   |
-
-The runtime `AccessCatalog.audit` array is not part of `PersistedAccessCatalog`. Audit history,
-session state, and credential last-use activity reset on restart; credential identities, verifiers,
-roles, revisions, and lifecycle metadata persist. The legacy `access.toml` is a migration input,
-not an additional active settings file.
-
-Type: `CameraAccess`, nested table belonging to the credential record, not to a camera. The
-`all_cameras` and `camera_ids` fields are required when the policy is present; `group_ids` defaults
-to an empty list for compatibility. Unknown fields are rejected.
-
-| Field         | Type          | Rule                                                                                                                                                                                        |
-| ------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `all_cameras` | `bool`        | Explicitly grant all current and future cameras. Must not be combined with a nonempty ID list.                                                                                              |
-| `group_ids`   | `Vec<String>` | Camera configuration namespaces, such as `outdoor` for `[outdoor.front_door]`. Defaults to empty. At most 128 unique, nonblank names of at most 256 UTF-8 bytes without control characters. |
-| `camera_ids`  | `Vec<String>` | At most 128 unique, nonblank IDs of at most 256 UTF-8 bytes without control characters. Use server-advertised camera IDs, not names.                                                        |
-
-With `all_cameras = false`, access is the union of cameras in `group_ids` and explicit `camera_ids`;
-both lists empty grants nothing. `all_cameras = true` requires both lists empty and includes future
-groups and cameras. New credentials and absent policies default to everything. Existing explicit
-restrictions are not broadened on upgrade. Administrators always have full access and cannot be
-restricted through this policy. There is no secret substitution inside grant records.
-
-The Administrator's user-access editor validates camera and group IDs against the current fleet and
-saves under the shared configuration lock. Each save increments the credential revision, rejects
-stale writes, and invalidates existing sessions. Grants survive configuration reload and export/import.
-Group grants are saved as group names, not expanded camera lists; effective access is resolved from
-the server's camera group membership. `available_group_ids` in management responses is bounded
-discovery metadata for the editor, not a persisted field. The editor supports up to 128 available
-groups using the same ID limits; an invalid or oversized inventory rejects management requests
-before any policy mutation. Runtime group-membership changes close affected group-scoped sessions
-and cancel their queued work so playback and event subscriptions cannot retain an obsolete grant.
-Grid audiences do not grant camera permissions. Custom roles remain unsupported, and trusted-local
-clients still follow the Administrator policy described above.
-
-## Saved event searches
-
-Source: [saved event searches](https://github.com/xnorpx/keeppeek/blob/main/src/server/saved_searches.rs).
-Saved event searches live in `config.toml` under `[saved_event_searches]` and use the
-`keeppeek.event-search.advanced.v1` capability. Manage them through `EventSearchCommand`
-compare-and-swap operations rather than editing the section manually.
-
-Type: `StoredRegistry`, section `[saved_event_searches]`.
-
-| Field            | Type                       | Rule                                                                                      |
-| ---------------- | -------------------------- | ----------------------------------------------------------------------------------------- |
-| `schema_version` | `u32`                      | Required; supported value is `1`.                                                         |
-| `owners`         | Map of `Vec<StoredSearch>` | Keyed by authenticated principal or local workspace ID; max 64 per owner and 1,024 total. |
-
-Type: `StoredSearch`, under `[saved_event_searches.owners."<owner-id>"]`.
-
-| Field                | Type     | Rule                                                                                               |
-| -------------------- | -------- | -------------------------------------------------------------------------------------------------- |
-| `id`                 | `String` | Stable UUID unique per owner; 1 to 128 characters.                                                 |
-| `name`               | `String` | Nonblank display name; 1 to 128 characters without control characters.                             |
-| `revision`           | `u64`    | Positive monotonic compare-and-swap revision.                                                      |
-| `expression_version` | `u32`    | Positive AST version (`1` editable; unsupported future versions remain readable and non-editable). |
-| `expression_json`    | `String` | Serialized AST draft, at most 32 KiB. Contains no credentials or secret references.                |
-| `updated_at_ms`      | `i64`    | UTC update timestamp in milliseconds.                                                              |
-
-Config-only backups validate and include `[saved_event_searches]` without copying the recording
-catalog database or stored embedding vectors.
-
-## Peek layout registry
-
-Source: [layout persistence](https://github.com/xnorpx/keeppeek/blob/main/src/server/peek_layouts.rs).
-Layouts use the existing main configuration file and the `keeppeek.peek-layouts.v1` capability.
-Use the layout controls and revision-checked operations rather than manually constructing this
-server-managed section.
-
-Type: `StoredRegistry`, section `[peek_layouts]`.
-
-| Field            | Type                        | Rule                                                                               |
-| ---------------- | --------------------------- | ---------------------------------------------------------------------------------- |
-| `schema_version` | `u32`                       | Required; supported value is `1`.                                                  |
-| `revision`       | `u64`                       | Nonzero registry revision. Stale writes conflict.                                  |
-| `shared_layouts` | `Vec<Layout>`               | Nonempty server-owned layout array.                                                |
-| `users`          | Map of `StoredUserRegistry` | Keyed by principal ID; holds per-user active selection and legacy private layouts. |
-
-Type: `StoredUserRegistry`, section `[peek_layouts.users."<principal-id>"]`.
-
-| Field              | Type          | Rule                                                                                                          |
-| ------------------ | ------------- | ------------------------------------------------------------------------------------------------------------- |
-| `active_layout_id` | `String`      | Selected layout identity. Missing selections are repaired by the registry.                                    |
-| `layouts`          | `Vec<Layout>` | Legacy private layout records; migrated to server-owned shared layouts with restricted audiences when opened. |
-
-Type: `Layout`, under `shared_layouts[]` or legacy `users.<principal-id>.layouts[]`.
-
-| Field            | Type                       | Rule                                                                                                                           |
-| ---------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `id`             | `String`                   | Unique within the registry view; nonblank, at most 128 characters.                                                             |
-| `name`           | `String`                   | Nonblank, at most 80 characters.                                                                                               |
-| `scope`          | `LayoutScope`              | `"shared"` for canonical layouts; `"private"` is retained for migration.                                                       |
-| `owner_id`       | `String`                   | `"server"` for shared layouts; private records must match their principal.                                                     |
-| `audience`       | `LayoutAudience`           | Defaults to everyone with an empty credential list when the entire field is absent.                                            |
-| `activity_focus` | `bool`                     | Whether activity can affect layout focus.                                                                                      |
-| `display`        | Optional `DisplaySettings` | Dashboard-owned display settings; absent objects use defaults. Older client writes that omit the object preserve saved values. |
-| `tiles`          | `Vec<LayoutTile>`          | Ordered tiles, at most 64 per layout; no duplicate camera IDs or overlaps.                                                     |
-
-Type: `DisplaySettings`, nested `display` table. The dashboard editor writes the complete object
-with the existing registry revision. Only Administrators can change it. A User can still change
-their selected dashboard but cannot alter its display settings. No field resolves secret references.
-
-| Field              | Type            | Default     | Validation and meaning                                                                          |
-| ------------------ | --------------- | ----------- | ----------------------------------------------------------------------------------------------- |
-| `version`          | `u32`           | `1`         | Required in present objects; only version `1` is supported.                                     |
-| `tile_shape`       | `TileShape`     | `"16:9"`    | `"16:9"`, `"4:3"`, or `"native"`.                                                               |
-| `media_fit`        | `MediaFit`      | `"contain"` | `"contain"` or `"cover"`; never stretch.                                                        |
-| `streaming_mode`   | `StreamingMode` | `"smart"`   | `"smart"` or `"continuous"`.                                                                    |
-| `stream_limit`     | `u32`           | `12`        | Whole number from 1 through 12; each browser also enforces its own capacity.                    |
-| `keep_awake`       | `bool`          | `false`     | Saved wake-lock intent; browser gesture, visibility, permission, and device policy still apply. |
-| `gap_px`           | `u32`           | `10`        | Whole pixels from 0 through 24 between tile slots.                                              |
-| `corner_radius_px` | `u32`           | `10`        | Whole pixels from 0 through 24; zero gives square video corners.                                |
-
-Display objects reject unknown fields, positional arrays, invalid types, and out-of-range values.
-The All cameras dashboard keeps immutable generated coordinates and identity, but its display
-object can be edited and survives camera-inventory synchronization. Preset names are derived from
-gap/radius values and are not an additional stored field.
-
-Type: `LayoutAudience`, nested `audience` table.
-
-| Field            | Type          | Rule                                                                                                                                                                                                 |
-| ---------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `everyone`       | `bool`        | When true, `credential_ids` must be empty.                                                                                                                                                           |
-| `credential_ids` | `Vec<String>` | At most 128 unique canonical UUID strings. Save operations check that viewer identities exist. Empty with `everyone = false` gives no ordinary user access; Administrators retain management access. |
-
-Type: `LayoutTile`, nested `tiles[]` array.
-
-| Field         | Type     | Rule                                                        |
-| ------------- | -------- | ----------------------------------------------------------- |
-| `camera_id`   | `String` | Stable camera identity, not display name.                   |
-| `column`      | `u32`    | One-based grid column.                                      |
-| `row`         | `u32`    | One-based grid row.                                         |
-| `column_span` | `u32`    | Positive horizontal span; tile must fit the 12-column grid. |
-| `row_span`    | `u32`    | Positive vertical span; tile must fit the 12-row grid.      |
-| `pinned`      | `bool`   | Tile pinning state.                                         |
-
-The registry has a 256 KiB serialized bound and at most 32 layouts per validated view. Stored
-camera references are retained when a camera disappears; additions are validated against known
-cameras. The initial registry has revision `1` and an `All cameras` shared layout with ID
-`default`, activity focus enabled, and up to 64 configured cameras. Opening the store also migrates
-the legacy `peek-layouts.json`; that file is not an active persistence target.
-
-The client-facing `LayoutRegistry` contains `schema_version`, `active_layout_id`, and `layouts`.
-It is not the on-disk `StoredRegistry`; do not paste a client exchange document over the main
-configuration. Grid audiences control grid visibility only. They must not be treated as permission
-to view, export, or control an otherwise restricted camera.
-
-The server intersects a User's returned tiles with their camera grants. Selecting a dashboard from
-that filtered view updates only the principal's active selection; it does not remove other cameras
-from the canonical layout. Unknown or no-longer-visible dashboard selections are rejected.
-
-## Camera templates
-
-Source: [configuration templates](https://github.com/xnorpx/keeppeek/blob/main/src/server/configuration.rs).
-Templates are versioned, server-managed configuration records, not another settings file.
-
-Type: `StoredTemplateDocument`, section `[configuration_templates]`.
-
-| Field              | Type                  | Rule                                                                           |
-| ------------------ | --------------------- | ------------------------------------------------------------------------------ |
-| `document_version` | `u32`                 | Required; supported value is `1`.                                              |
-| `templates`        | `Vec<StoredTemplate>` | Required array, at most 64 templates. Missing section means an empty document. |
-
-Type: `StoredTemplate`, array `[[configuration_templates.templates]]`.
-
-| Field           | Type                   | Rule                                                                                    |
-| --------------- | ---------------------- | --------------------------------------------------------------------------------------- |
-| `template_id`   | `String`               | Unique ID, 1 to 64 ASCII letters, digits, hyphens, or underscores.                      |
-| `version`       | `u64`                  | Server-managed template version.                                                        |
-| `name`          | `String`               | Nonblank, at most 128 bytes, no control characters; names are unique ignoring case.     |
-| `description`   | `String`               | Defaults to empty and is omitted when empty; at most 1024 bytes, no control characters. |
-| `values`        | `StoredTemplateValues` | At least one supported setting must be present.                                         |
-| `created_at_ms` | `i64`                  | Creation time, Unix milliseconds.                                                       |
-| `updated_at_ms` | `i64`                  | Last update time, Unix milliseconds.                                                    |
-
-Type: `StoredTemplateValues`, nested `values` table. Every field is optional and omitted when unset.
-
-| Field                               | Type                   | Rule                                                                      |
-| ----------------------------------- | ---------------------- | ------------------------------------------------------------------------- |
-| `username_secret_reference`         | `String`               | A complete valid secret reference, not an inline username.                |
-| `password_secret_reference`         | `String`               | A complete valid secret reference, not an inline password.                |
-| `onvif_port`                        | `u16`                  | `1..65535`.                                                               |
-| `http_port`                         | `u16`                  | `1..65535`.                                                               |
-| `backend`                           | `CameraBackend`        | `"auto"`, `"retina"`, or `"reo-proto"`.                                   |
-| `transport`                         | `CameraTransport`      | `"tcp"` or `"udp"`.                                                       |
-| `record_generic_motion_events`      | `bool`                 | Generic motion-event preference.                                          |
-| `recording_mode`                    | `CameraRecordingMode`  | `"off"`, `"sub"`, `"main"`, `"both"`, `"event-boost"`, or `"event-only"`. |
-| `event_recording_duration_secs`     | `u32`                  | `1..3600` seconds.                                                        |
-| `event_pre_recording_duration_secs` | `u32`                  | `0..30` seconds.                                                          |
-| `event_recording_stream`            | `EventRecordingStream` | `"main"` or `"sub"`.                                                      |
-
-The template writer enforces a 16 KiB serialized document limit. The legacy
-`configuration-templates.json` is imported into this section and removed. Template references stay
-as tokens in the stored template; applying a template must validate the resulting camera settings.
-
-## Notification rules
-
-Sources: [rule persistence](https://github.com/xnorpx/keeppeek/blob/main/src/notifications/store.rs),
-[rule model](https://github.com/xnorpx/keeppeek/blob/main/src/notifications/model.rs), and
-[cooldowns](https://github.com/xnorpx/keeppeek/blob/main/src/notifications.rs).
-
-Type: `NotificationConfiguration`, section `[notifications]`.
-
-| Field   | Type                       | Default and bound                              |
-| ------- | -------------------------- | ---------------------------------------------- |
-| `rules` | `Vec<PersistedRuleRecord>` | `[]`; at most 128 rules, with unique rule IDs. |
-
-Type: `PersistedRuleRecord`, array `[[notifications.rules]]`.
-
-| Field             | Type            | Meaning                                                 |
-| ----------------- | --------------- | ------------------------------------------------------- |
-| `id`              | `String`        | Stable rule ID.                                         |
-| `owner_id`        | `String`        | Owning principal ID.                                    |
-| `active`          | Optional `Rule` | Published rule; absent before first activation.         |
-| `active_revision` | `u64`           | Active revision used for conflict checks.               |
-| `draft`           | `Rule`          | Saved draft, which may be incomplete before activation. |
-| `draft_revision`  | `u64`           | Draft revision used for conflict checks.                |
-| `created_at_ms`   | `i64`           | Creation time, Unix milliseconds.                       |
-| `updated_at_ms`   | `i64`           | Last update time, Unix milliseconds.                    |
-
-Rule identity, owner, and revisions must agree with the containing record. A draft is bounded
-to 64 KiB in its JSON representation. Activating it requires complete rule validation. Runtime
-`RuleRecord.last_match_at_ms` and `last_delivery_at_ms` are not persisted fields.
-
-Type: `Rule`, under each record's `draft` and optional `active` tables.
-
-| Field             | Type                      | Validation or default                             |
-| ----------------- | ------------------------- | ------------------------------------------------- |
-| `id`              | `String`                  | 1 to 128 ASCII letters, digits, `.`, `-`, or `_`. |
-| `name`            | `String`                  | Nonblank, at most 128 characters.                 |
-| `enabled`         | `bool`                    | Required; disabled rules do not match events.     |
-| `revision`        | `u64`                     | Corresponding draft or active revision.           |
-| `owner_id`        | `String`                  | Same ID character and byte limits as `id`.        |
-| `triggers`        | `Vec<Trigger>`            | Nonempty and unique; values below.                |
-| `filter`          | `Filter`                  | Defaults to an empty filter.                      |
-| `schedule`        | `Schedule`                | Required.                                         |
-| `cooldowns`       | `Vec<Cooldown>`           | Defaults to `[]`; scopes must be unique.          |
-| `rate_limits`     | `Vec<RateLimit>`          | Defaults to `[]`; scopes must be unique.          |
-| `critical_bypass` | Optional `CriticalBypass` | Bounded critical-event quiet-hours bypass.        |
-| `enrichment`      | `EnrichmentPolicy`        | Required.                                         |
-| `actions`         | `Vec<Action>`             | 1 to 8 actions.                                   |
-| `failure`         | `FailurePolicy`           | Required.                                         |
-
-`Trigger` values are `"event_created"`, `"event_updated"`, `"event_ended"`, `"outage_started"`,
-`"recovery"`, `"storage_health"`, `"recording_health"`, and `"test"`.
-
-### Filters and schedules
-
-Type: `Filter`, nested `filter` table.
-
-| Field                 | Type            | Default and rule                                        |
-| --------------------- | --------------- | ------------------------------------------------------- |
-| `source_ids`          | `Vec<String>`   | `[]`; at most 128 nonblank values.                      |
-| `group_ids`           | `Vec<String>`   | `[]`; at most 128 nonblank values.                      |
-| `event_kinds`         | `Vec<String>`   | `[]`; at most 128 nonblank values.                      |
-| `zones`               | `Vec<String>`   | `[]`; at most 128 nonblank values.                      |
-| `minimum_confidence`  | Optional `f64`  | Finite value in `0..1`, inclusive.                      |
-| `attachment_required` | Optional `bool` | Require or exclude an available non-private attachment. |
-| `minimum_duration_ms` | Optional `u64`  | Minimum matching event duration.                        |
-| `severities`          | `Vec<Severity>` | `[]`; values `"info"`, `"warning"`, `"critical"`.       |
-| `reviewed`            | Optional `bool` | Match the supplied review state.                        |
-| `bookmarked`          | Optional `bool` | Match the supplied bookmark state.                      |
-
-Empty filter arrays do not restrict that dimension. Filter fields describe matching inputs;
-their presence does not mean every camera or event producer supplies them.
-
-Type: `Schedule`, nested `schedule` table.
-
-| Field            | Type                  | Default and rule                                    |
-| ---------------- | --------------------- | --------------------------------------------------- |
-| `timezone`       | `String`              | Required recognized IANA timezone, such as `"UTC"`. |
-| `active_windows` | `Vec<WeeklyWindow>`   | `[]`, meaning no active-window restriction.         |
-| `quiet_hours`    | Optional `QuietHours` | No quiet-hours suppression when absent.             |
-
-`QuietHours` has one required field, `windows: Vec<WeeklyWindow>`. `WeeklyWindow` fields are:
-
-| Field          | Type           | Rule                                                |
-| -------------- | -------------- | --------------------------------------------------- |
-| `weekdays`     | `Vec<Weekday>` | Nonempty and unique; `"monday"` through `"sunday"`. |
-| `start_minute` | `u16`          | `0..1439`, local minutes after midnight.            |
-| `end_minute`   | `u16`          | `0..1439`, exclusive end; must differ from start.   |
-
-An end earlier than the start describes an overnight window.
-
-### Cooldowns, limits, and delivery
-
-All policy durations below are in milliseconds and must be between `1` and `2592000000`
-(30 days), inclusive, unless a tighter rule is stated.
-
-| Type               | Fields                                                                                                                              | Validation                                                                                                |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `Cooldown`         | `scope: CooldownScope`, `duration_ms: u64`                                                                                          | Scopes: `"event"`, `"camera_event_kind"`, `"group"`, `"rule"`, `"outage"`.                                |
-| `RateLimit`        | `scope: RateLimitScope`, `maximum: u32`, `window_ms: u64`                                                                           | Maximum `1..10000`; scopes `"rule"`, `"channel"`, `"principal"`, `"global"`.                              |
-| `CriticalBypass`   | `maximum: u32`, `window_ms: u64`                                                                                                    | Maximum `1..10`.                                                                                          |
-| `EnrichmentPolicy` | `deadline_ms: u64`, `maximum_revisions: u32`, `maximum_attempts: u32`, `maximum_attachment_bytes: u64`, `wake_after_deadline: bool` | Revisions `1..32`, attempts `1..8`, attachment bytes `1..4194304` (4 MiB). All fields required.           |
-| `FailurePolicy`    | `maximum_attempts: u32`, `maximum_retry_interval_ms: u64`, `expiry_ms: u64`                                                         | Attempts `1..10`. An enabled push action requires retry interval at least `5000` ms. All fields required. |
-
-Type: `Action`, nested `actions[]` array.
-
-| Field                   | Type               | Default and rule                                                                                                                                                                                                                              |
-| ----------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `enabled`               | `bool`             | `true`.                                                                                                                                                                                                                                       |
-| `channel`               | `Channel`          | `"browser"`, `"push"`, `"webhook"`, or `"forwarder"`. Use channels advertised as available by the server.                                                                                                                                     |
-| `destination`           | `String`           | At most 2048 bytes after resolution. Browser actions use the owner and require an empty destination. Push uses the Pushover destination format; webhook requires an HTTP(S) URL without user-info; forwarder requires a nonblank destination. |
-| `template`              | `Template`         | Required `title: String` and `body: String`.                                                                                                                                                                                                  |
-| `attachment`            | `AttachmentPolicy` | `"never"`, `"when_available"`, or `"required"`.                                                                                                                                                                                               |
-| `allow_second_delivery` | `bool`             | Required flag for staged delivery.                                                                                                                                                                                                            |
-
-Template title and body limits are 256 and 4096 characters respectively; provider-specific limits
-can be tighter. Allowed `{{field}}` substitutions are `source.id`, `source.name`, `event.id`,
-`event.kind`, `event.zone`, `event.confidence`, `event.duration`, `health.state`,
-`notification.stage`, and `notification.deep_link`. These are notification template substitutions,
-not secret references.
-
-Provider destinations can contain credentials, so the rule writer moves non-browser destination
-strings into the companion secret file and stores references. It keeps active and draft secret
-versions separate. Do not inline tokens into a book example or export them with a layout.
-
-The legacy `notifications.db` is a rule-migration input. Delivery jobs, retry state, evaluation
-history, and counters are runtime state, not extra `[notifications]` settings. See
-[notifications and integrations](./notifications-and-integrations.md) for provider setup.
-
-## Runtime profiles
-
-Type: `ProfileRegistry`, section `[runtime_profiles]`. The server persists profile definitions,
-revisions, and the active selection in `config.toml` through the existing atomic configuration
-writer. Do not edit this section manually.
-
-| Field               | Type                               | Default | Validation and meaning                                                                                 |
-| ------------------- | ---------------------------------- | ------- | ------------------------------------------------------------------------------------------------------ |
-| `identity_schema`   | `i64` (server-managed marker)      | `1`     | Persistence-only rollback guard written on migration and preserved across writes, backup, and restore. |
-| `revision`          | `u64`                              | `0`     | Monotonic compare-and-set revision in `0..=i64::MAX`.                                                  |
-| `active_profile_id` | Optional `String`                  | Absent  | Active profile ID, or absent when Base applies. Active profiles cannot be deleted.                     |
-| `profiles`          | `BTreeMap<String, RuntimeProfile>` | Empty   | At most 32 profiles keyed by stable machine ID (1–128 ASCII `A-Z`, `a-z`, `0-9`, `._-`, not `.`/`..`). |
-
-Each `RuntimeProfile` stores `id`, `name` (non-whitespace, 1–80 UTF-8 bytes without control
-characters), positive `revision`, and `cameras` (at most 127 targets keyed by camera
-`profile_identity` UUID). Each target's `CameraProfileOverride` rejects unknown fields and permits
-only four runtime-safe fields:
-
-| Override field             | Type                           | Inheritance and enforcement                                                                                                                                                                                        |
-| -------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `availability`             | Optional `bool`                | Omitting inherits Base. `false` stops runtime camera ingress without editing Base; cannot enable disabled Base.                                                                                                    |
-| `recording_mode`           | Optional `CameraRecordingMode` | Accepts `off`, `sub`, `main`, `both`, `event-boost`, or `event-only`. Cannot enable recording when Base is `off`; effective mode resolves to `off` when `availability` is `false` or `privacy_enforced` is `true`. |
-| `privacy_enforced`         | Optional `bool`                | Feeds the server `PrivacyRegistry` gate. `true` enforces privacy; `false` cannot weaken an active privacy schedule.                                                                                                |
-| `notifications_suppressed` | Optional `bool`                | Suppresses matching notification candidates and queued outbox delivery without altering saved rule definitions.                                                                                                    |
-
-Credentials, secret references, addresses, ports, stream URLs, codecs, transport, storage paths,
-retention settings, detectors, zones, masks, access control, PTZ settings, and notification rules
-are not valid profile fields.
-
-**Controls and activation surface:** Administrators manage and activate profiles only through
-**Settings → Runtime profiles** or an authorized WebRTC `StateStoreCommand` client on the
-`service/runtime-profiles/` namespace. No HTTP, REST, MQTT, Home Assistant, webhook, CLI,
-scheduler, presence, geofence, or location activation surface exists. Users can observe the active
-profile and camera-scoped application status but cannot read profile definitions or mutate state.
-
-**Failure, retry, and recovery:** Desired selection commits atomically before camera workers
-converge asynchronously. Each visible camera reports `pending`, `applied`, or `degraded` with
-effective-value provenance (`base` or `profile`) across eight bounded observed status documents. A
-failed or timed-out target stays `degraded` without silently falling back to Base, and restrictive
-privacy stays closed until convergence succeeds. Missing configured targets remain `degraded` with
-`configured camera is missing` until removed from the profile or Base is activated. After repairing
-storage or camera faults, select **Reapply active policy** in Settings (or re-put the active
-selection over WebRTC CAS). Unknown `identity_schema` versions fail closed without modifying
-`config.toml`. Full configuration backup and restore preserve `[runtime_profiles]`,
-`identity_schema = 1`, and camera `profile_identity` bindings; rolling back to a pre-migration
-binary requires restoring a verified pre-migration configuration backup.
+**Type:** `PrivacyConfig`, `PrivacySchedule`, `PrivacyWindow`, `PrivacyOverride` | **Sections:** `[privacy.default]` & `[privacy.cameras."<camera-id-or-ip>"]` | **Ownership:** Operator | **Apply:** Live (plan/apply) / Restart (file) | **Sources:** [src/config.rs](https://github.com/xnorpx/keeppeek/blob/main/src/config.rs), [src/privacy.rs](https://github.com/xnorpx/keeppeek/blob/main/src/privacy.rs)
+
+`[privacy.default]` applies to cameras without a per-camera entry. `[privacy.cameras]` supports at most `127` entries (keys `1..=256` nonblank bytes; stable camera ID preferred, IP accepted for migration). Invalid schedules fail validation before media starts.
+
+| Field                   | Type                       | Default  | Limits and notes                                                                                                                                                                                                                                                                             |
+| ----------------------- | -------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`               | `bool`                     | `true`   | `false` retains the schedule while disabling enforcement.                                                                                                                                                                                                                                    |
+| `timezone`              | `String`                   | Required | Valid IANA timezone (e.g., `"America/New_York"`).                                                                                                                                                                                                                                            |
+| `windows`               | `Vec<PrivacyWindow>`       | `[]`     | Max `64` half-open weekly windows. Each window: `weekdays` (nonempty ISO `1..=7`, Mon=1..Sun=7), `start` and `end` (`"HH:MM"`, must differ; `end < start` = overnight). Repeated DST local hours are protected.                                                                              |
+| `temporary_override`    | Optional `PrivacyOverride` | Absent   | Persisted override suspending windows: `actor` and `reason` (`1..=256` nonblank B each), RFC3339 `accepted_at` and `expires_at` (`expires_at > accepted_at`, span `<= 24` hours). Control-channel requests overwrite `actor` and `accepted_at` with the authenticated Admin and server time. |
+| `keep_camera_connected` | `bool`                     | `true`   | Keeps camera ingress warm while blocking media delivery.                                                                                                                                                                                                                                     |
 
 ## Activity analytics
 
-Type: `AnalyticsConfig`, section `[analytics]`. Controls site display defaults and derived rollup
-storage bounds for bounded event activity summaries. Derived rollup tables live in the recording
-catalog database and can be rebuilt from canonical events without affecting recordings.
+**Type:** `AnalyticsConfig` | **Section:** `[analytics]` | **Ownership:** Operator | **Apply:** Restart | **Sources:** [src/config.rs](https://github.com/xnorpx/keeppeek/blob/main/src/config.rs), [src/storage/analytics/mod.rs](https://github.com/xnorpx/keeppeek/blob/main/src/storage/analytics/mod.rs)
 
-| Field             | Type        | Default    | Validation and meaning                                                                                          |
-| ----------------- | ----------- | ---------- | --------------------------------------------------------------------------------------------------------------- |
-| `enabled`         | `bool`      | `true`     | Enables site activity summary queries and rollup maintenance.                                                   |
-| `timezone`        | `String`    | `"UTC"`    | Recognized IANA timezone used as the default display timezone for civil-time buckets and comparisons.           |
-| `week_start`      | `WeekStart` | `"monday"` | First day of the calendar week (`"monday"` or `"sunday"`).                                                      |
-| `max_rollup_rows` | `u64`       | `500000`   | Derived rollup row quota (`1000..=5000000`). Exceeding the quota degrades analytics without blocking recording. |
+Controls site defaults and derived rollup bounds for bounded event activity summaries. Derived rollup tables live in the recording catalog DB and can be rebuilt from canonical events without affecting recordings.
+
+| Field             | Type        | Default    | Limits and notes                                                                 |
+| ----------------- | ----------- | ---------- | -------------------------------------------------------------------------------- |
+| `enabled`         | `bool`      | `true`     | Enables activity summary queries and rollup maintenance.                         |
+| `timezone`        | `String`    | `"UTC"`    | Valid IANA timezone for default civil-time buckets and comparisons.              |
+| `week_start`      | `WeekStart` | `"monday"` | `"monday"` or `"sunday"`.                                                        |
+| `max_rollup_rows` | `u64`       | `500000`   | `1000..=5000000`. Exceeding quota degrades analytics without blocking recording. |
+
+## MQTT event forwarding
+
+**Type:** `EventForwarderConfig` (`mqtt: MqttForwarderConfig`) | **Section:** `[event_forwarder.mqtt]` | **Ownership:** Operator (server-owned `revision`) | **Apply:** Live (UI/API) / Restart (file) | **Source:** [src/event_forwarder/config.rs](https://github.com/xnorpx/keeppeek/blob/main/src/event_forwarder/config.rs)
+
+| Field           | Type               | Default                   | Limits and notes                                                                                             |
+| --------------- | ------------------ | ------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `revision`      | `u64`              | `1`                       | Server-managed settings revision.                                                                            |
+| `enabled`       | `bool`             | `false`                   | Enables MQTT event/health forwarding.                                                                        |
+| `broker_url`    | `String`           | `"mqtt://127.0.0.1:1883"` | `mqtt` or `mqtts` URL with host; no user-info, non-root path, query, or fragment.                            |
+| `client_id`     | `String`           | `"keeppeek"`              | `1..=128` B; no NUL, `/`, `+`, or `#`.                                                                       |
+| `instance_id`   | `String`           | `"home-nvr"`              | `1..=128` B; no NUL, `/`, `+`, or `#`.                                                                       |
+| `forwarder_id`  | `String`           | `"mqtt"`                  | `1..=128` B; no NUL, `/`, `+`, or `#`.                                                                       |
+| `topic_prefix`  | `String`           | `"keeppeek"`              | `1..=512` B; no leading/trailing `/`, NUL, `+`, or `#` (interior `/` allowed).                               |
+| `username`      | Optional `String`  | Absent                    | Broker username (accepts secret refs).                                                                       |
+| `password`      | Optional `String`  | Absent                    | Requires `username`; prefer `{secret:MQTT_PASSWORD}` (UI writer stores `1..=4,096` B under `MQTT_PASSWORD`). |
+| `tls_ca_path`   | Optional `PathBuf` | Absent (system trust)     | Custom CA bundle; valid only with `mqtts`.                                                                   |
+| `qos`           | `u8`               | `1`                       | `0`, `1`, or `2`.                                                                                            |
+| `retain_events` | `bool`             | `false`                   | Retain event publications.                                                                                   |
+| `retain_health` | `bool`             | `true`                    | Retain health publications.                                                                                  |
+| `outbox_max_mb` | `u64`              | `64`                      | `1..=65536` MiB in-memory outbox budget (does not enable disk persistence; resets on restart).               |
+| `retry_min_ms`  | `u64`              | `250`                     | Nonzero; `<= retry_max_ms`.                                                                                  |
+| `retry_max_ms`  | `u64`              | `30000`                   | `<= 3600000` ms (1 hour).                                                                                    |
+
+Outbox and deduplication state live in memory and reset on restart; the retired `mqtt-forwarder.db` is deleted at startup without replay. See [Notifications and integrations](./notifications-and-integrations.md).
+
+## MCP server
+
+**Type:** `McpConfig` | **Section:** `[mcp]` | **Ownership:** Operator | **Apply:** Restart | **Sources:** [src/config/mcp.rs](https://github.com/xnorpx/keeppeek/blob/main/src/config/mcp.rs), [src/server/mcp.rs](https://github.com/xnorpx/keeppeek/blob/main/src/server/mcp.rs)
+
+The embedded Streamable HTTP endpoint (`POST /mcp`), configuration writes, on-camera hardware writes, and single-frame camera snapshots default to disabled. The canonical writer omits `[mcp]` when all fields stay at defaults.
+
+| Field                           | Type    | Default  | Limits and notes                                                                                                   |
+| ------------------------------- | ------- | -------- | ------------------------------------------------------------------------------------------------------------------ |
+| `enabled`                       | `bool`  | `false`  | Enable `POST /mcp` (and loopback `/mcp/secret-entry`); returns `404` when `false`.                                 |
+| `allow_writes`                  | `bool`  | `false`  | Enable opt-in Administrator configuration mutation tools unless overridden by a read-only client.                  |
+| `allow_snapshots`               | `bool`  | `false`  | Enable opt-in privacy-gated single-frame snapshots via `get_camera_snapshot` (camera hardware masks only).         |
+| `allow_camera_device_writes`    | `bool`  | `false`  | Enable opt-in live on-camera hardware writes via `update_camera_device_settings` (`dry_run: false`) when writable. |
+| `max_concurrent_requests`       | `usize` | `4`      | `1..=32` concurrent in-flight MCP requests.                                                                        |
+| `max_response_bytes`            | `usize` | `65536`  | `4096..=262144` bytes serialized JSON-RPC payload (`get_camera_snapshot` uses `max_snapshot_bytes`).               |
+| `request_timeout_seconds`       | `u64`   | `15`     | `1..=60` seconds server deadline per request.                                                                      |
+| `max_snapshot_bytes`            | `usize` | `262144` | `16384..=1048576` bytes encoded JPEG snapshot size (response adds base64 and metadata envelope overhead).          |
+| `max_snapshot_dimension`        | `u32`   | `1280`   | `160..=1920` px maximum snapshot width or height.                                                                  |
+| `snapshot_min_interval_seconds` | `u64`   | `5`      | `1..=300` seconds minimum interval between snapshots per camera.                                                   |
+
+Out-of-range values fail startup and configuration-planning validation. `POST /mcp` enforces `[access]` policy, Bearer header authentication, `localhost`/IP `Host` checks for unauthenticated local requests, `[direct_card].allowed_origins` plus mandatory Bearer auth for browser `Origin` headers, serialization-layer secret redaction, and fail-closed camera privacy schedules for snapshots. See [MCP server and LLM configuration](./mcp.md).
+
+## Credential records
+
+**Type:** `PersistedAccessCatalog` | **Section:** `[access_credentials]` | **Ownership:** Server-managed (use Admin credential controls) | **Apply:** Live (UI/API) | **Source:** [src/access.rs](https://github.com/xnorpx/keeppeek/blob/main/src/access.rs)
+
+Top-level fields: `version: u32` (must be `1`) and `credentials: Vec<StoredCredential>` (`[[access_credentials.credentials]]`, max `128` records with unique IDs).
+
+| Field                    | Type                    | Default                | Limits and notes                                                                                                                |
+| ------------------------ | ----------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                     | `Uuid`                  | Required               | Unique stable credential identity.                                                                                              |
+| `name`                   | `String`                | Required               | `1..=64` printable bytes after trimming (no control chars).                                                                     |
+| `description`            | Optional `String`       | Absent                 | Max `256` printable bytes; empty normalizes to absent.                                                                          |
+| `role`                   | `AccessRole`            | Required               | `"administrator"` or `"user"`.                                                                                                  |
+| `camera_access`          | Optional `CameraAccess` | Absent (unrestricted)  | Per-user camera/group policy below. New credentials explicitly initialize unrestricted; Administrators are always unrestricted. |
+| `verifier`               | `AccessKeyFingerprint`  | Required               | 32-byte SHA-256 fingerprint array (not raw key). Treat as sensitive auth material.                                              |
+| `created_at_ms`          | `i64`                   | Required               | Creation time, Unix ms.                                                                                                         |
+| `rotated_at_ms`          | Optional `i64`          | Absent                 | Last rotation time, Unix ms.                                                                                                    |
+| `last_used_at_ms`        | Optional `i64`          | Absent                 | Accepted on load for compatibility, cleared on load and omitted on write (activity is runtime-only).                            |
+| `expires_at_ms`          | Optional `i64`          | Absent                 | Expiry time, Unix ms; expired credentials are denied.                                                                           |
+| `disabled`               | `bool`                  | Required               | `true` denies authentication.                                                                                                   |
+| `revoked_at_ms`          | Optional `i64`          | Absent                 | Permanent revocation time, Unix ms.                                                                                             |
+| `revision`               | `u64`                   | Required               | Nonzero monotonic revision; changes invalidate stale sessions.                                                                  |
+| `legacy`                 | `bool`                  | Required               | Compatibility initial-credential marker.                                                                                        |
+| `initial_secret_pending` | `bool`                  | Required               | Initial-key retrieval still pending.                                                                                            |
+| `endpoint_kind`          | `EndpointKind`          | `"standard"` (omitted) | `"standard"` or `"paired_mobile"`.                                                                                              |
+| `paired_nvr_id`          | Optional `String`       | Absent                 | Required 16-byte NVR UUID/hex when `endpoint_kind = "paired_mobile"`; forbidden when `"standard"`.                              |
+
+**Nested `CameraAccess` (`deny_unknown_fields`):**
+
+| Field         | Type          | Default  | Limits and notes                                                                                                                               |
+| ------------- | ------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `all_cameras` | `bool`        | Required | Grants all current and future cameras/groups; requires both `group_ids` and `camera_ids` empty.                                                |
+| `group_ids`   | `Vec<String>` | `[]`     | Camera namespace names (e.g., `"outdoor"` for `[outdoor.front_door]`). Max `128` unique nonblank entries (`<= 256` UTF-8 B, no control chars). |
+| `camera_ids`  | `Vec<String>` | Required | Server-advertised camera IDs (not display names). Max `128` unique nonblank entries (`<= 256` UTF-8 B, no control chars).                      |
+
+- With `all_cameras = false`, effective access is `group_ids ∪ camera_ids` (both empty grants zero cameras). Existing restrictions are never broadened on upgrade. No secret substitution occurs inside grant records.
+- Saving grants increments `revision`, rejects stale writes, and invalidates sessions; runtime group-membership changes close affected group-scoped sessions and cancel queued work. `available_group_ids` (max `128`), `AccessCatalog.audit`, sessions, and last-use timestamps are runtime state, not persisted fields. Legacy `access.toml` is a one-time migration input only. Grid audiences never grant camera permissions, custom roles are unsupported, and trusted-local clients follow `[access].local_networks`.
+
+## Saved event searches
+
+**Type:** `StoredRegistry` & `StoredSearch` (`deny_unknown_fields`) | **Section:** `[saved_event_searches]` | **Ownership:** Server-managed (`keeppeek.event-search.advanced.v1` CAS commands) | **Apply:** Live (UI/API) | **Source:** [src/server/saved_searches.rs](https://github.com/xnorpx/keeppeek/blob/main/src/server/saved_searches.rs)
+
+Top-level fields: `schema_version: u32` (must be `1`) and `owners: BTreeMap<String, Vec<StoredSearch>>` (keyed by principal or local workspace ID; max `64` per owner, `1,024` total).
+
+Each `StoredSearch` under `[saved_event_searches.owners."<owner-id>"]`:
+
+| Field                | Type     | Default  | Limits and notes                                                                   |
+| -------------------- | -------- | -------- | ---------------------------------------------------------------------------------- |
+| `id`                 | `String` | Required | Unique UUID per owner (`1..=128` B).                                               |
+| `name`               | `String` | Required | Nonblank display name (`1..=128` B, no control chars).                             |
+| `revision`           | `u64`    | Required | Positive monotonic CAS revision.                                                   |
+| `expression_version` | `u32`    | Required | Positive AST version (`1` editable; newer versions remain readable and read-only). |
+| `expression_json`    | `String` | Required | Serialized AST draft (`<= 32 KiB`); contains no credentials or secret refs.        |
+| `updated_at_ms`      | `i64`    | Required | UTC update timestamp, Unix ms.                                                     |
+
+Config-only backups validate and include `[saved_event_searches]` without copying the recording catalog DB or semantic embedding vectors.
+
+## Peek layout registry
+
+**Type:** `StoredRegistry` (`deny_unknown_fields`) | **Section:** `[peek_layouts]` | **Ownership:** Server-managed (`keeppeek.peek-layouts.v1` CAS commands) | **Apply:** Live (UI/API) | **Sources:** [src/server/peek_layouts.rs](https://github.com/xnorpx/keeppeek/blob/main/src/server/peek_layouts.rs), [src/server/peek_layouts/display.rs](https://github.com/xnorpx/keeppeek/blob/main/src/server/peek_layouts/display.rs)
+
+Stores saved [live-wall](./live-wall.md) dashboards, per-dashboard display settings, and per-user active selection. Browser permissions and active media/wake-lock handles remain runtime state. All structs below reject unknown fields; no field resolves secret references.
+
+| Type / Section                      | Field            | Type                                   | Default  | Limits and notes                                                                                                                                                                                   |
+| ----------------------------------- | ---------------- | -------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `StoredRegistry` (`[peek_layouts]`) | `schema_version` | `u32`                                  | Required | Must be `1`.                                                                                                                                                                                       |
+| `StoredRegistry`                    | `revision`       | `u64`                                  | Required | Nonzero registry CAS revision; initial value `1`.                                                                                                                                                  |
+| `StoredRegistry`                    | `shared_layouts` | `Vec<Layout>`                          | Required | Nonempty server-owned layouts (initial default: `id = "default"`, name `"All cameras"`, `activity_focus = true`, up to `64` cameras).                                                              |
+| `StoredRegistry`                    | `users`          | `BTreeMap<String, StoredUserRegistry>` | Required | Keyed by principal ID. Each entry has `active_layout_id: String` (missing values auto-repaired) and `layouts: Vec<Layout>` (legacy private layouts migrated to restricted shared layouts on open). |
+
+**`Layout` (`shared_layouts[]` or legacy `users.<id>.layouts[]`):**
+
+| Field            | Type                       | Default                                    | Limits and notes                                                                                                                                                                                                                                       |
+| ---------------- | -------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `id`             | `String`                   | Required                                   | Unique in registry view; nonblank `<= 128` chars.                                                                                                                                                                                                      |
+| `name`           | `String`                   | Required                                   | Nonblank `<= 80` chars.                                                                                                                                                                                                                                |
+| `scope`          | `LayoutScope`              | Required                                   | `"shared"` (canonical) or `"private"` (legacy migration).                                                                                                                                                                                              |
+| `owner_id`       | `String`                   | Required                                   | `"server"` for shared layouts; principal ID for legacy private records.                                                                                                                                                                                |
+| `audience`       | `LayoutAudience`           | `{ everyone = true, credential_ids = [] }` | `everyone: bool` (when `true`, `credential_ids` must be empty); `credential_ids: Vec<String>` (max `128` unique canonical UUIDs verified against known identities; `everyone = false` + empty hides from Users while Admins retain management access). |
+| `activity_focus` | `bool`                     | Required                                   | Enables activity-driven focus on this dashboard.                                                                                                                                                                                                       |
+| `display`        | Optional `DisplaySettings` | Absent (uses defaults below)               | Omission by older clients preserves saved settings; only Administrators may modify.                                                                                                                                                                    |
+| `tiles`          | `Vec<LayoutTile>`          | Required                                   | Max `64` tiles; no duplicate `camera_id` or grid overlaps. Each tile: `camera_id` (stable ID), `column`/`row` (1-based `u32`), `column_span`/`row_span` (positive `u32` fitting the `12×12` grid), `pinned: bool`.                                     |
+
+**`DisplaySettings` (nested `display` table; rejects unknown fields and positional arrays):**
+
+| Field              | Type            | Default     | Limits and notes                                                                    |
+| ------------------ | --------------- | ----------- | ----------------------------------------------------------------------------------- |
+| `version`          | `u32`           | `1`         | Required when object is present; only `1` supported.                                |
+| `tile_shape`       | `TileShape`     | `"16:9"`    | `"16:9"`, `"4:3"`, or `"native"`.                                                   |
+| `media_fit`        | `MediaFit`      | `"contain"` | `"contain"` or `"cover"` (never stretch).                                           |
+| `streaming_mode`   | `StreamingMode` | `"smart"`   | `"smart"` or `"continuous"`.                                                        |
+| `stream_limit`     | `u32`           | `12`        | Whole number `1..=12` (also bounded by browser capacity).                           |
+| `keep_awake`       | `bool`          | `false`     | Saved wake-lock intent (browser gesture/visibility/policy still apply).             |
+| `gap_px`           | `u32`           | `10`        | Whole pixels `0..=24`.                                                              |
+| `corner_radius_px` | `u32`           | `10`        | Whole pixels `0..=24` (`0` = square corners). Preset names are derived, not stored. |
+
+**Registry boundaries:** `256 KiB` serialized ceiling; max `32` layouts per validated view. Stored tile camera references survive temporary camera removal; additions validate against known cameras. The `All cameras` dashboard keeps immutable coordinates/ID while its `display` object is editable and preserved across inventory sync. Opening the store migrates legacy `peek-layouts.json` (not an active write target). Client exchange `LayoutRegistry` (`schema_version`, `active_layout_id`, `layouts`) is **not** the on-disk `StoredRegistry`. Grid audiences control dashboard visibility only—never camera authorization; the server intersects User tile views with camera grants without mutating the canonical layout.
+
+## Camera templates
+
+**Type:** `StoredTemplateDocument` (`deny_unknown_fields`) | **Section:** `[configuration_templates]` | **Ownership:** Server-managed | **Apply:** Live (UI/API) | **Source:** [src/server/configuration.rs](https://github.com/xnorpx/keeppeek/blob/main/src/server/configuration.rs)
+
+Top-level fields: `document_version: u32` (must be `1`) and `templates: Vec<StoredTemplate>` (`[[configuration_templates.templates]]`, max `64`; `16 KiB` serialized document limit; absent section = empty). Legacy `configuration-templates.json` is imported on startup and removed.
+
+Each `StoredTemplate` (`deny_unknown_fields`): `template_id` (unique `1..=64` ASCII `[A-Za-z0-9_-]`), `version: u64`, `name` (case-insensitive unique, nonblank `<= 128` B, no control chars), `description` (default `""`, omitted when empty, `<= 1,024` B, no control chars), `values: StoredTemplateValues` (`>= 1` field required), `created_at_ms: i64`, `updated_at_ms: i64`.
+
+**`StoredTemplateValues` (all fields optional, omitted when unset, `deny_unknown_fields`):**
+
+| Field                               | Type                            | Default | Limits and notes                                                          |
+| ----------------------------------- | ------------------------------- | ------- | ------------------------------------------------------------------------- |
+| `username_secret_reference`         | Optional `String`               | Absent  | Complete secret reference only (no inline credentials).                   |
+| `password_secret_reference`         | Optional `String`               | Absent  | Complete secret reference only (no inline credentials).                   |
+| `onvif_port`, `http_port`           | Optional `u16`                  | Absent  | `1..=65535`.                                                              |
+| `backend`                           | Optional `CameraBackend`        | Absent  | `"auto"`, `"retina"`, or `"reo-proto"`.                                   |
+| `transport`                         | Optional `CameraTransport`      | Absent  | `"tcp"` or `"udp"`.                                                       |
+| `record_generic_motion_events`      | Optional `bool`                 | Absent  | Generic motion-event opt-in.                                              |
+| `recording_mode`                    | Optional `CameraRecordingMode`  | Absent  | `"off"`, `"sub"`, `"main"`, `"both"`, `"event-boost"`, or `"event-only"`. |
+| `event_recording_duration_secs`     | Optional `u32`                  | Absent  | `1..=3600` seconds.                                                       |
+| `event_pre_recording_duration_secs` | Optional `u32`                  | Absent  | `0..=30` seconds.                                                         |
+| `event_recording_stream`            | Optional `EventRecordingStream` | Absent  | `"main"` or `"sub"`.                                                      |
+
+## Notification rules
+
+**Type:** `NotificationConfiguration` (`deny_unknown_fields`) | **Section:** `[notifications]` | **Ownership:** Server-managed | **Apply:** Live (UI/API) | **Sources:** [src/notifications/store.rs](https://github.com/xnorpx/keeppeek/blob/main/src/notifications/store.rs), [src/notifications/model.rs](https://github.com/xnorpx/keeppeek/blob/main/src/notifications/model.rs), [src/notifications.rs](https://github.com/xnorpx/keeppeek/blob/main/src/notifications.rs)
+
+Top-level field: `rules: Vec<PersistedRuleRecord>` (`[[notifications.rules]]`, default `[]`, max `128` rules with unique IDs). Each `PersistedRuleRecord` (`deny_unknown_fields`) stores `id`, `owner_id`, `active: Option<Rule>` (absent before first activation), `active_revision: u64`, `draft: Rule` (max `64 KiB` JSON), `draft_revision: u64`, `created_at_ms: i64`, and `updated_at_ms: i64`. Rule IDs, owners, and revisions must match their containing record; runtime `last_match_at_ms` and `last_delivery_at_ms` are not persisted.
+
+**`Rule` (under `draft` and optional `active`):**
+
+| Field             | Type                      | Default  | Limits and notes                                                                                                                                                     |
+| ----------------- | ------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`, `owner_id`  | `String`                  | Required | `1..=128` ASCII `[A-Za-z0-9._-]`.                                                                                                                                    |
+| `name`            | `String`                  | Required | Nonblank `<= 128` chars.                                                                                                                                             |
+| `enabled`         | `bool`                    | Required | `false` disables matching.                                                                                                                                           |
+| `revision`        | `u64`                     | Required | Matches containing `draft_revision` or `active_revision`.                                                                                                            |
+| `triggers`        | `Vec<Trigger>`            | Required | Nonempty unique list of `"event_created"`, `"event_updated"`, `"event_ended"`, `"outage_started"`, `"recovery"`, `"storage_health"`, `"recording_health"`, `"test"`. |
+| `filter`          | `Filter`                  | Empty    | Nested filter predicates below.                                                                                                                                      |
+| `schedule`        | `Schedule`                | Required | Timezone, active windows, and optional quiet hours below.                                                                                                            |
+| `cooldowns`       | `Vec<Cooldown>`           | `[]`     | Unique scopes below.                                                                                                                                                 |
+| `rate_limits`     | `Vec<RateLimit>`          | `[]`     | Unique scopes below.                                                                                                                                                 |
+| `critical_bypass` | Optional `CriticalBypass` | Absent   | Bounded critical-severity quiet-hours bypass.                                                                                                                        |
+| `enrichment`      | `EnrichmentPolicy`        | Required | Staged attachment enrichment limits below.                                                                                                                           |
+| `actions`         | `Vec<Action>`             | Required | `1..=8` delivery actions below.                                                                                                                                      |
+| `failure`         | `FailurePolicy`           | Required | Retry and outbox expiry policy below.                                                                                                                                |
+
+### Filters and schedules
+
+**`Filter`:**
+
+| Field                                             | Type            | Default | Limits and notes                                          |
+| ------------------------------------------------- | --------------- | ------- | --------------------------------------------------------- |
+| `source_ids`, `group_ids`, `event_kinds`, `zones` | `Vec<String>`   | `[]`    | Max `128` nonblank entries each; empty does not restrict. |
+| `minimum_confidence`                              | Optional `f64`  | Absent  | Finite value in `0.0..=1.0`.                              |
+| `attachment_required`                             | Optional `bool` | Absent  | Require or exclude an available non-private attachment.   |
+| `minimum_duration_ms`                             | Optional `u64`  | Absent  | Minimum matching event duration in ms.                    |
+| `severities`                                      | `Vec<Severity>` | `[]`    | `"info"`, `"warning"`, `"critical"`.                      |
+| `reviewed`, `bookmarked`                          | Optional `bool` | Absent  | Match review or bookmark state.                           |
+
+Filter fields describe matching inputs and do not imply every camera/producer supplies them.
+
+**`Schedule`, `QuietHours`, and `WeeklyWindow`:**
+
+| Field                                     | Type                  | Default  | Limits and notes                                                                                                              |
+| ----------------------------------------- | --------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `schedule.timezone`                       | `String`              | Required | Valid IANA timezone (e.g., `"UTC"`).                                                                                          |
+| `schedule.active_windows`                 | `Vec<WeeklyWindow>`   | `[]`     | Empty = always active.                                                                                                        |
+| `schedule.quiet_hours`                    | Optional `QuietHours` | Absent   | Single field `windows: Vec<WeeklyWindow>`.                                                                                    |
+| `WeeklyWindow.weekdays`                   | `Vec<Weekday>`        | Required | Nonempty unique list of `"monday"`..`"sunday"`.                                                                               |
+| `WeeklyWindow.start_minute`, `end_minute` | `u16`                 | Required | `0..=1439` local minutes after midnight (`end_minute` exclusive, must differ from `start_minute`; `end < start` = overnight). |
+
+### Cooldowns, limits, and delivery
+
+All policy durations below are milliseconds in `1..=2592000000` (30 days) unless tighter.
+
+| Type               | Fields                                                                                                                              | Validation                                                                                             |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `Cooldown`         | `scope: CooldownScope`, `duration_ms: u64`                                                                                          | Scopes: `"event"`, `"camera_event_kind"`, `"group"`, `"rule"`, `"outage"`.                             |
+| `RateLimit`        | `scope: RateLimitScope`, `maximum: u32`, `window_ms: u64`                                                                           | `maximum` `1..=10000`; scopes: `"rule"`, `"channel"`, `"principal"`, `"global"`.                       |
+| `CriticalBypass`   | `maximum: u32`, `window_ms: u64`                                                                                                    | `maximum` `1..=10`.                                                                                    |
+| `EnrichmentPolicy` | `deadline_ms: u64`, `maximum_revisions: u32`, `maximum_attempts: u32`, `maximum_attachment_bytes: u64`, `wake_after_deadline: bool` | All required. Revisions `1..=32`, attempts `1..=8`, attachment bytes `1..=4194304` (4 MiB).            |
+| `FailurePolicy`    | `maximum_attempts: u32`, `maximum_retry_interval_ms: u64`, `expiry_ms: u64`                                                         | All required. Attempts `1..=10`. Enabled `"push"` actions require `maximum_retry_interval_ms >= 5000`. |
+
+**`Action` (`actions[]`):**
+
+| Field                   | Type               | Default  | Limits and notes                                                                                                                                                                                                                                                                                                      |
+| ----------------------- | ------------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`               | `bool`             | `true`   | Disabled actions skip destination validation and delivery.                                                                                                                                                                                                                                                            |
+| `channel`               | `Channel`          | Required | `"browser"`, `"push"`, `"webhook"`, `"forwarder"`, or `"keeppeek_service"` (use channels advertised by the server).                                                                                                                                                                                                   |
+| `destination`           | `String`           | Required | Max `2,048` B after secret resolution. `"browser"` and `"keeppeek_service"` require `""`; `"push"` uses Pushover format; `"webhook"` requires HTTP(S) URL without credentials; `"forwarder"` requires nonblank text.                                                                                                  |
+| `template`              | `Template`         | Required | `title` (`<= 256` chars) and `body` (`<= 4,096` chars; providers may enforce tighter limits). Allowed `{{field}}` tokens (not secret refs): `source.id`, `source.name`, `event.id`, `event.kind`, `event.zone`, `event.confidence`, `event.duration`, `health.state`, `notification.stage`, `notification.deep_link`. |
+| `attachment`            | `AttachmentPolicy` | Required | `"never"`, `"when_available"`, or `"required"`. `"keeppeek_service"` rejects `"required"` (never transmits media attachments).                                                                                                                                                                                        |
+| `allow_second_delivery` | `bool`             | Required | Enables staged enrichment follow-up delivery.                                                                                                                                                                                                                                                                         |
+
+Non-browser destinations saved through the rule store are stored in `secrets.toml` under managed `KEEPPEEK_NOTIFICATION_...` keys with separate active/draft secret references. Legacy `notifications.db` is a one-time migration input; delivery jobs, retry state, history, and counters are runtime state. See [Notifications and integrations](./notifications-and-integrations.md).
+
+## Runtime profiles
+
+**Type:** `ProfileRegistry` (`deny_unknown_fields`) | **Section:** `[runtime_profiles]` | **Ownership:** Server-managed (do not edit manually) | **Apply:** Live (asynchronous camera convergence) | **Sources:** [src/profiles.rs](https://github.com/xnorpx/keeppeek/blob/main/src/profiles.rs), [src/config.rs](https://github.com/xnorpx/keeppeek/blob/main/src/config.rs)
+
+| Field               | Type                               | Default              | Limits and notes                                                                                                                                           |
+| ------------------- | ---------------------------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `identity_schema`   | `i64` (persistence marker)         | `1`                  | Server-managed rollback guard stripped before struct deserialization and re-stamped on save; unknown versions fail closed without modifying `config.toml`. |
+| `revision`          | `u64`                              | `0`                  | Monotonic CAS revision (`0..=i64::MAX`).                                                                                                                   |
+| `active_profile_id` | Optional `String`                  | Absent (Base active) | Must exist in `profiles`; active profile cannot be deleted.                                                                                                |
+| `profiles`          | `BTreeMap<String, RuntimeProfile>` | `{}`                 | Max `32` profiles; keys match `profile.id` (`1..=128` ASCII `[A-Za-z0-9._-]`, not `.` or `..`).                                                            |
+
+Each `RuntimeProfile` (`deny_unknown_fields`) has `id`, `name` (nonblank `1..=80` UTF-8 B, no control chars), `revision` (`1..=i64::MAX`), and `cameras` (max `127` entries keyed by camera `profile_identity` UUID, each setting at least one field of `CameraProfileOverride`):
+
+| Override field             | Type                           | Default       | Limits and notes                                                                                                                                                                                      |
+| -------------------------- | ------------------------------ | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `availability`             | Optional `bool`                | Absent (Base) | `false` stops runtime ingress without editing Base; cannot enable disabled Base.                                                                                                                      |
+| `recording_mode`           | Optional `CameraRecordingMode` | Absent (Base) | `"off"`, `"sub"`, `"main"`, `"both"`, `"event-boost"`, or `"event-only"`. Cannot enable recording when Base is `"off"`; resolves to `"off"` when `availability = false` or `privacy_enforced = true`. |
+| `privacy_enforced`         | Optional `bool`                | Absent (Base) | Feeds `PrivacyRegistry`; `true` enforces privacy; `false` cannot weaken an active privacy schedule.                                                                                                   |
+| `notifications_suppressed` | Optional `bool`                | Absent (Base) | Suppresses matching notification candidates and queued outbox delivery without altering saved rules.                                                                                                  |
+
+Credentials, secret refs, addresses, ports, stream URLs, codecs, transport, storage paths, retention, detectors, zones, masks, access control, PTZ, and notification rules are rejected by `CameraProfileOverride`.
+
+- **Control surface:** Managed only via **Settings → Runtime profiles** or authorized WebRTC `StateStoreCommand` on `service/runtime-profiles/` (no HTTP, REST, MQTT, Home Assistant, webhook, CLI, scheduler, presence, or geofence trigger exists). Users can observe active profile and camera-scoped status, not definitions or mutations.
+- **Failure, retry, and recovery:** Desired selection commits atomically before camera workers converge. Visible cameras report `pending`, `applied`, or `degraded` with provenance (`base`/`profile`) across eight bounded status documents. Failed/timed-out targets stay `degraded` (restrictive privacy remains closed; no silent fallback to Base). Missing targets report `degraded` (`configured camera is missing`) until removed or Base is activated. Recover via **Reapply active policy** (or WebRTC CAS re-put). Full backups preserve `[runtime_profiles]`, `identity_schema = 1`, and camera `profile_identity` bindings; rolling back to a pre-migration binary requires restoring a pre-migration backup.
+
+## Settings-backed state store
+
+**Type:** `server::state_store_settings` | **Section:** `[state_store]` | **Ownership:** Server-managed (do not edit manually) | **Apply:** Live (WebRTC `StateStoreCommand` CAS) | **Sources:** [src/server/state_store_settings.rs](https://github.com/xnorpx/keeppeek/blob/main/src/server/state_store_settings.rs), [docs/state-store.md](https://github.com/xnorpx/keeppeek/blob/main/docs/state-store.md)
+
+Stores settings-backed `StateStore` adapter namespaces directly in `config.toml` under the shared `config_update` lock so they travel with configuration ZIP backups. Generic runtime/lease `StateStore` namespaces are stored separately in `state-store.db` under `storage.long_term_path`, not here.
+
+| Path / Field                                  | Type  | Default          | Limits and notes                                                                                                                                                                                                                                                                                                                                                                        |
+| --------------------------------------------- | ----- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `[state_store."<namespace>"].revision`        | `u64` | `0` (when empty) | Nonnegative monotonic namespace revision (`0..=i64::MAX`); required when `entries` is nonempty.                                                                                                                                                                                                                                                                                         |
+| `[state_store."<namespace>"].entries."<key>"` | Table | `{}`             | Max `1,024` entries per namespace; TTLs are rejected (configuration entries never expire). Each entry records `revision` (`1..=namespace.revision`), `schema`, `owner_id`, `updated_ms`, and adapter-validated schema fields (currently registered adapter: `service/state-store-test/`, schema `keeppeek.settings-test.v1`, fields `display_name` `<= 128` chars and `enabled: bool`). |
 
 ## Pending storage migration
 
-Type: `StorageMigration`, section `[storage_migration]`. The server creates this journal for a
-validated move and consumes it during migration. Do not use it as an alternative storage editor.
+**Type:** `StorageMigration` | **Section:** `[storage_migration]` | **Ownership:** Server-managed (do not edit manually) | **Apply:** Startup migration (consumed and removed on completion) | **Source:** [src/config.rs](https://github.com/xnorpx/keeppeek/blob/main/src/config.rs)
 
-| Field                          | Type                            | Meaning                                                                    |
-| ------------------------------ | ------------------------------- | -------------------------------------------------------------------------- |
-| `medium_term`                  | Optional `StoragePathMigration` | Medium-term recording move.                                                |
-| `long_term`                    | Optional `StoragePathMigration` | Long-term recording move.                                                  |
-| `recording_catalog`            | Optional `StoragePathMigration` | Explicit catalog move when not covered by a recording-root move.           |
-| `event_thumbnails`             | Optional `StoragePathMigration` | Explicit thumbnail move when not covered by a recording-root move.         |
-| `recording_catalog_after_move` | Optional `PathBuf`              | Catalog whose stored recording paths must be rewritten after moving roots. |
+| Field                          | Type                            | Default | Limits and notes                                                                   |
+| ------------------------------ | ------------------------------- | ------- | ---------------------------------------------------------------------------------- |
+| `medium_term`                  | Optional `StoragePathMigration` | Absent  | Medium-term directory move (`{ from, to }`).                                       |
+| `long_term`                    | Optional `StoragePathMigration` | Absent  | Long-term directory move (`{ from, to }`).                                         |
+| `recording_catalog`            | Optional `StoragePathMigration` | Absent  | Explicit catalog move when not covered by a recording-root move.                   |
+| `event_thumbnails`             | Optional `StoragePathMigration` | Absent  | Explicit thumbnail move when not covered by a recording-root move.                 |
+| `recording_catalog_after_move` | Optional `PathBuf`              | Absent  | Nonempty catalog path whose stored recording paths are rewritten after root moves. |
 
-Each `StoragePathMigration` has two required `PathBuf` fields: `from` and `to`. Paths must be
-nonempty, must not contain one another, and must satisfy the migration overlap checks. A single
-source cannot be split into conflicting destinations. `StorageMigrationPaths` is a runtime helper
-of borrowed paths, not another TOML section.
+Each `StoragePathMigration` requires nonempty `from: PathBuf` and `to: PathBuf` that do not contain one another, do not overlap other routes, and do not split one source into two destinations. `StorageMigrationPaths` is a runtime helper, not a TOML section. Incompatible with `[storage.metadata_pending]`.
 
 ## Compatibility and completeness
 
-- Preserve server-managed sections when editing ordinary settings. Serializing only `Config`
-  would omit the separate credential, layout, template, and notification records.
-- The legacy access, layout, template, and notification files are migration inputs only. Do not
-  create new instances of them for new settings.
-- There is no generic `[users]`, `[permissions]`, or `[groups]` schema in this configuration. Do not
-  invent those sections or assume a grid's audience restricts camera access elsewhere.
-- Future layout and permission settings must extend the existing application configuration and
-  its validation, atomic writes, and recovery coverage. Secret values remain in the existing
-  companion secret store.
-- When a serialized struct, section name, default, limit, enum, or migration changes, update this
-  reference in the same change and verify both load and write paths with synthetic fixtures.
+- Always preserve server-managed sections (`[access_credentials]`, `[external_identities]`, `[peek_layouts]`, `[saved_event_searches]`, `[configuration_templates]`, `[notifications]`, `[runtime_profiles]`, `[state_store]`, `[storage.metadata]`, `[storage.metadata_pending]`, `[storage_migration]`) when editing `config.toml`; serializing `Config` alone omits sections with dedicated loaders.
+- Legacy files (`access.toml`, `peek-layouts.json`, `configuration-templates.json`, `notifications.db`) are startup migration inputs only; never create new separate settings files.
+- There is no `[users]`, `[permissions]`, or `[groups]` section; never invent them or treat a grid's `audience` as camera authorization.
+- Keep this reference synchronized whenever any serialized struct, section name, default, limit, enum, or migration changes, and verify load/write round-trips with synthetic fixtures.
 
-For an upgrade from separate legacy stores, follow
-[What startup migrates](./upgrades-and-migrations.md#what-startup-migrates). For retention of runtime
-and recording data, see [Backup and restore](./backup-and-restore.md#what-survives-a-restart).
-
-### Event recording pre-roll
-
-`event-only` stores only accepted event windows from the selected main or sub stream.
-`event-boost` keeps continuous sub recording and uses main quality during event
-windows. A nonzero `event_pre_recording_duration_secs` enables bounded encoded
-history for these modes. EventBoost then delays persistence by up to the selected
-duration so an event can replace pending sub coverage with main coverage. A crash
-can lose this uncommitted window. With zero pre-roll, existing recording modes
-keep their immediate admission behavior.
-
-Changes persist in `config.toml` through the existing atomic writer. Camera
-changes use the existing source restart path when available; otherwise the
-response reports that a restart is required. Memory-budget changes require an
-application restart. Omitted updates retain existing values; cleared camera
-values inherit camera defaults. These settings contain no credentials. Existing supported secret references
-in camera credentials and URLs remain preserved. Whole-GOP eviction can shorten coverage under duration or memory
-pressure; health diagnostics report available coverage and the reason. Privacy,
-stream discontinuities and storage failures invalidate optional history.
+For legacy store upgrades, see [What startup migrates](./upgrades-and-migrations.md#what-startup-migrates). For restart durability of runtime vs config data, see [What survives a restart](./backup-and-restore.md#what-survives-a-restart).
