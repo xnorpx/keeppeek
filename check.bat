@@ -38,6 +38,9 @@ if errorlevel 1 (
         exit /b 1
 )
 
+echo Running Godzilla async/tokio gate...
+"%PYTHON_CMD%" godzilla.py || exit /b 1
+
 echo Building and Testing Rust...
 cargo build --all || exit /b 1
 cargo nextest run --all || exit /b 1

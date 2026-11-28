@@ -42,6 +42,9 @@ if ! "$python_cmd" -c 'import black' >/dev/null 2>&1; then
         exit 1
 fi
 
+echo "Running Godzilla async/tokio gate..."
+"$python_cmd" godzilla.py
+
 echo "Building and Testing Rust..."
 cargo build --locked --all
 if [ "$(uname -s)" = "Darwin" ]; then
