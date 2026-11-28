@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -15,9 +16,17 @@ def _make_metadata(
     packages: list[tuple[str, str]],
     workspace_ids: list[str],
     edges: dict[str, list[tuple[str, list[str | None]]]],
+    manifest_paths: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     return {
-        "packages": [{"id": pkg_id, "name": name} for pkg_id, name in packages],
+        "packages": [
+            {
+                "id": pkg_id,
+                "name": name,
+                "manifest_path": (manifest_paths or {}).get(pkg_id, f"/repo/{name}/Cargo.toml"),
+            }
+            for pkg_id, name in packages
+        ],
         "workspace_members": workspace_ids,
         "resolve": {
             "nodes": [
@@ -60,8 +69,8 @@ class StripRustCommentsAndLiteralsTests(unittest.TestCase):
             'const D: &str = r##"async { x.await }"##;\n'
             "const E: char = '\"';\n"
             "const F: char = '\\'';\n"
-            "const G: char = '\\u{22}';\n"
-            "fn borrow<'a>(input: &'a str) -> &'a str {\n"
+            "const G: char = '\\u{0_0_0_0_2_2}';\n"
+            "fn borrow<'a>(input: &'a str) -> impl core::fmt::Display + use<'a> {\n"
             "    let r#async = input;\n"
             "    r#async\n"
             "}\n"
@@ -116,6 +125,15 @@ sneaky = { package = "tokio-util", path = "crates/sneaky" }
                 "tokio-util",
             ):
                 assert any(expected in msg for msg in messages), (expected, messages)
+
+    def test_reports_invalid_toml_manifest_parse_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Cargo.toml").write_text("[dependencies\nbroken =", encoding="utf-8")
+            violations = godzilla.check_manifests(root)
+            assert len(violations) == 1
+            assert violations[0].rule == "manifest-parse"
+            assert violations[0].location == "Cargo.toml"
 
     def test_pollster_allowed_only_in_turso_manifests(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -175,10 +193,30 @@ class CargoMetadataPolicyTests(unittest.TestCase):
         assert any("keeppeek -> rumqttc" in m for m in messages), messages
         assert any("keeppeek -> futures-util" in m for m in messages), messages
 
+    def test_normal_dep_is_not_mislabeled_when_shorter_dev_path_shares_node(self) -> None:
+        metadata = _make_metadata(
+            packages=[
+                ("kp", "keeppeek"),
+                ("mid", "middle"),
+                ("shared", "shared"),
+                ("tk", "tokio"),
+            ],
+            workspace_ids=["kp"],
+            edges={
+                "kp": [("shared", ["dev"]), ("mid", [None])],
+                "mid": [("shared", [None])],
+                "shared": [("tk", [None])],
+            },
+        )
+        violations = godzilla.check_metadata_document(metadata, "x86_64-unknown-linux-gnu")
+        assert len(violations) == 1, violations
+        assert "(normal/build): keeppeek -> middle -> shared -> tokio" in violations[0].message
+
     def test_ignores_transitive_dev_deps_and_enforces_narrow_edge_allowlist(self) -> None:
         metadata = _make_metadata(
             packages=[
                 ("kp", "keeppeek"),
+                ("tc", "test-camera"),
                 ("ro", "rouille"),
                 ("pg", "postgres"),
                 ("tk", "tokio"),
@@ -186,9 +224,10 @@ class CargoMetadataPolicyTests(unittest.TestCase):
                 ("ta", "tauri"),
                 ("pl", "pollster"),
             ],
-            workspace_ids=["kp", "ro", "kd"],
+            workspace_ids=["kp", "tc", "ro", "kd"],
             edges={
                 "kp": [("ro", [None]), ("pl", [None])],
+                "tc": [("kp", [None])],
                 "ro": [("pg", ["dev"])],
                 "pg": [("tk", [None])],
                 "kd": [("ta", [None])],
@@ -229,33 +268,105 @@ class CargoMetadataPolicyTests(unittest.TestCase):
         assert any("rouille -> postgres -> tokio" in m for m in messages), messages
         assert any("keeppeek-supervisor -> pollster" in m for m in messages), messages
 
+    def test_flags_untracked_standalone_manifest_and_uses_utf8_subprocess_decoding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            root_manifest = root / "Cargo.toml"
+            root_manifest.write_text('[package]\nname = "root"\nversion = "0.1.0"\n', "utf-8")
+            standalone_dir = root / "tools" / "sneaky"
+            standalone_dir.mkdir(parents=True)
+            (standalone_dir / "Cargo.toml").write_text(
+                '[package]\nname = "sneaky"\nversion = "0.1.0"\n',
+                encoding="utf-8",
+            )
+            fake_json = (
+                '{"packages":[{"id":"r","name":"root","manifest_path":"'
+                + str(root_manifest).replace("\\", "\\\\")
+                + '"}],"workspace_members":["r"],"resolve":{"nodes":[{"id":"r","deps":[]}]}}'
+            )
+
+            def fake_run(*_args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                assert kwargs.get("encoding") == "utf-8"
+                assert kwargs.get("errors") == "replace"
+                return subprocess.CompletedProcess([], 0, stdout=fake_json, stderr="")
+
+            with patch("godzilla.subprocess.run", side_effect=fake_run):
+                violations = godzilla.check_cargo_metadata(
+                    root,
+                    platforms=("x86_64-unknown-linux-gnu",),
+                    standalone_unlocked_manifests=frozenset(),
+                )
+            assert len(violations) == 1, violations
+            assert violations[0].rule == "untracked-manifest"
+            assert violations[0].location == "tools/sneaky/Cargo.toml"
+
+    def test_reports_cargo_metadata_subprocess_and_json_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Cargo.toml").write_text("", encoding="utf-8")
+            failed = subprocess.CompletedProcess([], 101, stdout="", stderr="lockfile out of date")
+            with patch("godzilla.subprocess.run", return_value=failed):
+                violations = godzilla.check_cargo_metadata(
+                    root,
+                    platforms=("x86_64-unknown-linux-gnu",),
+                    standalone_unlocked_manifests=frozenset(),
+                )
+            assert len(violations) == 1
+            assert violations[0].rule == "cargo-metadata-error"
+            assert "lockfile out of date" in violations[0].message
+
+            bad_json = subprocess.CompletedProcess([], 0, stdout="{not-json", stderr="")
+            with patch("godzilla.subprocess.run", return_value=bad_json):
+                violations = godzilla.check_cargo_metadata(
+                    root,
+                    platforms=("x86_64-unknown-linux-gnu",),
+                    standalone_unlocked_manifests=frozenset(),
+                )
+            assert len(violations) == 1
+            assert violations[0].rule == "cargo-metadata-error"
+            assert "invalid cargo metadata JSON" in violations[0].message
+
 
 class RustSourcePolicyTests(unittest.TestCase):
-    def test_rejects_async_and_runtime_constructs_with_exact_line_numbers(self) -> None:
+    def test_candidate_regex_matches_every_banned_crate_identifier(self) -> None:
+        for crate in godzilla.BANNED_CRATE_EXACT:
+            ident = crate.replace("-", "_")
+            assert godzilla._CANDIDATE_RE.search(f"{ident}::foo") is not None, ident
+        for prefix in godzilla.BANNED_CRATE_PREFIXES:
+            ident = f"{prefix.replace('-', '_')}sample"
+            assert godzilla._CANDIDATE_RE.search(f"{ident}::foo") is not None, ident
+
+    def test_rejects_async_runtime_leading_colons_braced_uses_and_task_items(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             src = root / "src"
             src.mkdir()
             (src / "bad.rs").write_text(
-                "fn ok() {\n"
-                "    let r#async = 1;\n"
+                "fn ok<'a>(x: &'a str) -> impl core::fmt::Display + use<'a> {\n"
+                "    let r#async = x;\n"
                 '    let _ = "async fn tokio::main";\n'
                 "    // foo().await\n"
+                "    r#async\n"
                 "}\n"
+                "use std::{future::Future, task::{Context, Poll}};\n"
+                "use core::{future, task::Waker};\n"
+                "use alloc::task::Wake;\n"
+                "use std::task::*;\n"
+                "use tauri::{Manager, async_runtime};\n"
+                "use {::tokio::runtime::Runtime};\n"
+                "#[::tokio::main]\n"
+                "#[::async_trait::async_trait]\n"
                 "async\n"
                 "fn sneaky_async() {\n"
-                "    let _ = async move {\n"
+                "    let _ = ::tokio::runtime::Builder::new_current_thread();\n"
+                "    let _ = ::futures::executor::block_on(async move {\n"
                 "        work()\n"
                 "            .await\n"
-                "    };\n"
+                "    });\n"
                 "    let _ = async || 1;\n"
-                "}\n"
-                "#[tokio::main]\n"
-                "fn runtime_attr() {\n"
-                "    let _ = std::future::ready(1);\n"
-                "    let _ = core::task::Poll::Ready(1);\n"
+                "    let _ = std::task::ready!(p);\n"
                 "    let _ = pollster::block_on(x);\n"
-                "    let _ = tokio_util::codec::LinesCodec::new();\n"
+                "    let _ = deadpool::managed::Pool::builder();\n"
                 "}\n",
                 encoding="utf-8",
             )
@@ -265,17 +376,48 @@ class RustSourcePolicyTests(unittest.TestCase):
                 tauri_async_files=frozenset(),
             )
             rules_and_lines = {(v.rule, v.location) for v in violations}
-            assert ("async-syntax", "src/bad.rs:6") in rules_and_lines
-            assert ("async-syntax", "src/bad.rs:8") in rules_and_lines
-            assert ("async-syntax", "src/bad.rs:10") in rules_and_lines
-            assert ("async-syntax", "src/bad.rs:12") in rules_and_lines
-            assert ("forbidden-runtime", "src/bad.rs:14") in rules_and_lines
-            assert ("async-syntax", "src/bad.rs:16") in rules_and_lines
-            assert ("async-syntax", "src/bad.rs:17") in rules_and_lines
-            assert ("async-syntax", "src/bad.rs:18") in rules_and_lines
-            assert ("forbidden-runtime", "src/bad.rs:19") in rules_and_lines
-            # Ensure comments, string literals, and r#async do not trigger violations.
-            assert not any(v.location.endswith((":2", ":3", ":4")) for v in violations), violations
+            expected = {
+                ("async-syntax", "src/bad.rs:7"),
+                ("async-syntax", "src/bad.rs:8"),
+                ("async-syntax", "src/bad.rs:9"),
+                ("async-syntax", "src/bad.rs:10"),
+                ("tauri-async-runtime", "src/bad.rs:11"),
+                ("forbidden-runtime", "src/bad.rs:12"),
+                ("forbidden-runtime", "src/bad.rs:13"),
+                ("forbidden-runtime", "src/bad.rs:14"),
+                ("async-syntax", "src/bad.rs:15"),
+                ("forbidden-runtime", "src/bad.rs:17"),
+                ("forbidden-runtime", "src/bad.rs:18"),
+                ("async-syntax", "src/bad.rs:18"),
+                ("async-syntax", "src/bad.rs:20"),
+                ("async-syntax", "src/bad.rs:22"),
+                ("async-syntax", "src/bad.rs:23"),
+                ("async-syntax", "src/bad.rs:24"),
+                ("forbidden-runtime", "src/bad.rs:25"),
+            }
+            for item in expected:
+                assert item in rules_and_lines, (item, sorted(rules_and_lines))
+            # Ensure use<'a>, r#async, strings, and comments do not trigger violations.
+            assert not any(
+                v.location.endswith((":1", ":2", ":3", ":4", ":5")) for v in violations
+            ), violations
+
+    def test_deadpool_only_file_is_not_skipped_by_candidate_prefilter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "pool.rs").write_text(
+                "fn make() { let _ = deadpool::Runtime::Tokio1; }\n",
+                encoding="utf-8",
+            )
+            violations = godzilla.check_rust_sources(
+                root,
+                turso_async_files=frozenset(),
+                tauri_async_files=frozenset(),
+            )
+            assert [(v.rule, v.location) for v in violations] == [
+                ("forbidden-runtime", "src/pool.rs:1")
+            ]
 
     def test_enforces_turso_and_tauri_boundaries_and_ratchets_stale_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -290,7 +432,8 @@ class RustSourcePolicyTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (root / "src" / "turso_bad_tauri.rs").write_text(
-                "fn db() { tauri::async_runtime::spawn(async {}); }\n",
+                "use tauri::{Manager, async_runtime};\n"
+                "fn db() { async_runtime::spawn(async {}); }\n",
                 encoding="utf-8",
             )
             (root / "src" / "desktop_ok.rs").write_text(
@@ -349,7 +492,8 @@ class CliAndLiveRepositoryGateTests(unittest.TestCase):
 
     def test_current_repository_passes_godzilla(self) -> None:
         repo_root = Path(__file__).resolve().parent.parent
-        assert godzilla.check_repository(repo_root) == []
+        violations = godzilla.check_repository(repo_root)
+        assert violations == [], violations
 
 
 if __name__ == "__main__":

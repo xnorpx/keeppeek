@@ -17,12 +17,15 @@ from typing import Any
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent
 CARGO_METADATA_TIMEOUT_SECONDS = 60
-MAX_CHAR_ESCAPE_LENGTH = 14
+MAX_CHAR_ESCAPE_LENGTH = 32
+MAX_USE_TREE_DEPTH = 16
 SKIP_DIRECTORY_NAMES: frozenset[str] = frozenset({".git", "node_modules", "target"})
 
 TARGET_PLATFORMS: tuple[str, ...] = (
     "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
     "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
     "aarch64-apple-darwin",
 )
 
@@ -86,7 +89,21 @@ POLLSTER_ALLOWED_PARENTS: frozenset[str] = frozenset(
     }
 )
 
+# Allow standalone manifests without a Cargo.lock only when explicitly reviewed.
+STANDALONE_UNLOCKED_MANIFESTS: frozenset[str] = frozenset(
+    {
+        "crates/linux-desktop-unsupported/gtk/Cargo.toml",
+        "crates/linux-desktop-unsupported/javascriptcore-rs/Cargo.toml",
+        "crates/linux-desktop-unsupported/libappindicator/Cargo.toml",
+        "crates/linux-desktop-unsupported/soup3/Cargo.toml",
+        "crates/linux-desktop-unsupported/webkit2gtk/Cargo.toml",
+        "crates/rouille/rouille-multipart/fuzz/Cargo.toml",
+    }
+)
+
 # Keep an exact ratchet list of files that bridge turso's async SQLite API via pollster::block_on.
+# ponytail: Allowlisting at the file boundary avoids brittle type-level Turso heuristics; shrink
+# this list as Turso callers become synchronous or isolate test-only helpers.
 TURSO_ASYNC_FILES: frozenset[str] = frozenset(
     {
         "benches/advanced_event_search.rs",
@@ -211,35 +228,55 @@ TAURI_ASYNC_FILES: frozenset[str] = frozenset(
     }
 )
 
-_FORBIDDEN_RUNTIME_IDENT = (
-    r"(?:tokio(?:_[a-z0-9_]+)?|async_[a-z0-9_]+|smol|monoio|glommio|compio|"
-    r"embassy_[a-z0-9_]+|futures(?:_[a-z0-9_]+)?|hyper(?:_[a-z0-9_]+)?|reqwest|"
-    r"axum(?:_[a-z0-9_]+)?|actix(?:_[a-z0-9_]+)?|tonic(?:_[a-z0-9_]+)?|"
-    r"tower(?:_[a-z0-9_]+)?|rumqttc|sqlx(?:_[a-z0-9_]+)?|deadpool(?:_[a-z0-9_]+)?)"
-)
+
+def _build_runtime_ident_pattern() -> str:
+    prefix_idents = sorted(prefix.replace("-", "_") for prefix in BANNED_CRATE_PREFIXES)
+    exact_idents = sorted(
+        name.replace("-", "_")
+        for name in BANNED_CRATE_EXACT - {"pollster"}
+        if not any(name.startswith(prefix) for prefix in BANNED_CRATE_PREFIXES)
+    )
+    parts = [f"{prefix}[a-z0-9_]+" for prefix in prefix_idents]
+    parts.extend(exact_idents)
+    return "(?:" + "|".join(parts) + ")"
+
+
+def _build_candidate_regex() -> re.Pattern[str]:
+    tokens = {"async", "await", "future", "task", "tauri", "pollster"}
+    for name in BANNED_CRATE_EXACT:
+        tokens.add(name.replace("-", "_"))
+    for prefix in BANNED_CRATE_PREFIXES:
+        tokens.add(prefix.replace("-", "_"))
+    escaped = sorted((re.escape(token) for token in tokens), key=len, reverse=True)
+    return re.compile("|".join(escaped))
+
+
+_FORBIDDEN_RUNTIME_IDENT = _build_runtime_ident_pattern()
+_FORBIDDEN_RUNTIME_IDENT_RE = re.compile(rf"^{_FORBIDDEN_RUNTIME_IDENT}$")
+# Match a crate-root start: either a bare boundary or a leading :: not preceded by a path segment.
+_ROOT_PATH_START = r"(?:(?<![A-Za-z0-9_#:.])|(?<![A-Za-z0-9_>\]\)])::\s*)"
 
 _FORBIDDEN_RUNTIME_RE = re.compile(
-    rf"(?<![A-Za-z0-9_#:.]){_FORBIDDEN_RUNTIME_IDENT}\s*::"
-    rf"|\b(?:use|extern\s+crate)\s+(?:::\s*)?{_FORBIDDEN_RUNTIME_IDENT}\b"
-    r"|#\s*\[\s*(?:tokio|async_std|smol|actix_web|async_trait)\b"
+    rf"{_ROOT_PATH_START}{_FORBIDDEN_RUNTIME_IDENT}\s*::"
+    rf"|\bextern\s+crate\s+(?:::\s*)?{_FORBIDDEN_RUNTIME_IDENT}\b"
+    rf"|#\s*\[\s*(?:::\s*)?{_FORBIDDEN_RUNTIME_IDENT}\b"
 )
 
-_TAURI_ASYNC_RUNTIME_RE = re.compile(r"\btauri\s*::\s*async_runtime\b")
+_TAURI_ASYNC_RUNTIME_RE = re.compile(rf"{_ROOT_PATH_START}tauri\s*::\s*async_runtime\b")
 
 _ASYNC_SYNTAX_RE = re.compile(
     r"(?<!r#)\basync\b"
     r"|\.\s*await\b"
-    r"|(?<![A-Za-z0-9_#])pollster\s*::"
-    r"|\b(?:use|extern\s+crate)\s+(?:::\s*)?pollster\b"
-    r"|(?<![A-Za-z0-9_#])(?:std|core)\s*::\s*future\b"
-    r"|(?<![A-Za-z0-9_#])(?:std|core)\s*::\s*task\s*::\s*"
-    r"(?:Context|Poll|Waker|\{[^}]*\b(?:Context|Poll|Waker)\b)"
+    rf"|{_ROOT_PATH_START}pollster\s*::"
+    r"|\bextern\s+crate\s+(?:::\s*)?pollster\b"
+    rf"|{_ROOT_PATH_START}(?:std|core)\s*::\s*future\b"
+    rf"|{_ROOT_PATH_START}(?:std|core|alloc)\s*::\s*task\b"
 )
 
-_CANDIDATE_RE = re.compile(
-    r"async|await|tokio|pollster|futures|smol|monoio|glommio|compio|embassy|"
-    r"hyper|reqwest|axum|actix|tonic|tower|rumqttc|sqlx|future|Context|Poll|Waker"
-)
+# Match Rust use items while ignoring Rust 2024 precise-capturing bounds such as `impl T + use<'a>`.
+_USE_START_RE = re.compile(r"(?<!r#)(?<![.#])\buse(?:\s+(?=[A-Za-z_:])|\s*(?=\{))")
+
+_CANDIDATE_RE = _build_candidate_regex()
 
 # ponytail: Regex token stepping strips comments and literals before keyword checks;
 # switch to a full Rust parser only if macro token trees cause false positives.
@@ -351,7 +388,59 @@ def _is_allowed_graph_edge(
         return True
     if root_name == "rouille" and src_name == "rouille" and dst_name == "postgres" and is_dev_only:
         return True
+    # Allow test-camera and other workspace dependents to reach pollster only through keeppeek.
     return dst_name == "pollster" and src_name in POLLSTER_ALLOWED_PARENTS and not is_dev_only
+
+
+def _scan_member_dependencies(
+    root_id: str,
+    packages: dict[str, str],
+    nodes: dict[str, dict[str, Any]],
+    platform: str,
+    *,
+    allow_root_dev: bool,
+    blocked_nodes: set[str],
+    reported_crates: set[str],
+) -> tuple[list[Violation], set[str]]:
+    root_name = packages[root_id]
+    visited: set[str] = set()
+    violations: list[Violation] = []
+    kind_label = "dev" if allow_root_dev else "normal/build"
+    queue: deque[tuple[str, tuple[str, ...], int]] = deque([(root_id, (root_name,), 0)])
+
+    while queue:
+        node_id, path, depth = queue.popleft()
+        if node_id in visited:
+            continue
+        visited.add(node_id)
+        src_name = packages[node_id]
+        for dep in nodes[node_id].get("deps", []):
+            kinds = [entry.get("kind") for entry in dep.get("dep_kinds", [])]
+            is_dev_only = bool(kinds) and all(kind == "dev" for kind in kinds)
+            if depth == 0 and is_dev_only != allow_root_dev:
+                continue
+            if depth > 0 and is_dev_only:
+                continue
+            dst_id = dep["pkg"]
+            dst_name = packages[dst_id]
+            if _is_allowed_graph_edge(root_name, src_name, dst_name, is_dev_only):
+                continue
+            next_path = (*path, dst_name)
+            if is_banned_crate(dst_name):
+                if dst_name not in reported_crates:
+                    reported_crates.add(dst_name)
+                    chain = " -> ".join(next_path)
+                    violations.append(
+                        Violation(
+                            "banned-cargo-dep",
+                            f"{platform}:{root_name}",
+                            f"forbidden crate '{dst_name}' ({kind_label}): {chain}",
+                        )
+                    )
+            elif dst_id not in visited and dst_id not in blocked_nodes:
+                queue.append((dst_id, next_path, depth + 1))
+
+    return violations, visited
 
 
 def check_metadata_document(metadata: dict[str, Any], platform: str) -> list[Violation]:
@@ -361,97 +450,174 @@ def check_metadata_document(metadata: dict[str, Any], platform: str) -> list[Vio
     violations: list[Violation] = []
 
     for root_id in workspace_ids:
-        root_name = packages[root_id]
-        visited: set[str] = set()
         reported_crates: set[str] = set()
-        queue: deque[tuple[str, tuple[str, ...], int, bool]] = deque(
-            [(root_id, (root_name,), 0, False)]
+        # Audit normal and build dependencies first so shorter dev paths cannot mislabel them.
+        normal_violations, normal_visited = _scan_member_dependencies(
+            root_id,
+            packages,
+            nodes,
+            platform,
+            allow_root_dev=False,
+            blocked_nodes=set(),
+            reported_crates=reported_crates,
         )
-        while queue:
-            node_id, path, depth, via_dev = queue.popleft()
-            if node_id in visited:
-                continue
-            visited.add(node_id)
-            src_name = packages[node_id]
-            for dep in nodes[node_id].get("deps", []):
-                kinds = [entry.get("kind") for entry in dep.get("dep_kinds", [])]
-                is_dev_only = bool(kinds) and all(kind == "dev" for kind in kinds)
-                if depth > 0 and is_dev_only:
-                    continue
-                dst_id = dep["pkg"]
-                dst_name = packages[dst_id]
-                if _is_allowed_graph_edge(root_name, src_name, dst_name, is_dev_only):
-                    continue
-                next_via_dev = via_dev or is_dev_only
-                next_path = (*path, dst_name)
-                if is_banned_crate(dst_name):
-                    if dst_name not in reported_crates:
-                        reported_crates.add(dst_name)
-                        kind_label = "dev" if next_via_dev else "normal/build"
-                        chain = " -> ".join(next_path)
-                        violations.append(
-                            Violation(
-                                "banned-cargo-dep",
-                                f"{platform}:{root_name}",
-                                f"forbidden crate '{dst_name}' ({kind_label}): {chain}",
-                            )
-                        )
-                elif dst_id not in visited:
-                    queue.append((dst_id, next_path, depth + 1, next_via_dev))
+        violations.extend(normal_violations)
+        dev_violations, _ = _scan_member_dependencies(
+            root_id,
+            packages,
+            nodes,
+            platform,
+            allow_root_dev=True,
+            blocked_nodes=normal_visited - {root_id},
+            reported_crates=reported_crates,
+        )
+        violations.extend(dev_violations)
 
     return sorted(violations)
+
+
+def _run_cargo_metadata(
+    repo_root: Path,
+    manifest_path: Path,
+    platform: str,
+) -> tuple[dict[str, Any] | None, Violation | None]:
+    rel_manifest = manifest_path.relative_to(repo_root).as_posix()
+    location = platform if rel_manifest == "Cargo.toml" else f"{platform}:{rel_manifest}"
+    command = [
+        "cargo",
+        "metadata",
+        "--locked",
+        "--format-version",
+        "1",
+        "--all-features",
+        "--manifest-path",
+        str(manifest_path),
+        "--filter-platform",
+        platform,
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=CARGO_METADATA_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return None, Violation(
+            "cargo-metadata-error",
+            location,
+            f"unable to run cargo metadata: {error}",
+        )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or f"exit code {completed.returncode}"
+        return None, Violation(
+            "cargo-metadata-error",
+            location,
+            f"cargo metadata failed: {detail}",
+        )
+    try:
+        metadata = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        return None, Violation(
+            "cargo-metadata-error",
+            location,
+            f"invalid cargo metadata JSON: {error}",
+        )
+    if not isinstance(metadata, dict) or not isinstance(metadata.get("resolve"), dict):
+        return None, Violation(
+            "cargo-metadata-error",
+            location,
+            "cargo metadata output is missing resolved dependency graph",
+        )
+    return metadata, None
+
+
+def _check_standalone_manifests(
+    repo_root: Path,
+    root_manifest: Path,
+    covered_manifests: set[Path],
+    platforms: tuple[str, ...],
+    standalone_unlocked_manifests: frozenset[str],
+) -> list[Violation]:
+    violations: list[Violation] = []
+    existing_rels: set[str] = set()
+    used_standalone_allowlist: set[str] = set()
+
+    for manifest_path in _iter_repo_files(repo_root, "Cargo.toml", exact_name=True):
+        rel = manifest_path.relative_to(repo_root).as_posix()
+        existing_rels.add(rel)
+        if manifest_path.resolve() in covered_manifests or manifest_path == root_manifest:
+            continue
+        if (manifest_path.parent / "Cargo.lock").is_file():
+            for platform in platforms:
+                metadata, error = _run_cargo_metadata(repo_root, manifest_path, platform)
+                if error is not None:
+                    violations.append(error)
+                    continue
+                assert metadata is not None
+                violations.extend(check_metadata_document(metadata, platform))
+        elif rel in standalone_unlocked_manifests:
+            used_standalone_allowlist.add(rel)
+        else:
+            violations.append(
+                Violation(
+                    "untracked-manifest",
+                    rel,
+                    (
+                        "standalone Cargo.toml is outside root workspace and has no Cargo.lock; "
+                        "add it to workspace members or commit a Cargo.lock"
+                    ),
+                )
+            )
+
+    violations.extend(
+        Violation(
+            "stale-allowlist",
+            allowed,
+            "standalone manifest allowlist entry is stale; remove it from godzilla.py",
+        )
+        for allowed in sorted(standalone_unlocked_manifests)
+        if allowed not in existing_rels or allowed not in used_standalone_allowlist
+    )
+    return violations
 
 
 def check_cargo_metadata(
     repo_root: Path,
     platforms: tuple[str, ...] = TARGET_PLATFORMS,
+    standalone_unlocked_manifests: frozenset[str] = STANDALONE_UNLOCKED_MANIFESTS,
 ) -> list[Violation]:
     violations: list[Violation] = []
+    root_manifest = repo_root / "Cargo.toml"
+    covered_manifests: set[Path] = set()
+    root_succeeded = False
+
     for platform in platforms:
-        command = [
-            "cargo",
-            "metadata",
-            "--locked",
-            "--format-version",
-            "1",
-            "--all-features",
-            "--filter-platform",
-            platform,
-        ]
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=repo_root,
-                capture_output=True,
-                text=True,
-                timeout=CARGO_METADATA_TIMEOUT_SECONDS,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as error:
-            violations.append(
-                Violation(
-                    "cargo-metadata-error", platform, f"unable to run cargo metadata: {error}"
-                )
-            )
+        metadata, error = _run_cargo_metadata(repo_root, root_manifest, platform)
+        if error is not None:
+            violations.append(error)
             continue
-        if completed.returncode != 0:
-            detail = completed.stderr.strip() or f"exit code {completed.returncode}"
-            violations.append(
-                Violation("cargo-metadata-error", platform, f"cargo metadata failed: {detail}")
-            )
-            continue
-        try:
-            metadata = json.loads(completed.stdout)
-        except json.JSONDecodeError as error:
-            violations.append(
-                Violation(
-                    "cargo-metadata-error",
-                    platform,
-                    f"invalid cargo metadata JSON: {error}",
-                )
-            )
-            continue
+        assert metadata is not None
+        root_succeeded = True
+        for pkg in metadata["packages"]:
+            covered_manifests.add(Path(pkg["manifest_path"]).resolve())
         violations.extend(check_metadata_document(metadata, platform))
+
+    if root_succeeded:
+        violations.extend(
+            _check_standalone_manifests(
+                repo_root,
+                root_manifest,
+                covered_manifests,
+                platforms,
+                standalone_unlocked_manifests,
+            )
+        )
+
     return sorted(violations)
 
 
@@ -555,35 +721,156 @@ def _line_number(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
 
 
-def _scan_rust_file(
+def _split_top_level_commas(text: str) -> list[str]:
+    items: list[str] = []
+    depth = 0
+    start = 0
+    for index, ch in enumerate(text):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            items.append(text[start:index])
+            start = index + 1
+    items.append(text[start:])
+    return items
+
+
+def _join_rust_path(prefix: str, part: str) -> str:
+    cleaned = re.sub(r"\s*::\s*", "::", part.strip())
+    if not cleaned:
+        return prefix
+    if not prefix:
+        return cleaned
+    return f"{prefix.rstrip(':')}::{cleaned.lstrip(':')}"
+
+
+def expand_use_tree(body: str, prefix: str = "", depth: int = 0) -> list[str]:
+    if depth > MAX_USE_TREE_DEPTH:
+        return []
+    paths: list[str] = []
+    for raw_item in _split_top_level_commas(body):
+        item = raw_item.strip()
+        if not item:
+            continue
+        brace_open = item.find("{")
+        if brace_open != -1:
+            brace_close = item.rfind("}")
+            if brace_close <= brace_open:
+                continue
+            head = item[:brace_open].strip()
+            inner = item[brace_open + 1 : brace_close]
+            paths.extend(expand_use_tree(inner, _join_rust_path(prefix, head), depth + 1))
+            continue
+        leaf = re.sub(r"\s+as\s+[A-Za-z0-9_]+$", "", item).strip()
+        if leaf == "self":
+            if prefix:
+                paths.append(prefix)
+        else:
+            joined = _join_rust_path(prefix, leaf)
+            if joined:
+                paths.append(joined)
+    return paths
+
+
+def _consume_use_statement_end(stripped: str, body_start: int) -> int:
+    depth = 0
+    length = len(stripped)
+    index = body_start
+    while index < length:
+        ch = stripped[index]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            if depth == 0:
+                return index
+            depth -= 1
+        elif ch == ";" and depth == 0:
+            return index
+        index += 1
+    return length
+
+
+def _classify_use_path(path: str) -> tuple[str, str] | None:
+    bare = path.removeprefix("::")
+    segments = [seg for seg in bare.split("::") if seg]
+    if not segments:
+        return None
+    root = segments[0]
+    if _FORBIDDEN_RUNTIME_IDENT_RE.match(root):
+        return ("forbidden-runtime", f"forbidden async runtime import '{path}'")
+    if len(segments) >= 2 and segments[0] == "tauri" and segments[1] == "async_runtime":
+        return (
+            "tauri-async-runtime",
+            "tauri::async_runtime is allowed only in the desktop shell entrypoint",
+        )
+    if root == "pollster":
+        return ("async-syntax", f"forbidden Rust async import '{path}'")
+    if len(segments) >= 2 and (
+        (segments[0] in {"std", "core"} and segments[1] == "future")
+        or (segments[0] in {"std", "core", "alloc"} and segments[1] == "task")
+    ):
+        return ("async-syntax", f"forbidden Rust async import '{path}'")
+    return None
+
+
+def _scan_use_statements(
     rel: str,
     stripped: str,
     allow_turso: bool,
     allow_tauri: bool,
 ) -> tuple[list[Violation], bool]:
     violations: list[Violation] = []
-    saw_allowed_async = False
+    saw_allowed = False
+    for match in _USE_START_RE.finditer(stripped):
+        body_start = match.end()
+        body_end = _consume_use_statement_end(stripped, body_start)
+        line = _line_number(stripped, match.start())
+        for path in expand_use_tree(stripped[body_start:body_end]):
+            classified = _classify_use_path(path)
+            if classified is None:
+                continue
+            rule, message = classified
+            if rule == "tauri-async-runtime" and allow_tauri:
+                saw_allowed = True
+                continue
+            if rule == "async-syntax" and (allow_turso or allow_tauri):
+                saw_allowed = True
+                continue
+            violations.append(Violation(rule, f"{rel}:{line}", message))
+    return violations, saw_allowed
+
+
+def _scan_rust_file(
+    rel: str,
+    stripped: str,
+    allow_turso: bool,
+    allow_tauri: bool,
+) -> tuple[list[Violation], bool]:
+    violations, saw_allowed_async = _scan_use_statements(rel, stripped, allow_turso, allow_tauri)
+    seen_rule_locations = {(v.rule, v.location) for v in violations}
+
+    def record(rule: str, line: int, message: str) -> None:
+        loc = f"{rel}:{line}"
+        key = (rule, loc)
+        if key not in seen_rule_locations:
+            seen_rule_locations.add(key)
+            violations.append(Violation(rule, loc, message))
 
     for match in _FORBIDDEN_RUNTIME_RE.finditer(stripped):
         line = _line_number(stripped, match.start())
         token = " ".join(match.group(0).split())
-        violations.append(
-            Violation(
-                "forbidden-runtime", f"{rel}:{line}", f"forbidden async runtime reference '{token}'"
-            )
-        )
+        record("forbidden-runtime", line, f"forbidden async runtime reference '{token}'")
 
     for match in _TAURI_ASYNC_RUNTIME_RE.finditer(stripped):
         if allow_tauri:
             saw_allowed_async = True
             continue
-        line = _line_number(stripped, match.start())
-        violations.append(
-            Violation(
-                "tauri-async-runtime",
-                f"{rel}:{line}",
-                "tauri::async_runtime is allowed only in the desktop shell entrypoint",
-            )
+        record(
+            "tauri-async-runtime",
+            _line_number(stripped, match.start()),
+            "tauri::async_runtime is allowed only in the desktop shell entrypoint",
         )
 
     for match in _ASYNC_SYNTAX_RE.finditer(stripped):
@@ -592,9 +879,7 @@ def _scan_rust_file(
             continue
         line = _line_number(stripped, match.start())
         token = " ".join(match.group(0).split())
-        violations.append(
-            Violation("async-syntax", f"{rel}:{line}", f"forbidden Rust async construct '{token}'")
-        )
+        record("async-syntax", line, f"forbidden Rust async construct '{token}'")
 
     return violations, saw_allowed_async
 
