@@ -187,7 +187,7 @@ jobs:
               throw 'Unable to install KeepPeek'
             }
 
-            foreach ($binary in 'keeppeek.exe', 'keeppeek-service.exe', 'keeppeek-desktop.exe', 'uninstall.exe') {
+            foreach ($binary in 'keeppeek.exe', 'keeppeek-service.exe', 'keeppeek-supervisor.exe', 'keeppeek-desktop.exe', 'uninstall.exe') {
               if (-not (Test-Path (Join-Path $installDirectory $binary))) {
                 throw "$binary was not installed"
               }
@@ -200,6 +200,11 @@ jobs:
             & (Join-Path $installDirectory 'keeppeek-desktop.exe') --help
             if ($LASTEXITCODE -ne 0) {
               throw 'Installed keeppeek-desktop.exe --help failed'
+            }
+
+            & (Join-Path $installDirectory 'keeppeek-supervisor.exe') --help
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Installed keeppeek-supervisor.exe --help failed'
             }
 
             $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
@@ -216,6 +221,19 @@ jobs:
               $process = Start-Process -FilePath (Join-Path $installDirectory 'uninstall.exe') -ArgumentList '/S' -PassThru -Wait
               if ($process.ExitCode -ne 0) {
                 throw 'Unable to uninstall KeepPeek'
+              }
+              $uninstalled = $false
+              for ($attempt = 0; $attempt -lt 30; $attempt++) {
+                $remaining = @('keeppeek.exe', 'keeppeek-service.exe', 'keeppeek-supervisor.exe', 'keeppeek-desktop.exe') |
+                  Where-Object { Test-Path (Join-Path $installDirectory $_) }
+                if ($remaining.Count -eq 0 -and $null -eq (Get-CimInstance Win32_Service -Filter "Name='$serviceName'")) {
+                  $uninstalled = $true
+                  break
+                }
+                Start-Sleep -Seconds 1
+              }
+              if (-not $uninstalled) {
+                throw 'Uninstall did not remove KeepPeek binaries and service within 30 seconds'
               }
             } else {
               & sc.exe delete $serviceName

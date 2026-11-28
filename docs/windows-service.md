@@ -6,7 +6,7 @@ At runtime, `keeppeek-service.exe` embeds `crates/keeppeek-supervisor` to launch
 
 To test local developer builds under the Windows service, an administrator can explicitly pass `--allow-local` (or `--allow-unsigned-main`) in the service `binPath` ImagePath arguments and then drive live swaps with `keeppeek-supervisor update --root <config_dir>\supervisor --channel local --binary <path>\keeppeek.exe --apply --wait`. Neither flag is ever persisted in `config.toml`.
 
-The Windows installer includes both `keeppeek.exe` and `keeppeek-service.exe` (selecting the service component also installs `keeppeek.exe`). Select **Run KeepPeek as a Windows service** during installation to register and start the service; the installer stops, removes, and recreates an existing service during installer-based upgrades. Its uninstaller stops and removes the service.
+The Windows installer includes `keeppeek.exe`, `keeppeek-service.exe`, and `keeppeek-supervisor.exe` (selecting the service component installs all three). Select **KeepPeek Windows Service** during installation to register and start the service; during installer-based upgrades the installer stops and removes any existing service before replacing binaries, then recreates and starts it. Its uninstaller stops and removes the service.
 
 Install it from an elevated prompt:
 

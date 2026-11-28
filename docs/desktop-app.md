@@ -39,7 +39,7 @@ cargo fmt --all -- --check
 
 ### Windows binaries, unified installer (NSIS), and Authenticode signing
 
-Official Windows release builds publish three Authenticode-signed, RFC 3161 timestamped binaries (`keeppeek.exe` server with TUI, `keeppeek-service.exe` Windows service, and `keeppeek-desktop.exe` Tauri desktop UI) as standalone `.exe` + `.sha256` assets alongside `keeppeek-<version>-windows-<arch>.zip` and the single unified signed installer `keeppeek-<version>-windows-<arch>-installer.exe` (`installer/keeppeek.nsi`).
+Official Windows release builds publish four Authenticode-signed, RFC 3161 timestamped binaries (`keeppeek.exe` server with TUI, `keeppeek-service.exe` Windows service, `keeppeek-supervisor.exe` supervisor CLI, and `keeppeek-desktop.exe` Tauri desktop UI) as standalone `.exe` + `.sha256` assets alongside `keeppeek-<version>-windows-<arch>.zip` and the single unified signed installer `keeppeek-<version>-windows-<arch>-installer.exe` (`installer/keeppeek.nsi`).
 
 `installer/keeppeek.nsi` exposes three selectable components on `MUI_PAGE_COMPONENTS`—**KeepPeek Desktop** (`SecDesktop`), **KeepPeek Server with TUI** (`SecServer`), and **KeepPeek Windows Service** (`SecService`)—and enforces selecting at least one component both interactively (`ComponentsPageLeave`) and silently (`/DESKTOP`, `/SERVER`, `/SERVICE`, `/NO_DESKTOP`, `/NO_SERVER`, `/NO_SERVICE`; zero selected components exits with status `2`).
 
@@ -47,6 +47,7 @@ Requires NSIS 3.13 (`makensis.exe`). For local unsigned builds, `installer/keepp
 
 ```powershell
 cargo build --locked --release -p keeppeek --bin keeppeek --bin keeppeek-service
+cargo build --locked --release -p keeppeek-supervisor --bin keeppeek-supervisor
 cargo build --locked --release -p keeppeek-desktop --bin keeppeek-desktop
 & 'C:\Program Files (x86)\NSIS\makensis.exe' `
   '/DARCH=x86_64' `
@@ -61,7 +62,7 @@ Release and `Windows Signing` CI workflows use a two-pass NSIS build on `install
 
 1. Compile with `/DWRITE_UNINSTALLER_ONLY` and `/DUNINST_OUT=<path>\uninstall.exe` and execute the temporary generator (`__COMPAT_LAYER=RunAsInvoker`) to extract `uninstall.exe`.
 2. Authenticode-sign and RFC 3161 timestamp `uninstall.exe` with Azure Artifact Signing and verify `Get-AuthenticodeSignature` returns `Status == 'Valid'` with a non-null `TimestamperCertificate`.
-3. Compile the unified installer with `/DSIGNED_UNINSTALLER=<path>\uninstall.exe` (embedding the signed `uninstall.exe` via `File /oname=uninstall.exe`), then sign and verify `keeppeek-<version>-windows-<arch>-installer.exe`.
+3. Compile the unified installer with `/DSIGNED_UNINSTALLER=<path>\uninstall.exe` (embedding the signed `uninstall.exe` via `File /oname=uninstall.exe`), sign `keeppeek-<version>-windows-<arch>-installer.exe`, and verify via `.github/scripts/verify-windows-installer-signatures.ps1` that the installer and every extracted embedded `.exe` (`keeppeek.exe`, `keeppeek-service.exe`, `keeppeek-supervisor.exe`, `keeppeek-desktop.exe`, and `uninstall.exe`) have valid RFC 3161 timestamped Authenticode signatures and match the SHA-256 digests of the signed inputs.
 
 ### macOS disk image (`.app` and `.dmg`)
 

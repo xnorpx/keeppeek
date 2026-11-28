@@ -72,7 +72,7 @@ jobs:
           has_match() {
             printf '%s\n' "$changed" | grep -Eq "$1" && echo "true" || echo "false"
           }
-          rust="$(has_match '^(Cargo\.(toml|lock)|\.cargo/|build\.rs|src/|crates/|tests/|api/|installer/|\.github/workflows/ci\.yml|\.github/actions/)')"
+          rust="$(has_match '^(Cargo\.(toml|lock)|\.cargo/|build\.rs|src/|crates/|tests/|api/|installer/|\.github/workflows/ci\.yml|\.github/actions/|\.github/scripts/)')"
           ui="$(has_match '^(ui/|api/|\.npmrc|\.github/workflows/ci\.yml)')"
           docs="$(has_match '^(book/|docs/|README\.md|ui/scripts/.*wiki.*|\.github/workflows/ci\.yml)')"
           python="$(has_match '^(examples/object_detection_service/|api/|\.github/workflows/ci\.yml)')"
@@ -389,6 +389,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw 'keeppeek-desktop.exe --help failed'
           }
+      - name: Verify Windows supervisor binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & 'target/debug/keeppeek-supervisor.exe' --help
+          if ($LASTEXITCODE -ne 0) {
+            throw 'keeppeek-supervisor.exe --help failed'
+          }
+      - name: Verify Windows installer signature checker
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\.github\scripts\test-verify-windows-installer-signatures.ps1
       - name: Verify macOS app service installation
         if: runner.os == 'macOS'
         shell: bash
@@ -586,6 +598,7 @@ jobs:
         shell: bash
         run: |
           cargo build --locked --release -p keeppeek --bin keeppeek --bin keeppeek-service
+          cargo build --locked --release -p keeppeek-supervisor --bin keeppeek-supervisor
           cargo build --locked --release -p keeppeek-desktop --bin keeppeek-desktop
       - name: Upload unsigned Windows release binaries
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -594,6 +607,7 @@ jobs:
           path: |
             target/release/keeppeek.exe
             target/release/keeppeek-service.exe
+            target/release/keeppeek-supervisor.exe
             target/release/keeppeek-desktop.exe
           if-no-files-found: error
           retention-days: 1
@@ -652,6 +666,7 @@ jobs:
           files: |
             ${{ github.workspace }}\target\release\keeppeek.exe
             ${{ github.workspace }}\target\release\keeppeek-service.exe
+            ${{ github.workspace }}\target\release\keeppeek-supervisor.exe
             ${{ github.workspace }}\target\release\keeppeek-desktop.exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
@@ -659,7 +674,7 @@ jobs:
       - name: Verify Windows binary signatures
         shell: pwsh
         run: |
-          foreach ($path in 'target/release/keeppeek.exe', 'target/release/keeppeek-service.exe', 'target/release/keeppeek-desktop.exe') {
+          foreach ($path in 'target/release/keeppeek.exe', 'target/release/keeppeek-service.exe', 'target/release/keeppeek-supervisor.exe', 'target/release/keeppeek-desktop.exe') {
             $signature = Get-AuthenticodeSignature $path
             if ($signature.Status -ne 'Valid') {
               throw "$path has invalid signature status: $($signature.Status)"
@@ -777,18 +792,16 @@ jobs:
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
-      - name: Verify Windows installer signature
+      - name: Verify Windows installer and embedded binary signatures
         shell: pwsh
         env:
           INSTALLER: ${{ steps.windows-installer.outputs.installer }}
+          SIGNED_UNINSTALLER: ${{ steps.windows-uninstaller.outputs.uninstaller }}
         run: |
-          $signature = Get-AuthenticodeSignature $env:INSTALLER
-          if ($signature.Status -ne 'Valid') {
-            throw "$env:INSTALLER has invalid signature status: $($signature.Status)"
-          }
-          if ($null -eq $signature.TimestamperCertificate) {
-            throw "$env:INSTALLER does not have an RFC 3161 timestamp"
-          }
+          & .github/scripts/verify-windows-installer-signatures.ps1 `
+            -InstallerPath $env:INSTALLER `
+            -SignedBinariesDir (Join-Path $env:GITHUB_WORKSPACE 'target\release') `
+            -SignedUninstallerPath $env:SIGNED_UNINSTALLER
       - name: Stage signed binaries and SHA-256 checksums
         shell: pwsh
         env:
@@ -800,6 +813,7 @@ jobs:
           $copies = @(
             @{ Source = 'target/release/keeppeek.exe'; Target = "keeppeek-$env:VERSION-$env:PLATFORM.exe" },
             @{ Source = 'target/release/keeppeek-service.exe'; Target = "keeppeek-service-$env:VERSION-$env:PLATFORM.exe" },
+            @{ Source = 'target/release/keeppeek-supervisor.exe'; Target = "keeppeek-supervisor-$env:VERSION-$env:PLATFORM.exe" },
             @{ Source = 'target/release/keeppeek-desktop.exe'; Target = "keeppeek-desktop-$env:VERSION-$env:PLATFORM.exe" }
           )
           foreach ($item in $copies) {
@@ -810,6 +824,7 @@ jobs:
             "keeppeek-$env:VERSION-$env:PLATFORM-installer.exe",
             "keeppeek-$env:VERSION-$env:PLATFORM.exe",
             "keeppeek-service-$env:VERSION-$env:PLATFORM.exe",
+            "keeppeek-supervisor-$env:VERSION-$env:PLATFORM.exe",
             "keeppeek-desktop-$env:VERSION-$env:PLATFORM.exe"
           )
           foreach ($name in $artifacts) {
@@ -1444,6 +1459,7 @@ jobs:
         coverage,
         dependency-audit,
         container,
+        windows-signing,
       ]
     runs-on: ubuntu-latest
     timeout-minutes: 15

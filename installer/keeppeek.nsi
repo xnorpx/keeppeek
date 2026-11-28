@@ -92,6 +92,11 @@ Section ""
   WriteUninstaller "${UNINST_OUT}"
 SectionEnd
 !else
+Section "-StopServiceBeforeUpgrade"
+  ; Stop the existing service before any section overwrites keeppeek.exe.
+  Call StopServiceBeforeUpgrade
+SectionEnd
+
 Section "KeepPeek Desktop" SecDesktop
   SetOutPath "$INSTDIR"
   File /oname=keeppeek-desktop.exe "${BUILD_DIR}\keeppeek-desktop.exe"
@@ -114,13 +119,14 @@ SectionEnd
 Section "KeepPeek Server with TUI" SecServer
   SetOutPath "$INSTDIR"
   File /oname=keeppeek.exe "${BUILD_DIR}\keeppeek.exe"
+  File /oname=keeppeek-supervisor.exe "${BUILD_DIR}\keeppeek-supervisor.exe"
 SectionEnd
 
 Section /o "KeepPeek Windows Service" SecService
-  Call StopAndRemoveService
   SetOutPath "$INSTDIR"
   File /oname=keeppeek.exe "${BUILD_DIR}\keeppeek.exe"
   File /oname=keeppeek-service.exe "${BUILD_DIR}\keeppeek-service.exe"
+  File /oname=keeppeek-supervisor.exe "${BUILD_DIR}\keeppeek-supervisor.exe"
   Call InstallService
 SectionEnd
 
@@ -159,8 +165,8 @@ SectionEnd
 
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
   !insertmacro MUI_DESCRIPTION_TEXT ${SecDesktop} "Install the native KeepPeek Desktop UI (keeppeek-desktop.exe) and Start Menu shortcut."
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecServer} "Install the interactive KeepPeek Server with TUI (keeppeek.exe)."
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecService} "Install keeppeek-service.exe and configure KeepPeekService in the Windows Service Control Manager."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecServer} "Install the interactive KeepPeek Server with TUI (keeppeek.exe) and supervisor CLI (keeppeek-supervisor.exe)."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecService} "Install keeppeek-service.exe, keeppeek.exe, and keeppeek-supervisor.exe, and configure KeepPeekService in the Windows Service Control Manager."
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 !endif
 
@@ -175,6 +181,7 @@ Section "Uninstall"
   RMDir "${START_MENU_DIR}"
   Delete "$INSTDIR\keeppeek.exe"
   Delete "$INSTDIR\keeppeek-service.exe"
+  Delete "$INSTDIR\keeppeek-supervisor.exe"
   Delete "$INSTDIR\keeppeek-desktop.exe"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
@@ -194,6 +201,12 @@ SectionEnd
     !insertmacro UnselectSection ${section}
   ${EndIf}
 !macroend
+
+Function StopServiceBeforeUpgrade
+  ${If} ${SectionIsSelected} ${SecService}
+    Call StopAndRemoveService
+  ${EndIf}
+FunctionEnd
 
 Function ComponentsPageLeave
   ${IfNot} ${SectionIsSelected} ${SecDesktop}
