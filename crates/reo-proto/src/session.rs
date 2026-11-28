@@ -1042,8 +1042,8 @@ impl BcSession {
                 self.decrypt_body(body_start, body_len, channel_id, header.extension);
             }
         }
-        if self.should_trace_rx_xml(&header, body_start, body_len, skip_decrypt, is_media_body)
-            && tracing::enabled!(tracing::Level::TRACE)
+        if tracing::enabled!(tracing::Level::TRACE)
+            && self.should_trace_rx_xml(&header, body_start, body_len, skip_decrypt, is_media_body)
         {
             trace_xml_summary(
                 "rx",

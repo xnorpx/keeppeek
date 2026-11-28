@@ -669,8 +669,9 @@ fn scrub_urls(text: &str) -> String {
     while let Some(rel) = text[pos..].find("://") {
         let sep = pos + rel;
         let scheme_start = text[pos..sep]
-            .rfind(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.')))
-            .map_or(pos, |idx| pos + idx + 1);
+            .char_indices()
+            .rfind(|&(_, ch)| !(ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.')))
+            .map_or(pos, |(idx, ch)| pos + idx + ch.len_utf8());
         let scheme = &text[scheme_start..sep];
         if !scheme.starts_with(|ch: char| ch.is_ascii_alphabetic()) {
             out.push_str(&text[pos..sep + 3]);
@@ -1226,6 +1227,14 @@ mod tests {
         assert!(!stream_uri.contains("hunter2"));
         assert!(!stream_uri.contains("tok123"));
         assert!(!stream_uri.contains("tok456"));
+
+        let multibyte = scrub_xml_passwords(
+            "<Fault>Error：http://u:p@192.0.2.1/?token=abc —rtsp://u:p@192.0.2.1/s?token=tok</Fault>",
+        );
+        assert!(multibyte.contains("Error：http://192.0.2.1/?<query>"));
+        assert!(multibyte.contains("—rtsp://192.0.2.1/s?<query>"));
+        assert!(!multibyte.contains("abc"));
+        assert!(!multibyte.contains("tok"));
     }
 
     #[test]
