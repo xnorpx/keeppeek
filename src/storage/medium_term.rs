@@ -728,20 +728,14 @@ impl MediumTermWriter {
         else {
             return Ok(false);
         };
-        let camera_dts = (timestamp.is_some() || active.audio_after_gap).then(|| {
-            timestamp_ticks_or_fallback(
-                timestamp,
-                self.camera_timestamp_origin,
-                elapsed,
-                track.timescale,
-            )
-        });
-        let dts = match (active.next_audio_dts, camera_dts) {
-            (Some(next), Some(camera)) => next.max(camera),
-            (Some(next), None) => next,
-            (None, Some(camera)) => camera,
-            (None, None) => duration_to_ticks(elapsed, track.timescale),
-        };
+        let (camera_dts, dts) = resolve_audio_dts(
+            timestamp,
+            self.camera_timestamp_origin,
+            elapsed,
+            track.timescale,
+            active.next_audio_dts,
+            active.audio_after_gap,
+        );
         let sample_duration = audio_sample_duration(audio.duration, track.timescale)?;
         let recording_id = self.recording_id.as_str();
         active
@@ -1142,6 +1136,25 @@ fn resolve_video_dts(previous_dts: Option<u64>, camera_dts: u64, fallback_durati
         "clamped non-monotonic video DTS in MP4 muxer"
     );
     clamped
+}
+
+fn resolve_audio_dts(
+    timestamp: Option<Duration>,
+    origin: Option<Duration>,
+    elapsed: Duration,
+    timescale: u32,
+    next_audio_dts: Option<u64>,
+    audio_after_gap: bool,
+) -> (Option<u64>, u64) {
+    let camera_dts = (timestamp.is_some() || audio_after_gap)
+        .then(|| timestamp_ticks_or_fallback(timestamp, origin, elapsed, timescale));
+    let dts = match (next_audio_dts, camera_dts) {
+        (Some(next), Some(camera)) => next.max(camera),
+        (Some(next), None) => next,
+        (None, Some(camera)) => camera,
+        (None, None) => duration_to_ticks(elapsed, timescale),
+    };
+    (camera_dts, dts)
 }
 
 fn update_active_video_config(
