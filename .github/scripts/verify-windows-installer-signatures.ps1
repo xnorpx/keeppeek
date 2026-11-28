@@ -12,6 +12,7 @@ $ErrorActionPreference = 'Stop'
 
 $MaxExtractedEntries = 256
 $MaxExtractedExecutables = 64
+$MaxCleanupEntries = 1024
 $SevenZipTimeoutMs = 120000
 
 function Assert-ValidAuthenticodeSignature {
@@ -78,6 +79,53 @@ function Get-LowerSha256 {
     return (Get-FileHash -LiteralPath $FilePath -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+function Remove-DirectorySafely {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$AllowedParent,
+        [Parameter(Mandatory = $true)]
+        [string]$NamePrefix
+    )
+
+    $resolvedRoot = [System.IO.Path]::GetFullPath($TargetRoot)
+    if (-not $resolvedRoot.StartsWith($AllowedParent, [System.StringComparison]::OrdinalIgnoreCase) -or
+        [System.IO.Path]::GetFileName($resolvedRoot) -notlike "$NamePrefix*" -or
+        -not [System.IO.Directory]::Exists($resolvedRoot)) {
+        return
+    }
+
+    # Unlink reparse points without traversing targets because PowerShell 5.1 Remove-Item follows junctions.
+    $pending = [System.Collections.Generic.Queue[System.IO.DirectoryInfo]]::new()
+    $pending.Enqueue([System.IO.DirectoryInfo]::new($resolvedRoot))
+    $entryCount = 0
+    while ($pending.Count -gt 0 -and $entryCount -lt $MaxCleanupEntries) {
+        $directory = $pending.Dequeue()
+        foreach ($entry in $directory.EnumerateFileSystemInfos()) {
+            $entryCount += 1
+            if ($entryCount -ge $MaxCleanupEntries) { break }
+            if (($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                if ($entry -is [System.IO.DirectoryInfo]) {
+                    [System.IO.Directory]::Delete($entry.FullName, $false)
+                } else {
+                    [System.IO.File]::Delete($entry.FullName)
+                }
+                continue
+            }
+            if ($entry -is [System.IO.DirectoryInfo]) {
+                $pending.Enqueue($entry)
+            } elseif (($entry.Attributes -band [System.IO.FileAttributes]::ReadOnly) -ne 0) {
+                $entry.Attributes = $entry.Attributes -band (-bnot [System.IO.FileAttributes]::ReadOnly)
+            }
+        }
+    }
+    if ($pending.Count -gt 0 -or $entryCount -ge $MaxCleanupEntries) {
+        return
+    }
+    [System.IO.Directory]::Delete($resolvedRoot, $true)
+}
+
 function Invoke-SevenZipExtract {
     param(
         [Parameter(Mandatory = $true)]
@@ -88,14 +136,19 @@ function Invoke-SevenZipExtract {
         [string]$ExtractRoot
     )
 
+    $extractArgs = "x -tnsis -aou -y `"-o$ExtractRoot`" -- `"$ArchivePath`""
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
-    $psi.FileName = $SevenZipExecutable
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.CreateNoWindow = $true
-    # Quote each argument explicitly for compatibility with Windows PowerShell 5.1.
-    $psi.Arguments = "x -tnsis -aou -y `"-o$ExtractRoot`" -- `"$ArchivePath`""
+    if ($SevenZipExecutable -match '\.(cmd|bat)$') {
+        $psi.FileName = $env:ComSpec
+        $psi.Arguments = "/d /s /c `"`"$SevenZipExecutable`" $extractArgs`""
+    } else {
+        $psi.FileName = $SevenZipExecutable
+        $psi.Arguments = $extractArgs
+    }
 
     $process = [System.Diagnostics.Process]::Start($psi)
     try {
@@ -119,7 +172,7 @@ function Invoke-SevenZipExtract {
     # Allow 7-Zip warning exit 1 only for the expected trailing Authenticode certificate table.
     $isTrailingTailWarning = (
         $exitCode -eq 1 -and
-        $combined -match 'There are data after the end of archive' -and
+        $combined -match 'There are (?:some )?data after the end of (?:archive|the payload data)' -and
         $combined -match 'Warnings:\s*1\b' -and
         $combined -notmatch '\bErrors:\s*[1-9]' -and
         $combined -notmatch 'Sub items Errors:'
@@ -170,6 +223,8 @@ function Get-ExtractedExecutables {
 function Test-ExtractedExecutables {
     param(
         [Parameter(Mandatory = $true)]
+        [string]$ArchivePath,
+        [Parameter(Mandatory = $true)]
         [string]$ExtractRoot,
         [Parameter(Mandatory = $true)]
         [hashtable]$ExpectedHashes,
@@ -179,7 +234,7 @@ function Test-ExtractedExecutables {
 
     $executables = Get-ExtractedExecutables -ExtractRoot $ExtractRoot
     if ($executables.Count -eq 0) {
-        throw "No executables were extracted from $InstallerPath."
+        throw "No executables were extracted from $ArchivePath."
     }
 
     $allowedParents = @(
@@ -272,14 +327,17 @@ try {
         -ArchivePath $InstallerPath `
         -ExtractRoot $extractRoot
     Test-ExtractedExecutables `
+        -ArchivePath $InstallerPath `
         -ExtractRoot $extractRoot `
         -ExpectedHashes $expectedHashes `
         -ExpectedThumbprint $expectedThumbprint
 } finally {
-    $resolvedRoot = [System.IO.Path]::GetFullPath($extractRoot)
-    if ($resolvedRoot.StartsWith($temporaryRoot, [System.StringComparison]::OrdinalIgnoreCase) -and
-        [System.IO.Path]::GetFileName($resolvedRoot) -like 'keeppeek-installer-verify-*' -and
-        [System.IO.Directory]::Exists($resolvedRoot)) {
-        Remove-Item -LiteralPath $resolvedRoot -Recurse -Force -ErrorAction SilentlyContinue
+    try {
+        Remove-DirectorySafely `
+            -TargetRoot $extractRoot `
+            -AllowedParent $temporaryRoot `
+            -NamePrefix 'keeppeek-installer-verify-'
+    } catch {
+        # Keep cleanup best-effort so cleanup never masks an extraction or signature error.
     }
 }

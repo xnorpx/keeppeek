@@ -236,12 +236,13 @@ jobs:
             $uninstalled = $false
             for ($attempt = 0; $attempt -lt 120; $attempt++) {
               $remaining = @(
-                'keeppeek.exe',
-                'keeppeek-service.exe',
-                'keeppeek-supervisor.exe',
-                'keeppeek-desktop.exe',
-                'uninstall.exe'
-              | Where-Object { Test-Path (Join-Path $installDirectory $_) }
+                @(
+                  'keeppeek.exe',
+                  'keeppeek-service.exe',
+                  'keeppeek-supervisor.exe',
+                  'keeppeek-desktop.exe',
+                  'uninstall.exe'
+                ) | Where-Object { Test-Path (Join-Path $installDirectory $_) }
               )
               $servicePresent = $null -ne (Get-CimInstance Win32_Service -Filter "Name='$serviceName'")
               $shortcutPresent = Test-Path $desktopShortcut

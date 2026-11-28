@@ -103,7 +103,7 @@ SectionEnd
 !macroend
 
 Section "-StopServiceBeforeUpgrade"
-  ; Stop and remove the existing service before any section writes keeppeek.exe.
+  ; Stop and remove the existing service before any section writes keeppeek.exe when KeepPeek Windows Service is selected.
   Call StopServiceBeforeUpgrade
 SectionEnd
 

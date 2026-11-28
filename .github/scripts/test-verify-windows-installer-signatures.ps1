@@ -101,6 +101,51 @@ function Assert-VerificationFails {
     }
 }
 
+function Remove-TestRootSafely {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$AllowedParent
+    )
+
+    $resolvedRoot = [System.IO.Path]::GetFullPath($TargetRoot)
+    if (-not $resolvedRoot.StartsWith($AllowedParent, [System.StringComparison]::OrdinalIgnoreCase) -or
+        [System.IO.Path]::GetFileName($resolvedRoot) -notlike 'keeppeek-sigcheck-test-*' -or
+        -not [System.IO.Directory]::Exists($resolvedRoot)) {
+        return
+    }
+
+    # Unlink reparse points without traversing targets because PowerShell 5.1 Remove-Item follows junctions.
+    $pending = [System.Collections.Generic.Queue[System.IO.DirectoryInfo]]::new()
+    $pending.Enqueue([System.IO.DirectoryInfo]::new($resolvedRoot))
+    $entryCount = 0
+    while ($pending.Count -gt 0 -and $entryCount -lt 1024) {
+        $directory = $pending.Dequeue()
+        foreach ($entry in $directory.EnumerateFileSystemInfos()) {
+            $entryCount += 1
+            if ($entryCount -ge 1024) { break }
+            if (($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                if ($entry -is [System.IO.DirectoryInfo]) {
+                    [System.IO.Directory]::Delete($entry.FullName, $false)
+                } else {
+                    [System.IO.File]::Delete($entry.FullName)
+                }
+                continue
+            }
+            if ($entry -is [System.IO.DirectoryInfo]) {
+                $pending.Enqueue($entry)
+            } elseif (($entry.Attributes -band [System.IO.FileAttributes]::ReadOnly) -ne 0) {
+                $entry.Attributes = $entry.Attributes -band (-bnot [System.IO.FileAttributes]::ReadOnly)
+            }
+        }
+    }
+    if ($pending.Count -gt 0 -or $entryCount -ge 1024) {
+        return
+    }
+    [System.IO.Directory]::Delete($resolvedRoot, $true)
+}
+
 function New-FakeSevenZipScript {
     param(
         [Parameter(Mandatory = $true)]
@@ -207,11 +252,16 @@ try {
     & $runVerify
     $env:KEEPPEEK_FAKE_7Z_SRC = $payloadDir
 
-    # Verify that the script allows 7-Zip exit code 1 for the trailing Authenticode tail warning.
-    $env:KEEPPEEK_FAKE_7Z_EXIT = '1'
-    $env:KEEPPEEK_FAKE_7Z_MSG = 'There are data after the end of archive'
-    $env:KEEPPEEK_FAKE_7Z_WARN = 'Warnings: 1'
-    & $runVerify
+    # Verify that the script allows 7-Zip exit code 1 for both trailing-data warning messages.
+    foreach ($tailMsg in @(
+        'There are data after the end of archive',
+        'There are some data after the end of the payload data'
+    )) {
+        $env:KEEPPEEK_FAKE_7Z_EXIT = '1'
+        $env:KEEPPEEK_FAKE_7Z_MSG = $tailMsg
+        $env:KEEPPEEK_FAKE_7Z_WARN = 'Warnings: 1'
+        & $runVerify
+    }
     $env:KEEPPEEK_FAKE_7Z_EXIT = ''
     $env:KEEPPEEK_FAKE_7Z_MSG = ''
     $env:KEEPPEEK_FAKE_7Z_WARN = ''
@@ -305,12 +355,9 @@ try {
     $env:KEEPPEEK_FAKE_7Z_EXIT = ''
     $env:KEEPPEEK_FAKE_7Z_MSG = ''
 
-    # Verify that Get-ExtractedExecutables rejects a reparse point (directory junction).
-    $reparseRoot = Join-Path $testRoot 'reparse-check'
-    [void][System.IO.Directory]::CreateDirectory($reparseRoot)
-    $junctionPath = Join-Path $reparseRoot 'linked'
-    & cmd.exe /c "mklink /J `"$junctionPath`" `"$junctionTarget`"" | Out-Null
-    $global:LASTEXITCODE = 0
+    # Verify that reparse points fail closed and cleanup never deletes files in the junction target.
+    $canaryFile = Join-Path $junctionTarget 'canary.txt'
+    [System.IO.File]::WriteAllText($canaryFile, 'keep')
     $fakeJunctionCmd = Join-Path $testRoot 'fake-7z-junction.cmd'
     $junctionLines = @(
         '@echo off',
@@ -334,6 +381,10 @@ try {
             -SignedUninstallerPath $signedUninstaller `
             -SevenZipPath $fakeJunctionCmd
     }
+    if (-not (Test-Path -LiteralPath $canaryFile -PathType Leaf) -or
+        [System.IO.File]::ReadAllText($canaryFile) -ne 'keep') {
+        throw 'Cleanup traversed the directory junction and damaged the canary file.'
+    }
 
     [Console]::WriteLine('Windows installer signature verification regression passed.')
     exit 0
@@ -341,10 +392,9 @@ try {
     foreach ($key in $savedEnv.Keys) {
         [System.Environment]::SetEnvironmentVariable($key, $savedEnv[$key], 'Process')
     }
-    $resolvedRoot = [System.IO.Path]::GetFullPath($testRoot)
-    if ($resolvedRoot.StartsWith($temporaryRoot, [System.StringComparison]::OrdinalIgnoreCase) -and
-        [System.IO.Path]::GetFileName($resolvedRoot) -like 'keeppeek-sigcheck-test-*' -and
-        [System.IO.Directory]::Exists($resolvedRoot)) {
-        Remove-Item -LiteralPath $resolvedRoot -Recurse -Force -ErrorAction SilentlyContinue
+    try {
+        Remove-TestRootSafely -TargetRoot $testRoot -AllowedParent $temporaryRoot
+    } catch {
+        # Keep cleanup best-effort so cleanup never hides a test failure.
     }
 }

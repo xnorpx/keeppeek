@@ -465,25 +465,80 @@ jobs:
             }
 
             $expected = @{
-              'keeppeek.exe'            = Join-Path $buildDir 'keeppeek.exe'
-              'keeppeek-service.exe'    = Join-Path $buildDir 'keeppeek-service.exe'
-              'keeppeek-supervisor.exe' = Join-Path $buildDir 'keeppeek-supervisor.exe'
-              'keeppeek-desktop.exe'    = Join-Path $buildDir 'keeppeek-desktop.exe'
-              'uninstall.exe'           = $uninstaller
+              'keeppeek.exe'            = (Get-FileHash -LiteralPath (Join-Path $buildDir 'keeppeek.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+              'keeppeek-service.exe'    = (Get-FileHash -LiteralPath (Join-Path $buildDir 'keeppeek-service.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+              'keeppeek-supervisor.exe' = (Get-FileHash -LiteralPath (Join-Path $buildDir 'keeppeek-supervisor.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+              'keeppeek-desktop.exe'    = (Get-FileHash -LiteralPath (Join-Path $buildDir 'keeppeek-desktop.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+              'uninstall.exe'           = (Get-FileHash -LiteralPath $uninstaller -Algorithm SHA256).Hash.ToLowerInvariant()
             }
-            foreach ($name in $expected.Keys) {
-              $extracted = @(Join-Path $extractDir $name; Join-Path $extractDir "`$INSTDIR\$name") |
-                Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
-                Select-Object -First 1
-              if (-not $extracted) {
-                throw "7-Zip extraction did not yield $name"
+
+            $assertLayout = {
+              param([string]$Root)
+              $allowedParents = @(
+                [System.IO.Path]::GetFullPath($Root).TrimEnd('\'),
+                [System.IO.Path]::GetFullPath((Join-Path $Root '$INSTDIR')).TrimEnd('\')
+              )
+              $extractedExes = @(Get-ChildItem -LiteralPath $Root -Recurse -File -Filter '*.exe')
+              if ($extractedExes.Count -eq 0) {
+                throw "7-Zip extraction produced zero executables under $Root"
               }
-              $actualHash = (Get-FileHash -LiteralPath $extracted -Algorithm SHA256).Hash
-              $expectedHash = (Get-FileHash -LiteralPath $expected[$name] -Algorithm SHA256).Hash
-              if ($actualHash -ne $expectedHash) {
-                throw "Extracted $name hash mismatch ($actualHash != $expectedHash)"
+              $seenRequired = @{}
+              foreach ($exe in $extractedExes) {
+                $parent = [System.IO.Path]::GetFullPath($exe.DirectoryName).TrimEnd('\')
+                if ($parent -notin $allowedParents) {
+                  throw "Unexpected extracted executable directory: $($exe.FullName)"
+                }
+                $lower = $exe.Name.ToLowerInvariant()
+                if ($expected.ContainsKey($lower)) {
+                  $canonical = $lower
+                  $seenRequired[$canonical] = $true
+                } elseif ($lower -match '^(.+)_\d+\.exe$' -and $expected.ContainsKey("$($Matches[1]).exe")) {
+                  $canonical = "$($Matches[1]).exe"
+                } else {
+                  throw "Unexpected extracted executable: $($exe.Name)"
+                }
+                $actualHash = (Get-FileHash -LiteralPath $exe.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+                if ($actualHash -ne $expected[$canonical]) {
+                  throw "Extracted $($exe.Name) hash mismatch ($actualHash != $($expected[$canonical]))"
+                }
+              }
+              foreach ($required in $expected.Keys) {
+                if (-not $seenRequired.ContainsKey($required)) {
+                  throw "7-Zip extraction did not yield $required"
+                }
               }
             }
+
+            & $assertLayout $extractDir
+
+            # Append trailing bytes to simulate an Authenticode certificate table after the NSIS payload.
+            $tailedInstaller = Join-Path $outDir 'keeppeek-tailed-installer.exe'
+            $tailedExtractDir = Join-Path $workRoot 'extract-tailed'
+            New-Item -ItemType Directory -Force -Path $tailedExtractDir | Out-Null
+            Copy-Item -LiteralPath $installer -Destination $tailedInstaller
+            $stream = [System.IO.File]::Open($tailedInstaller, [System.IO.FileMode]::Append)
+            try {
+              $padding = [byte[]]::new(4096)
+              $stream.Write($padding, 0, $padding.Length)
+            } finally {
+              $stream.Dispose()
+            }
+            $tailedOutput = (& 7z x -tnsis -aou -y "-o$tailedExtractDir" -- $tailedInstaller 2>&1 | Out-String)
+            $tailedExit = $LASTEXITCODE
+            Write-Host "Trailing-tail 7-Zip exit code: $tailedExit"
+            if ($tailedExit -ne 0) {
+              $isExpectedTailWarning = (
+                $tailedExit -eq 1 -and
+                $tailedOutput -match 'There are (?:some )?data after the end of (?:archive|the payload data)' -and
+                $tailedOutput -match 'Warnings:\s*1\b' -and
+                $tailedOutput -notmatch '\bErrors:\s*[1-9]' -and
+                $tailedOutput -notmatch 'Sub items Errors:'
+              )
+              if (-not $isExpectedTailWarning) {
+                throw "Trailing-tail 7-Zip extraction failed (exit $tailedExit): $tailedOutput"
+              }
+            }
+            & $assertLayout $tailedExtractDir
           } finally {
             Remove-Item -LiteralPath $workRoot -Recurse -Force -ErrorAction SilentlyContinue
           }
