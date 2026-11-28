@@ -53,6 +53,7 @@ use url::{Host, Url};
 
 const DEFAULT_LOG_SEARCH_LIMIT: usize = 50;
 const MAX_LOG_SEARCH_LIMIT: usize = 200;
+const READ_ARTIFACT_MAX_RESPONSE_BYTES: usize = 512 * 1024;
 const PROFILE_ACTIVE_SCHEMA: &str = "keeppeek.runtime-profiles.active.v1";
 const PROFILE_SELECT_SCHEMA: &str = "keeppeek.runtime-profiles.select.v2";
 
@@ -509,22 +510,32 @@ fn handle_authenticated_post(
 }
 
 fn response_byte_limit(config: &McpConfig, request: &JsonRpcRequest) -> usize {
-    let is_snapshot = request.method == "tools/call"
-        && request
-            .params
-            .as_ref()
-            .and_then(|params| params.get("name"))
-            .and_then(Value::as_str)
-            == Some("get_camera_snapshot");
-    if is_snapshot {
+    let params = (request.method == "tools/call")
+        .then_some(request.params.as_ref())
+        .flatten();
+    let tool_name = params
+        .and_then(|value| value.get("name"))
+        .and_then(Value::as_str);
+    if tool_name == Some("get_camera_snapshot") {
         // Snapshots use max_snapshot_bytes plus base64 expansion and JSON metadata envelope.
         let base64_bytes = config.max_snapshot_bytes.div_ceil(3).saturating_mul(4);
-        config
+        return config
             .max_response_bytes
-            .max(base64_bytes.saturating_add(4_096))
-    } else {
-        config.max_response_bytes
+            .max(base64_bytes.saturating_add(4_096));
     }
+    let is_read_artifact = config.allow_camera_debugging
+        && tool_name == Some("camera_debugging")
+        && params
+            .and_then(|value| value.get("arguments"))
+            .and_then(|args| args.get("action"))
+            .and_then(Value::as_str)
+            == Some("read_artifact");
+    if is_read_artifact {
+        return config
+            .max_response_bytes
+            .max(READ_ARTIFACT_MAX_RESPONSE_BYTES);
+    }
+    config.max_response_bytes
 }
 
 fn parse_host_header(request: &Request) -> Result<Url, Response> {
@@ -1184,7 +1195,7 @@ fn tool_search_logs(ctx: &McpContext<'_>, args: Value) -> Result<ToolCallResult,
     };
     let max_entries = logging_service.settings().buffer.max_entries;
     let snapshot = logging_service.snapshot(args.since_sequence, max_entries);
-    let min_rank = args.level.map(log_level_rank);
+    let min_rank = args.level.map(LogLevel::rank);
     let target_needle = args.target.as_deref().map(str::to_ascii_lowercase);
     let camera_needle = args.camera.as_deref().map(str::to_ascii_lowercase);
     let query_needle = args.query.as_deref().map(str::to_ascii_lowercase);
@@ -1192,7 +1203,7 @@ fn tool_search_logs(ctx: &McpContext<'_>, args: Value) -> Result<ToolCallResult,
         .entries
         .into_iter()
         .filter(|entry| {
-            min_rank.is_none_or(|rank| log_level_rank(entry.level) >= rank)
+            min_rank.is_none_or(|rank| entry.level.rank() >= rank)
                 && args
                     .since_timestamp_ms
                     .is_none_or(|since| entry.timestamp_ms >= since)
@@ -1201,10 +1212,10 @@ fn tool_search_logs(ctx: &McpContext<'_>, args: Value) -> Result<ToolCallResult,
                     .is_none_or(|needle| entry.target.to_ascii_lowercase().contains(needle))
                 && camera_needle
                     .as_deref()
-                    .is_none_or(|needle| log_entry_matches(entry, needle))
+                    .is_none_or(|needle| entry.matches_query(needle))
                 && query_needle
                     .as_deref()
-                    .is_none_or(|needle| log_entry_matches(entry, needle))
+                    .is_none_or(|needle| entry.matches_query(needle))
         })
         .collect::<Vec<_>>();
     let matched_count = matched.len();
@@ -1228,35 +1239,21 @@ fn tool_search_logs(ctx: &McpContext<'_>, args: Value) -> Result<ToolCallResult,
     })))
 }
 
-const fn log_level_rank(level: LogLevel) -> u8 {
-    match level {
-        LogLevel::Trace => 0,
-        LogLevel::Debug => 1,
-        LogLevel::Info => 2,
-        LogLevel::Warn => 3,
-        LogLevel::Error => 4,
-    }
-}
-
-fn log_entry_matches(entry: &crate::logging::LogEntry, needle: &str) -> bool {
-    if entry.target.to_ascii_lowercase().contains(needle)
-        || entry.message.to_ascii_lowercase().contains(needle)
-    {
-        return true;
-    }
-    entry.fields.iter().any(|(key, value)| {
-        key.to_ascii_lowercase().contains(needle)
-            || value.to_string().to_ascii_lowercase().contains(needle)
-    })
-}
-
 fn tool_get_logging_settings(ctx: &McpContext<'_>) -> Result<ToolCallResult, ToolError> {
     ctx.require_admin()?;
     let settings = get_logging_settings(ctx.state).map_err(ToolError::from_control)?;
     ctx.audit("mcp_get_logging_settings", None, "success");
-    let value = serde_json::to_value(&settings).map_err(|error| {
+    let mut value = serde_json::to_value(&settings).map_err(|error| {
         ToolError::internal(format!("failed to encode logging settings: {error}"))
     })?;
+    if let Some(logging) = &ctx.state.logging
+        && let Some(object) = value.as_object_mut()
+    {
+        object.insert(
+            "base_filter".to_owned(),
+            Value::String(logging.base_filter()),
+        );
+    }
     Ok(ToolCallResult::json(value))
 }
 
@@ -5796,6 +5793,26 @@ display_name = "Front Door"
         ) -> Result<Value, ControlCommandError> {
             Ok(json!({ "action": "delete_capture", "deleted": 1 }))
         }
+
+        fn read_artifact(
+            &self,
+            request: mcp_camera_debug::ReadArtifactRequest,
+        ) -> Result<Value, ControlCommandError> {
+            Ok(json!({
+                "action": "read_artifact",
+                "capture_id": request.capture_id,
+                "camera_id": "192.0.2.10",
+                "artifact": request.artifact,
+                "offset": request.offset,
+                "length": self.sentinel.len(),
+                "total_bytes": self.sentinel.len(),
+                "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                "eof": true,
+                "next_offset": request.offset + self.sentinel.len() as u64,
+                "encoding": "utf8",
+                "data": self.sentinel,
+            }))
+        }
     }
 
     #[test]
@@ -5999,6 +6016,32 @@ display_name = "Front Door"
         (dir, state, router_tx)
     }
 
+    fn assert_capture_traces_readable(
+        state: &ServerState,
+        router_tx: &FacadeSender<RouterMessage>,
+        capture_id: &str,
+        sentinel: &str,
+    ) {
+        let read_trace = call_mcp_tool(
+            state,
+            router_tx,
+            11,
+            "camera_debugging",
+            json!({
+                "action": "read_artifact",
+                "capture_id": capture_id,
+                "artifact": "traces.jsonl",
+                "offset": 0,
+                "length": 65_536
+            }),
+        );
+        let trace_sc = &read_trace["result"]["structuredContent"];
+        assert_eq!(trace_sc["action"], "read_artifact");
+        assert_eq!(trace_sc["eof"], true);
+        assert_eq!(trace_sc["encoding"], "utf8");
+        assert!(!trace_sc["data"].as_str().unwrap().contains(sentinel));
+    }
+
     fn assert_rtsp_capture_and_inspect(
         state: &ServerState,
         router_tx: &FacadeSender<RouterMessage>,
@@ -6022,13 +6065,26 @@ display_name = "Front Door"
         let capture_dir = dir.join("camera-debug").join(&capture_id);
         assert!(capture_dir.is_dir());
         assert_valid_pcapng_blocks(&capture_dir.join("capture.pcapng"));
-        assert!(capture_dir.join("video.h264").is_file());
-        assert!(capture_dir.join("muxed.mp4").is_file());
-        assert!(capture_dir.join("protocol_transcript.json").is_file());
-        assert!(capture_dir.join("capture.json").is_file());
+        for file in [
+            "video.h264",
+            "muxed.mp4",
+            "protocol_transcript.json",
+            "traces.jsonl",
+            "capture.json",
+        ] {
+            assert!(capture_dir.join(file).is_file(), "missing {file}");
+        }
+        assert!(
+            cap["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f == "traces.jsonl")
+        );
         if cap["bitstream"]["audio_path"].is_string() {
             assert!(capture_dir.join("audio.aac").is_file());
         }
+        assert_capture_traces_readable(state, router_tx, &capture_id, sentinel);
 
         let inspect = call_mcp_tool(
             state,
@@ -6149,12 +6205,13 @@ display_name = "Front Door"
         );
         let (logging_service, dispatch) =
             LoggingService::for_test(LogFilterFile::new(dir.join("log-filter")), "info");
+        let logging_service_ref = logging_service.clone();
         let state = state.with_logging(logging_service);
-        tracing::dispatcher::with_default(&dispatch, || {
+        let capture_id = tracing::dispatcher::with_default(&dispatch, || {
             tracing::info!(target: "keeppeek::test", "camera auth {sentinel}");
+            assert_rtsp_capture_and_inspect(&state, &router_tx, &dir, sentinel)
         });
-
-        let capture_id = assert_rtsp_capture_and_inspect(&state, &router_tx, &dir, sentinel);
+        assert_eq!(logging_service_ref.active_filter(), "info");
         assert_rtsp_compare_list_delete_and_redaction(
             &state,
             &router_tx,
@@ -6527,6 +6584,225 @@ display_name = "Front Door"
                 .any(|t| t.name.contains("enable_mcp") || t.name.contains("silence"))
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nested_camera_span_flows_to_search_logs_and_sse_route() {
+        let dir =
+            std::env::temp_dir().join(format!("keeppeek-mcp-span-logs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut state, router_tx) = state_with_mcp(McpConfig {
+            enabled: true,
+            ..McpConfig::default()
+        });
+        let (logging, dispatch) = LoggingService::for_test(
+            LogFilterFile::new(dir.join("log-filter")),
+            "info,keeppeek=debug",
+        );
+        let logging_ref = logging.clone();
+        state = state.with_logging(logging);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            let span = tracing::info_span!("camera", camera_id = "cam-1", stream = "main");
+            let _guard = span.enter();
+            tracing::info!(target: "keeppeek::rtsp", "stream started");
+        });
+
+        let search_resp = call_mcp_tool(
+            &state,
+            &router_tx,
+            1,
+            "search_logs",
+            json!({ "camera": "cam-1" }),
+        );
+        let entries = search_resp["result"]["structuredContent"]["entries"]
+            .as_array()
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["fields"]["camera_id"], "cam-1");
+        assert_eq!(entries[0]["fields"]["stream"], "main");
+
+        let sse_req = Request::fake_http("GET", "/logs?tail=10", Vec::new(), Vec::new());
+        let sse_resp = super::super::handle_request(&sse_req, &router_tx, &state);
+        assert_eq!(sse_resp.status_code, 200);
+        logging_ref.close_streams();
+        let (mut reader, _) = sse_resp.data.into_reader_and_size();
+        let mut sse_body = String::new();
+        reader.read_to_string(&mut sse_body).unwrap();
+        assert!(sse_body.contains("\"camera_id\":\"cam-1\""));
+        assert!(sse_body.contains("\"stream\":\"main\""));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn seed_test_capture_artifact(
+        store: &crate::camera_debug::store::CaptureStore,
+        cap_id: &str,
+        cam_id: &str,
+        artifact: &str,
+        bytes: &[u8],
+    ) {
+        let cap_dir = store.capture_dir(cap_id).unwrap();
+        std::fs::create_dir_all(&cap_dir).unwrap();
+        std::fs::write(cap_dir.join(artifact), bytes).unwrap();
+        store
+            .save_metadata(
+                cap_id,
+                &crate::camera_debug::store::CaptureMetadata {
+                    capture_id: cap_id.to_owned(),
+                    camera_id: cam_id.to_owned(),
+                    protocol: "rtsp".to_owned(),
+                    created_at_unix_secs: 1,
+                    duration_ms: 10,
+                    total_bytes: bytes.len() as u64,
+                    packet_count: 1,
+                    include_raw_auth: true,
+                    trigger_probe: false,
+                    tls_decrypted: false,
+                    transport: "tcp".to_owned(),
+                    files: vec![artifact.to_owned()],
+                    anomalies: Default::default(),
+                    warnings: Vec::new(),
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn read_artifact_http_redaction_and_large_chunk_boundary() {
+        let sentinel = "READ-ARTIFACT-SENTINEL-665544";
+        let (dir, state, router_tx) = live_debug_fixture(
+            McpConfig {
+                enabled: true,
+                allow_camera_debugging: true,
+                debug_camera_ids: vec!["192.0.2.10".to_owned()],
+                ..McpConfig::default()
+            },
+            sentinel,
+            "[front.door]\nip = \"192.0.2.10\"\n\n[back.yard]\nip = \"192.0.2.11\"\n",
+        );
+        let store = crate::camera_debug::store::CaptureStore::new(
+            dir.join("camera-debug"),
+            crate::camera_debug::store::StoreLimits::default(),
+        )
+        .unwrap();
+        let big = format!("{sentinel}\n{}", "x".repeat(65_536));
+        seed_test_capture_artifact(
+            &store,
+            "cap-allowed",
+            "192.0.2.10",
+            "traces.jsonl",
+            big.as_bytes(),
+        );
+        seed_test_capture_artifact(
+            &store,
+            "cap-blocked",
+            "192.0.2.11",
+            "traces.jsonl",
+            big.as_bytes(),
+        );
+
+        let ok_chunk = call_mcp_tool(
+            &state,
+            &router_tx,
+            1,
+            "camera_debugging",
+            json!({
+                "action": "read_artifact",
+                "capture_id": "cap-allowed",
+                "artifact": "traces.jsonl",
+                "offset": 0,
+                "length": 65_536
+            }),
+        );
+        assert!(ok_chunk["error"].is_null());
+        assert_eq!(ok_chunk["result"]["structuredContent"]["length"], 65_536);
+        assert!(
+            ok_chunk["result"]["structuredContent"]["data"]
+                .as_str()
+                .unwrap()
+                .contains(sentinel)
+        );
+
+        let blocked = call_mcp_tool(
+            &state,
+            &router_tx,
+            2,
+            "camera_debugging",
+            json!({ "action": "read_artifact", "capture_id": "cap-blocked", "artifact": "traces.jsonl" }),
+        );
+        assert_eq!(blocked["error"]["code"], ERROR_FORBIDDEN);
+        assert!(!serde_json::to_string(&blocked).unwrap().contains(sentinel));
+
+        let cfg = call_mcp_tool(&state, &router_tx, 3, "get_configuration", json!({}));
+        assert!(!serde_json::to_string(&cfg).unwrap().contains(sentinel));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_artifact_http_control_byte_chunk_fits_json_rpc_budget() {
+        let (dir, state, router_tx) = live_debug_fixture(
+            McpConfig {
+                enabled: true,
+                allow_camera_debugging: true,
+                debug_camera_ids: vec!["192.0.2.10".to_owned()],
+                ..McpConfig::default()
+            },
+            "READ-ARTIFACT-SENTINEL-665544",
+            "[front.door]\nip = \"192.0.2.10\"\n",
+        );
+        let store = crate::camera_debug::store::CaptureStore::new(
+            dir.join("camera-debug"),
+            crate::camera_debug::store::StoreLimits::default(),
+        )
+        .unwrap();
+        let ctrl_bytes = vec![0x01_u8; 131_072];
+        seed_test_capture_artifact(&store, "cap-ctrl", "192.0.2.10", "ctrl.bin", &ctrl_bytes);
+
+        let auto_resp = call_mcp_tool(
+            &state,
+            &router_tx,
+            1,
+            "camera_debugging",
+            json!({
+                "action": "read_artifact",
+                "capture_id": "cap-ctrl",
+                "artifact": "ctrl.bin",
+                "offset": 0,
+                "length": 131_072,
+                "encoding": "auto"
+            }),
+        );
+        assert!(auto_resp["error"].is_null(), "{auto_resp}");
+        assert_eq!(
+            auto_resp["result"]["structuredContent"]["encoding"],
+            "base64"
+        );
+        assert_eq!(auto_resp["result"]["structuredContent"]["length"], 131_072);
+        assert_eq!(auto_resp["result"]["structuredContent"]["eof"], true);
+
+        let utf8_resp = call_mcp_tool(
+            &state,
+            &router_tx,
+            2,
+            "camera_debugging",
+            json!({
+                "action": "read_artifact",
+                "capture_id": "cap-ctrl",
+                "artifact": "ctrl.bin",
+                "offset": 0,
+                "length": 131_072,
+                "encoding": "utf8"
+            }),
+        );
+        assert!(utf8_resp["error"].is_null(), "{utf8_resp}");
+        let sc = &utf8_resp["result"]["structuredContent"];
+        let clamped_len = sc["length"].as_u64().unwrap();
+        assert!(clamped_len > 0 && clamped_len < 131_072);
+        assert_eq!(sc["encoding"], "utf8");
+        assert_eq!(sc["eof"], false);
+        assert_eq!(sc["next_offset"], clamped_len);
+        assert!(serde_json::to_vec(&utf8_resp).unwrap().len() <= READ_ARTIFACT_MAX_RESPONSE_BYTES);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

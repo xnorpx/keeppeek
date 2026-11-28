@@ -10,3 +10,4 @@ pub mod pcapng;
 pub mod protocols;
 pub mod repro;
 pub mod store;
+pub mod traces;

@@ -26,6 +26,8 @@ pub const DEFAULT_CAPTURE_TTL_SECS: u64 = 24 * 60 * 60;
 pub const CAPTURE_ID_LEN_MAX: usize = 128;
 /// Maximum permitted `camera_id` length in bytes.
 pub const CAMERA_ID_LEN_MAX: usize = 128;
+/// Maximum permitted single-segment artifact filename length in bytes.
+pub const ARTIFACT_NAME_LEN_MAX: usize = 128;
 /// Metadata filename written inside each capture directory.
 pub const CAPTURE_METADATA_FILENAME: &str = "capture.json";
 
@@ -434,6 +436,35 @@ pub fn validate_camera_id(camera_id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Validates that `artifact` is a single-segment filename without path traversal tokens.
+///
+/// # Errors
+/// Returns an error if `artifact` is empty, exceeds 128 bytes, or contains `/`, `\`, `:`, `..`, NUL, or control chars.
+pub fn validate_artifact_name(artifact: &str) -> anyhow::Result<()> {
+    ensure!(
+        !artifact.is_empty() && artifact.len() <= ARTIFACT_NAME_LEN_MAX,
+        "artifact filename must be between 1 and {ARTIFACT_NAME_LEN_MAX} bytes"
+    );
+    ensure!(
+        artifact != "." && artifact != ".." && !artifact.contains(".."),
+        "artifact filename '{artifact}' contains disallowed path traversal segment"
+    );
+    ensure!(
+        !artifact
+            .bytes()
+            .any(|byte| matches!(byte, b'/' | b'\\' | b':' | b'\0') || byte.is_ascii_control())
+            && !artifact.chars().any(char::is_control),
+        "artifact filename '{artifact}' contains disallowed path separator, colon, or control character"
+    );
+    let mut components = Path::new(artifact).components();
+    ensure!(
+        matches!(components.next(), Some(std::path::Component::Normal(_)))
+            && components.next().is_none(),
+        "artifact filename '{artifact}' must be a single relative path segment"
+    );
+    Ok(())
+}
+
 fn dir_size_bytes(dir: &Path) -> anyhow::Result<u64> {
     let mut total = 0_u64;
     for entry in std::fs::read_dir(dir)? {
@@ -622,5 +653,28 @@ mod tests {
 
         assert!(store.delete_capture("cap-mid").unwrap());
         assert!(!store.delete_capture("cap-mid").unwrap());
+    }
+
+    #[test]
+    fn validate_artifact_name_rejects_traversal_and_ntfs_ads_colons() {
+        assert!(validate_artifact_name("traces.jsonl").is_ok());
+        assert!(validate_artifact_name("capture.pcapng").is_ok());
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../x",
+            "a/b",
+            "a\\b",
+            "foo..bar",
+            "traces.jsonl:ads",
+            "C:artifact.bin",
+            "bad\0name",
+        ] {
+            assert!(
+                validate_artifact_name(bad).is_err(),
+                "expected artifact name rejection for {bad:?}"
+            );
+        }
     }
 }

@@ -29,6 +29,20 @@ pub enum LogLevel {
     Error,
 }
 
+impl LogLevel {
+    /// Returns the numeric severity rank (`Trace = 0` .. `Error = 4`).
+    #[must_use]
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::Trace => 0,
+            Self::Debug => 1,
+            Self::Info => 2,
+            Self::Warn => 3,
+            Self::Error => 4,
+        }
+    }
+}
+
 impl From<&tracing::Level> for LogLevel {
     fn from(level: &tracing::Level) -> Self {
         match *level {
@@ -53,6 +67,25 @@ pub struct LogEntry {
     pub file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
+}
+
+impl LogEntry {
+    /// Returns `true` when `target`, `message`, or any field matches `needle_lowercase`.
+    #[must_use]
+    pub fn matches_query(&self, needle_lowercase: &str) -> bool {
+        if self.target.to_ascii_lowercase().contains(needle_lowercase)
+            || self.message.to_ascii_lowercase().contains(needle_lowercase)
+        {
+            return true;
+        }
+        self.fields.iter().any(|(key, value)| {
+            key.to_ascii_lowercase().contains(needle_lowercase)
+                || value
+                    .to_string()
+                    .to_ascii_lowercase()
+                    .contains(needle_lowercase)
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -143,7 +176,7 @@ impl fmt::Display for LogStreamError {
 
 impl std::error::Error for LogStreamError {}
 
-pub(super) struct LogSubscription {
+pub struct LogSubscription {
     id: u64,
     hub: Weak<Mutex<HubState>>,
     replay: VecDeque<LogEntry>,
@@ -353,6 +386,14 @@ impl LogHub {
         state.subscribers.clear();
     }
 
+    pub(crate) fn subscribe_live(&self) -> Result<LogSubscription, LogStreamError> {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.register_subscriber(&mut state, VecDeque::new(), false)
+    }
+
     pub(super) fn subscribe(
         &self,
         after: Option<u64>,
@@ -390,6 +431,26 @@ impl LogHub {
             replay.drain(..replay.len() - replay_limit);
         }
 
+        self.register_subscriber(
+            &mut state,
+            replay.into(),
+            missing_before_buffer || over_limit,
+        )
+    }
+
+    fn register_subscriber(
+        &self,
+        state: &mut HubState,
+        replay: VecDeque<LogEntry>,
+        replay_truncated: bool,
+    ) -> Result<LogSubscription, LogStreamError> {
+        if state.closed {
+            return Err(LogStreamError::Closed);
+        }
+        if state.subscribers.len() >= self.limits.max_subscribers {
+            return Err(LogStreamError::LimitReached);
+        }
+
         let id = state.next_subscriber_id;
         state.next_subscriber_id = state.next_subscriber_id.saturating_add(1);
         let (sender, receiver) = bounded(self.limits.subscriber_capacity);
@@ -405,8 +466,8 @@ impl LogHub {
         Ok(LogSubscription {
             id,
             hub: Arc::downgrade(&self.inner),
-            replay: replay.into(),
-            replay_truncated: missing_before_buffer || over_limit,
+            replay,
+            replay_truncated,
             receiver,
             dropped,
         })
@@ -432,6 +493,10 @@ impl Default for LogHub {
 }
 
 impl LogSubscription {
+    pub(crate) const fn receiver(&self) -> &Receiver<LogEntry> {
+        &self.receiver
+    }
+
     pub(super) fn pop_replay(&mut self) -> Option<LogEntry> {
         self.replay.pop_front()
     }
@@ -440,7 +505,7 @@ impl LogSubscription {
         std::mem::take(&mut self.replay_truncated)
     }
 
-    pub(super) fn try_next(&self) -> Result<LogEntry, TryRecvError> {
+    pub(crate) fn try_next(&self) -> Result<LogEntry, TryRecvError> {
         self.receiver.try_recv()
     }
 
@@ -451,7 +516,7 @@ impl LogSubscription {
         self.receiver.recv_timeout(timeout)
     }
 
-    pub(super) fn take_dropped(&self) -> u64 {
+    pub(crate) fn take_dropped(&self) -> u64 {
         self.dropped.swap(0, Ordering::Relaxed)
     }
 }
