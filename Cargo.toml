@@ -51,6 +51,8 @@ encoding_rs = { version = "0.8.35", default-features = false, features = [
 ] }
 httparse = { version = "1.10.1", default-features = false, features = ["std"] }
 mime = { version = "0.3.17", default-features = false }
+mqtt-protocol-core = { version = "0.7.9", default-features = false }
+native-tls = { version = "0.2.18", default-features = false }
 rand = { version = "0.10.2", default-features = false }
 serde = { version = "1.0.229", default-features = false, features = ["std"] }
 serde_json = { version = "1.0.151", default-features = false, features = [
@@ -203,9 +205,9 @@ network-interface = "2.0.5"
 polling = "3.11.0"
 pollster = "1.0.1"
 rand = { version = "0.10.2" }
-rumqttc = { version = "0.25.1", default-features = false, features = [
-  "use-native-tls",
-] }
+# Keep the "tracing" feature disabled so mqtt-protocol-core cannot log CONNECT packet details.
+mqtt-protocol-core = { workspace = true, features = ["std"] }
+native-tls = { workspace = true }
 toml = { version = "1.1.4" }
 onvif = { path = "crates/onvif/onvif" }
 rouille = { path = "crates/rouille" }

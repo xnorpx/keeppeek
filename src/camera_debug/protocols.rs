@@ -24,6 +24,7 @@ use crate::{
 };
 use anyhow::{Context, bail, ensure};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use native_tls::{TlsConnector, TlsStream};
 use onvif::soap::client::{
     AuthType as OnvifAuthType, ClientBuilder as OnvifClientBuilder,
     Credentials as OnvifCredentials, TlsVerification,
@@ -45,7 +46,6 @@ use retina::{
     },
     codec::{AudioParameters, CodecItem, ParametersRef, VideoParameters, VideoParametersCodec},
 };
-use rumqttc::tokio_native_tls::native_tls::{TlsConnector, TlsStream};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
