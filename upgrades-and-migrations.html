@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-ca64c95b.js";
+            window.path_to_searchindex_js = "searchindex-5b5a2d89.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-515efa10.js"></script>
@@ -210,7 +210,7 @@ tail -n 100 ~/Library/Logs/KeepPeek/keeppeek.log ~/Library/Logs/KeepPeek/keeppee
 </code></pre>
 <p>See the <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/macos-installation.md">macOS installation guide</a> for signing and notarization details.</p>
 <h3 id="windows"><a class="header" href="#windows">Windows</a></h3>
-<p>Run the installer for your host architecture. When <code>KeepPeekService</code> exists, the service component is selected by default: the installer stops and removes the existing registration, replaces <code>keeppeek.exe</code> and <code>keeppeek-service.exe</code>, and recreates and starts <code>KeepPeekService</code>. Record custom SCM identity, startup, recovery, and environment settings before running the installer and verify them afterward, because service recreation does not preserve SCM customizations.</p>
+<p>Run the installer for your host architecture. When <code>KeepPeekService</code> exists, the service component is selected by default: the installer stops and removes the existing registration before replacing <code>keeppeek.exe</code>, <code>keeppeek-service.exe</code>, and <code>keeppeek-supervisor.exe</code>, then recreates and starts <code>KeepPeekService</code>. Record custom SCM identity, startup, recovery, and environment settings before running the installer and verify them afterward, because service recreation does not preserve SCM customizations.</p>
 <p>From an elevated PowerShell prompt, inspect or manually control the service (poll <code>sc.exe query</code> between <code>stop</code> and <code>start</code>, because <code>sc.exe stop</code> returns before exit completes):</p>
 <pre><code class="language-powershell">sc.exe query KeepPeekService
 sc.exe qc KeepPeekService

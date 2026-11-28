@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-ca64c95b.js";
+            window.path_to_searchindex_js = "searchindex-5b5a2d89.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-515efa10.js"></script>
@@ -231,10 +231,10 @@ sudo chown 65532:65532 keeppeek-data
 </ol>
 <p>Code signing and notarization depend on the release workflow’s configured credentials; verify the downloaded artifact rather than assuming both are present. See the <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/macos-installation.md">macOS installation guide</a> for service logs and <a href="./upgrades-and-migrations.html#macos">Upgrades and migrations</a> before replacing an existing app.</p>
 <h2 id="windows"><a class="header" href="#windows">Windows</a></h2>
-<p>Official Windows releases publish Authenticode-signed, RFC 3161 timestamped <code>x86_64</code> and <code>aarch64</code> executables (including <code>uninstall.exe</code>), each with a <code>.sha256</code> file:</p>
+<p>Official Windows releases publish Authenticode-signed, RFC 3161 timestamped <code>x86_64</code> and <code>aarch64</code> executables (including embedded <code>uninstall.exe</code> inside the unified installer), with a matching <code>.sha256</code> file for every downloadable release asset:</p>
 <ul>
-<li><strong>Unified installer:</strong> <code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;-installer.exe</code> — select at least one of <strong>KeepPeek Desktop</strong> (<code>keeppeek-desktop.exe</code>), <strong>KeepPeek Server with TUI</strong> (<code>keeppeek.exe</code>), and <strong>KeepPeek Windows Service</strong> (<code>keeppeek-service.exe</code> / <code>KeepPeekService</code>).</li>
-<li><strong>Standalone assets:</strong> <code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;.exe</code>, <code>keeppeek-service-&lt;version&gt;-windows-&lt;arch&gt;.exe</code>, <code>keeppeek-desktop-&lt;version&gt;-windows-&lt;arch&gt;.exe</code>, and server archive <code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;.zip</code>.</li>
+<li><strong>Unified installer:</strong> <code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;-installer.exe</code> — select at least one of <strong>KeepPeek Desktop</strong> (<code>keeppeek-desktop.exe</code>), <strong>KeepPeek Server with TUI</strong> (<code>keeppeek.exe</code> + <code>keeppeek-supervisor.exe</code>), and <strong>KeepPeek Windows Service</strong> (<code>keeppeek-service.exe</code> + <code>keeppeek.exe</code> + <code>keeppeek-supervisor.exe</code> / <code>KeepPeekService</code>).</li>
+<li><strong>Standalone assets:</strong> <code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;.exe</code>, <code>keeppeek-service-&lt;version&gt;-windows-&lt;arch&gt;.exe</code>, <code>keeppeek-supervisor-&lt;version&gt;-windows-&lt;arch&gt;.exe</code>, <code>keeppeek-desktop-&lt;version&gt;-windows-&lt;arch&gt;.exe</code>, and server archive <code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;.zip</code>.</li>
 </ul>
 <ol>
 <li>Download the unified installer for your host architecture and verify its <code>.sha256</code> hash and Authenticode signature (<code>Get-AuthenticodeSignature</code>).</li>

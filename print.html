@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-ca64c95b.js";
+            window.path_to_searchindex_js = "searchindex-5b5a2d89.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-515efa10.js"></script>
@@ -417,10 +417,10 @@ sudo chown 65532:65532 keeppeek-data
 </ol>
 <p>Code signing and notarization depend on the release workflow’s configured credentials; verify the downloaded artifact rather than assuming both are present. See the <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/macos-installation.md">macOS installation guide</a> for service logs and <a href="#macos-2">Upgrades and migrations</a> before replacing an existing app.</p>
 <h2 id="windows"><a class="header" href="#windows">Windows</a></h2>
-<p>Official Windows releases publish Authenticode-signed, RFC 3161 timestamped <code>x86_64</code> and <code>aarch64</code> executables (including <code>uninstall.exe</code>), each with a <code>.sha256</code> file:</p>
+<p>Official Windows releases publish Authenticode-signed, RFC 3161 timestamped <code>x86_64</code> and <code>aarch64</code> executables (including embedded <code>uninstall.exe</code> inside the unified installer), with a matching <code>.sha256</code> file for every downloadable release asset:</p>
 <ul>
-<li><strong>Unified installer:</strong> <code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;-installer.exe</code> — select at least one of <strong>KeepPeek Desktop</strong> (<code>keeppeek-desktop.exe</code>), <strong>KeepPeek Server with TUI</strong> (<code>keeppeek.exe</code>), and <strong>KeepPeek Windows Service</strong> (<code>keeppeek-service.exe</code> / <code>KeepPeekService</code>).</li>
-<li><strong>Standalone assets:</strong> <code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;.exe</code>, <code>keeppeek-service-&lt;version&gt;-windows-&lt;arch&gt;.exe</code>, <code>keeppeek-desktop-&lt;version&gt;-windows-&lt;arch&gt;.exe</code>, and server archive <code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;.zip</code>.</li>
+<li><strong>Unified installer:</strong> <code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;-installer.exe</code> — select at least one of <strong>KeepPeek Desktop</strong> (<code>keeppeek-desktop.exe</code>), <strong>KeepPeek Server with TUI</strong> (<code>keeppeek.exe</code> + <code>keeppeek-supervisor.exe</code>), and <strong>KeepPeek Windows Service</strong> (<code>keeppeek-service.exe</code> + <code>keeppeek.exe</code> + <code>keeppeek-supervisor.exe</code> / <code>KeepPeekService</code>).</li>
+<li><strong>Standalone assets:</strong> <code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;.exe</code>, <code>keeppeek-service-&lt;version&gt;-windows-&lt;arch&gt;.exe</code>, <code>keeppeek-supervisor-&lt;version&gt;-windows-&lt;arch&gt;.exe</code>, <code>keeppeek-desktop-&lt;version&gt;-windows-&lt;arch&gt;.exe</code>, and server archive <code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;.zip</code>.</li>
 </ul>
 <ol>
 <li>Download the unified installer for your host architecture and verify its <code>.sha256</code> hash and Authenticode signature (<code>Get-AuthenticodeSignature</code>).</li>
@@ -531,7 +531,7 @@ sc.exe qc KeepPeekService
 <p>Linux and mobile desktop builds are out of scope; use a standard browser on those platforms.</p>
 <h2 id="installation-and-uninstall"><a class="header" href="#installation-and-uninstall">Installation and uninstall</a></h2>
 <h3 id="windows-1"><a class="header" href="#windows-1">Windows</a></h3>
-<p>Official Windows releases publish Authenticode-signed, RFC 3161 timestamped executables (<code>keeppeek.exe</code>, <code>keeppeek-service.exe</code>, <code>keeppeek-desktop.exe</code>, <code>uninstall.exe</code>, and the unified installer), each with a matching <code>.sha256</code> file.</p>
+<p>Official Windows releases publish Authenticode-signed, RFC 3161 timestamped executables (<code>keeppeek.exe</code>, <code>keeppeek-service.exe</code>, <code>keeppeek-supervisor.exe</code>, <code>keeppeek-desktop.exe</code>, and the unified installer with embedded <code>uninstall.exe</code>), with a matching <code>.sha256</code> file for every downloadable release asset.</p>
 <ol>
 <li>Download <code>keeppeek-&lt;version&gt;-windows-&lt;arch&gt;-installer.exe</code> (or standalone <code>keeppeek-desktop-&lt;version&gt;-windows-&lt;arch&gt;.exe</code> for portable use) and its <code>.sha256</code> file from the <a href="https://github.com/xnorpx/keeppeek/releases">releases page</a>.</li>
 <li>Verify checksum and signature in PowerShell:</li>
@@ -3377,7 +3377,7 @@ tail -n 100 ~/Library/Logs/KeepPeek/keeppeek.log ~/Library/Logs/KeepPeek/keeppee
 </code></pre>
 <p>See the <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/macos-installation.md">macOS installation guide</a> for signing and notarization details.</p>
 <h3 id="windows-2"><a class="header" href="#windows-2">Windows</a></h3>
-<p>Run the installer for your host architecture. When <code>KeepPeekService</code> exists, the service component is selected by default: the installer stops and removes the existing registration, replaces <code>keeppeek.exe</code> and <code>keeppeek-service.exe</code>, and recreates and starts <code>KeepPeekService</code>. Record custom SCM identity, startup, recovery, and environment settings before running the installer and verify them afterward, because service recreation does not preserve SCM customizations.</p>
+<p>Run the installer for your host architecture. When <code>KeepPeekService</code> exists, the service component is selected by default: the installer stops and removes the existing registration before replacing <code>keeppeek.exe</code>, <code>keeppeek-service.exe</code>, and <code>keeppeek-supervisor.exe</code>, then recreates and starts <code>KeepPeekService</code>. Record custom SCM identity, startup, recovery, and environment settings before running the installer and verify them afterward, because service recreation does not preserve SCM customizations.</p>
 <p>From an elevated PowerShell prompt, inspect or manually control the service (poll <code>sc.exe query</code> between <code>stop</code> and <code>start</code>, because <code>sc.exe stop</code> returns before exit completes):</p>
 <pre><code class="language-powershell">sc.exe query KeepPeekService
 sc.exe qc KeepPeekService
@@ -5060,7 +5060,7 @@ KeepPeek media gateway:       camera -&gt; KeepPeek encoded forwarding -&gt; det
 <tbody>
 <tr><td><strong>Linux</strong></td><td>Multi-arch GHCR Docker image (<code>linux/amd64</code>, <code>linux/arm64</code>) with a persistent configuration volume (primary Linux path), plus native <code>linux-x86_64</code> and <code>linux-aarch64</code> archives.</td></tr>
 <tr><td><strong>macOS</strong></td><td>Signed and notarized Apple Silicon (<code>aarch64</code>) <code>KeepPeek.app</code> DMG with a per-user <code>launchd</code> service, plus optional <code>KeepPeek Desktop.app</code> DMG (Tauri v2 client connecting to an existing server).</td></tr>
-<tr><td><strong>Windows</strong></td><td>Authenticode-signed, RFC 3161 timestamped <code>x86_64</code> and <code>aarch64</code> binaries (<code>keeppeek.exe</code>, <code>keeppeek-service.exe</code>, <code>keeppeek-desktop.exe</code>) and a unified signed NSIS installer registering/upgrading <code>KeepPeekService</code>.</td></tr>
+<tr><td><strong>Windows</strong></td><td>Authenticode-signed, RFC 3161 timestamped <code>x86_64</code> and <code>aarch64</code> binaries (<code>keeppeek.exe</code>, <code>keeppeek-service.exe</code>, <code>keeppeek-supervisor.exe</code>, <code>keeppeek-desktop.exe</code>) and a unified signed NSIS installer registering/upgrading <code>KeepPeekService</code>.</td></tr>
 </tbody>
 </table>
 </div>
