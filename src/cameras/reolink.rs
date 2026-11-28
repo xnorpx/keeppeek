@@ -240,6 +240,17 @@ fn parse_dev_info(body: &str) -> (Option<String>, Option<String>) {
     (None, None)
 }
 
+const fn classify_ureq_error(error: &ureq::Error) -> &'static str {
+    match error {
+        ureq::Error::Timeout(_) => "timeout",
+        ureq::Error::HostNotFound | ureq::Error::ConnectionFailed => "connection_failed",
+        ureq::Error::StatusCode(_) => "http_status",
+        ureq::Error::RedirectFailed | ureq::Error::TooManyRedirects => "redirect",
+        ureq::Error::Protocol(_) => "protocol",
+        _ => "transport",
+    }
+}
+
 /// Build a minimal 20-byte Baichuan header as a discovery probe.
 /// Layout: 4 bytes magic + 4 bytes msg_id + 4 bytes body_len + 4 bytes enc_offset + 4 bytes reserved
 fn baichuan_discovery_packet() -> [u8; 20] {
@@ -643,13 +654,16 @@ impl ReolinkClient {
         if let Some(token) = &self.token {
             url.query_pairs_mut().append_pair("token", token);
         }
-
         let body = serde_json::json!([{
             "cmd": cmd,
             "action": 0,
             "param": param.unwrap_or_else(|| Value::Object(Default::default())),
         }]);
+        let bytes = self.execute_api_http(cmd, &url, &body)?;
+        self.decode_api_response(cmd, &bytes)
+    }
 
+    fn execute_api_http(&self, cmd: &str, url: &Url, body: &Value) -> anyhow::Result<Vec<u8>> {
         let mut config = self.client.post(url.as_str()).config().max_redirects(0);
         if let Some(deadline) = self.deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -672,7 +686,12 @@ impl ReolinkClient {
             .header("Content-Type", "application/json")
             .send(body.to_string())
             .map_err(|error| {
-                tracing::debug!(ip = %self.ip, cmd, %error, "Reolink HTTP API transport failed");
+                tracing::debug!(
+                    ip = %self.ip,
+                    cmd,
+                    reason = classify_ureq_error(&error),
+                    "Reolink HTTP API transport failed"
+                );
                 anyhow::anyhow!("{cmd} camera request failed")
             })?;
         let status = response.status();
@@ -689,7 +708,11 @@ impl ReolinkClient {
         if tracing::enabled!(tracing::Level::TRACE) {
             tracing::trace!(ip = %self.ip, cmd, bytes = bytes.len(), "Reolink HTTP API response");
         }
-        let [rsp]: [ApiRsp; 1] = serde_json::from_slice(&bytes).map_err(|error| {
+        Ok(bytes)
+    }
+
+    fn decode_api_response(&self, cmd: &str, bytes: &[u8]) -> anyhow::Result<Value> {
+        let [rsp]: [ApiRsp; 1] = serde_json::from_slice(bytes).map_err(|error| {
             anyhow::anyhow!(
                 "{cmd} camera response is invalid at line {} column {}",
                 error.line(),
@@ -706,14 +729,12 @@ impl ReolinkClient {
             tracing::debug!(ip = %self.ip, cmd, rsp_code = code, "Reolink HTTP API camera error");
             anyhow::bail!("{cmd} camera reported error code {code}");
         }
-
         if let Some(code) = rsp.code
             && code != 0
         {
             tracing::debug!(ip = %self.ip, cmd, code, "Reolink HTTP API non-zero code");
             anyhow::bail!("{cmd} failed with code {code}");
         }
-
         rsp.value
             .ok_or_else(|| anyhow::anyhow!("no value in {cmd} response"))
     }

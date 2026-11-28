@@ -137,11 +137,13 @@ impl Receiver {
             Ok(response) => response,
             Err(status) => response(status),
         };
+        let raw_url = request.raw_url();
+        let path = raw_url.split('?').next().unwrap_or(raw_url);
         tracing::debug!(
             name: "camera.isapi.callback",
             peer = %request.remote_addr().ip(),
             method = request.method(),
-            path = request.raw_url(),
+            path,
             http_status = response.status_code,
             pending_bytes = self.bytes.load(Ordering::Relaxed),
             "ISAPI callback handled"

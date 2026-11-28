@@ -115,6 +115,21 @@ impl SessionTimestampNormalizer {
     }
 }
 
+fn safe_url_display(raw: &str) -> String {
+    let Ok(url) = Url::parse(raw) else {
+        return "<invalid-url>".to_owned();
+    };
+    let mut out = format!("{}://{}", url.scheme(), url.host_str().unwrap_or("<none>"));
+    if let Some(port) = url.port() {
+        out.push_str(&format!(":{port}"));
+    }
+    out.push_str(url.path());
+    if url.query().is_some() {
+        out.push_str("?<query>");
+    }
+    out
+}
+
 pub(crate) fn local_broadcasts() -> anyhow::Result<Vec<Ipv4Addr>> {
     Ok(network::local_networks()?
         .into_iter()
@@ -1770,7 +1785,7 @@ pub fn query_cameras(configs: &HashMap<String, Vec<CameraConfig>>) -> HashMap<Ip
                             ip = %config.ip,
                             profile_idx = i,
                             name = %profile.name,
-                            onvif_stream_uri = %uri,
+                            onvif_stream_uri = %safe_url_display(uri),
                             "ONVIF stream URI (before Reolink merge)",
                         );
                     }
@@ -2601,5 +2616,10 @@ mod tests {
         assert!(!debug_logs.contains("normalized session timestamp"));
         let trace_logs = run_at(tracing::Level::TRACE);
         assert!(trace_logs.contains("normalized session timestamp"));
+
+        let scrubbed_url = safe_url_display("rtsp://admin:hunter2@192.0.2.9:554/stream1?token=xyz");
+        assert_eq!(scrubbed_url, "rtsp://192.0.2.9:554/stream1?<query>");
+        assert!(!scrubbed_url.contains("hunter2"));
+        assert!(!scrubbed_url.contains("xyz"));
     }
 }

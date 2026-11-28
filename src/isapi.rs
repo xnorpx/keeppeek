@@ -233,38 +233,11 @@ impl Worker {
             if self.shutdown.is_cancelled() {
                 break;
             }
-            self.counts.failures = self.counts.failures.saturating_add(1);
-            let error = result
-                .err()
-                .unwrap_or_else(|| anyhow::anyhow!("ISAPI event connection closed"));
-            let permanent = error
-                .downcast_ref::<DeliveryError>()
-                .is_some_and(|error| matches!(error, DeliveryError::Closed))
-                || error.downcast_ref::<::isapi::Error>().is_some_and(|error| {
-                    error.is_authentication()
-                        || error.is_invalid_input()
-                        || matches!(error.http_status(), Some(401 | 403 | 404 | 405))
-                });
-            self.report("disconnected");
-            let isapi_err = error.downcast_ref::<::isapi::Error>();
-            tracing::warn!(
-                camera_ip = %self.camera.ip,
-                %error,
-                permanent,
-                http_status = ?isapi_err.and_then(::isapi::Error::http_status),
-                device_status = ?isapi_err.and_then(::isapi::Error::device_status),
-                is_auth = isapi_err.is_some_and(::isapi::Error::is_authentication),
-                retry_seconds = backoff.as_secs(),
-                "ISAPI event subscription failed"
-            );
-            if permanent {
-                unsupported = error
-                    .downcast_ref::<::isapi::Error>()
-                    .is_some_and(|error| matches!(error.http_status(), Some(404 | 405)));
+            let (stop, is_unsupported) =
+                self.record_worker_failure(result.err(), before, &mut backoff);
+            if stop {
+                unsupported = is_unsupported;
                 break;
-            }
-            if self.counts.notifications > before {
-                backoff = RECONNECT_MIN;
             }
             if self.shutdown.wait_timeout(backoff) {
                 break;
@@ -276,11 +249,53 @@ impl Worker {
                 .counts
                 .dropped
                 .saturating_add(self.pending.len() as u64);
-            tracing::warn!(camera_ip = %self.camera.ip, pending = self.pending.len(),
-                "ISAPI worker stopped before retained transitions could be delivered");
+            tracing::warn!(
+                camera_ip = %self.camera.ip,
+                pending = self.pending.len(),
+                "ISAPI worker stopped before retained transitions could be delivered"
+            );
         }
         self.report("stopped");
         unsupported && self.pending.is_empty() && !self.shutdown.is_cancelled()
+    }
+
+    fn record_worker_failure(
+        &mut self,
+        result_err: Option<anyhow::Error>,
+        before: u64,
+        backoff: &mut Duration,
+    ) -> (bool, bool) {
+        self.counts.failures = self.counts.failures.saturating_add(1);
+        let error = result_err.unwrap_or_else(|| anyhow::anyhow!("ISAPI event connection closed"));
+        let isapi_err = error.downcast_ref::<::isapi::Error>();
+        let permanent = error
+            .downcast_ref::<DeliveryError>()
+            .is_some_and(|error| matches!(error, DeliveryError::Closed))
+            || isapi_err.is_some_and(|error| {
+                error.is_authentication()
+                    || error.is_invalid_input()
+                    || matches!(error.http_status(), Some(401 | 403 | 404 | 405))
+            });
+        self.report("disconnected");
+        tracing::warn!(
+            camera_ip = %self.camera.ip,
+            %error,
+            permanent,
+            http_status = ?isapi_err.and_then(::isapi::Error::http_status),
+            device_status = ?isapi_err.and_then(::isapi::Error::device_status),
+            is_auth = isapi_err.is_some_and(::isapi::Error::is_authentication),
+            retry_seconds = backoff.as_secs(),
+            "ISAPI event subscription failed"
+        );
+        if permanent {
+            let unsupported =
+                isapi_err.is_some_and(|error| matches!(error.http_status(), Some(404 | 405)));
+            return (true, unsupported);
+        }
+        if self.counts.notifications > before {
+            *backoff = RECONNECT_MIN;
+        }
+        (false, false)
     }
 
     fn observe(&mut self) -> anyhow::Result<()> {

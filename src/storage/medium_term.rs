@@ -600,214 +600,183 @@ impl MediumTermWriter {
 
         match rf.frame {
             MediaFrame::Video(video) => {
-                let camera_dts = timestamp_ticks_or_fallback(
-                    rf.timestamp,
-                    self.camera_timestamp_origin,
-                    elapsed,
-                    VIDEO_TIMESCALE,
-                );
-                let fallback_duration = active.last_video_duration.max(1);
-                let previous_dts = active.last_video_dts;
-                let dts = resolve_video_dts(previous_dts, camera_dts, fallback_duration)
-                    .max(self.gap_clock.map_or(0, |(_, end)| end));
-                if video.is_keyframe && active.writer.has_pending_samples() {
-                    let fragment_start_dts = active.fragment_start_dts.ok_or_else(|| {
-                        std::io::Error::other("active MP4 fragment has no start timestamp")
-                    })?;
-                    let fragment = active
-                        .writer
-                        .flush_fragment_before_sample(active.video_track, dts)
-                        .map_err(mp4_err)?;
-                    active.fragment_start_dts = None;
-                    if let Some(fragment) = fragment {
-                        self.commit_fragment(fragment, fragment_start_dts, dts)?;
-                    }
-                }
-                let WriterState::Active(active) = &mut self.state else {
-                    unreachable!("indexing a flushed fragment keeps its writer active");
-                };
-                if video.is_keyframe {
-                    if let Some(media_config) = video_media_config(&video)? {
-                        active.video_sample_description_index = active
-                            .writer
-                            .add_sample_description(active.video_track, media_config.clone())
-                            .map_err(mp4_err)?;
-                        active.video_codec = video.codec;
-                        active.video_media_config = media_config;
-                    } else if video.codec != active.video_codec {
-                        tracing::warn!(
-                            recording = self.recording_id,
-                            frame_codec = ?video.codec,
-                            active_codec = ?active.video_codec,
-                            "MP4 muxer video codec changed without decoder parameters"
-                        );
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "video codec changed without decoder parameters",
-                        ));
-                    }
-                } else {
-                    if video.codec != active.video_codec {
-                        tracing::warn!(
-                            recording = self.recording_id,
-                            frame_codec = ?video.codec,
-                            active_codec = ?active.video_codec,
-                            "MP4 muxer video codec changed without keyframe boundary"
-                        );
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "video codec changed without a keyframe boundary",
-                        ));
-                    }
-                    let has_parameters = match video.codec {
-                        VideoCodec::H264 => nal::has_h264_parameter_sets(&video.data),
-                        VideoCodec::H265 => nal::has_h265_parameter_sets(&video.data),
-                    };
-                    if has_parameters
-                        && required_video_media_config(&video)? != active.video_media_config
-                    {
-                        tracing::warn!(
-                            recording = self.recording_id,
-                            codec = ?video.codec,
-                            "MP4 muxer decoder parameters changed without keyframe boundary"
-                        );
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "video decoder parameters changed without a keyframe boundary",
-                        ));
-                    }
-                }
-                let duration = active
-                    .last_video_dts
-                    .and_then(|last| u32::try_from(dts - last).ok())
-                    .filter(|duration| *duration > 0)
-                    .unwrap_or(fallback_duration);
-                let data_len = video.data.len();
-                let recording_id = self.recording_id.clone();
-                active
-                    .writer
-                    .write_sample_with_source_timing(
-                        active.video_track,
-                        active.video_sample_description_index,
-                        mp4::Mp4Sample {
-                            start_time: dts,
-                            duration,
-                            rendering_offset: 0,
-                            is_sync: video.is_keyframe,
-                            bytes: video.data,
-                        },
-                        rf.source_rtp
-                            .as_ref()
-                            .map(super::segment::RecordingRtpTime::packet),
-                    )
-                    .map_err(|error| {
-                        let io_err = mp4_err(error);
-                        tracing::warn!(
-                            recording = %recording_id,
-                            dts,
-                            duration,
-                            is_keyframe = video.is_keyframe,
-                            error = %io_err,
-                            "MP4 muxer video sample write failed"
-                        );
-                        io_err
-                    })?;
-                if tracing::enabled!(tracing::Level::TRACE) {
-                    tracing::trace!(
-                        recording = %recording_id,
-                        camera_dts,
-                        dts,
-                        duration,
-                        is_keyframe = video.is_keyframe,
-                        bytes = data_len,
-                        "MP4 muxer wrote video sample"
-                    );
-                }
-                active.fragment_start_dts.get_or_insert(dts);
-                active.last_video_dts = Some(dts);
-                active.last_video_duration = duration;
-                self.frames_written += 1;
-                self.bytes_written += data_len as u64;
+                self.write_video_frame(video, rf.timestamp, rf.source_rtp, elapsed)
             }
             MediaFrame::Audio(audio) => {
-                if audio.codec != AudioCodec::Aac {
-                    return Ok(false);
-                }
-
-                let raw_aac = audio.aac_payload();
-                if raw_aac.is_empty() {
-                    return Ok(false);
-                }
-
-                let Some(track) = active
-                    .audio_track
-                    .as_ref()
-                    .filter(|track| track.accepts(&audio))
-                else {
-                    return Ok(false);
-                };
-                let camera_dts = (rf.timestamp.is_some() || active.audio_after_gap).then(|| {
-                    timestamp_ticks_or_fallback(
-                        rf.timestamp,
-                        self.camera_timestamp_origin,
-                        elapsed,
-                        track.timescale,
-                    )
-                });
-                let dts = match (active.next_audio_dts, camera_dts) {
-                    (Some(next), Some(camera)) => next.max(camera),
-                    (Some(next), None) => next,
-                    (None, Some(camera)) => camera,
-                    (None, None) => duration_to_ticks(elapsed, track.timescale),
-                };
-                let sample_duration = audio_sample_duration(audio.duration, track.timescale)?;
-
-                let recording_id = self.recording_id.clone();
-                let raw_aac_len = raw_aac.len();
-                active
-                    .writer
-                    .write_sample_with_source_timing(
-                        2,
-                        1,
-                        mp4::Mp4Sample {
-                            start_time: dts,
-                            duration: sample_duration,
-                            rendering_offset: 0,
-                            is_sync: true,
-                            bytes: audio.data.slice(audio.data.len() - raw_aac_len..),
-                        },
-                        rf.source_rtp
-                            .as_ref()
-                            .map(super::segment::RecordingRtpTime::packet),
-                    )
-                    .map_err(|error| {
-                        let io_err = mp4_err(error);
-                        tracing::warn!(
-                            recording = %recording_id,
-                            dts,
-                            duration = sample_duration,
-                            error = %io_err,
-                            "MP4 muxer audio sample write failed"
-                        );
-                        io_err
-                    })?;
-                if tracing::enabled!(tracing::Level::TRACE) {
-                    tracing::trace!(
-                        recording = %recording_id,
-                        ?camera_dts,
-                        dts,
-                        duration = sample_duration,
-                        bytes = raw_aac_len,
-                        "MP4 muxer wrote audio sample"
-                    );
-                }
-                active.next_audio_dts = Some(dts + u64::from(sample_duration));
-                active.audio_after_gap = false;
-
-                self.frames_written += 1;
-                self.bytes_written += raw_aac_len as u64;
+                self.write_audio_frame(audio, rf.timestamp, rf.source_rtp, elapsed)
             }
         }
+    }
+
+    fn write_video_frame(
+        &mut self,
+        video: VideoFrame,
+        timestamp: Option<Duration>,
+        source_rtp: Option<super::segment::RecordingRtpTime>,
+        elapsed: Duration,
+    ) -> std::io::Result<bool> {
+        let (camera_dts, fallback_duration, dts) = {
+            let WriterState::Active(ref active) = self.state else {
+                return Ok(false);
+            };
+            let camera_dts = timestamp_ticks_or_fallback(
+                timestamp,
+                self.camera_timestamp_origin,
+                elapsed,
+                VIDEO_TIMESCALE,
+            );
+            let fallback_duration = active.last_video_duration.max(1);
+            let dts = resolve_video_dts(active.last_video_dts, camera_dts, fallback_duration)
+                .max(self.gap_clock.map_or(0, |(_, end)| end));
+            (camera_dts, fallback_duration, dts)
+        };
+        self.flush_keyframe_boundary_fragment(video.is_keyframe, dts)?;
+        let WriterState::Active(ref mut active) = self.state else {
+            unreachable!("indexing a flushed fragment keeps its writer active");
+        };
+        update_active_video_config(&self.recording_id, active, &video)?;
+        let duration = active
+            .last_video_dts
+            .and_then(|last| u32::try_from(dts - last).ok())
+            .filter(|duration| *duration > 0)
+            .unwrap_or(fallback_duration);
+        let data_len = video.data.len();
+        let recording_id = self.recording_id.as_str();
+        active
+            .writer
+            .write_sample_with_source_timing(
+                active.video_track,
+                active.video_sample_description_index,
+                mp4::Mp4Sample {
+                    start_time: dts,
+                    duration,
+                    rendering_offset: 0,
+                    is_sync: video.is_keyframe,
+                    bytes: video.data,
+                },
+                source_rtp
+                    .as_ref()
+                    .map(super::segment::RecordingRtpTime::packet),
+            )
+            .map_err(|error| log_sample_write_err(recording_id, "video", dts, duration, error))?;
+        if tracing::enabled!(tracing::Level::TRACE) {
+            tracing::trace!(
+                recording = recording_id,
+                camera_dts,
+                dts,
+                duration,
+                is_keyframe = video.is_keyframe,
+                bytes = data_len,
+                "MP4 muxer wrote video sample"
+            );
+        }
+        active.fragment_start_dts.get_or_insert(dts);
+        active.last_video_dts = Some(dts);
+        active.last_video_duration = duration;
+        self.frames_written += 1;
+        self.bytes_written += data_len as u64;
+        Ok(true)
+    }
+
+    fn flush_keyframe_boundary_fragment(
+        &mut self,
+        is_keyframe: bool,
+        dts: u64,
+    ) -> std::io::Result<()> {
+        let WriterState::Active(ref mut active) = self.state else {
+            return Ok(());
+        };
+        if !is_keyframe || !active.writer.has_pending_samples() {
+            return Ok(());
+        }
+        let fragment_start_dts = active
+            .fragment_start_dts
+            .ok_or_else(|| std::io::Error::other("active MP4 fragment has no start timestamp"))?;
+        let fragment = active
+            .writer
+            .flush_fragment_before_sample(active.video_track, dts)
+            .map_err(mp4_err)?;
+        active.fragment_start_dts = None;
+        if let Some(fragment) = fragment {
+            self.commit_fragment(fragment, fragment_start_dts, dts)?;
+        }
+        Ok(())
+    }
+
+    fn write_audio_frame(
+        &mut self,
+        audio: AudioFrame,
+        timestamp: Option<Duration>,
+        source_rtp: Option<super::segment::RecordingRtpTime>,
+        elapsed: Duration,
+    ) -> std::io::Result<bool> {
+        if audio.codec != AudioCodec::Aac {
+            return Ok(false);
+        }
+        let raw_aac = audio.aac_payload();
+        if raw_aac.is_empty() {
+            return Ok(false);
+        }
+        let raw_aac_len = raw_aac.len();
+        let WriterState::Active(ref mut active) = self.state else {
+            return Ok(false);
+        };
+        let Some(track) = active
+            .audio_track
+            .as_ref()
+            .filter(|track| track.accepts(&audio))
+        else {
+            return Ok(false);
+        };
+        let camera_dts = (timestamp.is_some() || active.audio_after_gap).then(|| {
+            timestamp_ticks_or_fallback(
+                timestamp,
+                self.camera_timestamp_origin,
+                elapsed,
+                track.timescale,
+            )
+        });
+        let dts = match (active.next_audio_dts, camera_dts) {
+            (Some(next), Some(camera)) => next.max(camera),
+            (Some(next), None) => next,
+            (None, Some(camera)) => camera,
+            (None, None) => duration_to_ticks(elapsed, track.timescale),
+        };
+        let sample_duration = audio_sample_duration(audio.duration, track.timescale)?;
+        let recording_id = self.recording_id.as_str();
+        active
+            .writer
+            .write_sample_with_source_timing(
+                2,
+                1,
+                mp4::Mp4Sample {
+                    start_time: dts,
+                    duration: sample_duration,
+                    rendering_offset: 0,
+                    is_sync: true,
+                    bytes: audio.data.slice(audio.data.len() - raw_aac_len..),
+                },
+                source_rtp
+                    .as_ref()
+                    .map(super::segment::RecordingRtpTime::packet),
+            )
+            .map_err(|error| {
+                log_sample_write_err(recording_id, "audio", dts, sample_duration, error)
+            })?;
+        if tracing::enabled!(tracing::Level::TRACE) {
+            tracing::trace!(
+                recording = recording_id,
+                ?camera_dts,
+                dts,
+                duration = sample_duration,
+                bytes = raw_aac_len,
+                "MP4 muxer wrote audio sample"
+            );
+        }
+        active.next_audio_dts = Some(dts + u64::from(sample_duration));
+        active.audio_after_gap = false;
+        self.frames_written += 1;
+        self.bytes_written += raw_aac_len as u64;
         Ok(true)
     }
 
@@ -1173,6 +1142,82 @@ fn resolve_video_dts(previous_dts: Option<u64>, camera_dts: u64, fallback_durati
         "clamped non-monotonic video DTS in MP4 muxer"
     );
     clamped
+}
+
+fn update_active_video_config(
+    recording_id: &str,
+    active: &mut ActiveWriter,
+    video: &VideoFrame,
+) -> std::io::Result<()> {
+    if video.is_keyframe {
+        if let Some(media_config) = video_media_config(video)? {
+            active.video_sample_description_index = active
+                .writer
+                .add_sample_description(active.video_track, media_config.clone())
+                .map_err(mp4_err)?;
+            active.video_codec = video.codec;
+            active.video_media_config = media_config;
+        } else if video.codec != active.video_codec {
+            tracing::warn!(
+                recording = recording_id,
+                frame_codec = ?video.codec,
+                active_codec = ?active.video_codec,
+                "MP4 muxer video codec changed without decoder parameters"
+            );
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "video codec changed without decoder parameters",
+            ));
+        }
+        return Ok(());
+    }
+    if video.codec != active.video_codec {
+        tracing::warn!(
+            recording = recording_id,
+            frame_codec = ?video.codec,
+            active_codec = ?active.video_codec,
+            "MP4 muxer video codec changed without keyframe boundary"
+        );
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "video codec changed without a keyframe boundary",
+        ));
+    }
+    let has_parameters = match video.codec {
+        VideoCodec::H264 => nal::has_h264_parameter_sets(&video.data),
+        VideoCodec::H265 => nal::has_h265_parameter_sets(&video.data),
+    };
+    if has_parameters && required_video_media_config(video)? != active.video_media_config {
+        tracing::warn!(
+            recording = recording_id,
+            codec = ?video.codec,
+            "MP4 muxer decoder parameters changed without keyframe boundary"
+        );
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "video decoder parameters changed without a keyframe boundary",
+        ));
+    }
+    Ok(())
+}
+
+fn log_sample_write_err(
+    recording_id: &str,
+    kind: &'static str,
+    dts: u64,
+    duration: u32,
+    error: mp4::Error,
+) -> std::io::Error {
+    let io_err = mp4_err(error);
+    tracing::warn!(
+        recording = recording_id,
+        kind,
+        dts,
+        duration,
+        error = %io_err,
+        "MP4 muxer sample write failed"
+    );
+    io_err
 }
 
 fn timestamp_ticks_or_fallback(

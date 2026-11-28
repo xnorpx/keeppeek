@@ -259,17 +259,21 @@ impl Client {
 
         debug!(auth_mode, action, %redirections, "About to make SOAP request");
         if tracing::enabled!(tracing::Level::TRACE) {
-            trace!(auth_mode, action, payload = message, "SOAP request payload");
+            let scrubbed = scrub_xml_passwords(message);
+            trace!(
+                auth_mode,
+                action,
+                payload = %scrubbed,
+                "SOAP request payload"
+            );
         }
 
         let soap_msg =
             soap::soap(message, &username_token).map_err(|e| Error::Protocol(format!("{e:?}")))?;
-
         let mut request = self
             .agent
             .post(uri.as_str())
             .header("Content-Type", "application/soap+xml; charset=utf-8;");
-
         if let RequestAuthType::Digest(digest) = auth_type
             && let Some(authorization) = digest
                 .authorization_header()
@@ -280,11 +284,8 @@ impl Client {
         }
 
         let response = request.send(soap_msg).map_err(Self::map_ureq_error)?;
-
         let status = response.status();
-
         debug!(action, status = status.as_u16(), "SOAP response status");
-
         if !status.is_success()
             && status != ureq::http::StatusCode::UNAUTHORIZED
             && let RequestAuthType::Digest(digest) = auth_type
@@ -293,106 +294,149 @@ impl Client {
         }
 
         if status.is_success() {
-            if let RequestAuthType::Digest(digest) = auth_type {
-                digest.set_success();
-            }
-
-            let text = self.read_response_body(response)?;
-            trace!("Response body: {text}");
-            let response =
-                soap::unsoap(&text).map_err(|error| Error::Protocol(format!("{error:?}")))?;
-
-            if let Some(response_patcher) = &self.config.response_patcher {
-                let patched = response_patcher(&response)
-                    .map_err(|error| Error::Protocol(format!("Patching failed: {error}")))?;
-                trace!("Response (SOAP unwrapped, patched): {patched}");
-                Ok(patched)
-            } else {
-                Ok(response)
-            }
+            self.handle_soap_success(auth_type, response)
         } else if status == ureq::http::StatusCode::UNAUTHORIZED {
-            match auth_type {
-                RequestAuthType::Digest(digest) if !digest.is_failed() => {
-                    let challenge = response
-                        .headers()
-                        .get(ureq::http::header::WWW_AUTHENTICATE)
-                        .ok_or_else(|| {
-                            Error::Authorization("missing WWW-Authenticate header".to_string())
-                        })?
-                        .to_str()
-                        .map_err(|error| Error::Authorization(error.to_string()))?
-                        .to_owned();
-                    digest.set_401(challenge);
-                }
-                _ => {
-                    if let Ok(text) = self.read_response_body(response) {
-                        trace!(action, "SOAP Unauthorized body: {text}");
-                    }
-                    debug!(action, auth_mode, "SOAP request unauthorized");
-
-                    return Err(Error::Authorization(status.to_string()));
-                }
-            }
-
-            debug!(action, "Retrying SOAP request after 401 Digest challenge");
-            self.request_recursive(message, uri, auth_type, redirections)
-        } else if status.is_redirection() {
-            if !self.config.follow_redirects {
-                return Err(Error::Redirection("Redirects are disabled".to_owned()));
-            }
-            if redirections > 0 {
-                return Err(Error::Redirection("Redirection limit exceeded".to_string()));
-            }
-
-            let new_url = response
-                .headers()
-                .get(ureq::http::header::LOCATION)
-                .ok_or_else(|| Error::Redirection("missing Location header".to_string()))?
-                .to_str()
-                .map_err(|error| Error::Redirection(error.to_string()))?
-                .parse::<Url>()
-                .map_err(|error| Error::Redirection(error.to_string()))?;
-
-            debug!(action, new_url = %new_url, "Redirecting SOAP request");
-
-            self.request_recursive(message, &new_url, auth_type, redirections + 1)
-        } else {
-            let text = self.read_response_body(response).unwrap_or_default();
-            trace!(
+            let ctx = SoapRetry {
+                message,
+                uri,
+                auth_mode,
                 action,
-                status = status.as_u16(),
-                "SOAP HTTP error body: {text}"
-            );
-
-            let Err(soap::Error::Fault(fault)) = soap::unsoap(&text) else {
-                debug!(
-                    action,
-                    status = status.as_u16(),
-                    "SOAP HTTP error without fault"
-                );
-                return Err(Error::Other(status.to_string()));
+                redirections,
             };
+            self.handle_soap_unauthorized(ctx, auth_type, status, response)
+        } else if status.is_redirection() {
+            self.handle_soap_redirect(message, auth_type, action, redirections, response)
+        } else {
+            self.handle_soap_http_error(action, status, response)
+        }
+    }
 
-            let subcode = fault.code.subcode.as_ref().map(|s| s.value.as_str());
+    fn handle_soap_success(
+        &self,
+        auth_type: &mut RequestAuthType,
+        response: ureq::http::Response<ureq::Body>,
+    ) -> Result<String, Error> {
+        if let RequestAuthType::Digest(digest) = auth_type {
+            digest.set_success();
+        }
+        let text = self.read_response_body(response)?;
+        trace!("Response body: {text}");
+        let response =
+            soap::unsoap(&text).map_err(|error| Error::Protocol(format!("{error:?}")))?;
+        if let Some(response_patcher) = &self.config.response_patcher {
+            let patched = response_patcher(&response)
+                .map_err(|error| Error::Protocol(format!("Patching failed: {error}")))?;
+            trace!("Response (SOAP unwrapped, patched): {patched}");
+            Ok(patched)
+        } else {
+            Ok(response)
+        }
+    }
+
+    fn handle_soap_unauthorized(
+        &self,
+        ctx: SoapRetry<'_>,
+        auth_type: &mut RequestAuthType<'_>,
+        status: ureq::http::StatusCode,
+        response: ureq::http::Response<ureq::Body>,
+    ) -> Result<String, Error> {
+        let SoapRetry {
+            message,
+            uri,
+            auth_mode,
+            action,
+            redirections,
+        } = ctx;
+        match auth_type {
+            RequestAuthType::Digest(digest) if !digest.is_failed() => {
+                let challenge = response
+                    .headers()
+                    .get(ureq::http::header::WWW_AUTHENTICATE)
+                    .ok_or_else(|| {
+                        Error::Authorization("missing WWW-Authenticate header".to_string())
+                    })?
+                    .to_str()
+                    .map_err(|_| {
+                        Error::Authorization("invalid WWW-Authenticate header".to_string())
+                    })?
+                    .to_owned();
+                digest.set_401(challenge);
+            }
+            _ => {
+                if let Ok(text) = self.read_response_body(response) {
+                    trace!(action, "SOAP Unauthorized body: {text}");
+                }
+                debug!(action, auth_mode, "SOAP request unauthorized");
+                return Err(Error::Authorization(status.to_string()));
+            }
+        }
+        debug!(action, "Retrying SOAP request after 401 Digest challenge");
+        self.request_recursive(message, uri, auth_type, redirections)
+    }
+
+    fn handle_soap_redirect(
+        &self,
+        message: &str,
+        auth_type: &mut RequestAuthType,
+        action: &str,
+        redirections: u32,
+        response: ureq::http::Response<ureq::Body>,
+    ) -> Result<String, Error> {
+        if !self.config.follow_redirects {
+            return Err(Error::Redirection("Redirects are disabled".to_owned()));
+        }
+        if redirections > 0 {
+            return Err(Error::Redirection("Redirection limit exceeded".to_string()));
+        }
+        let new_url = response
+            .headers()
+            .get(ureq::http::header::LOCATION)
+            .ok_or_else(|| Error::Redirection("missing Location header".to_string()))?
+            .to_str()
+            .map_err(|error| Error::Redirection(error.to_string()))?
+            .parse::<Url>()
+            .map_err(|error| Error::Redirection(error.to_string()))?;
+        debug!(action, new_url = %SafeUrl(&new_url), "Redirecting SOAP request");
+        self.request_recursive(message, &new_url, auth_type, redirections + 1)
+    }
+
+    fn handle_soap_http_error(
+        &self,
+        action: &str,
+        status: ureq::http::StatusCode,
+        response: ureq::http::Response<ureq::Body>,
+    ) -> Result<String, Error> {
+        let text = self.read_response_body(response).unwrap_or_default();
+        trace!(
+            action,
+            status = status.as_u16(),
+            "SOAP HTTP error body: {text}"
+        );
+        let Err(soap::Error::Fault(fault)) = soap::unsoap(&text) else {
             debug!(
                 action,
                 status = status.as_u16(),
-                fault_code = %fault.code.value,
-                ?subcode,
-                unauthorized = fault.is_unauthorized(),
-                "SOAP fault response"
+                "SOAP HTTP error without fault"
             );
-
-            let message = subcode.map_or_else(
-                || status.to_string(),
-                |subcode| format!("{status} ({subcode})"),
-            );
-
-            if fault.is_unauthorized() {
-                Err(Error::Authorization(message))
-            } else {
-                Err(Error::Other(message))
-            }
+            return Err(Error::Other(status.to_string()));
+        };
+        let subcode = fault.code.subcode.as_ref().map(|s| s.value.as_str());
+        debug!(
+            action,
+            status = status.as_u16(),
+            fault_code = %fault.code.value,
+            ?subcode,
+            unauthorized = fault.is_unauthorized(),
+            "SOAP fault response"
+        );
+        let message = subcode.map_or_else(
+            || status.to_string(),
+            |subcode| format!("{status} ({subcode})"),
+        );
+        if fault.is_unauthorized() {
+            Err(Error::Authorization(message))
+        } else {
+            Err(Error::Other(message))
         }
     }
 
@@ -456,6 +500,72 @@ fn soap_operation_name(message: &str) -> &str {
         .unwrap_or(after_lt.len());
     let full_tag = &after_lt[..tag_end];
     full_tag.rsplit(':').next().unwrap_or(full_tag)
+}
+
+struct SoapRetry<'a> {
+    message: &'a str,
+    uri: &'a Url,
+    auth_mode: &'a str,
+    action: &'a str,
+    redirections: u32,
+}
+
+struct SafeUrl<'a>(&'a Url);
+
+impl std::fmt::Display for SafeUrl<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}://{}",
+            self.0.scheme(),
+            self.0.host_str().unwrap_or("<none>")
+        )?;
+        if let Some(port) = self.0.port() {
+            write!(f, ":{port}")?;
+        }
+        f.write_str(self.0.path())?;
+        if self.0.query().is_some() {
+            f.write_str("?<query>")?;
+        }
+        Ok(())
+    }
+}
+
+fn scrub_xml_passwords(xml: &str) -> String {
+    let mut out = String::with_capacity(xml.len());
+    let mut rest = xml;
+    while let Some(lt) = rest.find('<') {
+        out.push_str(&rest[..lt]);
+        let after_lt = &rest[lt..];
+        let Some(gt) = after_lt.find('>') else {
+            out.push_str(after_lt);
+            return out;
+        };
+        let open_tag = &after_lt[..=gt];
+        out.push_str(open_tag);
+        rest = &after_lt[gt + 1..];
+        let tag_inner = open_tag
+            .trim_start_matches('<')
+            .trim_end_matches('>')
+            .split_whitespace()
+            .next()
+            .unwrap_or("");
+        if !tag_inner.starts_with('/') && !open_tag.ends_with("/>") {
+            let local = tag_inner
+                .rsplit(':')
+                .next()
+                .unwrap_or(tag_inner)
+                .to_ascii_lowercase();
+            if (local.contains("password") || local.contains("secret"))
+                && let Some(close_rel) = rest.find('<')
+            {
+                out.push_str("[REDACTED]");
+                rest = &rest[close_rel..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 #[cfg(test)]
@@ -928,5 +1038,8 @@ mod tests {
             !logs.contains("PasswordDigest"),
             "leaked WSSE digest: {logs}"
         );
+        let scrubbed = scrub_xml_passwords("<SetUser><Password>s3cr3t!</Password></SetUser>");
+        assert!(scrubbed.contains("[REDACTED]"));
+        assert!(!scrubbed.contains("s3cr3t!"));
     }
 }

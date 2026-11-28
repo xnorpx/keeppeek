@@ -23,6 +23,8 @@ const _: () = assert!(
 );
 
 pub(super) struct Consumer {
+    camera_id: String,
+    camera_ip: std::net::IpAddr,
     owner: uuid::Uuid,
     lifetime: Arc<std::sync::atomic::AtomicBool>,
     tracker: Tracker,
@@ -53,7 +55,15 @@ impl Consumer {
         shutdown: Shutdown,
         snapshots: Option<SyncSender<super::snapshot::Job>>,
     ) -> Self {
+        let camera_id = camera
+            .config
+            .name
+            .as_deref()
+            .map(str::to_owned)
+            .unwrap_or_else(|| camera.config.ip.to_string());
         Self {
+            camera_id,
+            camera_ip: camera.config.ip,
             owner: uuid::Uuid::new_v4(),
             lifetime: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             tracker: Tracker::new(
@@ -75,6 +85,12 @@ impl Consumer {
     }
 
     pub fn run(mut self) {
+        let span = tracing::info_span!(
+            "camera_events_consumer",
+            camera_id = %self.camera_id,
+            camera_ip = %self.camera_ip,
+        );
+        let _guard = span.enter();
         let mut next_report = Instant::now() + Duration::from_secs(30);
         while !self.shutdown.is_cancelled() {
             if !self.advance() {

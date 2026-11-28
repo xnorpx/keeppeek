@@ -239,7 +239,7 @@ impl InorderParser {
             });
         } else if self.ssrc.is_none() {
             debug!(
-                "rtp ssrc bound from packet: stream_id={stream_id} ssrc=0x{ssrc:08x} pt={} seq={sequence_number}",
+                "rtp ssrc bound: stream_id={stream_id} ssrc=0x{ssrc:08x} pt={} seq={sequence_number}",
                 raw.payload_type()
             );
             self.ssrc = Some(Ssrc {
@@ -249,7 +249,7 @@ impl InorderParser {
         }
         if loss > 0x80_00 {
             debug!(
-                "rtp out-of-order or large gap: stream_id={stream_id} ssrc=0x{ssrc:08x} seq={sequence_number} expected_seq={:?} raw_gap={loss}",
+                "rtp ooo/gap: stream_id={stream_id} ssrc=0x{ssrc:08x} seq={sequence_number} expected={:?} gap={loss}",
                 self.seq.map(|s| s.next)
             );
             bail!(ErrorInt::RtpPacketError {
@@ -267,7 +267,7 @@ impl InorderParser {
         }
         if loss > 0 {
             debug!(
-                "rtp sequence gap: stream_id={stream_id} ssrc=0x{ssrc:08x} seq={sequence_number} expected_seq={:?} gap={loss}",
+                "rtp seq gap: stream_id={stream_id} ssrc=0x{ssrc:08x} seq={sequence_number} expected={:?} gap={loss}",
                 self.seq.map(|s| s.next)
             );
         }
@@ -275,8 +275,7 @@ impl InorderParser {
             Ok(ts) => ts,
             Err(description) => {
                 debug!(
-                    "rtp timeline rejected packet: stream_id={stream_id} ssrc=0x{ssrc:08x} seq={sequence_number} rtp_ts={} reason={description}",
-                    raw.timestamp()
+                    "rtp timeline reject: stream_id={stream_id} ssrc=0x{ssrc:08x} seq={sequence_number} reason={description}"
                 );
                 bail!(ErrorInt::RtpPacketError {
                     conn_ctx: *conn_ctx,
@@ -291,7 +290,7 @@ impl InorderParser {
         };
         if log_enabled!(log::Level::Trace) {
             trace!(
-                "rtp packet: stream_id={stream_id} ssrc=0x{ssrc:08x} pt={} seq={sequence_number} ts={} rtp_ts={} mark={} payload_len={} loss={loss}",
+                "rtp pkt: stream_id={stream_id} ssrc=0x{ssrc:08x} pt={} seq={sequence_number} ts={} rtp_ts={} mark={} len={} loss={loss}",
                 raw.payload_type(),
                 timestamp.timestamp(),
                 raw.timestamp(),

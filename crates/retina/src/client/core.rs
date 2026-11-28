@@ -833,45 +833,7 @@ impl RtspClient {
     ) -> Result<(), CoreError> {
         let (response, body) = expected_response(framed, cseq, "DESCRIBE")?;
         if response.status_code == msg::StatusCode::UNAUTHORIZED {
-            if let Err(error) = self.accept_auth_challenge(&response) {
-                log::debug!(
-                    "rtsp describe auth failed conn={} cseq={cseq} error={error}",
-                    connection.get()
-                );
-                self.phase = Phase::Failed;
-                self.outputs.push_back(Output::CloseTcp { connection });
-                self.outputs
-                    .push_back(Output::Event(Event::DescribeResponse {
-                        connection,
-                        received_at: time,
-                        response,
-                        body,
-                    }));
-                return Err(error);
-            }
-            let retry_cseq = self.take_cseq()?;
-            log::debug!(
-                "rtsp describe unauthorized conn={} cseq={cseq} retry_cseq={retry_cseq} url={}",
-                connection.get(),
-                SafeUrl(&url)
-            );
-            let authorization = self.authorization(&url, &msg::Method::DESCRIBE)?;
-            let data = describe_request(&url, retry_cseq, authorization)?;
-            self.phase = Phase::AwaitingDescribeWrite {
-                connection,
-                url,
-                cseq: retry_cseq,
-            };
-            self.outputs
-                .push_back(Output::Event(Event::DescribeResponse {
-                    connection,
-                    received_at: time,
-                    response,
-                    body,
-                }));
-            self.outputs
-                .push_back(Output::TcpTransmit { connection, data });
-            return Ok(());
+            return self.handle_describe_unauthorized(time, connection, cseq, url, response, body);
         }
         if response.status_code.is_success() {
             match super::parse::parse_describe(url.clone(), &response, &body) {
@@ -901,7 +863,7 @@ impl RtspClient {
             }
         } else {
             log::debug!(
-                "rtsp describe error status conn={} cseq={cseq} status={}",
+                "rtsp describe error conn={} cseq={cseq} status={}",
                 connection.get(),
                 response.status_code
             );
@@ -915,6 +877,56 @@ impl RtspClient {
                 response,
                 body,
             }));
+        Ok(())
+    }
+
+    fn handle_describe_unauthorized(
+        &mut self,
+        time: Time,
+        connection: TcpConnectionId,
+        cseq: u32,
+        url: Url,
+        response: msg::Response,
+        body: Bytes,
+    ) -> Result<(), CoreError> {
+        if let Err(error) = self.accept_auth_challenge(&response) {
+            log::debug!(
+                "rtsp describe auth failed conn={} cseq={cseq} error={error}",
+                connection.get()
+            );
+            self.phase = Phase::Failed;
+            self.outputs.push_back(Output::CloseTcp { connection });
+            self.outputs
+                .push_back(Output::Event(Event::DescribeResponse {
+                    connection,
+                    received_at: time,
+                    response,
+                    body,
+                }));
+            return Err(error);
+        }
+        let retry_cseq = self.take_cseq()?;
+        log::debug!(
+            "rtsp describe 401 retry conn={} cseq={cseq} retry_cseq={retry_cseq} url={}",
+            connection.get(),
+            SafeUrl(&url)
+        );
+        let authorization = self.authorization(&url, &msg::Method::DESCRIBE)?;
+        let data = describe_request(&url, retry_cseq, authorization)?;
+        self.phase = Phase::AwaitingDescribeWrite {
+            connection,
+            url,
+            cseq: retry_cseq,
+        };
+        self.outputs
+            .push_back(Output::Event(Event::DescribeResponse {
+                connection,
+                received_at: time,
+                response,
+                body,
+            }));
+        self.outputs
+            .push_back(Output::TcpTransmit { connection, data });
         Ok(())
     }
 
@@ -1905,13 +1917,34 @@ impl std::fmt::Display for SafeUrl<'_> {
     }
 }
 
+fn split_auth_params(rest: &str) -> Vec<&str> {
+    let mut params = Vec::new();
+    let mut start = 0;
+    let mut in_quotes = false;
+    let mut escaped = false;
+    for (idx, ch) in rest.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' && in_quotes {
+            escaped = true;
+        } else if ch == '"' {
+            in_quotes = !in_quotes;
+        } else if ch == ',' && !in_quotes {
+            params.push(&rest[start..idx]);
+            start = idx + 1;
+        }
+    }
+    params.push(&rest[start..]);
+    params
+}
+
 fn sanitize_www_authenticate(value: &str) -> String {
     let trimmed = value.trim();
     let Some((scheme, rest)) = trimmed.split_once(char::is_whitespace) else {
         return trimmed.to_string();
     };
     let mut kept = Vec::new();
-    for part in rest.split(',') {
+    for part in split_auth_params(rest) {
         let part = part.trim();
         let Some((key, raw_val)) = part.split_once('=') else {
             continue;
@@ -1934,11 +1967,14 @@ fn format_rtsp_headers_sanitized(headers: &msg::Headers) -> String {
         let key: &str = name;
         if key.eq_ignore_ascii_case("authorization")
             || key.eq_ignore_ascii_case("proxy-authorization")
+            || key.eq_ignore_ascii_case("authentication-info")
             || key.eq_ignore_ascii_case("set-cookie")
             || key.eq_ignore_ascii_case("cookie")
         {
             parts.push(format!("{key}: [REDACTED]"));
-        } else if key.eq_ignore_ascii_case("www-authenticate") {
+        } else if key.eq_ignore_ascii_case("www-authenticate")
+            || key.eq_ignore_ascii_case("proxy-authenticate")
+        {
             parts.push(format!("{key}: {}", sanitize_www_authenticate(value)));
         } else {
             parts.push(format!("{key}: {value}"));
@@ -3278,12 +3314,12 @@ mod tests {
         assert!(!safe.contains("abc"));
 
         let challenge = concat!(
-            r#"Digest realm="cam-realm", "#,
+            r#"Digest realm="Camera, Lobby", "#,
             r#"nonce="super-secret-nonce-value", "#,
             r#"qop="auth", algorithm=MD5, stale=TRUE, opaque="opaque-tok""#
         );
         let sanitized_challenge = sanitize_www_authenticate(challenge);
-        assert!(sanitized_challenge.contains(r#"realm="cam-realm""#));
+        assert!(sanitized_challenge.contains(r#"realm="Camera, Lobby""#));
         assert!(sanitized_challenge.contains(r#"qop="auth""#));
         assert!(sanitized_challenge.contains("algorithm=MD5"));
         assert!(sanitized_challenge.contains("stale=TRUE"));
@@ -3307,11 +3343,23 @@ mod tests {
             msg::HeaderName::WWW_AUTHENTICATE,
             msg::HeaderValue::try_from(challenge).unwrap(),
         );
+        headers.insert(
+            msg::HeaderName::from_static("Proxy-Authenticate").unwrap(),
+            msg::HeaderValue::try_from(challenge).unwrap(),
+        );
+        headers.insert(
+            msg::HeaderName::from_static("Authentication-Info").unwrap(),
+            msg::HeaderValue::try_from(r#"nextnonce="secret-next", rspauth="secret-rsp""#).unwrap(),
+        );
         let rendered = format_rtsp_headers_sanitized(&headers);
         assert!(rendered.contains("CSeq: 4"));
         assert!(rendered.contains("Session: 99887766"));
         assert!(rendered.contains("Authorization: [REDACTED]"));
+        assert!(rendered.contains("Authentication-Info: [REDACTED]"));
+        assert!(rendered.contains(r#"Proxy-Authenticate: Digest realm="Camera, Lobby""#));
         assert!(!rendered.contains("deadbeef"));
+        assert!(!rendered.contains("secret-next"));
+        assert!(!rendered.contains("secret-rsp"));
         assert!(!rendered.contains("super-secret-nonce-value"));
     }
 }

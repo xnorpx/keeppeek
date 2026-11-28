@@ -75,6 +75,27 @@ fn original_rtp_time(
     }
 }
 
+struct SafeUrl<'a>(&'a Url);
+
+impl std::fmt::Display for SafeUrl<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}://{}",
+            self.0.scheme(),
+            self.0.host_str().unwrap_or("<none>")
+        )?;
+        if let Some(port) = self.0.port() {
+            write!(f, ":{port}")?;
+        }
+        f.write_str(self.0.path())?;
+        if self.0.query().is_some() {
+            f.write_str("?<query>")?;
+        }
+        Ok(())
+    }
+}
+
 struct VideoContinuity {
     awaiting_random_access: bool,
 }
@@ -722,7 +743,7 @@ impl RtspLoop {
                 tracing::info!(
                     ip = %self.camera_ip,
                     stream = %self.stream,
-                    url = %fallback,
+                    url = %SafeUrl(&fallback),
                     "h265 not found, falling back to h264",
                 );
                 (self.try_describe(&fallback)?, fallback)
@@ -771,7 +792,7 @@ impl RtspLoop {
         tracing::info!(
             ip = %self.camera_ip,
             stream = %self.stream,
-            url = %active_url,
+            url = %SafeUrl(&active_url),
             codec = %video_meta.encoding,
             width = video_meta.width,
             height = video_meta.height,
@@ -1045,57 +1066,71 @@ impl RtspLoop {
             return;
         }
         if speaker.is_none() {
-            let Some(channel) = self.talkback_channel else {
+            self.open_hikvision_speaker(session, speaker);
+        }
+        self.send_hikvision_talkback_frame(session, speaker, &frame);
+    }
+
+    fn open_hikvision_speaker(
+        &self,
+        session: &mut Option<IsapiTalk>,
+        speaker: &mut Option<IsapiSpeaker>,
+    ) {
+        let Some(channel) = self.talkback_channel else {
+            return;
+        };
+        let origin = format!("http://{}:{}", self.camera_ip, self.http_port);
+        let credentials = IsapiCredentials::new(self.username.clone(), self.password.clone());
+        let client = match IsapiClient::builder(origin, credentials)
+            .cancelled({
+                let shutdown = self.shutdown.clone();
+                move || shutdown.is_cancelled()
+            })
+            .build()
+        {
+            Ok(client) => client,
+            Err(error) => {
+                tracing::warn!(ip = %self.camera_ip, %error, "unable to build Hikvision talkback client");
                 return;
-            };
-            let origin = format!("http://{}:{}", self.camera_ip, self.http_port);
-            let credentials = IsapiCredentials::new(self.username.clone(), self.password.clone());
-            let client = match IsapiClient::builder(origin, credentials)
-                .cancelled({
-                    let shutdown = self.shutdown.clone();
-                    move || shutdown.is_cancelled()
-                })
-                .build()
-            {
-                Ok(client) => client,
-                Err(error) => {
-                    tracing::warn!(ip = %self.camera_ip, %error, "unable to build Hikvision talkback client");
-                    return;
-                }
-            };
-            let mut audio = match client.open_audio(channel, Duration::from_secs(300)) {
-                Ok(audio) => audio,
-                Err(error) => {
-                    tracing::warn!(ip = %self.camera_ip, %error, "unable to open Hikvision talkback audio");
-                    return;
-                }
-            };
-            match audio.speaker() {
-                Ok(opened) => {
-                    tracing::debug!(
-                        ip = %self.camera_ip,
-                        channel,
-                        codec = ?opened.codec(),
-                        "opened Hikvision talkback speaker"
-                    );
-                    *session = Some(audio);
-                    *speaker = Some(opened);
-                }
-                Err(error) => {
-                    tracing::warn!(ip = %self.camera_ip, %error, "Hikvision speaker is unavailable");
-                    return;
-                }
+            }
+        };
+        let mut audio = match client.open_audio(channel, Duration::from_secs(300)) {
+            Ok(audio) => audio,
+            Err(error) => {
+                tracing::warn!(ip = %self.camera_ip, %error, "unable to open Hikvision talkback audio");
+                return;
+            }
+        };
+        match audio.speaker() {
+            Ok(opened) => {
+                tracing::debug!(
+                    ip = %self.camera_ip,
+                    channel,
+                    codec = ?opened.codec(),
+                    "opened Hikvision talkback speaker"
+                );
+                *session = Some(audio);
+                *speaker = Some(opened);
+            }
+            Err(error) => {
+                tracing::warn!(ip = %self.camera_ip, %error, "Hikvision speaker is unavailable");
             }
         }
+    }
+
+    fn send_hikvision_talkback_frame(
+        &self,
+        session: &mut Option<IsapiTalk>,
+        speaker: &mut Option<IsapiSpeaker>,
+        frame: &WebRtcAudioFrame,
+    ) {
         let Some(speaker_ref) = speaker.as_mut() else {
             return;
         };
         let codec = match speaker_ref.codec() {
             IsapiAudioCodec::G711Alaw => WebRtcAudioCodec::G711Alaw,
             IsapiAudioCodec::G711Ulaw => WebRtcAudioCodec::G711Ulaw,
-            _ => {
-                return;
-            }
+            _ => return,
         };
         let Some(encoded) = encode_g711(codec, &frame.data) else {
             return;
@@ -1108,16 +1143,15 @@ impl RtspLoop {
                 break;
             }
         }
-        if !send_failed && tracing::enabled!(tracing::Level::TRACE) {
+        if send_failed {
+            speaker.take();
+            session.take();
+        } else if tracing::enabled!(tracing::Level::TRACE) {
             tracing::trace!(
                 pcm_bytes = frame.data.len(),
                 encoded_bytes = encoded.len(),
                 "sent Hikvision talkback audio frame"
             );
-        }
-        if send_failed {
-            speaker.take();
-            session.take();
         }
     }
 
