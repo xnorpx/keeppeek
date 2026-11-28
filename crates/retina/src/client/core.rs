@@ -1228,21 +1228,21 @@ impl RtspClient {
             }
         };
         log::debug!(
-            "rtsp setup ok conn={} stream={stream} cseq={cseq} ssrc={:?} channel_id={:?} server_port={:?} session_id={} timeout_secs={}",
+            "rtsp setup ok conn={} stream={stream} cseq={cseq} ssrc={:?} channel_id={:?} server_port={:?} session_id_len={} timeout_secs={}",
             connection.get(),
             setup.ssrc,
             setup.channel_id,
             setup.server_port,
-            setup.session.id,
+            setup.session.id.len(),
             setup.session.timeout_sec
         );
         if let Some(existing) = &self.session {
             if existing.id != setup.session.id {
                 log::debug!(
-                    "rtsp setup changed session conn={} stream={stream} old_session={:?} new_session={:?}",
+                    "rtsp setup changed session conn={} stream={stream} old_session_len={} new_session_len={}",
                     connection.get(),
-                    existing.id,
-                    setup.session.id
+                    existing.id.len(),
+                    setup.session.id.len()
                 );
                 self.phase = Phase::Failed;
                 self.outputs.push_back(Output::CloseTcp { connection });
