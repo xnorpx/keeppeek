@@ -437,29 +437,39 @@ FunctionEnd
 !ifndef WRITE_UNINSTALLER_ONLY
 Function InstallService
   DetailPrint "Installing ${SERVICE_NAME}"
-  ExecWait '"$SYSDIR\sc.exe" create "${SERVICE_NAME}" binPath= "$\"$INSTDIR\keeppeek-service.exe$\"" start= auto DisplayName= "${PRODUCT_NAME} Service"' $0
+  ; Escape the inner quotes so sc.exe passes a single quoted ImagePath when $INSTDIR contains spaces.
+  nsExec::ExecToStack '"$SYSDIR\sc.exe" create "${SERVICE_NAME}" binPath= "\$\"$INSTDIR\keeppeek-service.exe\$\"" start= auto DisplayName= "${PRODUCT_NAME} Service"'
+  Pop $0
+  Pop $1
   ${If} $0 != 0
-    DetailPrint "${SERVICE_NAME} could not be created"
+    DetailPrint "${SERVICE_NAME} could not be created (exit $0): $1"
+    SetErrorLevel 4
     IfSilent create_failed
-    MessageBox MB_ICONSTOP "KeepPeek was installed, but ${SERVICE_NAME} could not be created. Install it manually with sc.exe."
+    MessageBox MB_ICONSTOP "KeepPeek was installed, but ${SERVICE_NAME} could not be created (exit $0). Install it manually with sc.exe."
 create_failed:
     Return
   ${EndIf}
 
-  ExecWait '"$SYSDIR\sc.exe" failure "${SERVICE_NAME}" reset= 86400 actions= restart/5000/restart/15000/restart/30000' $0
+  nsExec::ExecToStack '"$SYSDIR\sc.exe" failure "${SERVICE_NAME}" reset= 86400 actions= restart/5000/restart/15000/restart/30000'
+  Pop $0
+  Pop $1
   ${If} $0 != 0
-    DetailPrint "Warning: could not configure ${SERVICE_NAME} failure recovery actions (exit $0)"
+    DetailPrint "Warning: could not configure ${SERVICE_NAME} failure recovery actions (exit $0): $1"
   ${EndIf}
-  ExecWait '"$SYSDIR\sc.exe" failureflag "${SERVICE_NAME}" 1' $0
+  nsExec::ExecToStack '"$SYSDIR\sc.exe" failureflag "${SERVICE_NAME}" 1'
+  Pop $0
+  Pop $1
   ${If} $0 != 0
-    DetailPrint "Warning: could not enable ${SERVICE_NAME} non-crash failure recovery flag (exit $0)"
+    DetailPrint "Warning: could not enable ${SERVICE_NAME} non-crash failure recovery flag (exit $0): $1"
   ${EndIf}
 
-  ExecWait '"$SYSDIR\sc.exe" start "${SERVICE_NAME}"' $0
+  nsExec::ExecToStack '"$SYSDIR\sc.exe" start "${SERVICE_NAME}"'
+  Pop $0
+  Pop $1
   ${If} $0 != 0
-    DetailPrint "${SERVICE_NAME} could not be started"
+    DetailPrint "${SERVICE_NAME} could not be started (exit $0): $1"
     IfSilent start_failed
-    MessageBox MB_ICONEXCLAMATION "${SERVICE_NAME} was installed but could not be started. Check its configuration and logs."
+    MessageBox MB_ICONEXCLAMATION "${SERVICE_NAME} was installed but could not be started (exit $0). Check its configuration and logs."
 start_failed:
   ${EndIf}
 FunctionEnd
