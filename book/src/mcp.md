@@ -77,24 +77,24 @@ snapshot_min_interval_seconds = 5
 
 > **Security warning:** Setting `[mcp].allow_camera_debugging = true` grants Administrator MCP clients and AI assistants **full raw access to live video bitstreams, audio streams, decrypted network captures (PCAPNG), and camera credentials** for `debug_camera_ids` (or all configured cameras when empty). KeepPeek emits a prominent `tracing::warn!` on startup and adds a `warning` issue to `ServerHealthResponse` whenever both `enabled` and `allow_camera_debugging` are `true`. Enable it only during active protocol debugging and set `allow_camera_debugging = false` afterward.
 
-| Field                           | Type           | Default     | Allowed range           | Meaning                                                                                                                                  |
-| ------------------------------- | -------------- | ----------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `enabled`                       | `bool`         | `false`     | `true`/`false`          | Enable the embedded Streamable HTTP endpoint at `POST /mcp` (and loopback `/mcp/secret-entry`). Live via Web UI or `disable_mcp_access`. |
-| `enabled_at_unix_secs`          | Optional `u64` | Absent      | Unix epoch secs         | Server-managed timestamp recorded when `enabled` becomes `true`; used for the 7-day enabled warning and cleared when disabled.           |
-| `long_enabled_warning_silenced` | `bool`         | `false`     | `true`/`false`          | Human Administrator acknowledgement silencing the 7-day enabled warning for the current enabled stretch; cleared when disabled.          |
-| `allow_writes`                  | `bool`         | `false`     | `true`/`false`          | Permit Administrator KeepPeek configuration write tools after explicit approval.                                                         |
-| `allow_snapshots`               | `bool`         | `false`     | `true`/`false`          | Permit privacy-gated single-frame snapshots via `get_camera_snapshot`.                                                                   |
-| `allow_camera_device_writes`    | `bool`         | `false`     | `true`/`false`          | Permit live on-camera hardware writes via `update_camera_device_settings` (`dry_run: false`).                                            |
-| `allow_camera_debugging`        | `bool`         | `false`     | `true`/`false`          | Permit Administrator live camera packet/bitstream capture and repro-fixture export via `camera_debugging`.                               |
-| `debug_camera_ids`              | `Vec<String>`  | `[]`        | `<= 256` IDs            | Optional camera ID allowlist for `camera_debugging` (empty allows all cameras; each trimmed non-empty ASCII ID `<= 128` bytes).          |
-| `max_debug_capture_bytes`       | `usize`        | `67108864`  | `1048576..=268435456`   | Maximum capture artifact size in bytes (1 MiB..=256 MiB; default 64 MiB).                                                                |
-| `max_debug_storage_bytes`       | `u64`          | `536870912` | `16777216..=4294967296` | Total disk budget under `<config-dir>/camera-debug/` in bytes (16 MiB..=4 GiB; default 512 MiB, 24h TTL, FIFO eviction).                 |
-| `max_concurrent_requests`       | `usize`        | `4`         | `1..=32`                | Maximum simultaneous in-flight MCP requests.                                                                                             |
-| `max_response_bytes`            | `usize`        | `65536`     | `4096..=262144`         | Maximum serialized JSON-RPC response size in bytes (`get_camera_snapshot` uses `max_snapshot_bytes`).                                    |
-| `request_timeout_seconds`       | `u64`          | `15`        | `1..=60`                | Server-side deadline per MCP request, in seconds.                                                                                        |
-| `max_snapshot_bytes`            | `usize`        | `262144`    | `16384..=1048576`       | Maximum encoded JPEG size for `get_camera_snapshot`, in bytes (base64 + metadata overhead is added).                                     |
-| `max_snapshot_dimension`        | `u32`          | `1280`      | `160..=1920`            | Maximum width or height of returned snapshot frames, in pixels.                                                                          |
-| `snapshot_min_interval_seconds` | `u64`          | `5`         | `1..=300`               | Minimum interval between snapshot captures per camera, in seconds.                                                                       |
+| Field                           | Type           | Default     | Allowed range           | Meaning                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------------------- | -------------- | ----------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`                       | `bool`         | `false`     | `true`/`false`          | Enable the embedded Streamable HTTP endpoint at `POST /mcp` (and loopback `/mcp/secret-entry`). Live via Web UI or `disable_mcp_access`.                                                                                                                                                                                                                                            |
+| `enabled_at_unix_secs`          | Optional `u64` | Absent      | Unix epoch secs         | Server-managed timestamp recorded when `enabled` becomes `true`; used for the 7-day enabled warning and cleared when disabled.                                                                                                                                                                                                                                                      |
+| `long_enabled_warning_silenced` | `bool`         | `false`     | `true`/`false`          | Human Administrator acknowledgement silencing the 7-day enabled warning for the current enabled stretch; cleared when disabled.                                                                                                                                                                                                                                                     |
+| `allow_writes`                  | `bool`         | `false`     | `true`/`false`          | Permit Administrator KeepPeek configuration write tools after explicit approval.                                                                                                                                                                                                                                                                                                    |
+| `allow_snapshots`               | `bool`         | `false`     | `true`/`false`          | Permit privacy-gated single-frame snapshots via `get_camera_snapshot`.                                                                                                                                                                                                                                                                                                              |
+| `allow_camera_device_writes`    | `bool`         | `false`     | `true`/`false`          | Permit live on-camera hardware writes via `update_camera_device_settings` (`dry_run: false`).                                                                                                                                                                                                                                                                                       |
+| `allow_camera_debugging`        | `bool`         | `false`     | `true`/`false`          | Permit Administrator live camera packet/bitstream capture and repro-fixture export via `camera_debugging`.                                                                                                                                                                                                                                                                          |
+| `debug_camera_ids`              | `Vec<String>`  | `[]`        | `<= 256` IDs            | Optional camera ID allowlist for `camera_debugging` (empty allows all cameras; each trimmed non-empty ASCII ID `<= 128` bytes).                                                                                                                                                                                                                                                     |
+| `max_debug_capture_bytes`       | `usize`        | `67108864`  | `1048576..=268435456`   | Maximum capture artifact size in bytes (1 MiB..=256 MiB; default 64 MiB).                                                                                                                                                                                                                                                                                                           |
+| `max_debug_storage_bytes`       | `u64`          | `536870912` | `16777216..=4294967296` | Total disk budget under `<config-dir>/camera-debug/` in bytes (16 MiB..=4 GiB; default 512 MiB, 24h TTL, FIFO eviction).                                                                                                                                                                                                                                                            |
+| `max_concurrent_requests`       | `usize`        | `4`         | `1..=32`                | Maximum simultaneous in-flight MCP requests.                                                                                                                                                                                                                                                                                                                                        |
+| `max_response_bytes`            | `usize`        | `65536`     | `4096..=262144`         | Maximum serialized JSON-RPC response size in bytes (`get_camera_snapshot` uses `max_snapshot_bytes`; when `allow_camera_debugging = true`, `camera_debugging` `read_artifact` raises the cap to `max_response_bytes.max(524_288)` — `512 KiB`, with `384 KiB` UTF-8 JSON clamping and `base64` fallback — allowing `1..=131_072` B raw chunks even under the default `65_536` cap). |
+| `request_timeout_seconds`       | `u64`          | `15`        | `1..=60`                | Server-side deadline per MCP request, in seconds.                                                                                                                                                                                                                                                                                                                                   |
+| `max_snapshot_bytes`            | `usize`        | `262144`    | `16384..=1048576`       | Maximum encoded JPEG size for `get_camera_snapshot`, in bytes (base64 + metadata overhead is added).                                                                                                                                                                                                                                                                                |
+| `max_snapshot_dimension`        | `u32`          | `1280`      | `160..=1920`            | Maximum width or height of returned snapshot frames, in pixels.                                                                                                                                                                                                                                                                                                                     |
+| `snapshot_min_interval_seconds` | `u64`          | `5`         | `1..=300`               | Minimum interval between snapshot captures per camera, in seconds.                                                                                                                                                                                                                                                                                                                  |
 
 ### Human-only enable, agent self-disable, and 7-day warning
 
@@ -151,9 +151,8 @@ keeppeek mcp [--server <URL>] [--credential-file <PATH>] pull-capture <CAPTURE_I
 ```
 
 - `--server`, `--config`, `--credential-file`, and `--read-only` are top-level `keeppeek mcp` options and must appear **before** `logs`, `pull-capture`, or `skill`.
-- `keeppeek mcp logs` fetches `GET /logs/snapshot` (default, up to `--limit`, default `100`) or streams live `GET /logs` SSE events (`--follow`, tail `1..=1000`), filtering by `--level` (`trace | debug | info | warn | error`), `--target`, `--camera`, and `--query`, and printing compact JSONL `LogEntry` lines to `stdout`. Passing `--filter <DIRECTIVE>` temporarily applies an `EnvFilter` via `get_logging_settings` + `set_logging_filter` (requires Administrator + `[mcp].allow_writes = true`, without `--read-only`) and restores the previous filter automatically on exit or `Ctrl-C`.
+- `keeppeek mcp logs` fetches `GET /logs/snapshot` (default, up to `--limit`, default `100`) or streams live `GET /logs` SSE events (`--follow`, tail `1..=1000`), filtering by `--level` (`trace | debug | info | warn | error`), `--target`, `--camera`, and `--query`, and printing compact JSONL `LogEntry` lines to `stdout`. Passing `--filter <DIRECTIVE>` temporarily applies an `EnvFilter` via `get_logging_settings` + `set_logging_filter` (requires Administrator + `[mcp].allow_writes = true`, without `--read-only`) and restores the server's unboosted `base_filter` (falling back to `active_filter`) automatically on exit or `Ctrl-C` so concurrent `TraceFilterGuard` boosts are not persisted on disk.
 - `keeppeek mcp pull-capture` downloads every artifact (or specific `--artifact <NAME>` files) from `camera_debugging` (`list_captures` + chunked `read_artifact`), writes files atomically inside `--output <DIR>`, verifies SHA-256 digests, and prints `<artifact>\t<bytes>\t<sha256>`.
-
 - `--server <URL>` targets a specific KeepPeek server origin (for example `http://127.0.0.1:8081`
   or `https://keeppeek.example.net`).
 - `--config <PATH>` selects an alternate `config.toml` when resolving local server settings.
@@ -162,7 +161,9 @@ keeppeek mcp [--server <URL>] [--credential-file <PATH>] pull-capture <CAPTURE_I
 - `--read-only` sends `X-KeepPeek-MCP-Read-Only: true`, blocking all configuration and on-camera
   hardware write tools even if the server enables `[mcp].allow_writes` or
   `[mcp].allow_camera_device_writes`.
-- `stdout` is reserved strictly for newline-delimited JSON-RPC messages; warnings and logs go to
+- In `stdio` bridge mode, `stdout` is reserved strictly for newline-delimited JSON-RPC frames
+  (`keeppeek mcp logs` writes JSONL `LogEntry` lines to `stdout`, and `keeppeek mcp pull-capture`
+  writes `<artifact>\t<bytes>\t<sha256>` lines to `stdout`); warnings and diagnostic logs go to
   `stderr`.
 
 Example MCP client configuration (Claude Desktop, Cursor, or other `mcpServers` clients) using an
@@ -253,8 +254,9 @@ across live supervised binary swaps without restarting the agent or editing MCP 
    ```sh
    # Standalone CLI supervisor
    keeppeek-supervisor run --root <dev-supervisor-root> --config <path/to/config.toml> --allow-local --probation-ms 500
-   # Or Windows service / KeepPeek Desktop dev hosts:
-   keeppeek-service.exe --allow-local
+   # Windows service (pass --allow-local via Windows SCM binPath arguments; see docs/windows-service.md):
+   sc.exe config KeepPeekService binPath= "\"C:\path\to\keeppeek-service.exe\" --allow-local"
+   # Or KeepPeek Desktop dev host:
    keeppeek-desktop --manage-local-server --allow-local
    ```
 
@@ -404,7 +406,7 @@ Supported `camera_debugging` actions:
 
 - `inspect_pipeline`: Inspect active camera backend, stream state, health, and profile configuration from live `ServerState`.
 - `capture`: Run a bounded capture (`duration_seconds` `1..=60`, `max_bytes` `65536..=268435456`, `stream`: `"main" | "sub" | "both"`) collecting requested `artifacts` (`"pcapng"`, `"video_bitstream"`, `"audio_bitstream"`, `"muxed_mp4"`, `"protocol_transcript"`, `"traces"`; all six enabled by default when omitted) across `protocols` (`"rtsp"`, `"audio"`, `"onvif"`, `"isapi"`, `"reolink_http"`, `"reo_proto"`). Optional `trace_filter` (`1..=512` bytes, `EnvFilter` directive) temporarily boosts tracing under an RAII guard when `"traces"` is enabled (defaulting to full protocol `TRACE` targets) and restores the previous filter on completion.
-- `compare_transports`: Compare `mode: "media_transports"` or `mode: "event_channels"` side-by-side for a camera (also accepts `trace_filter` when `"traces"` is enabled).
+- `compare_transports`: Compare `mode: "media_transports"` or `mode: "event_channels"` side-by-side for a camera; it always uses `CaptureArtifacts::default()` (`traces: true`, recording `traces.jsonl`, with no `artifacts` toggle) and accepts optional `trace_filter`.
 - `read_artifact`: Read any saved capture artifact in bounded chunks (`capture_id`, single-segment `artifact` filename `<= 128` bytes, `offset` default `0`, `length` `1..=131072` default `65536`, `encoding`: `"auto" | "base64" | "utf8"`) returning `total_bytes`, full-file `sha256`, `eof`, `next_offset`, `encoding`, and `data`. Works in `--read-only` mode.
 - `export_repro_fixture`: Export a `keeppeek.camera-repro.v1` JSON fixture (`strip_credentials` default `true`, `anonymize_network` default `true`, `trim_media`: `"headers_and_minimal_failing_slice" | "synthetic_payloads" | "keep_raw_frames"`) with a `sharing_safety_report`.
 - `list_captures`: List saved captures under `<config-dir>/camera-debug/<capture-id>/` with byte sizes, filenames, and `created_at_unix_secs` timestamps (24-hour TTL entries are pruned on list).
@@ -563,8 +565,12 @@ rendered into the camera stream appear in the returned frame.
 
 KeepPeek caps simultaneous MCP executions at `max_concurrent_requests`, enforces
 `request_timeout_seconds`, and rejects oversized JSON-RPC responses above `max_response_bytes`
-(`get_camera_snapshot` uses `max_snapshot_bytes` plus base64 and metadata envelope overhead) so an
-automated assistant cannot starve camera ingest, recording, or live playback.
+(`get_camera_snapshot` uses `max_snapshot_bytes` plus base64 and metadata envelope overhead;
+when `[mcp].allow_camera_debugging = true`, `camera_debugging` `read_artifact` raises the
+JSON-RPC response cap to `max_response_bytes.max(524_288)` — `512 KiB`, with `384 KiB` UTF-8
+JSON clamping and `base64` fallback — allowing `1..=131_072` B raw chunks even under the
+default `65_536` cap) so an automated assistant cannot starve camera ingest, recording, or live
+playback.
 
 ## Troubleshooting
 

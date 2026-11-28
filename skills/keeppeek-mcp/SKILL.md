@@ -314,7 +314,7 @@ Save a webhook notification draft using a secret reference (`manage_notification
 Use read-only diagnostic tools in order from broad health to specific evidence:
 
 1. Call `get_server_health` to inspect recorder status, camera connection states, stream progress, and disk pressure. (For **User** credentials, results are filtered to permitted cameras.)
-2. Call `search_logs` and `get_logging_settings` (Administrator) to inspect redacted server logs by level, target, camera, time window, and limit — or stream live SSE traces over HTTPS/HTTP with `keeppeek mcp --server <URL> logs --follow --camera <ID> --filter "..."` (which restores the previous filter via `set_logging_filter` on exit). Standard 3-tier filter directives:
+2. Call `search_logs` and `get_logging_settings` (Administrator) to inspect redacted server logs by level, target, camera, time window, and limit — or stream live SSE traces over HTTPS/HTTP with `keeppeek mcp --server <URL> logs --follow --camera <ID> --filter "..."` (which reads and restores the server's unboosted `base_filter`, falling back to `active_filter`, via `set_logging_filter` on exit so concurrent `TraceFilterGuard` boosts aren't persisted on disk). Standard 3-tier filter directives:
    - `INFO`: `info,keeppeek=info` (or default `info,keeppeek=debug`)
    - `DEBUG`: `info,keeppeek=debug,retina=debug,reo_proto=debug,onvif=debug`
    - `TRACE`: `retina=trace,reo_proto=trace,onvif=trace,keeppeek::rtsp=trace,keeppeek::reolink=trace,keeppeek::isapi=trace,keeppeek::cameras=trace,keeppeek::camera_events=trace,keeppeek::media_time=trace,keeppeek::storage::medium_term=trace`
