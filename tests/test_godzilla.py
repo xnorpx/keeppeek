@@ -402,6 +402,38 @@ class RustSourcePolicyTests(unittest.TestCase):
                 v.location.endswith((":1", ":2", ":3", ":4", ":5")) for v in violations
             ), violations
 
+    def test_rejects_raw_identifier_aliases_and_arrow_leading_colon_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "tricky.rs").write_text(
+                "use tokio as r#match;\n"
+                "use std::{future as r#type};\n"
+                "use tauri::{Manager, async_runtime as r#loop};\n"
+                "fn a() ->::tokio::runtime::Runtime { todo!() }\n"
+                "fn b() ->::std::future::Ready<()> { todo!() }\n"
+                "fn c(x: u8) { match x { 0=>::tokio::spawn(x), _ => () } }\n"
+                "fn d() { let _ = ::r#tokio::runtime::Handle::current(); }\n",
+                encoding="utf-8",
+            )
+            violations = godzilla.check_rust_sources(
+                root,
+                turso_async_files=frozenset(),
+                tauri_async_files=frozenset(),
+            )
+            rules_and_lines = {(v.rule, v.location) for v in violations}
+            expected = {
+                ("forbidden-runtime", "src/tricky.rs:1"),
+                ("async-syntax", "src/tricky.rs:2"),
+                ("tauri-async-runtime", "src/tricky.rs:3"),
+                ("forbidden-runtime", "src/tricky.rs:4"),
+                ("async-syntax", "src/tricky.rs:5"),
+                ("forbidden-runtime", "src/tricky.rs:6"),
+                ("forbidden-runtime", "src/tricky.rs:7"),
+            }
+            for item in expected:
+                assert item in rules_and_lines, (item, sorted(rules_and_lines))
+
     def test_deadpool_only_file_is_not_skipped_by_candidate_prefilter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

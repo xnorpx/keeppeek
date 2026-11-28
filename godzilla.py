@@ -252,25 +252,27 @@ def _build_candidate_regex() -> re.Pattern[str]:
 
 
 _FORBIDDEN_RUNTIME_IDENT = _build_runtime_ident_pattern()
-_FORBIDDEN_RUNTIME_IDENT_RE = re.compile(rf"^{_FORBIDDEN_RUNTIME_IDENT}$")
-# Match a crate-root start: either a bare boundary or a leading :: not preceded by a path segment.
-_ROOT_PATH_START = r"(?:(?<![A-Za-z0-9_#:.])|(?<![A-Za-z0-9_>\]\)])::\s*)"
+_FORBIDDEN_RUNTIME_IDENT_RE = re.compile(rf"^(?:r#)?{_FORBIDDEN_RUNTIME_IDENT}$")
+# Match a crate-root start: either a bare boundary or a leading :: not continuing a path/generic.
+_ROOT_PATH_START = r"(?:(?<![A-Za-z0-9_#:.])|(?<![A-Za-z0-9_>])::\s*|(?<=->)::\s*|(?<==>)::\s*)"
 
 _FORBIDDEN_RUNTIME_RE = re.compile(
-    rf"{_ROOT_PATH_START}{_FORBIDDEN_RUNTIME_IDENT}\s*::"
-    rf"|\bextern\s+crate\s+(?:::\s*)?{_FORBIDDEN_RUNTIME_IDENT}\b"
-    rf"|#\s*\[\s*(?:::\s*)?{_FORBIDDEN_RUNTIME_IDENT}\b"
+    rf"{_ROOT_PATH_START}(?:r#)?{_FORBIDDEN_RUNTIME_IDENT}\s*::"
+    rf"|\bextern\s+crate\s+(?:::\s*)?(?:r#)?{_FORBIDDEN_RUNTIME_IDENT}\b"
+    rf"|#\s*\[\s*(?:::\s*)?(?:r#)?{_FORBIDDEN_RUNTIME_IDENT}\b"
 )
 
-_TAURI_ASYNC_RUNTIME_RE = re.compile(rf"{_ROOT_PATH_START}tauri\s*::\s*async_runtime\b")
+_TAURI_ASYNC_RUNTIME_RE = re.compile(
+    rf"{_ROOT_PATH_START}(?:r#)?tauri\s*::\s*(?:r#)?async_runtime\b"
+)
 
 _ASYNC_SYNTAX_RE = re.compile(
     r"(?<!r#)\basync\b"
     r"|\.\s*await\b"
-    rf"|{_ROOT_PATH_START}pollster\s*::"
-    r"|\bextern\s+crate\s+(?:::\s*)?pollster\b"
-    rf"|{_ROOT_PATH_START}(?:std|core)\s*::\s*future\b"
-    rf"|{_ROOT_PATH_START}(?:std|core|alloc)\s*::\s*task\b"
+    rf"|{_ROOT_PATH_START}(?:r#)?pollster\s*::"
+    r"|\bextern\s+crate\s+(?:::\s*)?(?:r#)?pollster\b"
+    rf"|{_ROOT_PATH_START}(?:r#)?(?:std|core)\s*::\s*(?:r#)?future\b"
+    rf"|{_ROOT_PATH_START}(?:r#)?(?:std|core|alloc)\s*::\s*(?:r#)?task\b"
 )
 
 # Match Rust use items while ignoring Rust 2024 precise-capturing bounds such as `impl T + use<'a>`.
@@ -763,7 +765,7 @@ def expand_use_tree(body: str, prefix: str = "", depth: int = 0) -> list[str]:
             inner = item[brace_open + 1 : brace_close]
             paths.extend(expand_use_tree(inner, _join_rust_path(prefix, head), depth + 1))
             continue
-        leaf = re.sub(r"\s+as\s+[A-Za-z0-9_]+$", "", item).strip()
+        leaf = re.sub(r"\s+as\s+(?:r#)?[A-Za-z0-9_]+$", "", item).strip()
         if leaf == "self":
             if prefix:
                 paths.append(prefix)
@@ -794,7 +796,7 @@ def _consume_use_statement_end(stripped: str, body_start: int) -> int:
 
 def _classify_use_path(path: str) -> tuple[str, str] | None:
     bare = path.removeprefix("::")
-    segments = [seg for seg in bare.split("::") if seg]
+    segments = [seg.removeprefix("r#") for seg in bare.split("::") if seg]
     if not segments:
         return None
     root = segments[0]
