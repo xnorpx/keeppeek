@@ -957,7 +957,7 @@ impl Depacketizer {
                     DepacketizerInner::G723(Box::new(g723::Depacketizer::new(clock_rate)?))
                 }
                 (_, _) => {
-                    log::info!("no depacketizer for media/encoding_name {media}/{encoding_name}");
+                    log::debug!("no depacketizer for media/encoding_name {media}/{encoding_name}");
                     return Err(format!(
                         "no depacketizer for media/encoding_name {media}/{encoding_name}"
                     ));
@@ -1038,6 +1038,16 @@ impl Depacketizer {
             .payload_type
             .is_some_and(|pt| input.raw.payload_type() != pt)
         {
+            if log::log_enabled!(log::Level::Trace) {
+                log::trace!(
+                    "skipping RTP packet for unmatched payload type: stream_id={} pt={} expected_pt={:?} seq={} loss={}",
+                    input.stream_id(),
+                    input.raw.payload_type(),
+                    self.payload_type,
+                    input.sequence_number(),
+                    input.loss(),
+                );
+            }
             self.skipped_loss = self.skipped_loss.saturating_add(input.loss());
             return Ok(());
         }
@@ -1046,7 +1056,10 @@ impl Depacketizer {
                 .loss
                 .saturating_add(std::mem::take(&mut self.skipped_loss));
         }
-        match &mut self.inner {
+        let stream_id = input.stream_id();
+        let seq = input.sequence_number();
+        let pt = input.raw.payload_type();
+        let result = match &mut self.inner {
             DepacketizerInner::Aac(d) => d.push(input),
             DepacketizerInner::G723(d) => d.push(input),
             DepacketizerInner::H264(d) => d.push(input),
@@ -1055,7 +1068,13 @@ impl Depacketizer {
             DepacketizerInner::Onvif(d) => d.push(input),
             DepacketizerInner::SimpleAudio(d) => d.push(input),
             DepacketizerInner::Jpeg(d) => d.push(input),
+        };
+        if let Err(ref error) = result {
+            log::debug!(
+                "depacketizer rejected RTP packet: stream_id={stream_id} pt={pt} seq={seq} reason={error}"
+            );
         }
+        result
     }
 
     /// Retrieves a completed frame from the depacketizer.
@@ -1063,7 +1082,7 @@ impl Depacketizer {
     /// Some packetization formats support aggregating multiple frames into one packet, so a single
     /// `push` call may cause `pull` to return `Some(...))` more than once.
     pub fn pull(&mut self) -> Option<Result<CodecItem, DepacketizeError>> {
-        match &mut self.inner {
+        let item = match &mut self.inner {
             DepacketizerInner::Aac(d) => d.pull(),
             DepacketizerInner::G723(d) => d.pull(),
             DepacketizerInner::H264(d) => d.pull(),
@@ -1072,7 +1091,16 @@ impl Depacketizer {
             DepacketizerInner::Onvif(d) => d.pull(),
             DepacketizerInner::SimpleAudio(d) => d.pull(),
             DepacketizerInner::Jpeg(d) => d.pull(),
+        };
+        if let Some(Err(ref error)) = item {
+            log::debug!(
+                "depacketizer emitted frame error: ssrc=0x{:08x} seq={} reason={}",
+                error.ssrc,
+                error.sequence_number,
+                error.description
+            );
         }
+        item
     }
 }
 

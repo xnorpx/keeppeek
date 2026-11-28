@@ -189,7 +189,7 @@ fn discover_http(
     cancelled: &AtomicBool,
 ) -> anyhow::Result<Vec<HttpProbeResult>> {
     let ips = super::network::scan_targets(networks);
-    tracing::info!(
+    tracing::debug!(
         "HTTP probe: scanning {} IPs across {} subnet(s)",
         ips.len(),
         networks.len()
@@ -240,6 +240,17 @@ fn parse_dev_info(body: &str) -> (Option<String>, Option<String>) {
     (None, None)
 }
 
+const fn classify_ureq_error(error: &ureq::Error) -> &'static str {
+    match error {
+        ureq::Error::Timeout(_) => "timeout",
+        ureq::Error::HostNotFound | ureq::Error::ConnectionFailed => "connection_failed",
+        ureq::Error::StatusCode(_) => "http_status",
+        ureq::Error::RedirectFailed | ureq::Error::TooManyRedirects => "redirect",
+        ureq::Error::Protocol(_) => "protocol",
+        _ => "transport",
+    }
+}
+
 /// Build a minimal 20-byte Baichuan header as a discovery probe.
 /// Layout: 4 bytes magic + 4 bytes msg_id + 4 bytes body_len + 4 bytes enc_offset + 4 bytes reserved
 fn baichuan_discovery_packet() -> [u8; 20] {
@@ -258,7 +269,7 @@ fn discover_baichuan(
     networks: &[super::network::LocalNetwork],
     cancelled: &AtomicBool,
 ) -> anyhow::Result<Vec<BaichuanHit>> {
-    tracing::info!(
+    tracing::debug!(
         "Baichuan broadcast: sending discovery to {} requested subnet(s) on port {}",
         networks.len(),
         BAICHUAN_PORT,
@@ -323,7 +334,7 @@ fn discover_baichuan(
         }
     }
 
-    tracing::info!("Baichuan broadcast: found {} cameras", hits.len());
+    tracing::debug!("Baichuan broadcast: found {} cameras", hits.len());
     Ok(hits)
 }
 
@@ -359,7 +370,7 @@ fn discover_onvif_direct(
     cancelled: &AtomicBool,
 ) -> anyhow::Result<Vec<OnvifDirectResult>> {
     let ips = super::network::scan_targets(networks);
-    tracing::info!(
+    tracing::debug!(
         "ONVIF direct probe: scanning {} IPs on port {}",
         ips.len(),
         ONVIF_PORT
@@ -369,7 +380,7 @@ fn discover_onvif_direct(
         probe_onvif(&agent, ip)
     });
 
-    tracing::info!("ONVIF direct probe: found {} Reolink cameras", found.len());
+    tracing::debug!("ONVIF direct probe: found {} Reolink cameras", found.len());
     Ok(found)
 }
 
@@ -643,13 +654,16 @@ impl ReolinkClient {
         if let Some(token) = &self.token {
             url.query_pairs_mut().append_pair("token", token);
         }
-
         let body = serde_json::json!([{
             "cmd": cmd,
             "action": 0,
             "param": param.unwrap_or_else(|| Value::Object(Default::default())),
         }]);
+        let bytes = self.execute_api_http(cmd, &url, &body)?;
+        self.decode_api_response(cmd, &bytes)
+    }
 
+    fn execute_api_http(&self, cmd: &str, url: &Url, body: &Value) -> anyhow::Result<Vec<u8>> {
         let mut config = self.client.post(url.as_str()).config().max_redirects(0);
         if let Some(deadline) = self.deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -659,24 +673,46 @@ impl ReolinkClient {
             );
             config = config.timeout_global(Some(remaining));
         }
+        if tracing::enabled!(tracing::Level::TRACE) {
+            tracing::trace!(
+                ip = %self.ip,
+                cmd,
+                has_session = self.token.is_some(),
+                "Reolink HTTP API request"
+            );
+        }
         let response = config
             .build()
             .header("Content-Type", "application/json")
             .send(body.to_string())
-            .map_err(|_| anyhow::anyhow!("{cmd} camera request failed"))?;
+            .map_err(|error| {
+                tracing::debug!(
+                    ip = %self.ip,
+                    cmd,
+                    reason = classify_ureq_error(&error),
+                    "Reolink HTTP API transport failed"
+                );
+                anyhow::anyhow!("{cmd} camera request failed")
+            })?;
         let status = response.status();
-        anyhow::ensure!(
-            status.is_success(),
-            "{cmd} camera HTTP status {}",
-            status.as_u16()
-        );
+        if !status.is_success() {
+            tracing::debug!(ip = %self.ip, cmd, status = status.as_u16(), "Reolink HTTP API error status");
+            anyhow::bail!("{cmd} camera HTTP status {}", status.as_u16());
+        }
         let bytes = response
             .into_body()
             .into_with_config()
             .limit(CGI_RESPONSE_BYTES_MAX)
             .read_to_vec()
             .map_err(|_| anyhow::anyhow!("{cmd} camera response is unavailable or too large"))?;
-        let [rsp]: [ApiRsp; 1] = serde_json::from_slice(&bytes).map_err(|error| {
+        if tracing::enabled!(tracing::Level::TRACE) {
+            tracing::trace!(ip = %self.ip, cmd, bytes = bytes.len(), "Reolink HTTP API response");
+        }
+        Ok(bytes)
+    }
+
+    fn decode_api_response(&self, cmd: &str, bytes: &[u8]) -> anyhow::Result<Value> {
+        let [rsp]: [ApiRsp; 1] = serde_json::from_slice(bytes).map_err(|error| {
             anyhow::anyhow!(
                 "{cmd} camera response is invalid at line {} column {}",
                 error.line(),
@@ -690,15 +726,15 @@ impl ReolinkClient {
         if let Some(code) = rsp.error.and_then(|error| error.rsp_code)
             && code != 0
         {
+            tracing::debug!(ip = %self.ip, cmd, rsp_code = code, "Reolink HTTP API camera error");
             anyhow::bail!("{cmd} camera reported error code {code}");
         }
-
         if let Some(code) = rsp.code
             && code != 0
         {
+            tracing::debug!(ip = %self.ip, cmd, code, "Reolink HTTP API non-zero code");
             anyhow::bail!("{cmd} failed with code {code}");
         }
-
         rsp.value
             .ok_or_else(|| anyhow::anyhow!("no value in {cmd} response"))
     }
@@ -849,11 +885,24 @@ impl ReolinkClient {
                     return Ok(profiles);
                 }
                 Ok(_) => {
+                    tracing::debug!(
+                        ip = %self.ip,
+                        channel,
+                        attempt,
+                        "Reolink GetEnc missing mainStream; retrying"
+                    );
                     last_error = Some(anyhow::anyhow!(
                         "GetEnc returned no main stream profile on attempt {attempt}"
                     ));
                 }
                 Err(error) => {
+                    tracing::debug!(
+                        ip = %self.ip,
+                        channel,
+                        attempt,
+                        %error,
+                        "Reolink GetEnc attempt failed"
+                    );
                     last_error = Some(error.context(format!("GetEnc attempt {attempt}")));
                 }
             }
@@ -1691,12 +1740,22 @@ impl ReolinkClient {
             url.push_str("&token=");
             url.push_str(token);
         }
-        let response = self.client.get(&url).call()?;
+        let response = self.client.get(&url).call().map_err(|error| {
+            tracing::debug!(
+                ip = %self.ip,
+                channel,
+                reason = classify_ureq_error(&error),
+                "Reolink snapshot HTTP request failed"
+            );
+            anyhow::anyhow!("Snap failed: {}", classify_ureq_error(&error))
+        })?;
         if !response.status().is_success() {
             anyhow::bail!("Snap failed: HTTP {}", response.status());
         }
         let mut body = response.into_body();
-        Ok(body.read_to_vec()?)
+        body.read_to_vec().map_err(|error| {
+            anyhow::anyhow!("Snap body read failed: {}", classify_ureq_error(&error))
+        })
     }
 
     pub fn ptz_ctrl(&self, channel: u32, op: PtzOp, speed: u32) -> anyhow::Result<()> {
@@ -1746,7 +1805,7 @@ impl ReolinkClient {
 
         for profile in &profiles {
             if let Some(ref v) = profile.video {
-                tracing::info!(
+                tracing::debug!(
                     ip = %config.ip,
                     stream = %profile.name,
                     encoding = ?v.encoding,
@@ -2233,5 +2292,16 @@ mod tests {
         assert_eq!(normalize_reolink_sample_rate(44), Some(44_100));
         assert_eq!(normalize_reolink_sample_rate(48_000), Some(48_000));
         assert_eq!(normalize_reolink_sample_rate(0), None);
+    }
+
+    #[test]
+    fn snap_error_does_not_leak_session_token() {
+        let mut client =
+            ReolinkClient::new_with_http_port(IpAddr::V4(Ipv4Addr::LOCALHOST), Some(1));
+        client.base_url = "not-a-valid-scheme://127.0.0.1/cgi-bin/api.cgi".to_string();
+        client.token = Some("CANARY_REOLINK_SNAP_TOKEN".to_string());
+        let err = client.snap(0).unwrap_err();
+        let text = err.to_string();
+        assert!(!text.contains("CANARY_REOLINK_SNAP_TOKEN"), "{text}");
     }
 }

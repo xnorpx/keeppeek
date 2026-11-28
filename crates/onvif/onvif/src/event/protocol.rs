@@ -53,6 +53,12 @@ impl Lease {
         if remaining < Duration::from_millis(100) || remaining > Duration::from_secs(86400) {
             return Err(ProtocolError("invalid subscription lifetime"));
         }
+        tracing::trace!(
+            current = %current.to_rfc3339(),
+            termination = %termination.to_rfc3339(),
+            remaining_secs = remaining.as_secs_f64(),
+            "ONVIF event lease parsed"
+        );
         Ok(Self { remaining })
     }
 
@@ -105,10 +111,16 @@ impl Subscription {
             .resolve(xml::field(reference, xml::ADDRESS, "Address")?)
             .map_err(|_| ProtocolError("unapproved subscription endpoint"))?;
         let parameters = reference_parameters(reference)?;
+        let lease = Lease::from_element(root)?;
+        tracing::debug!(
+            lease_secs = lease.remaining().as_secs_f64(),
+            reference_params = parameters.len(),
+            "ONVIF PullPoint subscription parsed"
+        );
         Ok(Self {
             endpoint,
             parameters,
-            lease: Lease::from_element(root)?,
+            lease,
         })
     }
 
@@ -356,6 +368,12 @@ impl Pull {
                 _ => invalid_messages += 1,
             }
         }
+        tracing::trace!(
+            events = notifications.len(),
+            invalid_messages,
+            lease_secs = lease.remaining().as_secs_f64(),
+            "ONVIF PullMessagesResponse parsed"
+        );
         Ok(Self {
             lease,
             notifications,

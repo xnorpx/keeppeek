@@ -15,7 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 use thiserror::Error;
-use tracing::debug;
+use tracing::{debug, trace};
 use url::Url;
 
 #[derive(Debug, Error)]
@@ -141,12 +141,10 @@ impl DiscoveryBuilder {
         let probe = build_probe(&self.probe_types);
         let probe_xml =
             yaserde::ser::to_string(&probe).map_err(|error| Error::Serde(error.to_string()))?;
-        debug!(
-            "Unicast Probe XML: {}. Since you are using unicast, some devices might not be detected",
-            probe_xml
-        );
+        trace!("Unicast Probe XML: {probe_xml}");
 
         let targets = enumerate_network_v4(network, network_mask);
+        debug!(targets = targets.len(), "starting unicast WS-Discovery");
         if targets.is_empty() {
             return Ok(Vec::new());
         }
@@ -197,6 +195,7 @@ impl DiscoveryBuilder {
             let mut found = worker.join().map_err(|_| Error::WorkerFailed)?;
             devices.append(&mut found);
         }
+        debug!(found = devices.len(), "completed unicast WS-Discovery");
 
         Ok(devices)
     }
@@ -213,7 +212,8 @@ impl DiscoveryBuilder {
         let probe = build_probe(&self.probe_types);
         let probe_xml =
             yaserde::ser::to_string(&probe).map_err(|error| Error::Serde(error.to_string()))?;
-        debug!("Probe XML: {probe_xml}");
+        trace!("Probe XML: {probe_xml}");
+        debug!("starting multicast WS-Discovery");
 
         let socket = UdpSocket::bind(SocketAddr::new(
             IpAddr::V4(listen_address),
@@ -242,7 +242,7 @@ impl DiscoveryBuilder {
             match recv_string(&socket) {
                 Ok((xml, source)) => {
                     if !known_responses.insert(calculate_hash(&xml)) {
-                        debug!("Duplicate response from {source}, skipping ...");
+                        trace!("Duplicate response from {source}, skipping ...");
                         continue;
                     }
 
@@ -263,6 +263,7 @@ impl DiscoveryBuilder {
                 Err(error) => return Err(Error::Network(error)),
             }
         }
+        debug!(found = devices.len(), "completed multicast WS-Discovery");
 
         Ok(devices)
     }
@@ -309,7 +310,7 @@ fn probe_unicast(
         )
         .ok()?;
     let (xml, source) = recv_string(&socket).ok()?;
-    debug!("Probe match XML from {source}: {xml}");
+    trace!("Probe match XML from {source}: {xml}");
 
     device_from_probe_response(&xml, message_id)
 }
@@ -325,13 +326,13 @@ fn device_from_probe_response(xml: &str, message_id: &str) -> Option<Device> {
     let envelope = match yaserde::de::from_str::<probe_matches::Envelope>(xml) {
         Ok(envelope) => envelope,
         Err(error) => {
-            debug!("Deserialization failed: {error}");
+            trace!("Probe match deserialization failed: {error}");
             return None;
         }
     };
 
     if envelope.header.relates_to != message_id {
-        debug!("Unrelated message");
+        trace!("Unrelated WS-Discovery probe match message");
         return None;
     }
 

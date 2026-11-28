@@ -1,7 +1,10 @@
 // Copyright (C) The Retina Authors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{Presentation, Stream};
+use super::{
+    Presentation, Stream,
+    sanitize::{SafeUrl, sanitize_rtp_info, sanitize_sdp, sanitize_url_str},
+};
 use bytes::Bytes;
 use log::{debug, warn};
 use sdp_types::Media;
@@ -204,7 +207,13 @@ fn join_control(base_url: &Url, control: &str) -> Result<Url, String> {
         },
         control
     ))
-    .map_err(|e| format!("unable to join base url {base_url} with control url {control:?}: {e}"))
+    .map_err(|e| {
+        format!(
+            "unable to join base url {} with control url {:?}: {e}",
+            SafeUrl(base_url),
+            sanitize_url_str(control)
+        )
+    })
 }
 
 /// Returns the clock rate for an encoding whose RTP payload format permits only one rate.
@@ -430,20 +439,22 @@ pub fn parse_describe(
         Some(v) => {
             return Err(format!(
                 "DESCRIBE response at {} has unexpected content type {}",
-                request_url.as_str(),
+                SafeUrl(&request_url),
                 v,
             ));
         }
         None => {
             warn!(
                 "DESCRIBE response at {} has no content type; trying sdp anyway",
-                request_url.as_str()
+                SafeUrl(&request_url)
             );
         }
     }
     let raw_sdp = MostlyAscii::new(&body[..]);
-    let sdp = parse_sdp(raw_sdp.bytes)
-        .map_err(|e| format!("Unable to parse SDP: {e}\n\n{raw_sdp:#?}",))?;
+    let sdp = parse_sdp(raw_sdp.bytes).map_err(|e| {
+        let scrubbed_sdp = sanitize_sdp(&String::from_utf8_lossy(raw_sdp.bytes));
+        format!("Unable to parse SDP: {e}\n\n{scrubbed_sdp:?}")
+    })?;
 
     // https://tools.ietf.org/html/rfc2326#appendix-C.1.1
     let base_url = response
@@ -462,8 +473,9 @@ pub fn parse_describe(
                 // scheme prefix. Try prepending the request URL's scheme.
                 // See <https://github.com/scottlamb/moonfire-nvr/issues/356>.
                 let fixed = format!("{}://{v}", request_url.scheme());
-                let url = Url::parse(&fixed).map_err(|e| format!("bad {h} {v:?}: {e}"))?;
-                warn!("repaired schemeless {h} {v:?} to {url}");
+                let safe_raw = sanitize_url_str(v);
+                let url = Url::parse(&fixed).map_err(|e| format!("bad {h} {safe_raw:?}: {e}"))?;
+                warn!("repaired schemeless {h} {safe_raw:?} to {}", SafeUrl(&url));
                 Ok::<_, String>(url)
             })
         })
@@ -491,7 +503,8 @@ pub fn parse_describe(
         .filter_map(|(i, m)| {
             parse_media(&base_url, m).map_or_else(
                 |e| {
-                    warn!("Ignoring unparseable stream {i}: {e}\nraw SDP: {raw_sdp:#?}");
+                    let scrubbed_sdp = sanitize_sdp(&String::from_utf8_lossy(raw_sdp.bytes));
+                    warn!("Ignoring unparseable stream {i}: {e}\nraw SDP: {scrubbed_sdp:?}");
                     None
                 },
                 Some,
@@ -552,7 +565,8 @@ fn parse_session_id(id: &str, session_str: &str) -> Result<Box<str>, String> {
     let id = id.trim();
     if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_graphic()) {
         return Err(format!(
-            "Empty or invalid session id in Session header {session_str:?}"
+            "Empty or invalid session id in Session header (len={})",
+            session_str.len()
         ));
     }
     Ok(id.into())
@@ -590,7 +604,8 @@ pub fn parse_setup(response: &crate::rtsp::msg::Response) -> Result<SetupRespons
                 if timeout_sec == 0 {
                     // This would make Retina send keepalives at an absurd rate; reject.
                     return Err(format!(
-                        "Invalid timeout=0 in Session header {session_str:?}"
+                        "Invalid timeout=0 in Session header (len={})",
+                        session_str.len()
                     ));
                 }
                 SessionHeader {
@@ -598,7 +613,10 @@ pub fn parse_setup(response: &crate::rtsp::msg::Response) -> Result<SetupRespons
                     timeout_sec,
                 }
             } else {
-                return Err(format!("Unparseable Session header {session_str:?}"));
+                return Err(format!(
+                    "Unparseable Session header (len={})",
+                    session_str.len()
+                ));
             }
         }
     };
@@ -697,7 +715,7 @@ pub fn parse_play(
         let stream = match stream {
             Some(s) => s,
             None => {
-                log::warn!("RTP-Info contains unknown stream {url}");
+                log::warn!("RTP-Info contains unknown stream {}", SafeUrl(&url));
                 continue;
             }
         };
@@ -708,7 +726,7 @@ pub fn parse_play(
                 // here simply because I didn't include all the SETUP steps.
                 debug!(
                     "PLAY response described stream {} in Uninit state",
-                    stream.control.as_ref().unwrap_or(&presentation.control)
+                    SafeUrl(stream.control.as_ref().unwrap_or(&presentation.control))
                 );
                 continue;
             }
@@ -730,11 +748,17 @@ pub fn parse_play(
                 }
                 "rtptime" => match u32::from_str_radix(value, 10) {
                     Ok(v) => state.initial_rtptime = Some(v),
-                    Err(_) => warn!("Unparseable rtptime in RTP-Info header {rtp_info:?}"),
+                    Err(_) => warn!(
+                        "Unparseable rtptime in RTP-Info header {:?}",
+                        sanitize_rtp_info(rtp_info)
+                    ),
                 },
                 "ssrc" if state.ssrc.is_none() => match parse_rtp_info_ssrc(value) {
                     Some(ssrc) => state.ssrc = Some(ssrc),
-                    None => warn!("Ignoring ambiguous or invalid ssrc in RTP-Info {rtp_info:?}"),
+                    None => warn!(
+                        "Ignoring ambiguous or invalid ssrc in RTP-Info {:?}",
+                        sanitize_rtp_info(rtp_info)
+                    ),
                 },
                 _ => {}
             }
@@ -1590,6 +1614,39 @@ mod tests {
     }
 
     #[test]
+    fn setup_session_header_errors_omit_raw_session_id() {
+        let cases = [
+            (
+                b"RTSP/1.0 200 OK\r\n\
+                  Session: CANARY_SESS_ID;timeout=0\r\n\
+                  Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n"
+                    .as_slice(),
+                "Invalid timeout=0 in Session header",
+            ),
+            (
+                b"RTSP/1.0 200 OK\r\n\
+                  Session: CANARY_SESS_ID;bogus=1\r\n\
+                  Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n"
+                    .as_slice(),
+                "Unparseable Session header",
+            ),
+            (
+                b"RTSP/1.0 200 OK\r\n\
+                  Session: bad CANARY_SESS_ID\r\n\
+                  Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n"
+                    .as_slice(),
+                "Empty or invalid session id in Session header",
+            ),
+        ];
+        for (raw, expected_prefix) in cases {
+            let error = parse_setup(&response(raw).0).unwrap_err();
+            assert!(error.starts_with(expected_prefix), "{error}");
+            assert!(error.contains("(len="), "{error}");
+            assert!(!error.contains("CANARY_SESS_ID"), "{error}");
+        }
+    }
+
+    #[test]
     fn session_id_rejects_spaces_and_controls() {
         for id in [
             "bad session",
@@ -1848,5 +1905,41 @@ mod tests {
         let r = setup_with_transport(" source=192.168.1.10 ; server_port=6970-6971").unwrap();
         assert_eq!(r.source, Some("192.168.1.10".parse().unwrap()));
         assert_eq!(r.server_port, Some(6970));
+    }
+
+    #[test]
+    fn parse_errors_redact_url_credentials_tokens_and_sdp_keys() {
+        let url =
+            Url::parse("rtsp://admin:CANARY_PW@192.0.2.10:554/stream?token=CANARY_TOK").unwrap();
+        let (bad_ct, body) = response(
+            b"RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Type: text/plain\r\nContent-Length: 3\r\n\r\nv=0",
+        );
+        let err = super::parse_describe(url.clone(), &bad_ct, &body)
+            .err()
+            .expect("expected bad content type error");
+        assert!(!err.contains("CANARY_PW"), "{err}");
+        assert!(!err.contains("CANARY_TOK"), "{err}");
+
+        let (bad_sdp_resp, bad_sdp_body) = sdp_response(
+            b"v=0\nu=rtsp://admin:CANARY_PW@192.0.2.10/x?token=CANARY_SDP_TOK\nk=clear:CANARY_SDP_KEY\na=crypto:1 AES_CM_128 inline:CANARY_CRYPTO\n \na=x\n",
+        );
+        let err = super::parse_describe(url.clone(), &bad_sdp_resp, &bad_sdp_body)
+            .err()
+            .expect("expected bad SDP error");
+        assert!(!err.contains("CANARY_PW"), "{err}");
+        assert!(!err.contains("CANARY_SDP_TOK"), "{err}");
+        assert!(!err.contains("CANARY_SDP_KEY"), "{err}");
+        assert!(!err.contains("CANARY_CRYPTO"), "{err}");
+
+        let (mut bad_cb_resp, bad_cb_body) =
+            sdp_response(b"v=0\nm=video 0 RTP/AVP 96\na=rtpmap:96 H264/90000\n");
+        bad_cb_resp.headers.insert(
+            crate::rtsp::msg::HeaderName::from_static("Content-Base").unwrap(),
+            crate::rtsp::msg::HeaderValue::try_from("[bad]/path?token=CANARY_CB_TOK").unwrap(),
+        );
+        let err = super::parse_describe(url, &bad_cb_resp, &bad_cb_body)
+            .err()
+            .expect("expected bad Content-Base error");
+        assert!(!err.contains("CANARY_CB_TOK"), "{err}");
     }
 }

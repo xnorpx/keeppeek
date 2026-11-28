@@ -179,6 +179,12 @@ impl std::fmt::Display for DeliveryTimeout {
 
 impl std::error::Error for DeliveryTimeout {}
 
+struct PullWindow {
+    started: Instant,
+    budget: Duration,
+    timeout: Duration,
+}
+
 impl LeaseClock {
     fn new(lease: Lease, started: Instant) -> Self {
         Self {
@@ -294,6 +300,18 @@ impl Producer {
         ) {
             return;
         }
+        let camera_id = self
+            .camera
+            .name
+            .as_deref()
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.camera.ip.to_string());
+        let span = tracing::info_span!(
+            "onvif_pullpoint",
+            camera_id = %camera_id,
+            camera_ip = %self.camera.ip,
+        );
+        let _guard = span.enter();
         let mut backoff = RECONNECT_MIN;
         while !self.shutdown.is_cancelled() {
             let progress = self.progress();
@@ -370,6 +388,12 @@ impl Producer {
         }
         let (subscription, mut clock) =
             create_subscription(&mut client, service.endpoint(), Instant::now)?;
+        tracing::debug!(
+            camera_ip = %self.camera.ip,
+            lease_ms = clock.remaining_ms(),
+            kinds = service.kinds().len(),
+            "ONVIF PullPoint subscription created"
+        );
         self.slot.update(|evidence| {
             evidence.pull_capable = true;
             evidence.unsubscribed = false;
@@ -426,45 +450,82 @@ impl Producer {
                 clock.renew_at = started;
                 continue;
             }
-            let response = client.execute(
-                &subscription.request(Operation::Pull {
+            self.pull_once(
+                client,
+                subscription,
+                clock,
+                PullWindow {
+                    started,
+                    budget,
                     timeout: pull_timeout,
-                    limit: limits.messages,
-                })?,
-                budget.min(pull_timeout + Duration::from_secs(2)),
-            );
-            match response {
-                Ok(bytes) => {
-                    self.deliver(bytes, clock, started)?;
-                    failures = 0;
-                }
-                Err(error) => {
-                    if let Some(offered) = error.pull_limits() {
-                        limits = reduced_limits(
-                            PullLimits {
-                                timeout: pull_timeout,
-                                messages: limits.messages,
-                            },
-                            offered,
-                        )
-                        .ok_or(error)
-                        .context("camera did not lower usable pull limits")?;
-                    } else {
-                        failures += 1;
-                        if error.is_expired()
-                            || request_state(error).is_some()
-                            || failures >= FAILURES_MAX
-                        {
-                            return Err(error.into());
-                        }
-                    }
-                }
-            }
+                },
+                &mut limits,
+                &mut failures,
+            )?;
             self.shutdown.wait_timeout(
                 POLL_INTERVAL
                     .saturating_sub(started.elapsed())
                     .min(clock.renew_at.saturating_duration_since(Instant::now())),
             );
+        }
+        Ok(())
+    }
+
+    fn pull_once(
+        &self,
+        client: &mut Client,
+        subscription: &Subscription,
+        clock: &mut LeaseClock,
+        window: PullWindow,
+        limits: &mut PullLimits,
+        failures: &mut u8,
+    ) -> anyhow::Result<()> {
+        let response = client.execute(
+            &subscription.request(Operation::Pull {
+                timeout: window.timeout,
+                limit: limits.messages,
+            })?,
+            window.budget.min(window.timeout + Duration::from_secs(2)),
+        );
+        match response {
+            Ok(bytes) => {
+                if tracing::enabled!(tracing::Level::TRACE) {
+                    tracing::trace!(
+                        bytes = bytes.len(),
+                        lease_ms = clock.remaining_ms(),
+                        "ONVIF PullMessages batch received"
+                    );
+                }
+                self.deliver(bytes, clock, window.started)?;
+                *failures = 0;
+            }
+            Err(error) => {
+                if let Some(offered) = error.pull_limits() {
+                    tracing::debug!(
+                        camera_ip = %self.camera.ip,
+                        offered_timeout_ms = offered.timeout.as_millis(),
+                        offered_messages = offered.messages,
+                        "camera lowered ONVIF pull limits"
+                    );
+                    *limits = reduced_limits(
+                        PullLimits {
+                            timeout: window.timeout,
+                            messages: limits.messages,
+                        },
+                        offered,
+                    )
+                    .ok_or(error)
+                    .context("camera did not lower usable pull limits")?;
+                } else {
+                    *failures += 1;
+                    if error.is_expired()
+                        || request_state(error).is_some()
+                        || *failures >= FAILURES_MAX
+                    {
+                        return Err(error.into());
+                    }
+                }
+            }
         }
         Ok(())
     }

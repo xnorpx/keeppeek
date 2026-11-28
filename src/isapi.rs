@@ -208,6 +208,19 @@ impl std::error::Error for DeliveryError {}
 
 impl Worker {
     fn run(mut self) -> bool {
+        let camera_id = self
+            .camera
+            .name
+            .as_deref()
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.camera.ip.to_string());
+        let span = tracing::info_span!(
+            "isapi_events",
+            camera_id = %camera_id,
+            camera_ip = %self.camera.ip,
+            channel = self.route.channel,
+        );
+        let _guard = span.enter();
         let mut backoff = RECONNECT_MIN;
         let mut unsupported = false;
         while !self.shutdown.is_cancelled() {
@@ -220,29 +233,11 @@ impl Worker {
             if self.shutdown.is_cancelled() {
                 break;
             }
-            self.counts.failures = self.counts.failures.saturating_add(1);
-            let error = result
-                .err()
-                .unwrap_or_else(|| anyhow::anyhow!("ISAPI event connection closed"));
-            let permanent = error
-                .downcast_ref::<DeliveryError>()
-                .is_some_and(|error| matches!(error, DeliveryError::Closed))
-                || error.downcast_ref::<::isapi::Error>().is_some_and(|error| {
-                    error.is_authentication()
-                        || error.is_invalid_input()
-                        || matches!(error.http_status(), Some(401 | 403 | 404 | 405))
-                });
-            self.report("disconnected");
-            tracing::warn!(camera_ip = %self.camera.ip, %error, permanent,
-				retry_seconds = backoff.as_secs(), "ISAPI event subscription failed");
-            if permanent {
-                unsupported = error
-                    .downcast_ref::<::isapi::Error>()
-                    .is_some_and(|error| matches!(error.http_status(), Some(404 | 405)));
+            let (stop, is_unsupported) =
+                self.record_worker_failure(result.err(), before, &mut backoff);
+            if stop {
+                unsupported = is_unsupported;
                 break;
-            }
-            if self.counts.notifications > before {
-                backoff = RECONNECT_MIN;
             }
             if self.shutdown.wait_timeout(backoff) {
                 break;
@@ -254,11 +249,53 @@ impl Worker {
                 .counts
                 .dropped
                 .saturating_add(self.pending.len() as u64);
-            tracing::warn!(camera_ip = %self.camera.ip, pending = self.pending.len(),
-                "ISAPI worker stopped before retained transitions could be delivered");
+            tracing::warn!(
+                camera_ip = %self.camera.ip,
+                pending = self.pending.len(),
+                "ISAPI worker stopped before retained transitions could be delivered"
+            );
         }
         self.report("stopped");
         unsupported && self.pending.is_empty() && !self.shutdown.is_cancelled()
+    }
+
+    fn record_worker_failure(
+        &mut self,
+        result_err: Option<anyhow::Error>,
+        before: u64,
+        backoff: &mut Duration,
+    ) -> (bool, bool) {
+        self.counts.failures = self.counts.failures.saturating_add(1);
+        let error = result_err.unwrap_or_else(|| anyhow::anyhow!("ISAPI event connection closed"));
+        let isapi_err = error.downcast_ref::<::isapi::Error>();
+        let permanent = error
+            .downcast_ref::<DeliveryError>()
+            .is_some_and(|error| matches!(error, DeliveryError::Closed))
+            || isapi_err.is_some_and(|error| {
+                error.is_authentication()
+                    || error.is_invalid_input()
+                    || matches!(error.http_status(), Some(401 | 403 | 404 | 405))
+            });
+        self.report("disconnected");
+        tracing::warn!(
+            camera_ip = %self.camera.ip,
+            %error,
+            permanent,
+            http_status = ?isapi_err.and_then(::isapi::Error::http_status),
+            device_status = ?isapi_err.and_then(::isapi::Error::device_status),
+            is_auth = isapi_err.is_some_and(::isapi::Error::is_authentication),
+            retry_seconds = backoff.as_secs(),
+            "ISAPI event subscription failed"
+        );
+        if permanent {
+            let unsupported =
+                isapi_err.is_some_and(|error| matches!(error.http_status(), Some(404 | 405)));
+            return (true, unsupported);
+        }
+        if self.counts.notifications > before {
+            *backoff = RECONNECT_MIN;
+        }
+        (false, false)
     }
 
     fn observe(&mut self) -> anyhow::Result<()> {
@@ -270,8 +307,18 @@ impl Worker {
         )
         .cancelled(move || shutdown.is_cancelled())
         .build()?;
+        tracing::debug!(
+            camera_ip = %self.camera.ip,
+            channel = self.route.channel,
+            "subscribing to ISAPI AlertStream"
+        );
         let mut stream = client.subscribe()?;
         self.counts.connections = self.counts.connections.saturating_add(1);
+        tracing::info!(
+            camera_ip = %self.camera.ip,
+            channel = self.route.channel,
+            "ISAPI AlertStream connected"
+        );
         self.report("connected");
         let mut reported = Instant::now();
         let mut notification_deadline = Instant::now() + HEARTBEAT_TIMEOUT;
@@ -319,10 +366,23 @@ impl Worker {
                 if event.is_heartbeat() {
                     self.counts.heartbeats = self.counts.heartbeats.saturating_add(1);
                 }
+                if tracing::enabled!(tracing::Level::TRACE) {
+                    tracing::trace!(
+                        kind = ?part.kind(),
+                        heartbeat = event.is_heartbeat(),
+                        "ISAPI AlertStream event part"
+                    );
+                }
             } else if part.kind() == PartKind::Jpeg {
                 self.counts.images = self.counts.images.saturating_add(1);
+                if tracing::enabled!(tracing::Level::TRACE) {
+                    tracing::trace!(kind = ?part.kind(), "ISAPI AlertStream image part");
+                }
             } else {
                 self.counts.ignored = self.counts.ignored.saturating_add(1);
+                if tracing::enabled!(tracing::Level::TRACE) {
+                    tracing::trace!(kind = ?part.kind(), "ISAPI AlertStream ignored part");
+                }
             }
             for bundle in assembler.push(part, received.saturating_duration_since(origin))? {
                 self.deliver_bundle(&bundle, origin, wall_time)?;
@@ -393,7 +453,7 @@ impl Worker {
     }
 
     fn report(&self, state: &str) {
-        tracing::info!(name: "camera.isapi.status", camera_ip = %self.camera.ip,
+        tracing::debug!(name: "camera.isapi.status", camera_ip = %self.camera.ip,
 			channel = self.route.channel, state,
 			connections = self.counts.connections, notifications = self.counts.notifications,
 			heartbeats = self.counts.heartbeats, ignored = self.counts.ignored,

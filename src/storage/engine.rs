@@ -1381,6 +1381,11 @@ impl WriterWorker {
             if writer.needs_rotation(frame.received_at, self.config.medium_term_duration) {
                 let old = pipeline.medium_term.take().unwrap();
                 let recording_id = old.recording_id().to_owned();
+                tracing::debug!(
+                    camera = camera_id,
+                    recording_id = %recording_id,
+                    "rotating recording segment at keyframe boundary",
+                );
                 if let Some(path) = finalize_pipeline_recording(old, &self.health, camera_id)? {
                     self.finish_relocation(camera_id, &path, &recording_id);
                 }

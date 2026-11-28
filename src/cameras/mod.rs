@@ -76,10 +76,24 @@ impl SessionTimestampNormalizer {
                     .saturating_sub(previous)
                     .max(Duration::from_nanos(1));
             }
+            tracing::debug!(
+                raw_pts_ms = timestamp.as_millis(),
+                session_offset_ms = normalized.as_millis(),
+                previous_step_ms = self.previous_step.as_millis(),
+                "re-anchored camera session timestamp origin"
+            );
             self.previous_timestamp = Some(normalized);
             return normalized;
         };
 
+        if timestamp < session_origin {
+            tracing::debug!(
+                raw_pts_ms = timestamp.as_millis(),
+                session_origin_ms = session_origin.as_millis(),
+                session_offset_ms = self.session_offset.as_millis(),
+                "clamped backward camera session timestamp jump"
+            );
+        }
         let normalized = self
             .session_offset
             .saturating_add(timestamp.saturating_sub(session_origin));
@@ -88,9 +102,32 @@ impl SessionTimestampNormalizer {
         {
             self.previous_step = normalized - previous;
         }
+        if tracing::enabled!(tracing::Level::TRACE) {
+            tracing::trace!(
+                raw_pts_ms = timestamp.as_millis(),
+                normalized_pts_ms = normalized.as_millis(),
+                step_ms = self.previous_step.as_millis(),
+                "normalized session timestamp"
+            );
+        }
         self.previous_timestamp = Some(normalized);
         normalized
     }
+}
+
+fn safe_url_display(raw: &str) -> String {
+    let Ok(url) = Url::parse(raw) else {
+        return "<invalid-url>".to_owned();
+    };
+    let mut out = format!("{}://{}", url.scheme(), url.host_str().unwrap_or("<none>"));
+    if let Some(port) = url.port() {
+        out.push_str(&format!(":{port}"));
+    }
+    out.push_str(url.path());
+    if url.query().is_some() {
+        out.push_str("?<query>");
+    }
+    out
 }
 
 pub(crate) fn local_broadcasts() -> anyhow::Result<Vec<Ipv4Addr>> {
@@ -837,7 +874,7 @@ fn run_port_scan(
     cancelled: &AtomicBool,
 ) -> anyhow::Result<Vec<IpAddr>> {
     let ips = network::scan_targets(networks);
-    tracing::info!(
+    tracing::debug!(
         "{} port scan: scanning {} IPs on port {}",
         label,
         ips.len(),
@@ -847,7 +884,7 @@ fn run_port_scan(
         probe_tcp_port(ip, port)
     });
 
-    tracing::info!("{} port scan: found {} open ports", label, found.len());
+    tracing::debug!("{} port scan: found {} open ports", label, found.len());
     Ok(found)
 }
 
@@ -1087,9 +1124,18 @@ fn query_onvif_services(
             include_capability: true,
         },
     ) {
-        Ok(resp) => Ok(resp),
+        Ok(resp) => {
+            tracing::debug!(
+                port,
+                services = resp.service.len(),
+                include_capability = true,
+                "ONVIF GetServices ok"
+            );
+            Ok(resp)
+        }
         Err(first_err) => {
             let kind = classify_soap_error(&first_err);
+            tracing::debug!(port, ?kind, "ONVIF GetServices with capabilities failed");
             // Never retry GetServices on auth, lockout, redirect, or timeout errors.
             if matches!(
                 kind,
@@ -1101,13 +1147,20 @@ fn query_onvif_services(
                 return Err(OnvifProbeError::from_soap("get_services", port, &first_err));
             }
             let retry_client = build_pinned_soap_client(url, creds, deadline, port)?;
-            devicemgmt::get_services(
+            let resp = devicemgmt::get_services(
                 &retry_client,
                 &devicemgmt::GetServices {
                     include_capability: false,
                 },
             )
-            .map_err(|error| OnvifProbeError::from_soap("get_services", port, &error))
+            .map_err(|error| OnvifProbeError::from_soap("get_services", port, &error))?;
+            tracing::debug!(
+                port,
+                services = resp.service.len(),
+                include_capability = false,
+                "ONVIF GetServices fallback ok"
+            );
+            Ok(resp)
         }
     }
 }
@@ -1258,9 +1311,13 @@ fn query_onvif_media_profiles(
     })?;
     let media_client = build_pinned_soap_client(&parsed, creds.clone(), deadline, port)?;
     let resp = match onvif_media::get_profiles(&media_client, &onvif_media::GetProfiles {}) {
-        Ok(resp) => resp,
+        Ok(resp) => {
+            tracing::debug!(port, profiles = resp.profiles.len(), "ONVIF GetProfiles ok");
+            resp
+        }
         Err(error) => {
             let mapped = OnvifProbeError::from_soap("get_profiles", port, &error);
+            tracing::debug!(port, kind = ?mapped.kind, "ONVIF GetProfiles failed");
             if matches!(
                 mapped.kind,
                 OnvifProbeFailureKind::AuthFailed
@@ -1653,7 +1710,7 @@ pub fn query_cameras(configs: &HashMap<String, Vec<CameraConfig>>) -> HashMap<Ip
 
     for (namespace, cameras) in configs {
         for config in cameras {
-            tracing::info!(
+            tracing::debug!(
                 "querying {} ({}) in namespace '{}'",
                 config.name.as_deref().unwrap_or("?"),
                 config.ip,
@@ -1709,7 +1766,7 @@ pub fn query_cameras(configs: &HashMap<String, Vec<CameraConfig>>) -> HashMap<Ip
                 && let Ok(ip4) = config.ip.to_string().parse::<std::net::Ipv4Addr>()
                 && reolink::probe_reolink_http(ip4)
             {
-                tracing::info!(
+                tracing::debug!(
                     ip = %config.ip,
                     onvif_manufacturer = manufacturer,
                     "ONVIF reports non-Reolink manufacturer but HTTP API responds \u{2014} treating as Reolink",
@@ -1720,15 +1777,15 @@ pub fn query_cameras(configs: &HashMap<String, Vec<CameraConfig>>) -> HashMap<Ip
             if is_reolink {
                 camera.is_reolink = true;
                 normalize_reolink_device(&mut camera.device);
-                tracing::info!("detected Reolink — querying HTTP API for extras");
+                tracing::debug!("detected Reolink — querying HTTP API for extras");
 
                 for (i, profile) in camera.profiles.iter().enumerate() {
                     if let Some(ref uri) = profile.stream_uri {
-                        tracing::info!(
+                        tracing::debug!(
                             ip = %config.ip,
                             profile_idx = i,
                             name = %profile.name,
-                            onvif_stream_uri = %uri,
+                            onvif_stream_uri = %safe_url_display(uri),
                             "ONVIF stream URI (before Reolink merge)",
                         );
                     }
@@ -2503,5 +2560,66 @@ mod tests {
         assert_eq!(ports.https, Some(8443));
         assert_eq!(ports.rtsp, Some(554));
         assert_eq!(ports.onvif, Some(8000));
+    }
+
+    #[test]
+    fn session_timestamp_normalizer_logs_only_at_debug_and_trace() {
+        use std::sync::{Arc, Mutex};
+        use tracing_subscriber::fmt::MakeWriter;
+
+        #[derive(Clone, Default)]
+        struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+        struct BufWriter(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for BufWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> MakeWriter<'a> for SharedBuf {
+            type Writer = BufWriter;
+            fn make_writer(&'a self) -> Self::Writer {
+                BufWriter(Arc::clone(&self.0))
+            }
+        }
+
+        let run_at = |level: tracing::Level| -> String {
+            let buf = SharedBuf::default();
+            let subscriber = tracing_subscriber::fmt()
+                .with_max_level(level)
+                .with_ansi(false)
+                .with_writer(buf.clone())
+                .finish();
+            tracing::subscriber::with_default(subscriber, || {
+                let mut norm = SessionTimestampNormalizer::new();
+                norm.begin_session();
+                assert_eq!(norm.normalize(Duration::from_secs(10)), Duration::ZERO);
+                assert_eq!(
+                    norm.normalize(Duration::from_secs(11)),
+                    Duration::from_secs(1)
+                );
+                assert_eq!(
+                    norm.normalize(Duration::from_secs(5)),
+                    Duration::from_secs(0)
+                );
+            });
+            String::from_utf8(buf.0.lock().unwrap().clone()).unwrap()
+        };
+
+        assert!(run_at(tracing::Level::INFO).is_empty());
+        let debug_logs = run_at(tracing::Level::DEBUG);
+        assert!(debug_logs.contains("re-anchored camera session timestamp origin"));
+        assert!(debug_logs.contains("clamped backward camera session timestamp jump"));
+        assert!(!debug_logs.contains("normalized session timestamp"));
+        let trace_logs = run_at(tracing::Level::TRACE);
+        assert!(trace_logs.contains("normalized session timestamp"));
+
+        let scrubbed_url = safe_url_display("rtsp://admin:hunter2@192.0.2.9:554/stream1?token=xyz");
+        assert_eq!(scrubbed_url, "rtsp://192.0.2.9:554/stream1?<query>");
+        assert!(!scrubbed_url.contains("hunter2"));
+        assert!(!scrubbed_url.contains("xyz"));
     }
 }

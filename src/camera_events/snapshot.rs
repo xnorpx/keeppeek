@@ -58,6 +58,8 @@ fn run(
     slot: Arc<Slot>,
     shutdown: Shutdown,
 ) {
+    let span = tracing::debug_span!("event_snapshot", camera_ip = %ip);
+    let _guard = span.enter();
     while !shutdown.is_cancelled() {
         let job = match received.recv_timeout(Duration::from_millis(100)) {
             Ok(job) => job,
@@ -68,15 +70,24 @@ fn run(
             return;
         }
         let Some(permit) = privacy.media_permit(job.camera_id.as_str().into()) else {
+            tracing::debug!(camera_id = %job.camera_id, event_id = %job.event_id, "skipping event snapshot under privacy mode");
             continue;
         };
         let Some(endpoint) = registry.snapshot_endpoint(ip) else {
+            tracing::debug!(camera_id = %job.camera_id, event_id = %job.event_id, "no snapshot endpoint registered");
             slot.update(|evidence| evidence.snapshot_failures += 1);
             continue;
         };
+        tracing::trace!(camera_id = %job.camera_id, event_id = %job.event_id, "fetching ONVIF event snapshot");
         let jpeg = match client.snapshot(&endpoint, Duration::from_secs(2)) {
             Ok(jpeg) if crate::storage::events::jpeg_dimensions(&jpeg).is_ok() => jpeg,
-            _ => {
+            Ok(_) => {
+                tracing::debug!(camera_id = %job.camera_id, event_id = %job.event_id, "ONVIF event snapshot had invalid JPEG");
+                slot.update(|evidence| evidence.snapshot_failures += 1);
+                continue;
+            }
+            Err(error) => {
+                tracing::debug!(camera_id = %job.camera_id, event_id = %job.event_id, %error, "ONVIF event snapshot fetch failed");
                 slot.update(|evidence| evidence.snapshot_failures += 1);
                 continue;
             }

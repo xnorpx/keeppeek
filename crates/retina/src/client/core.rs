@@ -3,7 +3,10 @@
 //! The caller owns sockets and time. After every [`RtspClient::handle_input`]
 //! call, drain [`RtspClient::poll_output`] until it returns [`Output::Timeout`].
 
-use super::channel_mapping::{ChannelMappings, ChannelType};
+use super::{
+    channel_mapping::{ChannelMappings, ChannelType},
+    sanitize::{SafeUrl, sanitize_rtp_info, sanitize_sdp, sanitize_url_str},
+};
 use crate::rtsp::{
     inputs::{Contiguous, Input as _, Slice as _},
     msg,
@@ -595,6 +598,11 @@ impl RtspClient {
             crate::ConnectionContext::unspecified_at(time.wall)
                 .map_err(|error| CoreError::InvalidTime(error.to_string()))?,
         );
+        log::debug!(
+            "rtsp tcp connected conn={} url={}",
+            connection.get(),
+            SafeUrl(&url)
+        );
         let cseq = self.take_cseq()?;
         let authorization = self.authorization(&url, &msg::Method::DESCRIBE)?;
         let data = describe_request(&url, cseq, authorization)?;
@@ -625,6 +633,10 @@ impl RtspClient {
         }
 
         self.phase = Phase::Failed;
+        log::debug!(
+            "rtsp tcp connect failed conn={} error={error}",
+            connection.get()
+        );
         self.outputs
             .push_back(Output::Event(Event::TcpConnectFailed { connection, error }));
         Ok(())
@@ -824,44 +836,20 @@ impl RtspClient {
     ) -> Result<(), CoreError> {
         let (response, body) = expected_response(framed, cseq, "DESCRIBE")?;
         if response.status_code == msg::StatusCode::UNAUTHORIZED {
-            if let Err(error) = self.accept_auth_challenge(&response) {
-                self.phase = Phase::Failed;
-                self.outputs.push_back(Output::CloseTcp { connection });
-                self.outputs
-                    .push_back(Output::Event(Event::DescribeResponse {
-                        connection,
-                        received_at: time,
-                        response,
-                        body,
-                    }));
-                return Err(error);
-            }
-            let retry_cseq = self.take_cseq()?;
-            let authorization = self.authorization(&url, &msg::Method::DESCRIBE)?;
-            let data = describe_request(&url, retry_cseq, authorization)?;
-            self.phase = Phase::AwaitingDescribeWrite {
-                connection,
-                url,
-                cseq: retry_cseq,
-            };
-            self.outputs
-                .push_back(Output::Event(Event::DescribeResponse {
-                    connection,
-                    received_at: time,
-                    response,
-                    body,
-                }));
-            self.outputs
-                .push_back(Output::TcpTransmit { connection, data });
-            return Ok(());
+            return self.handle_describe_unauthorized(time, connection, cseq, url, response, body);
         }
         if response.status_code.is_success() {
             match super::parse::parse_describe(url.clone(), &response, &body) {
                 Ok(presentation) => {
+                    log_presentation_summary(connection, &url, &presentation);
                     self.presentation = Some(presentation);
                     self.phase = Phase::Described { connection, url };
                 }
                 Err(description) => {
+                    log::debug!(
+                        "rtsp describe parse failed conn={} cseq={cseq} error={description}",
+                        connection.get()
+                    );
                     self.phase = Phase::Failed;
                     self.outputs.push_back(Output::CloseTcp { connection });
                     self.outputs
@@ -877,6 +865,11 @@ impl RtspClient {
                 }
             }
         } else {
+            log::debug!(
+                "rtsp describe error conn={} cseq={cseq} status={}",
+                connection.get(),
+                response.status_code
+            );
             self.phase = Phase::Failed;
             self.outputs.push_back(Output::CloseTcp { connection });
         }
@@ -887,6 +880,56 @@ impl RtspClient {
                 response,
                 body,
             }));
+        Ok(())
+    }
+
+    fn handle_describe_unauthorized(
+        &mut self,
+        time: Time,
+        connection: TcpConnectionId,
+        cseq: u32,
+        url: Url,
+        response: msg::Response,
+        body: Bytes,
+    ) -> Result<(), CoreError> {
+        if let Err(error) = self.accept_auth_challenge(&response) {
+            log::debug!(
+                "rtsp describe auth failed conn={} cseq={cseq} error={error}",
+                connection.get()
+            );
+            self.phase = Phase::Failed;
+            self.outputs.push_back(Output::CloseTcp { connection });
+            self.outputs
+                .push_back(Output::Event(Event::DescribeResponse {
+                    connection,
+                    received_at: time,
+                    response,
+                    body,
+                }));
+            return Err(error);
+        }
+        let retry_cseq = self.take_cseq()?;
+        log::debug!(
+            "rtsp describe 401 retry conn={} cseq={cseq} retry_cseq={retry_cseq} url={}",
+            connection.get(),
+            SafeUrl(&url)
+        );
+        let authorization = self.authorization(&url, &msg::Method::DESCRIBE)?;
+        let data = describe_request(&url, retry_cseq, authorization)?;
+        self.phase = Phase::AwaitingDescribeWrite {
+            connection,
+            url,
+            cseq: retry_cseq,
+        };
+        self.outputs
+            .push_back(Output::Event(Event::DescribeResponse {
+                connection,
+                received_at: time,
+                response,
+                body,
+            }));
+        self.outputs
+            .push_back(Output::TcpTransmit { connection, data });
         Ok(())
     }
 
@@ -1153,6 +1196,11 @@ impl RtspClient {
         } = context;
         let (response, body) = expected_response(framed, cseq, "SETUP")?;
         if !response.status_code.is_success() {
+            log::debug!(
+                "rtsp setup error status conn={} stream={stream} cseq={cseq} status={}",
+                connection.get(),
+                response.status_code
+            );
             self.phase = Phase::Failed;
             self.outputs.push_back(Output::CloseTcp { connection });
             self.outputs.push_back(Output::Event(Event::SetupResponse {
@@ -1168,6 +1216,10 @@ impl RtspClient {
         let setup = match super::parse::parse_setup(&response) {
             Ok(setup) => setup,
             Err(description) => {
+                log::debug!(
+                    "rtsp setup parse failed conn={} stream={stream} cseq={cseq} error={description}",
+                    connection.get()
+                );
                 self.phase = Phase::Failed;
                 self.outputs.push_back(Output::CloseTcp { connection });
                 return Err(CoreError::UnexpectedResponse(format!(
@@ -1175,13 +1227,29 @@ impl RtspClient {
                 )));
             }
         };
+        log::debug!(
+            "rtsp setup ok conn={} stream={stream} cseq={cseq} ssrc={:?} channel_id={:?} server_port={:?} session_id_len={} timeout_secs={}",
+            connection.get(),
+            setup.ssrc,
+            setup.channel_id,
+            setup.server_port,
+            setup.session.id.len(),
+            setup.session.timeout_sec
+        );
         if let Some(existing) = &self.session {
             if existing.id != setup.session.id {
+                log::debug!(
+                    "rtsp setup changed session conn={} stream={stream} old_session_len={} new_session_len={}",
+                    connection.get(),
+                    existing.id.len(),
+                    setup.session.id.len()
+                );
                 self.phase = Phase::Failed;
                 self.outputs.push_back(Output::CloseTcp { connection });
                 return Err(CoreError::UnexpectedResponse(format!(
-                    "SETUP changed RTSP session id from {:?} to {:?}",
-                    existing.id, setup.session.id
+                    "SETUP changed RTSP session id (old_len={} new_len={})",
+                    existing.id.len(),
+                    setup.session.id.len()
                 )));
             }
         } else {
@@ -1383,6 +1451,11 @@ impl RtspClient {
     ) -> Result<(), CoreError> {
         let (response, body) = expected_response(framed, cseq, "PLAY")?;
         if !response.status_code.is_success() {
+            log::debug!(
+                "rtsp play error status conn={} cseq={cseq} status={}",
+                connection.get(),
+                response.status_code
+            );
             self.pending_udp.clear();
             self.phase = Phase::Failed;
             self.outputs.push_back(Output::CloseTcp { connection });
@@ -1478,6 +1551,10 @@ impl RtspClient {
             Ok(())
         })();
         if let Err(description) = result {
+            log::debug!(
+                "rtsp play init failed conn={} cseq={cseq} error={description}",
+                connection.get()
+            );
             self.pending_udp.clear();
             self.phase = Phase::Failed;
             self.outputs.push_back(Output::CloseTcp { connection });
@@ -1486,6 +1563,11 @@ impl RtspClient {
             )));
         }
 
+        log::debug!(
+            "rtsp play ok conn={} cseq={cseq} url={}",
+            connection.get(),
+            SafeUrl(&url)
+        );
         self.phase = Phase::Playing { connection, url };
         self.outputs.push_back(Output::Event(Event::PlayResponse {
             connection,
@@ -1522,13 +1604,16 @@ impl RtspClient {
             )
         })?;
         let challenge: &str = challenge;
-        self.requested_auth = Some(http_auth::PasswordClient::try_from(challenge).map_err(
-            |error| {
-                CoreError::UnexpectedResponse(format!(
-                    "unable to parse RTSP authentication challenge: {error}"
-                ))
-            },
-        )?);
+        self.requested_auth =
+            Some(http_auth::PasswordClient::try_from(challenge).map_err(|_| {
+                CoreError::UnexpectedResponse(
+                    "unable to parse RTSP authentication challenge".to_string(),
+                )
+            })?);
+        if log::log_enabled!(log::Level::Debug) {
+            let sanitized_challenge = sanitize_www_authenticate(challenge);
+            log::debug!("rtsp auth challenge accepted challenge=[{sanitized_challenge}]");
+        }
         Ok(())
     }
 
@@ -1553,10 +1638,12 @@ impl RtspClient {
                 method: method.as_ref(),
                 body: Some(&[]),
             })
-            .map_err(CoreError::Encoding)?;
-        msg::HeaderValue::try_from(value)
-            .map(Some)
-            .map_err(|error| CoreError::Encoding(error.to_string()))
+            .map_err(|_| {
+                CoreError::Encoding("unable to compute RTSP authorization header".to_string())
+            })?;
+        msg::HeaderValue::try_from(value).map(Some).map_err(|_| {
+            CoreError::Encoding("RTSP authorization header contains invalid bytes".to_string())
+        })
     }
 
     fn handle_tcp_closed(&mut self, connection: TcpConnectionId) -> Result<(), CoreError> {
@@ -1568,6 +1655,7 @@ impl RtspClient {
         }
 
         self.pending_udp.clear();
+        log::debug!("rtsp tcp closed conn={}", connection.get());
         self.phase = Phase::Closed;
         self.outputs
             .push_back(Output::Event(Event::TcpClosed { connection }));
@@ -1601,6 +1689,7 @@ impl RtspClient {
         }
 
         self.pending_udp.clear();
+        log::debug!("rtsp request timeout conn={} cseq={cseq}", connection.get());
         self.phase = Phase::Failed;
         self.outputs
             .push_back(Output::Event(Event::RequestTimedOut { connection, cseq }));
@@ -1654,19 +1743,7 @@ fn describe_request(
         msg::HeaderValue::try_from("application/sdp")
             .map_err(|error| CoreError::Encoding(error.to_string()))?,
     );
-    let request = msg::OwnedMessage::Request {
-        head: msg::Request {
-            method: msg::Method::DESCRIBE,
-            request_uri: Some(url.clone()),
-            headers,
-        },
-        body: Bytes::new(),
-    };
-    let mut wire = Cursor::new(Vec::new());
-    request
-        .write(&mut wire)
-        .map_err(|error| CoreError::Encoding(error.to_string()))?;
-    Ok(Bytes::from(wire.into_inner()))
+    encode_request(msg::Method::DESCRIBE, url, cseq, headers)
 }
 
 fn setup_request(
@@ -1699,19 +1776,7 @@ fn setup_request(
                 .map_err(|error| CoreError::Encoding(error.to_string()))?,
         );
     }
-    let request = msg::OwnedMessage::Request {
-        head: msg::Request {
-            method: msg::Method::SETUP,
-            request_uri: Some(url.clone()),
-            headers,
-        },
-        body: Bytes::new(),
-    };
-    let mut wire = Cursor::new(Vec::new());
-    request
-        .write(&mut wire)
-        .map_err(|error| CoreError::Encoding(error.to_string()))?;
-    Ok(Bytes::from(wire.into_inner()))
+    encode_request(msg::Method::SETUP, url, cseq, headers)
 }
 
 fn play_request(
@@ -1731,9 +1796,26 @@ fn play_request(
         msg::HeaderValue::try_from(session_id.to_string())
             .map_err(|error| CoreError::Encoding(error.to_string()))?,
     );
+    encode_request(msg::Method::PLAY, url, cseq, headers)
+}
+
+fn encode_request(
+    method: msg::Method,
+    url: &Url,
+    cseq: u32,
+    headers: msg::Headers,
+) -> Result<Bytes, CoreError> {
+    if log::log_enabled!(log::Level::Trace) {
+        let method_name: &str = method.as_ref();
+        log::trace!(
+            "rtsp tx method={method_name} url={} cseq={cseq} headers=[{}]",
+            SafeUrl(url),
+            format_rtsp_headers_sanitized(&headers)
+        );
+    }
     let request = msg::OwnedMessage::Request {
         head: msg::Request {
-            method: msg::Method::PLAY,
+            method,
             request_uri: Some(url.clone()),
             headers,
         },
@@ -1815,7 +1897,143 @@ fn expected_response(
             "expected {operation} response CSeq {expected_cseq}, got {cseq}"
         )));
     }
+    if log::log_enabled!(log::Level::Trace) {
+        log_rtsp_response_trace(operation, cseq, &response, &framed.body);
+    }
     Ok((response, framed.body))
+}
+
+fn fallback_challenge_scheme(trimmed: &str) -> String {
+    let scheme = trimmed
+        .split_once(char::is_whitespace)
+        .map_or(trimmed, |(scheme, _)| scheme);
+    if !scheme.is_empty()
+        && scheme
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        scheme.to_string()
+    } else {
+        "<malformed>".to_string()
+    }
+}
+
+fn format_challenge_param(key_lower: &str, value: &http_auth::ParamValue<'_>) -> String {
+    let escaped = value.as_escaped();
+    let is_plain_token = !escaped.is_empty()
+        && escaped
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
+    if matches!(key_lower, "algorithm" | "stale") && is_plain_token {
+        format!("{key_lower}={escaped}")
+    } else {
+        format!("{key_lower}=\"{escaped}\"")
+    }
+}
+
+fn sanitize_www_authenticate(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let Ok(challenges) = http_auth::parse_challenges(trimmed) else {
+        return fallback_challenge_scheme(trimmed);
+    };
+    let mut rendered = Vec::new();
+    for challenge in challenges {
+        let mut kept = Vec::new();
+        for (key, param_val) in &challenge.params {
+            let key_lower = key.to_ascii_lowercase();
+            if matches!(key_lower.as_str(), "realm" | "qop" | "algorithm" | "stale") {
+                kept.push(format_challenge_param(&key_lower, param_val));
+            }
+        }
+        if kept.is_empty() {
+            rendered.push(challenge.scheme.to_string());
+        } else {
+            rendered.push(format!("{} {}", challenge.scheme, kept.join(", ")));
+        }
+    }
+    if rendered.is_empty() {
+        fallback_challenge_scheme(trimmed)
+    } else {
+        rendered.join(", ")
+    }
+}
+
+fn format_rtsp_headers_sanitized(headers: &msg::Headers) -> String {
+    let mut parts = Vec::new();
+    for (name, value) in headers.iter() {
+        let key: &str = name;
+        if key.eq_ignore_ascii_case("authorization")
+            || key.eq_ignore_ascii_case("proxy-authorization")
+            || key.eq_ignore_ascii_case("authentication-info")
+            || key.eq_ignore_ascii_case("proxy-authentication-info")
+            || key.eq_ignore_ascii_case("set-cookie")
+            || key.eq_ignore_ascii_case("cookie")
+            || key.eq_ignore_ascii_case("session")
+        {
+            parts.push(format!("{key}: [REDACTED]"));
+        } else if key.eq_ignore_ascii_case("www-authenticate")
+            || key.eq_ignore_ascii_case("proxy-authenticate")
+        {
+            parts.push(format!("{key}: {}", sanitize_www_authenticate(value)));
+        } else if key.eq_ignore_ascii_case("location")
+            || key.eq_ignore_ascii_case("content-base")
+            || key.eq_ignore_ascii_case("content-location")
+        {
+            parts.push(format!("{key}: {}", sanitize_url_str(value)));
+        } else if key.eq_ignore_ascii_case("rtp-info") {
+            parts.push(format!("{key}: {}", sanitize_rtp_info(value)));
+        } else {
+            parts.push(format!("{key}: {value}"));
+        }
+    }
+    parts.join("; ")
+}
+
+fn log_rtsp_response_trace(operation: &str, cseq: u32, response: &msg::Response, body: &Bytes) {
+    let headers = format_rtsp_headers_sanitized(&response.headers);
+    if operation == "DESCRIBE" && response.status_code.is_success() && !body.is_empty() {
+        let sdp = sanitize_sdp(&String::from_utf8_lossy(body));
+        log::trace!(
+            "rtsp rx op={operation} cseq={cseq} status={} headers=[{headers}] sdp={sdp:?}",
+            response.status_code
+        );
+    } else {
+        log::trace!(
+            "rtsp rx op={operation} cseq={cseq} status={} body_len={} headers=[{headers}]",
+            response.status_code,
+            body.len()
+        );
+    }
+}
+
+fn log_presentation_summary(
+    connection: TcpConnectionId,
+    url: &Url,
+    presentation: &super::Presentation,
+) {
+    if !log::log_enabled!(log::Level::Debug) {
+        return;
+    }
+    let tracks: Vec<String> = presentation
+        .streams
+        .iter()
+        .enumerate()
+        .map(|(idx, s)| {
+            format!(
+                "#{idx}:media={}/enc={}/pt={}/hz={}",
+                s.media, s.encoding_name, s.rtp_payload_type, s.clock_rate_hz
+            )
+        })
+        .collect();
+    log::debug!(
+        "rtsp describe ok conn={} url={} streams=[{}]",
+        connection.get(),
+        SafeUrl(url),
+        tracks.join(", ")
+    );
 }
 
 #[cfg(test)]
@@ -3091,5 +3309,248 @@ mod tests {
         ));
         assert_eq!(client.state(), ClientState::Failed);
         assert!(client.streams().is_none());
+    }
+
+    #[test]
+    fn logging_helpers_redact_credentials_nonces_and_auth_headers() {
+        let secret_url =
+            Url::parse("rtsp://admin:hunter2@192.0.2.55:8554/h264Preview_01_main?token=abc")
+                .unwrap();
+        let safe = SafeUrl(&secret_url).to_string();
+        assert_eq!(safe, "rtsp://192.0.2.55:8554/h264Preview_01_main?<query>");
+        assert!(!safe.contains("admin"));
+        assert!(!safe.contains("hunter2"));
+        assert!(!safe.contains("abc"));
+
+        let challenge = concat!(
+            r#"Digest realm="Camera, Lobby", "#,
+            r#"nonce="super-secret-nonce-value", "#,
+            r#"qop="auth", algorithm=MD5, stale=TRUE, opaque="opaque-tok""#
+        );
+        let sanitized_challenge = sanitize_www_authenticate(challenge);
+        assert!(sanitized_challenge.contains(r#"realm="Camera, Lobby""#));
+        assert!(sanitized_challenge.contains(r#"qop="auth""#));
+        assert!(sanitized_challenge.contains("algorithm=MD5"));
+        assert!(sanitized_challenge.contains("stale=TRUE"));
+        assert!(!sanitized_challenge.contains("super-secret-nonce-value"));
+        assert!(!sanitized_challenge.contains("opaque-tok"));
+
+        let mut headers = msg::Headers::default();
+        headers.insert(
+            msg::HeaderName::CSEQ,
+            msg::HeaderValue::try_from("4").unwrap(),
+        );
+        headers.insert(
+            msg::HeaderName::SESSION,
+            msg::HeaderValue::try_from("99887766").unwrap(),
+        );
+        headers.insert(
+            msg::HeaderName::AUTHORIZATION,
+            msg::HeaderValue::try_from(r#"Digest username="admin", response="deadbeef""#).unwrap(),
+        );
+        headers.insert(
+            msg::HeaderName::WWW_AUTHENTICATE,
+            msg::HeaderValue::try_from(challenge).unwrap(),
+        );
+        headers.insert(
+            msg::HeaderName::from_static("Proxy-Authenticate").unwrap(),
+            msg::HeaderValue::try_from(challenge).unwrap(),
+        );
+        headers.insert(
+            msg::HeaderName::from_static("Authentication-Info").unwrap(),
+            msg::HeaderValue::try_from(r#"nextnonce="secret-next", rspauth="secret-rsp""#).unwrap(),
+        );
+        let rendered = format_rtsp_headers_sanitized(&headers);
+        assert!(rendered.contains("CSeq: 4"));
+        assert!(rendered.contains("Session: [REDACTED]"));
+        assert!(!rendered.contains("99887766"));
+        assert!(rendered.contains("Authorization: [REDACTED]"));
+        assert!(rendered.contains("Authentication-Info: [REDACTED]"));
+        assert!(rendered.contains(r#"Proxy-Authenticate: Digest realm="Camera, Lobby""#));
+        assert!(!rendered.contains("deadbeef"));
+        assert!(!rendered.contains("secret-next"));
+        assert!(!rendered.contains("secret-rsp"));
+        assert!(!rendered.contains("super-secret-nonce-value"));
+    }
+
+    #[test]
+    fn malformed_auth_challenge_and_headers_do_not_leak_secrets() {
+        let unterminated = r#"Digest realm="bad, nonce="CANARY_NONCE_1", opaque="CANARY_OPQ_1""#;
+        let sanitized_unterminated = sanitize_www_authenticate(unterminated);
+        assert_eq!(sanitized_unterminated, "Digest");
+        assert!(!sanitized_unterminated.contains("CANARY_NONCE_1"));
+        assert!(!sanitized_unterminated.contains("CANARY_OPQ_1"));
+
+        let missing_comma = r#"Digest realm="cam" nonce="CANARY_NONCE_2""#;
+        let sanitized_missing_comma = sanitize_www_authenticate(missing_comma);
+        assert_eq!(sanitized_missing_comma, "Digest");
+        assert!(!sanitized_missing_comma.contains("CANARY_NONCE_2"));
+
+        let (mut client, connection, start) = describe_client_with_options(ClientOptions {
+            credentials: Some(crate::client::Credentials {
+                username: "admin".to_string(),
+                password: "secret".to_string(),
+            }),
+            ..ClientOptions::default()
+        });
+        client
+            .handle_input(Input::TcpConnected {
+                time: time(start, Duration::from_millis(1)),
+                connection,
+            })
+            .unwrap();
+        let _ = client.poll_output();
+        let _ = client.poll_output();
+        client
+            .handle_input(Input::TcpWriteCompleted {
+                time: time(start, Duration::from_millis(2)),
+                connection,
+            })
+            .unwrap();
+        let _ = client.poll_output();
+
+        let bad_401 = concat!(
+            "RTSP/1.0 401 Unauthorized\r\n",
+            "CSeq: 1\r\n",
+            "WWW-Authenticate: Digest realm=\"bad, nonce=\"CANARY_NONCE_99\", opaque=\"CANARY_OPQ_99\"\r\n",
+            "\r\n"
+        );
+        let error = client
+            .handle_input(Input::TcpData {
+                time: time(start, Duration::from_millis(3)),
+                connection,
+                data: bad_401.as_bytes(),
+            })
+            .unwrap_err();
+        let err_text = error.to_string();
+        assert!(!err_text.contains("CANARY_NONCE_99"), "{err_text}");
+        assert!(!err_text.contains("CANARY_OPQ_99"), "{err_text}");
+
+        let mut headers = msg::Headers::default();
+        headers.insert(
+            msg::HeaderName::from_static("Proxy-Authentication-Info").unwrap(),
+            msg::HeaderValue::try_from(r#"nextnonce="CANARY_PROXY_NEXT""#).unwrap(),
+        );
+        headers.insert(
+            msg::HeaderName::from_static("Location").unwrap(),
+            msg::HeaderValue::try_from("rtsp://admin:pw@192.0.2.1/live?token=CANARY_LOC").unwrap(),
+        );
+        headers.insert(
+            msg::HeaderName::from_static("Content-Base").unwrap(),
+            msg::HeaderValue::try_from("rtsp://admin:pw@192.0.2.1/base?token=CANARY_BASE").unwrap(),
+        );
+        headers.insert(
+            msg::HeaderName::from_static("Content-Location").unwrap(),
+            msg::HeaderValue::try_from("rtsp://admin:pw@192.0.2.1/loc?token=CANARY_CLOC").unwrap(),
+        );
+        headers.insert(
+            msg::HeaderName::RTP_INFO,
+            msg::HeaderValue::try_from(
+                "url=rtsp://admin:pw@192.0.2.1/track1?token=CANARY_RTP;seq=10;rtptime=20",
+            )
+            .unwrap(),
+        );
+        let rendered = format_rtsp_headers_sanitized(&headers);
+        assert!(rendered.contains("Proxy-Authentication-Info: [REDACTED]"));
+        assert!(rendered.contains("Location: rtsp://192.0.2.1/live?<query>"));
+        assert!(rendered.contains("Content-Base: rtsp://192.0.2.1/base?<query>"));
+        assert!(rendered.contains("Content-Location: rtsp://192.0.2.1/loc?<query>"));
+        assert!(
+            rendered.contains("RTP-Info: url=rtsp://192.0.2.1/track1?<query>;seq=10;rtptime=20")
+        );
+        for canary in [
+            "CANARY_PROXY_NEXT",
+            "CANARY_LOC",
+            "CANARY_BASE",
+            "CANARY_CLOC",
+            "CANARY_RTP",
+            ":pw@",
+        ] {
+            assert!(!rendered.contains(canary), "leaked {canary}: {rendered}");
+        }
+
+        let sdp = concat!(
+            "v=0\r\n",
+            "u=rtsp://admin:sdp-pw@192.0.2.1/info?token=CANARY_SDP_U\r\n",
+            "k=clear:CANARY_SDP_K\r\n",
+            "m=video 0 RTP/AVP 96\r\n",
+            "a=rtpmap:96 H264/90000\r\n",
+            "a=control:rtsp://admin:sdp-pw@192.0.2.1/track0?token=CANARY_SDP_CTRL\r\n",
+            "a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:CANARY_SDP_CRYPTO\r\n"
+        );
+        let scrubbed_sdp = sanitize_sdp(sdp);
+        assert!(scrubbed_sdp.contains("u=rtsp://192.0.2.1/info?<query>"));
+        assert!(scrubbed_sdp.contains("k=[REDACTED]"));
+        assert!(scrubbed_sdp.contains("a=control:rtsp://192.0.2.1/track0?<query>"));
+        assert!(scrubbed_sdp.contains("a=crypto:[REDACTED]"));
+        assert!(scrubbed_sdp.contains("a=rtpmap:96 H264/90000"));
+        for canary in [
+            "sdp-pw",
+            "CANARY_SDP_U",
+            "CANARY_SDP_K",
+            "CANARY_SDP_CTRL",
+            "CANARY_SDP_CRYPTO",
+        ] {
+            assert!(
+                !scrubbed_sdp.contains(canary),
+                "leaked {canary}: {scrubbed_sdp}"
+            );
+        }
+    }
+
+    #[test]
+    fn setup_changed_session_id_omits_raw_session_ids() {
+        let (mut client, connection, start) = described_client();
+        client
+            .handle_input(Input::Command {
+                time: time(start, Duration::from_millis(4)),
+                command: Command::Setup { stream: 0 },
+            })
+            .unwrap();
+        let _ = client.poll_output();
+        client
+            .handle_input(Input::TcpWriteCompleted {
+                time: time(start, Duration::from_millis(5)),
+                connection,
+            })
+            .unwrap();
+        let _ = client.poll_output();
+        client
+            .handle_input(Input::TcpData {
+                time: time(start, Duration::from_millis(6)),
+                connection,
+                data: b"RTSP/1.0 200 OK\r\nCSeq: 2\r\nSession: CANARY_SESS_OLD;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n",
+            })
+            .unwrap();
+        let _ = client.poll_output();
+
+        client
+            .handle_input(Input::Command {
+                time: time(start, Duration::from_millis(7)),
+                command: Command::Setup { stream: 1 },
+            })
+            .unwrap();
+        let _ = client.poll_output();
+        client
+            .handle_input(Input::TcpWriteCompleted {
+                time: time(start, Duration::from_millis(8)),
+                connection,
+            })
+            .unwrap();
+        let _ = client.poll_output();
+        let error = client
+            .handle_input(Input::TcpData {
+                time: time(start, Duration::from_millis(9)),
+                connection,
+                data: b"RTSP/1.0 200 OK\r\nCSeq: 3\r\nSession: CANARY_SESS_NEW2;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=2-3\r\n\r\n",
+            })
+            .unwrap_err();
+        let err_text = error.to_string();
+        assert!(
+            err_text.contains("SETUP changed RTSP session id (old_len=15 new_len=16)"),
+            "{err_text}"
+        );
+        assert!(!err_text.contains("CANARY_SESS_OLD"), "{err_text}");
+        assert!(!err_text.contains("CANARY_SESS_NEW2"), "{err_text}");
     }
 }

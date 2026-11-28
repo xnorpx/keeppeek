@@ -97,7 +97,7 @@ pub(super) fn discover(
     let mut cameras = unique
         .into_values()
         .map(|device| {
-            tracing::info!(
+            tracing::debug!(
                 ip = %device.ip,
                 model = device.device_type.as_deref().unwrap_or("unknown"),
                 command_port = device.command_port,

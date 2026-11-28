@@ -452,7 +452,7 @@ impl StreamEntry {
             other => (AudioEncoding::Unknown(format!("{other:?}")), None),
         };
         if self.audio_codec.is_none() {
-            tracing::info!(ip = %camera_ip, stream = %self.kind, codec = %encoding, "first audio frame received");
+            tracing::debug!(ip = %camera_ip, stream = %self.kind, codec = %encoding, "first audio frame received");
         }
         self.audio_codec = Some(encoding);
         self.stats.on_audio_frame(bytes);
@@ -600,6 +600,19 @@ pub(crate) struct ReolinkLoop {
 
 impl ReolinkLoop {
     pub fn run(self) {
+        let camera_id = self
+            .camera_name
+            .as_deref()
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.camera_ip.to_string());
+        let span = tracing::info_span!(
+            "reolink_session",
+            camera_id = %camera_id,
+            camera_ip = %self.camera_ip,
+            channel = self.channel,
+            transport = ?self.transport,
+        );
+        let _guard = span.enter();
         let mut streams: Vec<StreamEntry> = Vec::new();
         let mut active_motion = HashMap::new();
 
@@ -668,7 +681,7 @@ impl ReolinkLoop {
         }
         let storage_label = self.storage_label();
         let addr = SocketAddr::new(self.camera_ip, BAICHUAN_PORT);
-        tracing::info!(
+        tracing::debug!(
             ip = %self.camera_ip,
             sub_enabled = self.enable_sub,
             "baichuan connecting to {}:{}",
@@ -774,7 +787,7 @@ impl ReolinkLoop {
                     }
                     Ok(Output::Event(event)) => match event {
                         Event::LoggedIn(result) => {
-                            tracing::info!(
+                            tracing::debug!(
                                 ip = %self.camera_ip,
                                 model = %result.camera_identity.model,
                                 firmware = %result.camera_identity.firmware,
@@ -875,6 +888,11 @@ impl ReolinkLoop {
                                 channel,
                                 stream_id,
                                 stream = %kind,
+                                codec = %entry.meta.encoding,
+                                width = entry.meta.width,
+                                height = entry.meta.height,
+                                fps = entry.meta.framerate,
+                                transport = ?self.transport,
                                 "subscribed stream",
                             );
                         }
@@ -887,6 +905,13 @@ impl ReolinkLoop {
                             ));
                         }
                         Event::StreamMetadata { stream_id, info } => {
+                            tracing::debug!(
+                                stream_id,
+                                width = info.width,
+                                height = info.height,
+                                fps = info.fps,
+                                "baichuan stream metadata",
+                            );
                             if let Some(entry) = streams
                                 .iter_mut()
                                 .find(|entry| entry.stream_id == Some(stream_id))
@@ -988,6 +1013,18 @@ impl ReolinkLoop {
                             let received_at = Instant::now();
                             note_video_progress(entry, received_at);
                             let timestamp = entry.timestamps.normalize(timestamp);
+                            let data_len = data.len();
+                            if tracing::enabled!(tracing::Level::TRACE) {
+                                tracing::trace!(
+                                    stream_id,
+                                    stream = %entry.kind,
+                                    ?frame_codec,
+                                    is_keyframe,
+                                    bytes = data_len,
+                                    pts = ?timestamp,
+                                    "reolink video frame",
+                                );
+                            }
                             entry.meta.encoding = encoding.clone();
                             entry.stats.set_stream_info(
                                 encoding,
@@ -995,7 +1032,7 @@ impl ReolinkLoop {
                                 entry.meta.height,
                                 entry.meta.framerate,
                             );
-                            entry.stats.on_video_frame(is_keyframe, data.len());
+                            entry.stats.on_video_frame(is_keyframe, data_len);
 
                             let avcc = Bytes::from(nal::annexb_to_avcc(data));
                             if let Some(live) = &self.live {
@@ -1061,13 +1098,18 @@ impl ReolinkLoop {
                                 .iter_mut()
                                 .find(|entry| entry.stream_id == Some(stream_id))
                             else {
+                                tracing::debug!(
+                                    stream_id,
+                                    "dropping audio frame with unknown stream id"
+                                );
                                 continue;
                             };
                             let audio_stream = entry.kind;
+                            let data_len = data.len();
                             if let Some(fc) = entry.observe_audio(
                                 self.camera_ip,
                                 codec,
-                                data.len(),
+                                data_len,
                                 preferred_kind,
                                 |kind| {
                                     let stream = match kind {
@@ -1079,6 +1121,16 @@ impl ReolinkLoop {
                                     })
                                 },
                             ) {
+                                if tracing::enabled!(tracing::Level::TRACE) {
+                                    tracing::trace!(
+                                        stream_id,
+                                        stream = %audio_stream,
+                                        ?codec,
+                                        bytes = data_len,
+                                        ?duration,
+                                        "reolink audio frame",
+                                    );
+                                }
                                 let sample_rate = fc.default_sample_rate();
                                 let web_codec = match fc {
                                     AudioCodec::Aac => Some(WebRtcAudioCodec::Aac),
@@ -1821,5 +1873,100 @@ mod tests {
             expired_media_stream(&streams, now + MEDIA_IDLE_TIMEOUT * 2),
             Some(StreamKind::Main)
         );
+    }
+
+    struct LogBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for LogBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuf {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            Self(std::sync::Arc::clone(&self.0))
+        }
+    }
+
+    fn make_bc_wire(msg_id: u32, xml: &[u8], status_class: u32) -> Vec<u8> {
+        let mut body = xml.to_vec();
+        reo_proto::encryption::bc_xor(&mut body, 0);
+        let hdr = reo_proto::header::PacketHeader {
+            msg_id,
+            body_len: body.len() as u32,
+            encryption_offset: 0,
+            status_class,
+            extension: Some(0),
+        };
+        let mut hdr_buf = [0u8; reo_proto::magic::HEADER_LEN_EXTENDED];
+        let hdr_len = hdr.serialize(&mut hdr_buf);
+        let mut pkt = hdr_buf[..hdr_len].to_vec();
+        pkt.extend_from_slice(&body);
+        pkt
+    }
+
+    fn run_bc_login_at(level: tracing::Level) -> String {
+        let buf = LogBuf(std::sync::Arc::new(std::sync::Mutex::new(Vec::new())));
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(level)
+            .with_ansi(false)
+            .with_writer(LogBuf(std::sync::Arc::clone(&buf.0)))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let now = Instant::now();
+            let mut client = BcSession::new(BcSessionConfig::default_client(), now);
+            client
+                .handle_input(Input::Command(Command::Login(LoginParams::new(
+                    "admin",
+                    "swordfish-secret",
+                    EncryptionMode::BcEncrypt,
+                ))))
+                .unwrap();
+            let mut out_c = vec![0u8; 64 * 1024];
+            while let Ok(Output::TcpSend { .. }) = client.poll_output(&mut out_c) {}
+            let status_dd02 =
+                (0xDD02_u32) | (u32::from(reo_proto::magic::BC_CLASS_MODERN_EXT) << 16);
+            let nonce_wire = make_bc_wire(
+                reo_proto::COMMAND_LOGIN,
+                br#"<body><Encryption version="2"><type>bc</type><nonce>SECRET_NONCE_VALUE</nonce></Encryption></body>"#,
+                status_dd02,
+            );
+            client
+                .handle_input(Input::TcpData(now, &nonce_wire))
+                .unwrap();
+            while let Ok(Output::TcpSend { .. }) = client.poll_output(&mut out_c) {}
+            let ok_status = u32::from(reo_proto::magic::BC_CLASS_MODERN_EXT) << 16;
+            let confirm_wire = make_bc_wire(
+                reo_proto::COMMAND_LOGIN,
+                br#"<body><LoginUser version="2"><userName>admin</userName><result>ok</result><userId>99</userId></LoginUser><DeviceInfo version="2"><model>RLC-810A</model><serialNumber>SN001</serialNumber><firmVer>v3.0</firmVer><channelNum>2</channelNum></DeviceInfo></body>"#,
+                ok_status,
+            );
+            client
+                .handle_input(Input::TcpData(now, &confirm_wire))
+                .unwrap();
+            while let Ok(Output::Event(_)) = client.poll_output(&mut out_c) {}
+        });
+        String::from_utf8(buf.0.lock().unwrap().clone()).unwrap()
+    }
+
+    #[test]
+    fn baichuan_logging_tiers_remain_sparse_at_info_and_redact_secrets_at_trace() {
+        let info_logs = run_bc_login_at(tracing::Level::INFO);
+        assert!(info_logs.is_empty(), "INFO must stay sparse: {info_logs}");
+
+        let debug_logs = run_bc_login_at(tracing::Level::DEBUG);
+        assert!(debug_logs.contains("baichuan login encryption negotiated"));
+        assert!(debug_logs.contains("baichuan login confirmed"));
+        assert!(!debug_logs.contains("swordfish-secret"));
+        assert!(!debug_logs.contains("SECRET_NONCE_VALUE"));
+
+        let trace_logs = run_bc_login_at(tracing::Level::TRACE);
+        assert!(trace_logs.contains("baichuan packet header"));
+        assert!(!trace_logs.contains("swordfish-secret"));
+        assert!(!trace_logs.contains("SECRET_NONCE_VALUE"));
     }
 }

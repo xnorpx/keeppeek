@@ -196,7 +196,7 @@ enum RequestAuthType<'a> {
 }
 
 impl Transport for Client {
-    #[instrument(skip_all, fields(uri = self.config.uri.as_str()))]
+    #[instrument(skip_all, fields(uri = %SafeUrl(&self.config.uri)))]
     fn request(&self, message: &str) -> Result<String, Error> {
         match self.config.auth_type {
             AuthType::Any => match self.request_with_digest(message) {
@@ -251,32 +251,41 @@ impl Client {
             RequestAuthType::UsernameToken => self.username_token_auth(),
             _ => None,
         };
+        let auth_mode = match auth_type {
+            RequestAuthType::Digest(_) => "Digest",
+            RequestAuthType::UsernameToken => "UsernameToken",
+        };
+        let action = soap_operation_name(message);
 
-        debug!(?auth_type, %redirections, "About to make request.");
+        debug!(auth_mode, action, %redirections, "About to make SOAP request");
+        if tracing::enabled!(tracing::Level::TRACE) {
+            let scrubbed = scrub_xml_passwords(message);
+            trace!(
+                auth_mode,
+                action,
+                payload = %scrubbed,
+                "SOAP request payload"
+            );
+        }
 
         let soap_msg =
             soap::soap(message, &username_token).map_err(|e| Error::Protocol(format!("{e:?}")))?;
-
         let mut request = self
             .agent
             .post(uri.as_str())
             .header("Content-Type", "application/soap+xml; charset=utf-8;");
-
         if let RequestAuthType::Digest(digest) = auth_type
             && let Some(authorization) = digest
                 .authorization_header()
                 .map_err(|error| Error::Authorization(error.to_string()))?
         {
             request = request.header("Authorization", authorization);
-            debug!("Digest headers added");
+            trace!(action, "Digest authorization header attached");
         }
 
         let response = request.send(soap_msg).map_err(Self::map_ureq_error)?;
-
         let status = response.status();
-
-        debug!("Response status: {status}");
-
+        debug!(action, status = status.as_u16(), "SOAP response status");
         if !status.is_success()
             && status != ureq::http::StatusCode::UNAUTHORIZED
             && let RequestAuthType::Digest(digest) = auth_type
@@ -285,85 +294,161 @@ impl Client {
         }
 
         if status.is_success() {
-            if let RequestAuthType::Digest(digest) = auth_type {
-                digest.set_success();
-            }
-
-            let text = self.read_response_body(response)?;
-            trace!("Response body: {text}");
-            let response =
-                soap::unsoap(&text).map_err(|error| Error::Protocol(format!("{error:?}")))?;
-
-            if let Some(response_patcher) = &self.config.response_patcher {
-                let patched = response_patcher(&response)
-                    .map_err(|error| Error::Protocol(format!("Patching failed: {error}")))?;
-                trace!("Response (SOAP unwrapped, patched): {patched}");
-                Ok(patched)
-            } else {
-                Ok(response)
-            }
+            self.handle_soap_success(auth_type, response)
         } else if status == ureq::http::StatusCode::UNAUTHORIZED {
-            match auth_type {
-                RequestAuthType::Digest(digest) if !digest.is_failed() => {
-                    let challenge = response
-                        .headers()
-                        .get(ureq::http::header::WWW_AUTHENTICATE)
-                        .ok_or_else(|| {
-                            Error::Authorization("missing WWW-Authenticate header".to_string())
-                        })?
-                        .to_str()
-                        .map_err(|error| Error::Authorization(error.to_string()))?
-                        .to_owned();
-                    digest.set_401(challenge);
-                }
-                _ => {
-                    if let Ok(text) = self.read_response_body(response) {
-                        debug!("Got Unauthorized with body: {text}");
-                    }
-
-                    return Err(Error::Authorization(status.to_string()));
-                }
-            }
-
-            self.request_recursive(message, uri, auth_type, redirections)
-        } else if status.is_redirection() {
-            if !self.config.follow_redirects {
-                return Err(Error::Redirection("Redirects are disabled".to_owned()));
-            }
-            if redirections > 0 {
-                return Err(Error::Redirection("Redirection limit exceeded".to_string()));
-            }
-
-            let new_url = response
-                .headers()
-                .get(ureq::http::header::LOCATION)
-                .ok_or_else(|| Error::Redirection("missing Location header".to_string()))?
-                .to_str()
-                .map_err(|error| Error::Redirection(error.to_string()))?
-                .parse::<Url>()
-                .map_err(|error| Error::Redirection(error.to_string()))?;
-
-            debug!("Redirecting to {new_url} ...");
-
-            self.request_recursive(message, &new_url, auth_type, redirections + 1)
-        } else {
-            let text = self.read_response_body(response).unwrap_or_default();
-            debug!("Got HTTP error with body: {text}");
-
-            let Err(soap::Error::Fault(fault)) = soap::unsoap(&text) else {
-                return Err(Error::Other(status.to_string()));
+            let ctx = SoapRetry {
+                message,
+                uri,
+                auth_mode,
+                action,
+                redirections,
             };
+            self.handle_soap_unauthorized(ctx, auth_type, status, response)
+        } else if status.is_redirection() {
+            self.handle_soap_redirect(message, auth_type, action, redirections, response)
+        } else {
+            self.handle_soap_http_error(action, status, response)
+        }
+    }
 
-            let message = fault.code.subcode.as_ref().map_or_else(
-                || status.to_string(),
-                |subcode| format!("{status} ({})", subcode.value),
-            );
-
-            if fault.is_unauthorized() {
-                Err(Error::Authorization(message))
-            } else {
-                Err(Error::Other(message))
+    fn handle_soap_success(
+        &self,
+        auth_type: &mut RequestAuthType,
+        response: ureq::http::Response<ureq::Body>,
+    ) -> Result<String, Error> {
+        if let RequestAuthType::Digest(digest) = auth_type {
+            digest.set_success();
+        }
+        let text = self.read_response_body(response)?;
+        if tracing::enabled!(tracing::Level::TRACE) {
+            let scrubbed = scrub_xml_passwords(&text);
+            trace!("Response body: {scrubbed}");
+        }
+        let response =
+            soap::unsoap(&text).map_err(|error| Error::Protocol(format!("{error:?}")))?;
+        if let Some(response_patcher) = &self.config.response_patcher {
+            let patched = response_patcher(&response)
+                .map_err(|error| Error::Protocol(format!("Patching failed: {error}")))?;
+            if tracing::enabled!(tracing::Level::TRACE) {
+                let scrubbed = scrub_xml_passwords(&patched);
+                trace!("Response (SOAP unwrapped, patched): {scrubbed}");
             }
+            Ok(patched)
+        } else {
+            Ok(response)
+        }
+    }
+
+    fn handle_soap_unauthorized(
+        &self,
+        ctx: SoapRetry<'_>,
+        auth_type: &mut RequestAuthType<'_>,
+        status: ureq::http::StatusCode,
+        response: ureq::http::Response<ureq::Body>,
+    ) -> Result<String, Error> {
+        let SoapRetry {
+            message,
+            uri,
+            auth_mode,
+            action,
+            redirections,
+        } = ctx;
+        match auth_type {
+            RequestAuthType::Digest(digest) if !digest.is_failed() => {
+                let challenge = response
+                    .headers()
+                    .get(ureq::http::header::WWW_AUTHENTICATE)
+                    .ok_or_else(|| {
+                        Error::Authorization("missing WWW-Authenticate header".to_string())
+                    })?
+                    .to_str()
+                    .map_err(|_| {
+                        Error::Authorization("invalid WWW-Authenticate header".to_string())
+                    })?
+                    .to_owned();
+                digest.set_401(challenge);
+            }
+            _ => {
+                if tracing::enabled!(tracing::Level::TRACE)
+                    && let Ok(text) = self.read_response_body(response)
+                {
+                    let scrubbed = scrub_xml_passwords(&text);
+                    trace!(action, "SOAP Unauthorized body: {scrubbed}");
+                }
+                debug!(action, auth_mode, "SOAP request unauthorized");
+                return Err(Error::Authorization(status.to_string()));
+            }
+        }
+        debug!(action, "Retrying SOAP request after 401 Digest challenge");
+        self.request_recursive(message, uri, auth_type, redirections)
+    }
+
+    fn handle_soap_redirect(
+        &self,
+        message: &str,
+        auth_type: &mut RequestAuthType,
+        action: &str,
+        redirections: u32,
+        response: ureq::http::Response<ureq::Body>,
+    ) -> Result<String, Error> {
+        if !self.config.follow_redirects {
+            return Err(Error::Redirection("Redirects are disabled".to_owned()));
+        }
+        if redirections > 0 {
+            return Err(Error::Redirection("Redirection limit exceeded".to_string()));
+        }
+        let new_url = response
+            .headers()
+            .get(ureq::http::header::LOCATION)
+            .ok_or_else(|| Error::Redirection("missing Location header".to_string()))?
+            .to_str()
+            .map_err(|error| Error::Redirection(error.to_string()))?
+            .parse::<Url>()
+            .map_err(|error| Error::Redirection(error.to_string()))?;
+        debug!(action, new_url = %SafeUrl(&new_url), "Redirecting SOAP request");
+        self.request_recursive(message, &new_url, auth_type, redirections + 1)
+    }
+
+    fn handle_soap_http_error(
+        &self,
+        action: &str,
+        status: ureq::http::StatusCode,
+        response: ureq::http::Response<ureq::Body>,
+    ) -> Result<String, Error> {
+        let text = self.read_response_body(response).unwrap_or_default();
+        if tracing::enabled!(tracing::Level::TRACE) {
+            let scrubbed = scrub_xml_passwords(&text);
+            trace!(
+                action,
+                status = status.as_u16(),
+                "SOAP HTTP error body: {scrubbed}"
+            );
+        }
+        let Err(soap::Error::Fault(fault)) = soap::unsoap(&text) else {
+            debug!(
+                action,
+                status = status.as_u16(),
+                "SOAP HTTP error without fault"
+            );
+            return Err(Error::Other(status.to_string()));
+        };
+        let subcode = fault.code.subcode.as_ref().map(|s| s.value.as_str());
+        debug!(
+            action,
+            status = status.as_u16(),
+            fault_code = %fault.code.value,
+            ?subcode,
+            unauthorized = fault.is_unauthorized(),
+            "SOAP fault response"
+        );
+        let message = subcode.map_or_else(
+            || status.to_string(),
+            |subcode| format!("{status} ({subcode})"),
+        );
+        if fault.is_unauthorized() {
+            Err(Error::Authorization(message))
+        } else {
+            Err(Error::Other(message))
         }
     }
 
@@ -380,7 +465,16 @@ impl Client {
     }
 
     fn map_ureq_error(error: ureq::Error) -> Error {
-        let message = error_chain(&error);
+        let message = match &error {
+            ureq::Error::BadUri(raw) => format!("bad uri: {}", sanitize_url_or_redact(raw)),
+            ureq::Error::RequireHttpsOnly(raw) => {
+                format!("configured for https only: {}", sanitize_url_or_redact(raw))
+            }
+            ureq::Error::ConnectProxyFailed(raw) => {
+                format!("CONNECT proxy failed: {}", sanitize_url_or_redact(raw))
+            }
+            _ => scrub_urls(&error_chain(&error)),
+        };
         match error {
             ureq::Error::Timeout(_) => Error::Timeout(message),
             ureq::Error::HostNotFound | ureq::Error::ConnectionFailed => Error::Connection(message),
@@ -415,6 +509,217 @@ fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(": ")
+}
+
+fn soap_operation_name(message: &str) -> &str {
+    let trimmed = message.trim_start();
+    let Some(after_lt) = trimmed.strip_prefix('<') else {
+        return "unknown";
+    };
+    let tag_end = after_lt
+        .find(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '>' | '/'))
+        .unwrap_or(after_lt.len());
+    let full_tag = &after_lt[..tag_end];
+    full_tag.rsplit(':').next().unwrap_or(full_tag)
+}
+
+struct SoapRetry<'a> {
+    message: &'a str,
+    uri: &'a Url,
+    auth_mode: &'a str,
+    action: &'a str,
+    redirections: u32,
+}
+
+struct SafeUrl<'a>(&'a Url);
+
+impl std::fmt::Display for SafeUrl<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}://{}",
+            self.0.scheme(),
+            self.0.host_str().unwrap_or("<none>")
+        )?;
+        if let Some(port) = self.0.port() {
+            write!(f, ":{port}")?;
+        }
+        f.write_str(self.0.path())?;
+        if self.0.query().is_some() {
+            f.write_str("?<query>")?;
+        }
+        Ok(())
+    }
+}
+
+fn sanitize_url_or_redact(raw: &str) -> String {
+    Url::parse(raw.trim()).map_or_else(
+        |_| "<redacted>".to_string(),
+        |url| SafeUrl(&url).to_string(),
+    )
+}
+
+fn is_sensitive_xml_tag(tag_name: &str) -> bool {
+    let local = tag_name
+        .rsplit(':')
+        .next()
+        .unwrap_or(tag_name)
+        .to_ascii_lowercase();
+    local.contains("password")
+        || local.contains("secret")
+        || local.contains("nonce")
+        || local.contains("passphrase")
+        || local.contains("key")
+}
+
+fn find_closing_xml_tag(rest: &str, tag_name: &str) -> Option<usize> {
+    let mut pos = 0;
+    let mut depth = 1usize;
+    while let Some(rel) = rest[pos..].find('<') {
+        let lt = pos + rel;
+        let tail = &rest[lt..];
+        if tail.starts_with("<!--") {
+            let end = tail.find("-->")?;
+            pos = lt + end + 3;
+        } else if tail.starts_with("<![CDATA[") {
+            let end = tail.find("]]>")?;
+            pos = lt + end + 3;
+        } else if let Some(after_slash) = tail.strip_prefix("</") {
+            let gt = after_slash.find('>')?;
+            if after_slash[..gt].trim() == tag_name {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(lt);
+                }
+            }
+            pos = lt + 2 + gt + 1;
+        } else {
+            let gt = tail.find('>')?;
+            let inner = &tail[1..gt];
+            let open_name = inner.split_whitespace().next().unwrap_or("");
+            if open_name == tag_name && !inner.ends_with('/') {
+                depth = depth.saturating_add(1);
+            }
+            pos = lt + gt + 1;
+        }
+    }
+    None
+}
+
+fn scrub_xml_passwords(xml: &str) -> String {
+    let mut out = String::with_capacity(xml.len());
+    let mut rest = xml;
+    while let Some(lt) = rest.find('<') {
+        out.push_str(&rest[..lt]);
+        let after_lt = &rest[lt..];
+        if after_lt.starts_with("<!--") {
+            let Some(end) = after_lt.find("-->") else {
+                out.push_str(after_lt);
+                return scrub_urls(&out);
+            };
+            out.push_str(&after_lt[..end + 3]);
+            rest = &after_lt[end + 3..];
+            continue;
+        }
+        if after_lt.starts_with("<![CDATA[") {
+            let Some(end) = after_lt.find("]]>") else {
+                out.push_str(after_lt);
+                return scrub_urls(&out);
+            };
+            out.push_str(&after_lt[..end + 3]);
+            rest = &after_lt[end + 3..];
+            continue;
+        }
+        let Some(gt) = after_lt.find('>') else {
+            out.push_str(after_lt);
+            return scrub_urls(&out);
+        };
+        let open_tag = &after_lt[..=gt];
+        out.push_str(open_tag);
+        rest = &after_lt[gt + 1..];
+        let tag_name = open_tag
+            .trim_start_matches('<')
+            .trim_end_matches('>')
+            .trim_end_matches('/')
+            .split_whitespace()
+            .next()
+            .unwrap_or("");
+        if !tag_name.is_empty()
+            && !tag_name.starts_with('/')
+            && !tag_name.starts_with('?')
+            && !tag_name.starts_with('!')
+            && !open_tag.ends_with("/>")
+            && is_sensitive_xml_tag(tag_name)
+        {
+            out.push_str("[REDACTED]");
+            if let Some(close_rel) = find_closing_xml_tag(rest, tag_name) {
+                rest = &rest[close_rel..];
+            } else {
+                return scrub_urls(&out);
+            }
+        }
+    }
+    out.push_str(rest);
+    scrub_urls(&out)
+}
+
+fn scrub_urls(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut pos = 0;
+    while let Some(rel) = text[pos..].find("://") {
+        let sep = pos + rel;
+        let scheme_start = text[pos..sep]
+            .char_indices()
+            .rfind(|&(_, ch)| !(ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.')))
+            .map_or(pos, |(idx, ch)| pos + idx + ch.len_utf8());
+        let scheme = &text[scheme_start..sep];
+        if !scheme.starts_with(|ch: char| ch.is_ascii_alphabetic()) {
+            out.push_str(&text[pos..sep + 3]);
+            pos = sep + 3;
+            continue;
+        }
+        out.push_str(&text[pos..scheme_start]);
+        let url_end = text[sep + 3..]
+            .find(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '<' | '>' | '"' | '\''))
+            .map_or(text.len(), |idx| sep + 3 + idx);
+        let candidate = &text[scheme_start..url_end];
+        if let Ok(parsed) = Url::parse(candidate) {
+            if parsed.username() != ""
+                || parsed.password().is_some()
+                || parsed.query().is_some()
+                || parsed.fragment().is_some()
+            {
+                out.push_str(&SafeUrl(&parsed).to_string());
+            } else {
+                out.push_str(candidate);
+            }
+        } else {
+            out.push_str(&redact_malformed_url(candidate));
+        }
+        pos = url_end;
+    }
+    out.push_str(&text[pos..]);
+    out
+}
+
+fn redact_malformed_url(candidate: &str) -> String {
+    let Some((scheme, rest)) = candidate.split_once("://") else {
+        return "<redacted>".to_string();
+    };
+    let (base, has_query) = match rest.split_once('?') {
+        Some((before, _)) => (before, true),
+        None => (rest, false),
+    };
+    let (base, _) = base.split_once('#').unwrap_or((base, ""));
+    let auth_end = base.find('/').unwrap_or(base.len());
+    let host_part = base[..auth_end]
+        .rsplit_once('@')
+        .map_or(&base[..auth_end], |(_, host)| host);
+    let mut out = format!("{scheme}://{host_part}{}", &base[auth_end..]);
+    if has_query {
+        out.push_str("?<query>");
+    }
+    out
 }
 
 #[cfg(test)]
@@ -807,5 +1112,193 @@ mod tests {
         );
         let text = error.to_string();
         assert!(text.contains(':'), "{text}");
+    }
+
+    struct LogBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for LogBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuf {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            Self(std::sync::Arc::clone(&self.0))
+        }
+    }
+
+    #[test]
+    fn soap_logging_is_tiered_and_redacts_secrets() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let uri = Url::parse(&format!(
+            "http://{}/onvif/device_service",
+            listener.local_addr().unwrap()
+        ))
+        .unwrap();
+        let server = thread::spawn(move || {
+            for _ in 0..5 {
+                let (mut stream, _) = listener.accept().unwrap();
+                read_request(&mut stream);
+                write_response(
+                    &mut stream,
+                    "401 Unauthorized",
+                    &[(
+                        "WWW-Authenticate",
+                        r#"Digest realm="onvif", qop="auth", nonce="very-secret-digest-nonce""#,
+                    )],
+                    "",
+                );
+            }
+        });
+
+        let buf = LogBuf(std::sync::Arc::new(std::sync::Mutex::new(Vec::new())));
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer(LogBuf(std::sync::Arc::clone(&buf.0)))
+            .finish();
+        let client = ClientBuilder::new(&uri)
+            .timeout(Duration::from_secs(2))
+            .credentials(Some(Credentials {
+                username: "admin".to_string(),
+                password: "super-secret-password".to_string(),
+            }))
+            .build();
+        let error = tracing::subscriber::with_default(subscriber, || {
+            client.request("<GetCapabilities/>").unwrap_err()
+        });
+        assert!(matches!(error, Error::Authorization(_)), "{error:?}");
+        server.join().unwrap();
+
+        let logs = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            logs.contains("GetCapabilities"),
+            "missing SOAP action: {logs}"
+        );
+        assert!(logs.contains("SOAP response status"), "{logs}");
+        assert!(
+            !logs.contains("super-secret-password"),
+            "leaked password: {logs}"
+        );
+        assert!(
+            !logs.contains("very-secret-digest-nonce"),
+            "leaked Digest nonce: {logs}"
+        );
+        assert!(
+            !logs.contains("PasswordDigest"),
+            "leaked WSSE digest: {logs}"
+        );
+        let scrubbed = scrub_xml_passwords("<SetUser><Password>s3cr3t!</Password></SetUser>");
+        assert!(scrubbed.contains("[REDACTED]"));
+        assert!(!scrubbed.contains("s3cr3t!"));
+    }
+
+    #[test]
+    fn scrub_xml_passwords_blocks_cdata_comments_unclosed_and_uris() {
+        let cdata = scrub_xml_passwords("<wsse:Password><![CDATA[s3cr3t!]]></wsse:Password>");
+        assert_eq!(cdata, "<wsse:Password>[REDACTED]</wsse:Password>");
+        assert!(!cdata.contains("s3cr3t!"));
+
+        let commented = scrub_xml_passwords("<Password><!-- </Password> -->s3cr3t!</Password>");
+        assert_eq!(commented, "<Password>[REDACTED]</Password>");
+        assert!(!commented.contains("s3cr3t!"));
+
+        let unclosed = scrub_xml_passwords("<Password>s3cr3t!");
+        assert_eq!(unclosed, "<Password>[REDACTED]");
+        assert!(!unclosed.contains("s3cr3t!"));
+
+        let extra_tags = scrub_xml_passwords(
+            "<wsse:Nonce>n0nc3!</wsse:Nonce><Passphrase>p4ss</Passphrase><PrivateKey>k3y!</PrivateKey>",
+        );
+        assert!(!extra_tags.contains("n0nc3!"));
+        assert!(!extra_tags.contains("p4ss"));
+        assert!(!extra_tags.contains("k3y!"));
+
+        let stream_uri = scrub_xml_passwords(
+            r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><tt:Uri>rtsp://admin:hunter2@192.0.2.10:554/stream1?token=tok123</tt:Uri><Endpoint href="http://u:p@192.0.2.10/snap?secret=tok456"/></s:Envelope>"#,
+        );
+        assert!(stream_uri.contains(r#"xmlns:s="http://www.w3.org/2003/05/soap-envelope""#));
+        assert!(stream_uri.contains("rtsp://192.0.2.10:554/stream1?<query>"));
+        assert!(stream_uri.contains("http://192.0.2.10/snap?<query>"));
+        assert!(!stream_uri.contains("hunter2"));
+        assert!(!stream_uri.contains("tok123"));
+        assert!(!stream_uri.contains("tok456"));
+
+        let multibyte = scrub_xml_passwords(
+            "<Fault>Error：http://u:p@192.0.2.1/?token=abc —rtsp://u:p@192.0.2.1/s?token=tok</Fault>",
+        );
+        assert!(multibyte.contains("Error：http://192.0.2.1/?<query>"));
+        assert!(multibyte.contains("—rtsp://192.0.2.1/s?<query>"));
+        assert!(!multibyte.contains("abc"));
+        assert!(!multibyte.contains("tok"));
+    }
+
+    #[test]
+    fn soap_span_and_response_trace_redact_uri_credentials_and_tokens() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let uri = Url::parse(&format!(
+            "http://admin:span-pass@{}/onvif/device_service?token=span-tok",
+            listener.local_addr().unwrap()
+        ))
+        .unwrap();
+        let response_xml = r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:tt="http://www.onvif.org/ver10/schema"><s:Body><trt:GetStreamUriResponse xmlns:trt="http://www.onvif.org/ver10/media/wsdl"><trt:MediaUri><tt:Uri>rtsp://camuser:campass@192.0.2.55:554/h264?token=stream-tok</tt:Uri></trt:MediaUri></trt:GetStreamUriResponse></s:Body></s:Envelope>"#;
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            read_request(&mut stream);
+            write_response(&mut stream, "200 OK", &[], response_xml);
+        });
+
+        let buf = LogBuf(std::sync::Arc::new(std::sync::Mutex::new(Vec::new())));
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer(LogBuf(std::sync::Arc::clone(&buf.0)))
+            .finish();
+        let client = ClientBuilder::new(&uri)
+            .timeout(Duration::from_secs(2))
+            .build();
+        let body = tracing::subscriber::with_default(subscriber, || {
+            client.request("<GetStreamUri/>").unwrap()
+        });
+        assert!(body.contains("stream-tok"));
+        server.join().unwrap();
+
+        let logs = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        assert!(logs.contains("onvif/device_service?<query>"), "{logs}");
+        assert!(
+            logs.contains("rtsp://192.0.2.55:554/h264?<query>"),
+            "{logs}"
+        );
+        assert!(!logs.contains("span-pass"), "{logs}");
+        assert!(!logs.contains("span-tok"), "{logs}");
+        assert!(!logs.contains("camuser"), "{logs}");
+        assert!(!logs.contains("campass"), "{logs}");
+        assert!(!logs.contains("stream-tok"), "{logs}");
+    }
+
+    #[test]
+    fn map_ureq_error_redacts_bad_uri_and_https_only_urls() {
+        let bad = Client::map_ureq_error(ureq::Error::BadUri(
+            "http://user:canary-pw@192.0.2.10/onvif?token=canary-tok".to_string(),
+        ));
+        let bad_text = bad.to_string();
+        assert!(!bad_text.contains("canary-pw"), "{bad_text}");
+        assert!(!bad_text.contains("canary-tok"), "{bad_text}");
+
+        let unparseable = Client::map_ureq_error(ureq::Error::BadUri(
+            "://unparseable-canary-secret".to_string(),
+        ));
+        assert!(!unparseable.to_string().contains("canary-secret"));
+
+        let https_only = Client::map_ureq_error(ureq::Error::RequireHttpsOnly(
+            "http://user:canary-pw@192.0.2.10/onvif?token=canary-tok".to_string(),
+        ));
+        let https_text = https_only.to_string();
+        assert!(!https_text.contains("canary-pw"), "{https_text}");
+        assert!(!https_text.contains("canary-tok"), "{https_text}");
     }
 }

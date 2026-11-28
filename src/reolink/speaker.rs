@@ -48,6 +48,12 @@ impl Talkback {
         session: &mut BcSession,
     ) -> Result<(), reo_proto::BcError> {
         self.subscription_pending = false;
+        tracing::debug!(
+            channel = self.channel,
+            stream_id = id,
+            has_route = self.route.is_some(),
+            "reolink talkback stream subscribed"
+        );
         if self.route.is_none() {
             return session
                 .handle_input(Input::Command(Command::UnsubscribeStream { stream_id: id }));
@@ -69,6 +75,11 @@ impl Talkback {
             TalkEvent::Ability(ability) if self.stream_id.is_some() => {
                 match select_profile(*ability, self.channel) {
                     Ok(config) => {
+                        tracing::debug!(
+                            channel = self.channel,
+                            ?config,
+                            "selected reolink talkback profile"
+                        );
                         self.blocks = Some(SpeakerBlocks::new(&config));
                         session.handle_input(Input::Command(Command::Talk(
                             TalkCommand::Configure(config),
@@ -80,7 +91,14 @@ impl Talkback {
                     }
                 }
             }
-            TalkEvent::Configured => self.ready = self.blocks.is_some(),
+            TalkEvent::Configured => {
+                self.ready = self.blocks.is_some();
+                tracing::debug!(
+                    channel = self.channel,
+                    ready = self.ready,
+                    "reolink talkback configured"
+                );
+            }
             // Reset is a reply to close(), which already discarded that route's audio.
             // A late reply can arrive after a replacement route has been configured.
             TalkEvent::Reset | TalkEvent::Ability(_) => {}
@@ -111,6 +129,11 @@ impl Talkback {
         self.route = None;
         // Only the pending subscription itself reserves the channel until its ID arrives.
         if let Some(stream_id) = self.stream_id.take() {
+            tracing::debug!(
+                channel = self.channel,
+                stream_id,
+                "closing reolink talkback"
+            );
             session.handle_input(Input::Command(Command::Talk(TalkCommand::Reset {
                 channel: self.channel,
             })))?;
@@ -145,6 +168,13 @@ impl Talkback {
         if live.offer_talkback_packet(source, &route, || wire.offer_speaker_packet(data))?
             && let Some(blocks) = self.blocks.as_mut()
         {
+            if tracing::enabled!(tracing::Level::TRACE) {
+                tracing::trace!(
+                    channel = self.channel,
+                    bytes = data.len(),
+                    "flushed reolink talkback ADPCM packet"
+                );
+            }
             blocks.record_send(Instant::now());
         }
         Ok(())

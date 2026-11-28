@@ -8,6 +8,7 @@ mod channel_mapping;
 pub mod core;
 mod parse;
 pub mod rtp;
+mod sanitize;
 mod timeline;
 
 /// Policy for interpreting the `rtptime` field in a `PLAY` response.
@@ -208,7 +209,13 @@ impl std::fmt::Debug for Stream {
         formatter
             .debug_struct("Stream")
             .field("media", &self.media)
-            .field("control", &self.control.as_ref().map(Url::as_str))
+            .field(
+                "control",
+                &self
+                    .control
+                    .as_ref()
+                    .map(|url| sanitize::SafeUrl(url).to_string()),
+            )
             .field("encoding_name", &self.encoding_name)
             .field("rtp_payload_type", &self.rtp_payload_type)
             .field("clock_rate", &self.clock_rate_hz)

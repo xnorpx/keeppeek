@@ -83,9 +83,9 @@ fn digest_auth(www_authenticate: &str, creds: &Credentials, url: &Url) -> Result
     context.method = digest_auth::HttpMethod::POST;
 
     Ok(digest_auth::parse(www_authenticate)
-        .map_err(|e| Error::Digest(e.to_string()))?
+        .map_err(|_| Error::Digest("invalid WWW-Authenticate challenge".to_string()))?
         .respond(&context)
-        .map_err(|e| Error::Digest(e.to_string()))?
+        .map_err(|_| Error::Digest("unable to compute Digest response".to_string()))?
         .to_string())
 }
 
