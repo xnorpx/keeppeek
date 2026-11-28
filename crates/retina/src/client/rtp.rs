@@ -412,17 +412,18 @@ impl InorderParser {
             rtp_timestamp,
             raw: data,
         };
-        if log_enabled!(log::Level::Trace) {
-            log_rtcp_compound_trace(stream_id, &compound);
+        if log_enabled!(log::Level::Debug) {
+            log_rtcp_compound(stream_id, &compound);
         }
         Ok(Some(PacketItem::Rtcp(compound)))
     }
 }
 
-fn log_rtcp_compound_trace(stream_id: usize, compound: &ReceivedCompoundPacket) {
+fn log_rtcp_compound(stream_id: usize, compound: &ReceivedCompoundPacket) {
+    let trace_enabled = log_enabled!(log::Level::Trace);
     for pkt in compound.pkts() {
         match pkt.as_typed() {
-            Ok(Some(crate::rtcp::TypedPacketRef::SenderReport(sr))) => {
+            Ok(Some(crate::rtcp::TypedPacketRef::SenderReport(sr))) if trace_enabled => {
                 trace!(
                     "rtcp SR: stream_id={stream_id} ssrc=0x{:08x} ntp=0x{:016x} rtp_ts={} blocks={}",
                     sr.ssrc(),
@@ -431,14 +432,14 @@ fn log_rtcp_compound_trace(stream_id: usize, compound: &ReceivedCompoundPacket) 
                     sr.count()
                 );
             }
-            Ok(Some(crate::rtcp::TypedPacketRef::ReceiverReport(rr))) => {
+            Ok(Some(crate::rtcp::TypedPacketRef::ReceiverReport(rr))) if trace_enabled => {
                 trace!(
                     "rtcp RR: stream_id={stream_id} ssrc=0x{:08x} blocks={}",
                     rr.ssrc(),
                     rr.count()
                 );
             }
-            Ok(None) => {
+            Ok(None) if trace_enabled => {
                 trace!(
                     "rtcp packet: stream_id={stream_id} pt={} count={} len={}",
                     pkt.payload_type(),
@@ -446,6 +447,7 @@ fn log_rtcp_compound_trace(stream_id: usize, compound: &ReceivedCompoundPacket) 
                     pkt.raw().len()
                 );
             }
+            Ok(_) => {}
             Err(error) => {
                 debug!(
                     "rtcp subpacket invalid: stream_id={stream_id} pt={} err={error}",

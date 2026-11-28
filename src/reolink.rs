@@ -608,7 +608,7 @@ impl ReolinkLoop {
         let span = tracing::info_span!(
             "reolink_session",
             camera_id = %camera_id,
-            ip = %self.camera_ip,
+            camera_ip = %self.camera_ip,
             channel = self.channel,
             transport = ?self.transport,
         );

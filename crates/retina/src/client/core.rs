@@ -3,7 +3,10 @@
 //! The caller owns sockets and time. After every [`RtspClient::handle_input`]
 //! call, drain [`RtspClient::poll_output`] until it returns [`Output::Timeout`].
 
-use super::channel_mapping::{ChannelMappings, ChannelType};
+use super::{
+    channel_mapping::{ChannelMappings, ChannelType},
+    sanitize::{SafeUrl, sanitize_rtp_info, sanitize_sdp, sanitize_url_str},
+};
 use crate::rtsp::{
     inputs::{Contiguous, Input as _, Slice as _},
     msg,
@@ -1600,15 +1603,16 @@ impl RtspClient {
             )
         })?;
         let challenge: &str = challenge;
-        let sanitized_challenge = sanitize_www_authenticate(challenge);
-        self.requested_auth = Some(http_auth::PasswordClient::try_from(challenge).map_err(
-            |error| {
-                CoreError::UnexpectedResponse(format!(
-                    "unable to parse RTSP authentication challenge: {error}"
-                ))
-            },
-        )?);
-        log::debug!("rtsp auth challenge accepted challenge=[{sanitized_challenge}]");
+        self.requested_auth =
+            Some(http_auth::PasswordClient::try_from(challenge).map_err(|_| {
+                CoreError::UnexpectedResponse(
+                    "unable to parse RTSP authentication challenge".to_string(),
+                )
+            })?);
+        if log::log_enabled!(log::Level::Debug) {
+            let sanitized_challenge = sanitize_www_authenticate(challenge);
+            log::debug!("rtsp auth challenge accepted challenge=[{sanitized_challenge}]");
+        }
         Ok(())
     }
 
@@ -1633,10 +1637,12 @@ impl RtspClient {
                 method: method.as_ref(),
                 body: Some(&[]),
             })
-            .map_err(CoreError::Encoding)?;
-        msg::HeaderValue::try_from(value)
-            .map(Some)
-            .map_err(|error| CoreError::Encoding(error.to_string()))
+            .map_err(|_| {
+                CoreError::Encoding("unable to compute RTSP authorization header".to_string())
+            })?;
+        msg::HeaderValue::try_from(value).map(Some).map_err(|_| {
+            CoreError::Encoding("RTSP authorization header contains invalid bytes".to_string())
+        })
     }
 
     fn handle_tcp_closed(&mut self, connection: TcpConnectionId) -> Result<(), CoreError> {
@@ -1896,68 +1902,61 @@ fn expected_response(
     Ok((response, framed.body))
 }
 
-struct SafeUrl<'a>(&'a Url);
-
-impl std::fmt::Display for SafeUrl<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}://{}",
-            self.0.scheme(),
-            self.0.host_str().unwrap_or("<none>")
-        )?;
-        if let Some(port) = self.0.port() {
-            write!(f, ":{port}")?;
-        }
-        f.write_str(self.0.path())?;
-        if self.0.query().is_some() {
-            f.write_str("?<query>")?;
-        }
-        Ok(())
+fn fallback_challenge_scheme(trimmed: &str) -> String {
+    let scheme = trimmed
+        .split_once(char::is_whitespace)
+        .map_or(trimmed, |(scheme, _)| scheme);
+    if !scheme.is_empty()
+        && scheme
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        scheme.to_string()
+    } else {
+        "<malformed>".to_string()
     }
 }
 
-fn split_auth_params(rest: &str) -> Vec<&str> {
-    let mut params = Vec::new();
-    let mut start = 0;
-    let mut in_quotes = false;
-    let mut escaped = false;
-    for (idx, ch) in rest.char_indices() {
-        if escaped {
-            escaped = false;
-        } else if ch == '\\' && in_quotes {
-            escaped = true;
-        } else if ch == '"' {
-            in_quotes = !in_quotes;
-        } else if ch == ',' && !in_quotes {
-            params.push(&rest[start..idx]);
-            start = idx + 1;
-        }
+fn format_challenge_param(key_lower: &str, value: &http_auth::ParamValue<'_>) -> String {
+    let escaped = value.as_escaped();
+    let is_plain_token = !escaped.is_empty()
+        && escaped
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
+    if matches!(key_lower, "algorithm" | "stale") && is_plain_token {
+        format!("{key_lower}={escaped}")
+    } else {
+        format!("{key_lower}=\"{escaped}\"")
     }
-    params.push(&rest[start..]);
-    params
 }
 
 fn sanitize_www_authenticate(value: &str) -> String {
     let trimmed = value.trim();
-    let Some((scheme, rest)) = trimmed.split_once(char::is_whitespace) else {
-        return trimmed.to_string();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let Ok(challenges) = http_auth::parse_challenges(trimmed) else {
+        return fallback_challenge_scheme(trimmed);
     };
-    let mut kept = Vec::new();
-    for part in split_auth_params(rest) {
-        let part = part.trim();
-        let Some((key, raw_val)) = part.split_once('=') else {
-            continue;
-        };
-        let key_lower = key.trim().to_ascii_lowercase();
-        if matches!(key_lower.as_str(), "realm" | "qop" | "algorithm" | "stale") {
-            kept.push(format!("{key_lower}={}", raw_val.trim()));
+    let mut rendered = Vec::new();
+    for challenge in challenges {
+        let mut kept = Vec::new();
+        for (key, param_val) in &challenge.params {
+            let key_lower = key.to_ascii_lowercase();
+            if matches!(key_lower.as_str(), "realm" | "qop" | "algorithm" | "stale") {
+                kept.push(format_challenge_param(&key_lower, param_val));
+            }
+        }
+        if kept.is_empty() {
+            rendered.push(challenge.scheme.to_string());
+        } else {
+            rendered.push(format!("{} {}", challenge.scheme, kept.join(", ")));
         }
     }
-    if kept.is_empty() {
-        scheme.to_string()
+    if rendered.is_empty() {
+        fallback_challenge_scheme(trimmed)
     } else {
-        format!("{scheme} {}", kept.join(", "))
+        rendered.join(", ")
     }
 }
 
@@ -1968,6 +1967,7 @@ fn format_rtsp_headers_sanitized(headers: &msg::Headers) -> String {
         if key.eq_ignore_ascii_case("authorization")
             || key.eq_ignore_ascii_case("proxy-authorization")
             || key.eq_ignore_ascii_case("authentication-info")
+            || key.eq_ignore_ascii_case("proxy-authentication-info")
             || key.eq_ignore_ascii_case("set-cookie")
             || key.eq_ignore_ascii_case("cookie")
         {
@@ -1976,6 +1976,13 @@ fn format_rtsp_headers_sanitized(headers: &msg::Headers) -> String {
             || key.eq_ignore_ascii_case("proxy-authenticate")
         {
             parts.push(format!("{key}: {}", sanitize_www_authenticate(value)));
+        } else if key.eq_ignore_ascii_case("location")
+            || key.eq_ignore_ascii_case("content-base")
+            || key.eq_ignore_ascii_case("content-location")
+        {
+            parts.push(format!("{key}: {}", sanitize_url_str(value)));
+        } else if key.eq_ignore_ascii_case("rtp-info") {
+            parts.push(format!("{key}: {}", sanitize_rtp_info(value)));
         } else {
             parts.push(format!("{key}: {value}"));
         }
@@ -1986,7 +1993,7 @@ fn format_rtsp_headers_sanitized(headers: &msg::Headers) -> String {
 fn log_rtsp_response_trace(operation: &str, cseq: u32, response: &msg::Response, body: &Bytes) {
     let headers = format_rtsp_headers_sanitized(&response.headers);
     if operation == "DESCRIBE" && response.status_code.is_success() && !body.is_empty() {
-        let sdp = String::from_utf8_lossy(body);
+        let sdp = sanitize_sdp(&String::from_utf8_lossy(body));
         log::trace!(
             "rtsp rx op={operation} cseq={cseq} status={} headers=[{headers}] sdp={sdp:?}",
             response.status_code
@@ -3361,5 +3368,130 @@ mod tests {
         assert!(!rendered.contains("secret-next"));
         assert!(!rendered.contains("secret-rsp"));
         assert!(!rendered.contains("super-secret-nonce-value"));
+    }
+
+    #[test]
+    fn malformed_auth_challenge_and_headers_do_not_leak_secrets() {
+        let unterminated = r#"Digest realm="bad, nonce="CANARY_NONCE_1", opaque="CANARY_OPQ_1""#;
+        let sanitized_unterminated = sanitize_www_authenticate(unterminated);
+        assert_eq!(sanitized_unterminated, "Digest");
+        assert!(!sanitized_unterminated.contains("CANARY_NONCE_1"));
+        assert!(!sanitized_unterminated.contains("CANARY_OPQ_1"));
+
+        let missing_comma = r#"Digest realm="cam" nonce="CANARY_NONCE_2""#;
+        let sanitized_missing_comma = sanitize_www_authenticate(missing_comma);
+        assert_eq!(sanitized_missing_comma, "Digest");
+        assert!(!sanitized_missing_comma.contains("CANARY_NONCE_2"));
+
+        let (mut client, connection, start) = describe_client_with_options(ClientOptions {
+            credentials: Some(crate::client::Credentials {
+                username: "admin".to_string(),
+                password: "secret".to_string(),
+            }),
+            ..ClientOptions::default()
+        });
+        client
+            .handle_input(Input::TcpConnected {
+                time: time(start, Duration::from_millis(1)),
+                connection,
+            })
+            .unwrap();
+        let _ = client.poll_output();
+        let _ = client.poll_output();
+        client
+            .handle_input(Input::TcpWriteCompleted {
+                time: time(start, Duration::from_millis(2)),
+                connection,
+            })
+            .unwrap();
+        let _ = client.poll_output();
+
+        let bad_401 = concat!(
+            "RTSP/1.0 401 Unauthorized\r\n",
+            "CSeq: 1\r\n",
+            "WWW-Authenticate: Digest realm=\"bad, nonce=\"CANARY_NONCE_99\", opaque=\"CANARY_OPQ_99\"\r\n",
+            "\r\n"
+        );
+        let error = client
+            .handle_input(Input::TcpData {
+                time: time(start, Duration::from_millis(3)),
+                connection,
+                data: bad_401.as_bytes(),
+            })
+            .unwrap_err();
+        let err_text = error.to_string();
+        assert!(!err_text.contains("CANARY_NONCE_99"), "{err_text}");
+        assert!(!err_text.contains("CANARY_OPQ_99"), "{err_text}");
+
+        let mut headers = msg::Headers::default();
+        headers.insert(
+            msg::HeaderName::from_static("Proxy-Authentication-Info").unwrap(),
+            msg::HeaderValue::try_from(r#"nextnonce="CANARY_PROXY_NEXT""#).unwrap(),
+        );
+        headers.insert(
+            msg::HeaderName::from_static("Location").unwrap(),
+            msg::HeaderValue::try_from("rtsp://admin:pw@192.0.2.1/live?token=CANARY_LOC").unwrap(),
+        );
+        headers.insert(
+            msg::HeaderName::from_static("Content-Base").unwrap(),
+            msg::HeaderValue::try_from("rtsp://admin:pw@192.0.2.1/base?token=CANARY_BASE").unwrap(),
+        );
+        headers.insert(
+            msg::HeaderName::from_static("Content-Location").unwrap(),
+            msg::HeaderValue::try_from("rtsp://admin:pw@192.0.2.1/loc?token=CANARY_CLOC").unwrap(),
+        );
+        headers.insert(
+            msg::HeaderName::RTP_INFO,
+            msg::HeaderValue::try_from(
+                "url=rtsp://admin:pw@192.0.2.1/track1?token=CANARY_RTP;seq=10;rtptime=20",
+            )
+            .unwrap(),
+        );
+        let rendered = format_rtsp_headers_sanitized(&headers);
+        assert!(rendered.contains("Proxy-Authentication-Info: [REDACTED]"));
+        assert!(rendered.contains("Location: rtsp://192.0.2.1/live?<query>"));
+        assert!(rendered.contains("Content-Base: rtsp://192.0.2.1/base?<query>"));
+        assert!(rendered.contains("Content-Location: rtsp://192.0.2.1/loc?<query>"));
+        assert!(
+            rendered.contains("RTP-Info: url=rtsp://192.0.2.1/track1?<query>;seq=10;rtptime=20")
+        );
+        for canary in [
+            "CANARY_PROXY_NEXT",
+            "CANARY_LOC",
+            "CANARY_BASE",
+            "CANARY_CLOC",
+            "CANARY_RTP",
+            ":pw@",
+        ] {
+            assert!(!rendered.contains(canary), "leaked {canary}: {rendered}");
+        }
+
+        let sdp = concat!(
+            "v=0\r\n",
+            "u=rtsp://admin:sdp-pw@192.0.2.1/info?token=CANARY_SDP_U\r\n",
+            "k=clear:CANARY_SDP_K\r\n",
+            "m=video 0 RTP/AVP 96\r\n",
+            "a=rtpmap:96 H264/90000\r\n",
+            "a=control:rtsp://admin:sdp-pw@192.0.2.1/track0?token=CANARY_SDP_CTRL\r\n",
+            "a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:CANARY_SDP_CRYPTO\r\n"
+        );
+        let scrubbed_sdp = sanitize_sdp(sdp);
+        assert!(scrubbed_sdp.contains("u=rtsp://192.0.2.1/info?<query>"));
+        assert!(scrubbed_sdp.contains("k=[REDACTED]"));
+        assert!(scrubbed_sdp.contains("a=control:rtsp://192.0.2.1/track0?<query>"));
+        assert!(scrubbed_sdp.contains("a=crypto:[REDACTED]"));
+        assert!(scrubbed_sdp.contains("a=rtpmap:96 H264/90000"));
+        for canary in [
+            "sdp-pw",
+            "CANARY_SDP_U",
+            "CANARY_SDP_K",
+            "CANARY_SDP_CTRL",
+            "CANARY_SDP_CRYPTO",
+        ] {
+            assert!(
+                !scrubbed_sdp.contains(canary),
+                "leaked {canary}: {scrubbed_sdp}"
+            );
+        }
     }
 }

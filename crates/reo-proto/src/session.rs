@@ -1042,9 +1042,7 @@ impl BcSession {
                 self.decrypt_body(body_start, body_len, channel_id, header.extension);
             }
         }
-        if body_len > 0
-            && !is_media_body
-            && header.msg_id != crate::COMMAND_LOGIN
+        if self.should_trace_rx_xml(&header, body_start, body_len, skip_decrypt, is_media_body)
             && tracing::enabled!(tracing::Level::TRACE)
         {
             trace_xml_summary(
@@ -3223,6 +3221,30 @@ fn trace_media_frame(
 }
 
 impl BcSession {
+    fn should_trace_rx_xml(
+        &self,
+        header: &PacketHeader,
+        body_start: usize,
+        body_len: usize,
+        skip_decrypt: bool,
+        is_media_body: bool,
+    ) -> bool {
+        let is_stream_continuation = header.msg_id == crate::COMMAND_STREAM
+            && !(self.video_accums.is_empty()
+                && self.audio_accums.is_empty()
+                && self.header_carry.is_empty());
+        let is_snap_continuation =
+            header.msg_id == crate::COMMAND_SNAP && self.snapshot_accum.is_some();
+        body_len > 0
+            && !skip_decrypt
+            && !is_media_body
+            && !header.is_binary()
+            && !is_stream_continuation
+            && !is_snap_continuation
+            && header.msg_id != crate::COMMAND_LOGIN
+            && self.recv_buf.get(body_start) == Some(&b'<')
+    }
+
     fn take_pending_command(&mut self, header: PacketHeader) -> Option<PendingCommandKind> {
         let msg_num = header.message_number();
         (msg_num != 0)
@@ -4762,5 +4784,49 @@ mod tests {
             }
             other => panic!("expected TcpSend, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn binary_stream_and_snap_chunks_skip_xml_trace() {
+        let now = Instant::now();
+        let mut s = BcSession::default_client(now);
+        s.set_state(SessionState::Connected);
+        let fake_xml = b"<fake-binary-bytes>";
+        let body_len = fake_xml.len();
+        s.recv_buf[..body_len].copy_from_slice(fake_xml);
+
+        let stream_hdr = PacketHeader {
+            msg_id: crate::COMMAND_STREAM,
+            body_len: body_len as u32,
+            encryption_offset: 0,
+            status_class: make_status(BC_CLASS_MODERN_EXT, 0),
+            extension: Some(0),
+        };
+        assert!(s.should_trace_rx_xml(&stream_hdr, 0, body_len, false, false));
+        assert!(!s.should_trace_rx_xml(&stream_hdr, 0, body_len, true, false));
+        assert!(!s.should_trace_rx_xml(&stream_hdr, 0, body_len, false, true));
+
+        let binary_snap_hdr = PacketHeader {
+            msg_id: crate::COMMAND_SNAP,
+            body_len: body_len as u32,
+            encryption_offset: 0,
+            status_class: make_status(BC_CLASS_LEGACY, 0),
+            extension: None,
+        };
+        assert!(!s.should_trace_rx_xml(&binary_snap_hdr, 0, body_len, false, false));
+
+        s.start_snapshot(1024);
+        let cont_snap_hdr = PacketHeader {
+            msg_id: crate::COMMAND_SNAP,
+            body_len: body_len as u32,
+            encryption_offset: 0,
+            status_class: make_status(BC_CLASS_MODERN_EXT, 0),
+            extension: Some(0),
+        };
+        assert!(!s.should_trace_rx_xml(&cont_snap_hdr, 0, body_len, false, false));
+
+        s.snapshot_accum = None;
+        s.recv_buf[..4].copy_from_slice(b"\xff\xd8\xff\xe0");
+        assert!(!s.should_trace_rx_xml(&cont_snap_hdr, 0, 4, false, false));
     }
 }

@@ -1740,12 +1740,22 @@ impl ReolinkClient {
             url.push_str("&token=");
             url.push_str(token);
         }
-        let response = self.client.get(&url).call()?;
+        let response = self.client.get(&url).call().map_err(|error| {
+            tracing::debug!(
+                ip = %self.ip,
+                channel,
+                reason = classify_ureq_error(&error),
+                "Reolink snapshot HTTP request failed"
+            );
+            anyhow::anyhow!("Snap failed: {}", classify_ureq_error(&error))
+        })?;
         if !response.status().is_success() {
             anyhow::bail!("Snap failed: HTTP {}", response.status());
         }
         let mut body = response.into_body();
-        Ok(body.read_to_vec()?)
+        body.read_to_vec().map_err(|error| {
+            anyhow::anyhow!("Snap body read failed: {}", classify_ureq_error(&error))
+        })
     }
 
     pub fn ptz_ctrl(&self, channel: u32, op: PtzOp, speed: u32) -> anyhow::Result<()> {
@@ -2282,5 +2292,16 @@ mod tests {
         assert_eq!(normalize_reolink_sample_rate(44), Some(44_100));
         assert_eq!(normalize_reolink_sample_rate(48_000), Some(48_000));
         assert_eq!(normalize_reolink_sample_rate(0), None);
+    }
+
+    #[test]
+    fn snap_error_does_not_leak_session_token() {
+        let mut client =
+            ReolinkClient::new_with_http_port(IpAddr::V4(Ipv4Addr::LOCALHOST), Some(1));
+        client.base_url = "not-a-valid-scheme://127.0.0.1/cgi-bin/api.cgi".to_string();
+        client.token = Some("CANARY_REOLINK_SNAP_TOKEN".to_string());
+        let err = client.snap(0).unwrap_err();
+        let text = err.to_string();
+        assert!(!text.contains("CANARY_REOLINK_SNAP_TOKEN"), "{text}");
     }
 }
