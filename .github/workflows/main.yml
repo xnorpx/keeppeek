@@ -247,7 +247,9 @@ jobs:
                 ) | Where-Object { Test-Path (Join-Path $installDirectory $_) }
               )
               & sc.exe query $serviceName *> $null
-              $servicePresent = $LASTEXITCODE -ne 1060
+              $queryExit = $LASTEXITCODE
+              $global:LASTEXITCODE = 0
+              $servicePresent = $queryExit -ne 1060
               $shortcutPresent = Test-Path $desktopShortcut
               $dirPresent = Test-Path $installDirectory
               if ($remaining.Count -eq 0 -and -not $servicePresent -and -not $shortcutPresent -and -not $dirPresent) {
@@ -259,7 +261,8 @@ jobs:
               Start-Sleep -Seconds 1
             }
             if (-not $uninstalled) {
-              $serviceState = (& sc.exe query $serviceName 2>&1) -join "`n"
+              $serviceState = (& sc.exe query $serviceName) -join "`n"
+              $global:LASTEXITCODE = 0
               $leftoverEntries = if (Test-Path $installDirectory) {
                 (Get-ChildItem -LiteralPath $installDirectory -Force | Select-Object -ExpandProperty Name) -join ', '
               } else {
@@ -271,6 +274,7 @@ jobs:
                 "dirPresent=$dirPresent, servicePresent=$servicePresent). Service state:`n$serviceState"
               )
             }
+            Write-Host 'KeepPeek Windows installer lifecycle verified (zero-component guard, install, reinstall, uninstall).'
           } finally {
             # Keep cleanup best-effort so cleanup never hides a test failure.
             if ($null -ne (Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction SilentlyContinue)) {
@@ -278,6 +282,7 @@ jobs:
               & sc.exe failure $serviceName reset= 0 actions= "" | Out-Null
               & sc.exe stop $serviceName | Out-Null
               & sc.exe delete $serviceName | Out-Null
+              $global:LASTEXITCODE = 0
             }
             Remove-Item -Force -Recurse -ErrorAction SilentlyContinue $zeroDirectory, $installDirectory, $env:OUTPUT_DIRECTORY
           }
