@@ -17,8 +17,10 @@ use crate::{
         },
         repro,
         store::{CaptureMetadata, CaptureStore},
+        traces::TraceSession,
     },
     cameras::CameraTransport,
+    logging::LoggingService,
 };
 use anyhow::{Context, bail, ensure};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
@@ -115,17 +117,27 @@ pub struct CaptureArtifacts {
     pub audio_bitstream: bool,
     pub muxed_mp4: bool,
     pub protocol_transcript: bool,
+    pub traces: bool,
 }
 
-impl Default for CaptureArtifacts {
-    fn default() -> Self {
+impl CaptureArtifacts {
+    /// Returns an artifact set with every supported capture artifact enabled.
+    #[must_use]
+    pub const fn all() -> Self {
         Self {
             pcapng: true,
             video_bitstream: true,
             audio_bitstream: true,
             muxed_mp4: true,
             protocol_transcript: true,
+            traces: true,
         }
+    }
+}
+
+impl Default for CaptureArtifacts {
+    fn default() -> Self {
+        Self::all()
     }
 }
 
@@ -146,6 +158,8 @@ pub struct CaptureRequest {
     pub duration_max_ms: u64,
     pub frames_max: u64,
     pub artifacts: CaptureArtifacts,
+    pub logging: Option<LoggingService>,
+    pub trace_filter: Option<String>,
 }
 
 impl fmt::Debug for CaptureRequest {
@@ -203,6 +217,8 @@ impl CaptureRequest {
             duration_max_ms: DEFAULT_DURATION_MAX_MS,
             frames_max: DEFAULT_FRAMES_MAX,
             artifacts: CaptureArtifacts::default(),
+            logging: None,
+            trace_filter: None,
         }
     }
 
@@ -352,9 +368,22 @@ fn execute_capture_inside_dir(
     let started = Instant::now();
     let created_at = unix_now_secs();
     let max_bytes = store.limits().max_capture_bytes;
-    let mut ctx = open_capture_context(capture_dir, max_bytes, started, req)?;
+    let reserved = reserved_capture_budget(max_bytes);
+    let trace_budget = if req.artifacts.protocol_transcript {
+        reserved / 2
+    } else {
+        reserved.saturating_sub(4_096)
+    };
+    let mut ctx = open_capture_context(capture_dir, max_bytes, reserved, started, req)?;
     let mut transcript = new_transcript(req, host);
-    dispatch_protocol_capture(&mut ctx, url, &mut transcript)?;
+    run_protocol_with_traces(
+        &mut ctx,
+        capture_dir,
+        url,
+        req,
+        trace_budget,
+        &mut transcript,
+    )?;
     transcript.tls_decrypted = ctx.tls_decrypted;
     let packet_count = ctx.pcap.as_ref().map_or(0, PcapngWriter::packet_count);
     if let Some(pcap) = ctx.pcap.take() {
@@ -392,13 +421,50 @@ fn execute_capture_inside_dir(
     })
 }
 
+fn run_protocol_with_traces(
+    ctx: &mut CaptureContext<'_>,
+    capture_dir: &Path,
+    url: &Url,
+    req: &CaptureRequest,
+    trace_budget: u64,
+    transcript: &mut ProtocolTranscript,
+) -> anyhow::Result<()> {
+    let trace_session = req.artifacts.traces.then(|| {
+        TraceSession::start(
+            req.logging.as_ref(),
+            capture_dir,
+            &req.camera_id,
+            &req.capture_id,
+            req.trace_filter.as_deref(),
+            trace_budget,
+        )
+    });
+    let span = tracing::info_span!(
+        "camera_debug_capture",
+        camera_id = %req.camera_id,
+        capture_id = %req.capture_id,
+        protocol = %req.protocol.as_str()
+    );
+    let dispatch_res = span.in_scope(|| dispatch_protocol_capture(ctx, url, transcript));
+    if let Some(session) = trace_session {
+        ctx.warnings.extend(session.finish());
+    }
+    dispatch_res
+}
+
+fn reserved_capture_budget(max_bytes: u64) -> u64 {
+    (max_bytes / 4)
+        .clamp(4_096, 2 * 1024 * 1024)
+        .min(max_bytes / 2)
+}
+
 fn open_capture_context<'a>(
     capture_dir: &Path,
     max_bytes: u64,
+    reserved: u64,
     started: Instant,
     req: &'a CaptureRequest,
 ) -> anyhow::Result<CaptureContext<'a>> {
-    let reserved = (max_bytes / 4).clamp(4_096, 512 * 1024).min(max_bytes / 2);
     let media_budget = max_bytes.saturating_sub(reserved).max(1_024);
     let pcap_budget = media_budget / 2;
     let bitstream_budget = media_budget.saturating_sub(pcap_budget).max(512);

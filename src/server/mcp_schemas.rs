@@ -302,6 +302,7 @@ fn camera_debugging_schema() -> Value {
     let mut properties = serde_json::Map::new();
     insert_camera_debug_target_properties(&mut properties);
     insert_camera_debug_option_properties(&mut properties);
+    insert_camera_debug_read_artifact_properties(&mut properties);
     json!({
         "type": "object",
         "required": ["action"],
@@ -322,7 +323,8 @@ fn insert_camera_debug_target_properties(properties: &mut serde_json::Map<String
                     "compare_transports",
                     "export_repro_fixture",
                     "list_captures",
-                    "delete_capture"
+                    "delete_capture",
+                    "read_artifact"
                 ]
             }),
         ),
@@ -343,7 +345,7 @@ fn insert_camera_debug_target_properties(properties: &mut serde_json::Map<String
             json!({
                 "type": "array",
                 "minItems": 1,
-                "maxItems": 5,
+                "maxItems": 6,
                 "items": {
                     "type": "string",
                     "enum": [
@@ -351,7 +353,8 @@ fn insert_camera_debug_target_properties(properties: &mut serde_json::Map<String
                         "video_bitstream",
                         "audio_bitstream",
                         "muxed_mp4",
-                        "protocol_transcript"
+                        "protocol_transcript",
+                        "traces"
                     ]
                 }
             }),
@@ -439,6 +442,52 @@ fn insert_camera_debug_option_properties(properties: &mut serde_json::Map<String
             }),
         ),
         ("delete_all", json!({ "type": "boolean" })),
+        (
+            "trace_filter",
+            json!({
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "description": "Optional tracing EnvFilter directive applied temporarily during capture or compare_transports when traces are enabled."
+            }),
+        ),
+    ];
+    for (key, value) in entries {
+        properties.insert(key.to_owned(), value);
+    }
+}
+
+fn insert_camera_debug_read_artifact_properties(properties: &mut serde_json::Map<String, Value>) {
+    let entries = [
+        (
+            "artifact",
+            json!({ "type": "string", "minLength": 1, "maxLength": 128 }),
+        ),
+        (
+            "offset",
+            json!({
+                "type": "integer",
+                "minimum": 0,
+                "description": "Byte offset for read_artifact (defaults to 0)."
+            }),
+        ),
+        (
+            "length",
+            json!({
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 131072,
+                "description": "Maximum chunk length in bytes for read_artifact (defaults to 65536)."
+            }),
+        ),
+        (
+            "encoding",
+            json!({
+                "type": "string",
+                "enum": ["auto", "base64", "utf8"],
+                "description": "Payload encoding for read_artifact (defaults to auto)."
+            }),
+        ),
     ];
     for (key, value) in entries {
         properties.insert(key.to_owned(), value);

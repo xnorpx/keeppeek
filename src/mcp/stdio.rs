@@ -5,7 +5,9 @@
 //! responses strictly to `stdout`. All diagnostics go to `stderr`.
 
 use crate::{
+    camera_debug::store::{validate_artifact_name, validate_capture_id},
     config,
+    logging::{LogEntry, LogLevel, LogSnapshot, TRACE_FILTER_MAX_BYTES},
     mcp::{
         protocol::{
             ERROR_INTERNAL, ERROR_INVALID_REQUEST, ERROR_PARSE, JsonRpcError, JsonRpcResponse,
@@ -14,18 +16,34 @@ use crate::{
         skill,
     },
 };
-use clap::{Args, Subcommand};
-use serde_json::Value;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use clap::{Args, Subcommand, ValueEnum};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
-    io::{self, BufRead, Write},
+    fmt::Write as _,
+    fs::File,
+    io::{self, BufRead, BufReader, Write},
     path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
+use tracing_subscriber::EnvFilter;
 use ureq::Agent;
 use url::{Host, Url};
 
 const STDIO_HTTP_TIMEOUT: Duration = Duration::from_secs(60);
+const SSE_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const SSE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_STDIO_RESPONSE_BYTES: u64 = 2 * 1_024 * 1_024;
+const MAX_LOG_SNAPSHOT_BYTES: u64 = 16 * 1_024 * 1_024;
+const MAX_SSE_LINE_BYTES: usize = 256 * 1_024;
+const MAX_SSE_DATA_BYTES: usize = 512 * 1_024;
+const MAX_SSE_LOG_TAIL: usize = 1_000;
+const READ_ARTIFACT_CHUNK_BYTES: usize = 65_536;
 const ACCESS_KEY_ENV: &str = "KEEPPEEK_ACCESS_KEY";
 
 /// Command-line options for `keeppeek mcp`.
@@ -49,6 +67,28 @@ pub struct McpArgs {
     pub command: Option<McpCommand>,
 }
 
+/// Log severity filter accepted by `keeppeek mcp logs --level`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum LogLevelArg {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl From<LogLevelArg> for LogLevel {
+    fn from(value: LogLevelArg) -> Self {
+        match value {
+            LogLevelArg::Trace => Self::Trace,
+            LogLevelArg::Debug => Self::Debug,
+            LogLevelArg::Info => Self::Info,
+            LogLevelArg::Warn => Self::Warn,
+            LogLevelArg::Error => Self::Error,
+        }
+    }
+}
+
 /// Subcommands available under `keeppeek mcp`.
 #[derive(Debug, Clone, Subcommand)]
 pub enum McpCommand {
@@ -64,11 +104,48 @@ pub enum McpCommand {
         #[arg(long, value_name = "DIR")]
         output: Option<PathBuf>,
     },
+    /// Download artifacts from a remote camera debug capture and verify SHA-256 digests.
+    PullCapture {
+        /// Capture identifier to download.
+        capture_id: String,
+        /// Local directory where downloaded artifact files will be written.
+        #[arg(long, value_name = "DIR")]
+        output: PathBuf,
+        /// Specific artifact filenames to download (defaults to all capture artifacts).
+        #[arg(long = "artifact", value_name = "NAME")]
+        artifacts: Vec<String>,
+    },
+    /// Fetch snapshot logs or stream live SSE logs from a KeepPeek server.
+    Logs {
+        /// Minimum log level to display.
+        #[arg(long, value_enum)]
+        level: Option<LogLevelArg>,
+        /// Filter entries whose target contains this substring (case-insensitive).
+        #[arg(long)]
+        target: Option<String>,
+        /// Filter entries matching this camera ID or field substring.
+        #[arg(long)]
+        camera: Option<String>,
+        /// Filter entries matching this substring across target, message, and fields.
+        #[arg(long)]
+        query: Option<String>,
+        /// Temporarily set this EnvFilter directive via MCP and restore it on exit.
+        #[arg(long)]
+        filter: Option<String>,
+        /// Stream live log events over `GET /logs` SSE instead of fetching a single snapshot.
+        #[arg(long)]
+        follow: bool,
+        /// Maximum number of snapshot or initial tail entries.
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+    },
 }
 
 /// HTTP client that forwards JSON-RPC requests to `POST /mcp`.
+#[derive(Clone)]
 pub struct McpHttpClient {
     agent: Agent,
+    origin: Url,
     endpoint: Url,
     authorization: Option<String>,
     read_only: bool,
@@ -110,6 +187,7 @@ impl McpHttpClient {
         if key.is_some() && parsed.scheme() == "http" && !loopback {
             anyhow::bail!("an access key requires HTTPS unless the MCP server is loopback");
         }
+        let origin = parsed.clone();
         let base_path = parsed.path().trim_end_matches('/').to_owned();
         parsed.set_path(&format!("{base_path}/mcp"));
         let agent = Agent::config_builder()
@@ -120,10 +198,137 @@ impl McpHttpClient {
             .into();
         Ok(Self {
             agent,
+            origin,
             endpoint: parsed,
             authorization: key.map(|token| format!("Bearer {token}")),
             read_only,
         })
+    }
+
+    /// Invokes one MCP tool via `POST /mcp` and returns its structured result object.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP request fails, returns JSON-RPC/tool errors, or omits JSON data.
+    pub fn call_tool(&self, name: &str, arguments: Value) -> anyhow::Result<Value> {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": name, "arguments": arguments }
+        });
+        let request_json = serde_json::to_string(&request)?;
+        let Some(body) = self
+            .forward(&request_json)
+            .map_err(|error| anyhow::anyhow!("{error}"))?
+        else {
+            anyhow::bail!("MCP server returned empty response for tool '{name}'");
+        };
+        let rpc: JsonRpcResponse = serde_json::from_str(&body)?;
+        if let Some(error) = rpc.error {
+            anyhow::bail!(
+                "MCP tool '{name}' failed ({}): {}",
+                error.code,
+                error.message
+            );
+        }
+        let result = rpc.result.ok_or_else(|| {
+            anyhow::anyhow!("MCP tool '{name}' returned neither result nor error")
+        })?;
+        if result.get("isError").and_then(Value::as_bool) == Some(true) {
+            let text = result
+                .get("content")
+                .and_then(|c| c.get(0))
+                .and_then(|item| item.get("text"))
+                .and_then(Value::as_str)
+                .unwrap_or("tool returned error");
+            anyhow::bail!("MCP tool '{name}' error: {text}");
+        }
+        if let Some(structured) = result.get("structuredContent") {
+            return Ok(structured.clone());
+        }
+        if let Some(text) = result
+            .get("content")
+            .and_then(|c| c.get(0))
+            .and_then(|item| item.get("text"))
+            .and_then(Value::as_str)
+            && let Ok(parsed) = serde_json::from_str::<Value>(text)
+        {
+            return Ok(parsed);
+        }
+        Ok(result)
+    }
+
+    fn origin_url(&self, suffix: &str) -> Url {
+        let mut url = self.origin.clone();
+        let base_path = url.path().trim_end_matches('/').to_owned();
+        url.set_path(&format!("{base_path}{suffix}"));
+        url
+    }
+
+    /// Fetches `GET /logs/snapshot` using this client's origin and Bearer credentials.
+    ///
+    /// # Errors
+    /// Returns an error if the HTTP request fails, returns non-2xx, or returns invalid JSON.
+    pub fn get_logs_snapshot(&self) -> anyhow::Result<LogSnapshot> {
+        let url = self.origin_url("/logs/snapshot");
+        let mut request = self
+            .agent
+            .get(url.as_str())
+            .header("Accept", "application/json");
+        if let Some(authorization) = &self.authorization {
+            request = request.header("Authorization", authorization);
+        }
+        let mut response = request
+            .call()
+            .map_err(|error| anyhow::anyhow!("GET /logs/snapshot failed: {error}"))?;
+        let status = response.status().as_u16();
+        let body = response
+            .body_mut()
+            .with_config()
+            .limit(MAX_LOG_SNAPSHOT_BYTES)
+            .read_to_string()
+            .map_err(|error| anyhow::anyhow!("failed reading /logs/snapshot: {error}"))?;
+        if !(200..300).contains(&status) {
+            anyhow::bail!("GET /logs/snapshot returned HTTP {status}: {}", body.trim());
+        }
+        Ok(serde_json::from_str(&body)?)
+    }
+
+    /// Opens an SSE stream from `GET /logs?tail=<tail>` using this client's origin and credentials.
+    ///
+    /// # Errors
+    /// Returns an error if connecting fails or the server responds with a non-2xx status.
+    pub fn open_log_stream(&self, tail: usize) -> anyhow::Result<Box<dyn BufRead + Send>> {
+        let mut url = self.origin_url("/logs");
+        url.set_query(Some(&format!("tail={tail}")));
+        let stream_agent: Agent = Agent::config_builder()
+            .http_status_as_error(false)
+            .max_redirects(0)
+            .timeout_connect(Some(SSE_CONNECT_TIMEOUT))
+            .timeout_recv_response(Some(SSE_RESPONSE_TIMEOUT))
+            .build()
+            .into();
+        let mut request = stream_agent
+            .get(url.as_str())
+            .header("Accept", "text/event-stream");
+        if let Some(authorization) = &self.authorization {
+            request = request.header("Authorization", authorization);
+        }
+        let mut response = request
+            .call()
+            .map_err(|error| anyhow::anyhow!("GET /logs failed: {error}"))?;
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            let body = response
+                .body_mut()
+                .with_config()
+                .limit(8_192)
+                .read_to_string()
+                .unwrap_or_default();
+            anyhow::bail!("GET /logs returned HTTP {status}: {}", body.trim());
+        }
+        Ok(Box::new(BufReader::new(response.into_body().into_reader())))
     }
 
     /// Sends one raw JSON-RPC payload to `POST /mcp` and returns any JSON response body.
@@ -187,6 +392,39 @@ pub fn run(args: McpArgs) -> anyhow::Result<()> {
     let server_url = resolve_server_url(args.server.as_deref(), args.config.as_deref())?;
     let credential = resolve_credential(args.credential_file.as_deref())?;
     let client = McpHttpClient::new(&server_url, credential, args.read_only)?;
+    match args.command {
+        Some(McpCommand::PullCapture {
+            capture_id,
+            output,
+            artifacts,
+        }) => {
+            let mut stdout = io::stdout().lock();
+            return execute_pull_capture(&client, &capture_id, &output, &artifacts, &mut stdout);
+        }
+        Some(McpCommand::Logs {
+            level,
+            target,
+            camera,
+            query,
+            filter,
+            follow,
+            limit,
+        }) => {
+            let stop_flag = Arc::new(AtomicBool::new(false));
+            let options = LogsCommandOptions {
+                level: level.map(LogLevel::from),
+                target,
+                camera,
+                query,
+                filter,
+                follow,
+                limit,
+            };
+            let mut stdout = io::stdout().lock();
+            return execute_logs_command(&client, &options, &stop_flag, true, &mut stdout);
+        }
+        Some(McpCommand::Skill { .. }) | None => {}
+    }
     let stdin = io::stdin();
     let stdout = io::stdout();
     serve_stdio_loop(stdin.lock(), stdout.lock(), |line| {
@@ -382,6 +620,433 @@ fn execute_skill_command<W: Write>(
     }
     writer.write_all(skill::render_named_skill_markdown(resolved).as_bytes())?;
     writer.flush()?;
+    Ok(())
+}
+
+struct TempFileGuard(Option<PathBuf>);
+
+impl TempFileGuard {
+    const fn new(path: PathBuf) -> Self {
+        Self(Some(path))
+    }
+
+    fn persist(mut self, target: &Path) -> io::Result<()> {
+        let Some(temp_path) = self.0.take() else {
+            return Err(io::Error::other("temporary file already consumed"));
+        };
+        std::fs::rename(&temp_path, target)
+    }
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+fn execute_pull_capture<W: Write>(
+    client: &McpHttpClient,
+    capture_id: &str,
+    output_dir: &Path,
+    requested_artifacts: &[String],
+    writer: &mut W,
+) -> anyhow::Result<()> {
+    validate_capture_id(capture_id)?;
+    let target_artifacts = resolve_pull_artifacts(client, capture_id, requested_artifacts)?;
+    std::fs::create_dir_all(output_dir)?;
+    for artifact in target_artifacts {
+        let (bytes_written, sha256) =
+            download_verified_artifact(client, capture_id, &artifact, output_dir)?;
+        writeln!(writer, "{artifact}\t{bytes_written}\t{sha256}")?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+fn resolve_pull_artifacts(
+    client: &McpHttpClient,
+    capture_id: &str,
+    requested: &[String],
+) -> anyhow::Result<Vec<String>> {
+    if !requested.is_empty() {
+        let mut deduped = Vec::with_capacity(requested.len());
+        for raw in requested {
+            let name = raw.trim();
+            validate_artifact_name(name)?;
+            if !deduped.iter().any(|existing| existing == name) {
+                deduped.push(name.to_owned());
+            }
+        }
+        return Ok(deduped);
+    }
+    let listed = client.call_tool("camera_debugging", json!({ "action": "list_captures" }))?;
+    let captures = listed
+        .get("captures")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("list_captures response missing captures array"))?;
+    let entry = captures
+        .iter()
+        .find(|item| item.get("capture_id").and_then(Value::as_str) == Some(capture_id))
+        .ok_or_else(|| anyhow::anyhow!("capture '{capture_id}' was not found on server"))?;
+    let files = entry
+        .get("files")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("capture '{capture_id}' metadata missing files list"))?;
+    let mut out = Vec::with_capacity(files.len());
+    for file in files {
+        let name = file.as_str().ok_or_else(|| {
+            anyhow::anyhow!("capture '{capture_id}' contains non-string filename")
+        })?;
+        validate_artifact_name(name)?;
+        if !out.iter().any(|existing| existing == name) {
+            out.push(name.to_owned());
+        }
+    }
+    anyhow::ensure!(
+        !out.is_empty(),
+        "capture '{capture_id}' has no downloadable artifacts"
+    );
+    Ok(out)
+}
+
+fn download_verified_artifact(
+    client: &McpHttpClient,
+    capture_id: &str,
+    artifact: &str,
+    output_dir: &Path,
+) -> anyhow::Result<(u64, String)> {
+    let final_path = output_dir.join(artifact);
+    anyhow::ensure!(
+        final_path.parent() == Some(output_dir),
+        "artifact path escaped output directory"
+    );
+    let temp_path = output_dir.join(format!(".pull-{}.tmp", uuid::Uuid::new_v4()));
+    let temp_guard = TempFileGuard::new(temp_path.clone());
+    let mut out_file = File::create(&temp_path)?;
+    let (written, sha256) = stream_artifact_chunks(client, capture_id, artifact, &mut out_file)?;
+    out_file.sync_all()?;
+    drop(out_file);
+    temp_guard.persist(&final_path)?;
+    Ok((written, sha256))
+}
+
+fn stream_artifact_chunks(
+    client: &McpHttpClient,
+    capture_id: &str,
+    artifact: &str,
+    out_file: &mut File,
+) -> anyhow::Result<(u64, String)> {
+    let mut hasher = Sha256::new();
+    let mut offset = 0_u64;
+    let mut expected_sha256: Option<String> = None;
+    let expected_total: u64;
+    loop {
+        let chunk = client.call_tool(
+            "camera_debugging",
+            json!({
+                "action": "read_artifact",
+                "capture_id": capture_id,
+                "artifact": artifact,
+                "offset": offset,
+                "length": READ_ARTIFACT_CHUNK_BYTES,
+                "encoding": "auto"
+            }),
+        )?;
+        let server_sha = chunk_str(&chunk, "sha256")?;
+        if let Some(prev) = &expected_sha256 {
+            anyhow::ensure!(
+                prev == server_sha,
+                "artifact '{artifact}' sha256 changed mid-download"
+            );
+        } else {
+            expected_sha256 = Some(server_sha.to_owned());
+        }
+        let total_bytes = chunk_u64(&chunk, "total_bytes")?;
+        let next_offset = chunk_u64(&chunk, "next_offset")?;
+        let eof = chunk_bool(&chunk, "eof")?;
+        let decoded = decode_artifact_payload(&chunk)?;
+        let expected_chunk_len = chunk_u64(&chunk, "length")?;
+        anyhow::ensure!(
+            u64::try_from(decoded.len()).unwrap_or(u64::MAX) == expected_chunk_len,
+            "artifact '{artifact}' chunk length mismatch"
+        );
+        out_file.write_all(&decoded)?;
+        hasher.update(&decoded);
+        offset = offset.saturating_add(expected_chunk_len);
+        anyhow::ensure!(
+            next_offset == offset,
+            "artifact '{artifact}' next_offset mismatch ({next_offset} != {offset})"
+        );
+        if eof {
+            expected_total = total_bytes;
+            break;
+        }
+        anyhow::ensure!(
+            expected_chunk_len > 0,
+            "artifact '{artifact}' stalled without eof"
+        );
+    }
+    anyhow::ensure!(
+        offset == expected_total,
+        "artifact '{artifact}' truncated ({offset} != {expected_total} bytes)"
+    );
+    let actual_sha256 = digest_hex(&hasher.finalize());
+    let server_sha256 = expected_sha256.unwrap_or_default();
+    anyhow::ensure!(
+        actual_sha256 == server_sha256,
+        "artifact '{artifact}' SHA-256 mismatch: expected {server_sha256}, got {actual_sha256}"
+    );
+    Ok((offset, actual_sha256))
+}
+
+fn decode_artifact_payload(chunk: &Value) -> anyhow::Result<Vec<u8>> {
+    let encoding = chunk_str(chunk, "encoding")?;
+    let data = chunk_str(chunk, "data")?;
+    match encoding {
+        "utf8" => Ok(data.as_bytes().to_vec()),
+        "base64" => Ok(BASE64.decode(data)?),
+        other => anyhow::bail!("unsupported read_artifact encoding '{other}'"),
+    }
+}
+
+fn chunk_str<'a>(value: &'a Value, field: &str) -> anyhow::Result<&'a str> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("read_artifact response missing string '{field}'"))
+}
+
+fn chunk_u64(value: &Value, field: &str) -> anyhow::Result<u64> {
+    value
+        .get(field)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| anyhow::anyhow!("read_artifact response missing u64 '{field}'"))
+}
+
+fn chunk_bool(value: &Value, field: &str) -> anyhow::Result<bool> {
+    value
+        .get(field)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| anyhow::anyhow!("read_artifact response missing bool '{field}'"))
+}
+
+fn digest_hex(digest: &[u8]) -> String {
+    let mut hex = String::with_capacity(digest.len().saturating_mul(2));
+    for byte in digest {
+        let _ = write!(&mut hex, "{byte:02x}");
+    }
+    hex
+}
+
+struct LogsCommandOptions {
+    level: Option<LogLevel>,
+    target: Option<String>,
+    camera: Option<String>,
+    query: Option<String>,
+    filter: Option<String>,
+    follow: bool,
+    limit: usize,
+}
+
+struct LogFilterMatcher {
+    min_rank: Option<u8>,
+    target_needle: Option<String>,
+    camera_needle: Option<String>,
+    query_needle: Option<String>,
+}
+
+impl LogFilterMatcher {
+    fn from_options(options: &LogsCommandOptions) -> Self {
+        Self {
+            min_rank: options.level.map(LogLevel::rank),
+            target_needle: options.target.as_deref().map(str::to_ascii_lowercase),
+            camera_needle: options.camera.as_deref().map(str::to_ascii_lowercase),
+            query_needle: options.query.as_deref().map(str::to_ascii_lowercase),
+        }
+    }
+
+    fn matches(&self, entry: &LogEntry) -> bool {
+        self.min_rank.is_none_or(|rank| entry.level.rank() >= rank)
+            && self
+                .target_needle
+                .as_deref()
+                .is_none_or(|needle| entry.target.to_ascii_lowercase().contains(needle))
+            && self
+                .camera_needle
+                .as_deref()
+                .is_none_or(|needle| entry.matches_query(needle))
+            && self
+                .query_needle
+                .as_deref()
+                .is_none_or(|needle| entry.matches_query(needle))
+    }
+}
+
+struct RemoteFilterGuard {
+    state: Arc<Mutex<Option<(McpHttpClient, String)>>>,
+}
+
+impl RemoteFilterGuard {
+    fn acquire(client: &McpHttpClient, new_filter: &str) -> anyhow::Result<Self> {
+        let trimmed = new_filter.trim();
+        anyhow::ensure!(
+            !trimmed.is_empty() && trimmed.len() <= TRACE_FILTER_MAX_BYTES,
+            "filter must be between 1 and {TRACE_FILTER_MAX_BYTES} bytes"
+        );
+        EnvFilter::try_new(trimmed)?;
+        let settings = client.call_tool("get_logging_settings", json!({}))?;
+        let previous = settings
+            .get("active_filter")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("get_logging_settings missing active_filter"))?
+            .to_owned();
+        client.call_tool("set_logging_filter", json!({ "filter": trimmed }))?;
+        Ok(Self {
+            state: Arc::new(Mutex::new(Some((client.clone(), previous)))),
+        })
+    }
+
+    fn restore_now(state: &Arc<Mutex<Option<(McpHttpClient, String)>>>) {
+        let pending = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some((client, previous)) = pending
+            && let Err(error) =
+                client.call_tool("set_logging_filter", json!({ "filter": previous }))
+        {
+            eprintln!("keeppeek mcp logs: failed to restore logging filter: {error}");
+        }
+    }
+}
+
+impl Drop for RemoteFilterGuard {
+    fn drop(&mut self) {
+        Self::restore_now(&self.state);
+    }
+}
+
+fn execute_logs_command<W: Write>(
+    client: &McpHttpClient,
+    options: &LogsCommandOptions,
+    stop_flag: &Arc<AtomicBool>,
+    install_ctrlc: bool,
+    writer: &mut W,
+) -> anyhow::Result<()> {
+    let _filter_guard = options
+        .filter
+        .as_deref()
+        .map(|directive| RemoteFilterGuard::acquire(client, directive))
+        .transpose()?;
+    if install_ctrlc && options.follow {
+        let ctrlc_stop = stop_flag.clone();
+        let ctrlc_guard = _filter_guard.as_ref().map(|guard| guard.state.clone());
+        let _ = ctrlc::set_handler(move || {
+            ctrlc_stop.store(true, Ordering::Release);
+            if let Some(state) = &ctrlc_guard {
+                RemoteFilterGuard::restore_now(state);
+            }
+            std::process::exit(130);
+        });
+    }
+    let matcher = LogFilterMatcher::from_options(options);
+    if !options.follow {
+        let snapshot = client.get_logs_snapshot()?;
+        let limit = options.limit.max(1);
+        let mut matched: Vec<LogEntry> = snapshot
+            .entries
+            .into_iter()
+            .filter(|entry| matcher.matches(entry))
+            .collect();
+        if matched.len() > limit {
+            matched.drain(..matched.len() - limit);
+        }
+        for entry in &matched {
+            write_log_entry_line(writer, entry)?;
+        }
+        writer.flush()?;
+        return Ok(());
+    }
+    let tail = options.limit.clamp(1, MAX_SSE_LOG_TAIL);
+    let mut reader = client.open_log_stream(tail)?;
+    stream_sse_logs(&mut reader, &matcher, writer, stop_flag)
+}
+
+fn stream_sse_logs<R: BufRead, W: Write>(
+    reader: &mut R,
+    matcher: &LogFilterMatcher,
+    writer: &mut W,
+    stop_flag: &AtomicBool,
+) -> anyhow::Result<()> {
+    let mut line_buf = Vec::new();
+    let mut event_name = String::new();
+    let mut data_buf = String::new();
+    while !stop_flag.load(Ordering::Acquire) {
+        line_buf.clear();
+        let Some(within_limit) = read_bounded_line(reader, &mut line_buf, MAX_SSE_LINE_BYTES)?
+        else {
+            break;
+        };
+        if !within_limit {
+            event_name.clear();
+            data_buf.clear();
+            continue;
+        }
+        let line = String::from_utf8_lossy(&line_buf);
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            dispatch_sse_event(&event_name, &data_buf, matcher, writer)?;
+            event_name.clear();
+            data_buf.clear();
+            continue;
+        }
+        if trimmed.starts_with(':') {
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("event:") {
+            event_name = value.trim().to_owned();
+        } else if let Some(value) = trimmed.strip_prefix("data:") {
+            let chunk = value.trim_start();
+            if data_buf.len().saturating_add(chunk.len()) <= MAX_SSE_DATA_BYTES {
+                if !data_buf.is_empty() {
+                    data_buf.push('\n');
+                }
+                data_buf.push_str(chunk);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn dispatch_sse_event<W: Write>(
+    event_name: &str,
+    data: &str,
+    matcher: &LogFilterMatcher,
+    writer: &mut W,
+) -> anyhow::Result<()> {
+    if data.is_empty() {
+        return Ok(());
+    }
+    if event_name.is_empty() || event_name == "log" {
+        if let Ok(entry) = serde_json::from_str::<LogEntry>(data)
+            && matcher.matches(&entry)
+        {
+            write_log_entry_line(writer, &entry)?;
+            writer.flush()?;
+        }
+        return Ok(());
+    }
+    if matches!(event_name, "gap" | "replay-truncated") {
+        eprintln!("keeppeek mcp logs: event={event_name} data={data}");
+    }
+    Ok(())
+}
+
+fn write_log_entry_line<W: Write>(writer: &mut W, entry: &LogEntry) -> anyhow::Result<()> {
+    serde_json::to_writer(&mut *writer, entry)?;
+    writer.write_all(b"\n")?;
     Ok(())
 }
 
@@ -620,5 +1285,426 @@ mod tests {
         assert!(
             TestCli::try_parse_from(["keeppeek-mcp", "skill", "--list", "camera-debug"]).is_err()
         );
+    }
+
+    #[test]
+    fn cli_parses_pull_capture_and_logs_subcommands() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct TestCli {
+            #[command(flatten)]
+            mcp: McpArgs,
+        }
+
+        let pull = TestCli::try_parse_from([
+            "keeppeek-mcp",
+            "--server",
+            "https://nvr.example.com",
+            "pull-capture",
+            "cap-123",
+            "--output",
+            "debug-out",
+            "--artifact",
+            "traces.jsonl",
+            "--artifact",
+            "capture.pcapng",
+        ])
+        .unwrap();
+        match pull.mcp.command.unwrap() {
+            McpCommand::PullCapture {
+                capture_id,
+                output,
+                artifacts,
+            } => {
+                assert_eq!(capture_id, "cap-123");
+                assert_eq!(output, PathBuf::from("debug-out"));
+                assert_eq!(artifacts, vec!["traces.jsonl", "capture.pcapng"]);
+            }
+            _ => panic!("expected PullCapture"),
+        }
+
+        let logs = TestCli::try_parse_from([
+            "keeppeek-mcp",
+            "logs",
+            "--level",
+            "debug",
+            "--target",
+            "keeppeek::rtsp",
+            "--camera",
+            "cam-1",
+            "--query",
+            "describe",
+            "--filter",
+            "retina=trace",
+            "--follow",
+            "--limit",
+            "50",
+        ])
+        .unwrap();
+        match logs.mcp.command.unwrap() {
+            McpCommand::Logs {
+                level,
+                target,
+                camera,
+                query,
+                filter,
+                follow,
+                limit,
+            } => {
+                assert_eq!(level, Some(LogLevelArg::Debug));
+                assert_eq!(target.as_deref(), Some("keeppeek::rtsp"));
+                assert_eq!(camera.as_deref(), Some("cam-1"));
+                assert_eq!(query.as_deref(), Some("describe"));
+                assert_eq!(filter.as_deref(), Some("retina=trace"));
+                assert!(follow);
+                assert_eq!(limit, 50);
+            }
+            _ => panic!("expected Logs"),
+        }
+    }
+
+    fn spawn_mock_http_server<F>(
+        max_requests: usize,
+        handler: F,
+    ) -> (String, std::thread::JoinHandle<()>)
+    where
+        F: Fn(String, String, Vec<(String, String)>, String) -> (u16, String, String)
+            + Send
+            + 'static,
+    {
+        use std::io::Read;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            for _ in 0..max_requests {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request_line = String::new();
+                if reader.read_line(&mut request_line).unwrap() == 0 {
+                    continue;
+                }
+                let mut parts = request_line.split_whitespace();
+                let method = parts.next().unwrap_or("").to_owned();
+                let path = parts.next().unwrap_or("").to_owned();
+                let mut headers = Vec::new();
+                let mut content_len = 0_usize;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    let trimmed = line.trim_end_matches(['\r', '\n']);
+                    if trimmed.is_empty() {
+                        break;
+                    }
+                    if let Some((k, v)) = trimmed.split_once(':') {
+                        if k.eq_ignore_ascii_case("content-length") {
+                            content_len = v.trim().parse().unwrap_or(0);
+                        }
+                        headers.push((k.trim().to_owned(), v.trim().to_owned()));
+                    }
+                }
+                let mut body_bytes = vec![0_u8; content_len];
+                if content_len > 0 {
+                    reader.read_exact(&mut body_bytes).unwrap();
+                }
+                let body = String::from_utf8(body_bytes).unwrap();
+                let (status, content_type, resp_body) = handler(method, path, headers, body);
+                let header = format!(
+                    "HTTP/1.1 {status} OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    resp_body.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(resp_body.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    #[test]
+    fn pull_capture_downloads_chunks_verifies_sha256_and_blocks_traversal() {
+        let trace_bytes = b"{\"line\":1}\n{\"line\":2}\n".to_vec();
+        let bin_bytes: Vec<u8> = vec![0x00, 0x01, 0xFE, 0xFF, 0x42, 0x43];
+        let trace_sha = digest_hex(&Sha256::digest(&trace_bytes));
+        let bin_sha = digest_hex(&Sha256::digest(&bin_bytes));
+        let corrupt_sha = "0".repeat(64);
+        let req_count_srv = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (origin, server) = spawn_mock_http_server(5, move |_method, _path, _headers, body| {
+            let rpc: Value = serde_json::from_str(&body).unwrap();
+            let args = &rpc["params"]["arguments"];
+            let action = args["action"].as_str().unwrap();
+            let n = req_count_srv.fetch_add(1, Ordering::Relaxed);
+            let sc = match action {
+                "list_captures" => json!({
+                    "action": "list_captures",
+                    "captures": [{
+                        "capture_id": "cap-pull-1",
+                        "files": ["traces.jsonl", "capture.pcapng"]
+                    }]
+                }),
+                "read_artifact" => {
+                    let artifact = args["artifact"].as_str().unwrap();
+                    let offset = args["offset"].as_u64().unwrap() as usize;
+                    if artifact == "traces.jsonl" {
+                        if offset == 0 {
+                            let part = std::str::from_utf8(&trace_bytes[..11]).unwrap();
+                            json!({
+                                "action": "read_artifact",
+                                "capture_id": "cap-pull-1",
+                                "artifact": "traces.jsonl",
+                                "offset": 0,
+                                "length": 11,
+                                "total_bytes": trace_bytes.len(),
+                                "sha256": trace_sha,
+                                "eof": false,
+                                "next_offset": 11,
+                                "encoding": "utf8",
+                                "data": part
+                            })
+                        } else {
+                            let part = std::str::from_utf8(&trace_bytes[11..]).unwrap();
+                            json!({
+                                "action": "read_artifact",
+                                "capture_id": "cap-pull-1",
+                                "artifact": "traces.jsonl",
+                                "offset": 11,
+                                "length": trace_bytes.len() - 11,
+                                "total_bytes": trace_bytes.len(),
+                                "sha256": trace_sha,
+                                "eof": true,
+                                "next_offset": trace_bytes.len(),
+                                "encoding": "utf8",
+                                "data": part
+                            })
+                        }
+                    } else if n == 4 {
+                        json!({
+                            "action": "read_artifact",
+                            "capture_id": "cap-pull-1",
+                            "artifact": "capture.pcapng",
+                            "offset": 0,
+                            "length": bin_bytes.len(),
+                            "total_bytes": bin_bytes.len(),
+                            "sha256": corrupt_sha,
+                            "eof": true,
+                            "next_offset": bin_bytes.len(),
+                            "encoding": "base64",
+                            "data": BASE64.encode(&bin_bytes)
+                        })
+                    } else {
+                        json!({
+                            "action": "read_artifact",
+                            "capture_id": "cap-pull-1",
+                            "artifact": "capture.pcapng",
+                            "offset": 0,
+                            "length": bin_bytes.len(),
+                            "total_bytes": bin_bytes.len(),
+                            "sha256": bin_sha,
+                            "eof": true,
+                            "next_offset": bin_bytes.len(),
+                            "encoding": "base64",
+                            "data": BASE64.encode(&bin_bytes)
+                        })
+                    }
+                }
+                other => panic!("unexpected action {other}"),
+            };
+            let reply = JsonRpcResponse::success(
+                rpc["id"].clone(),
+                serde_json::to_value(crate::mcp::protocol::ToolCallResult::json(sc)).unwrap(),
+            );
+            (
+                200,
+                "application/json".to_owned(),
+                serde_json::to_string(&reply).unwrap(),
+            )
+        });
+
+        let client = McpHttpClient::new(&origin, None, false).unwrap();
+        let out_dir =
+            std::env::temp_dir().join(format!("keeppeek-pull-test-{}", uuid::Uuid::new_v4()));
+        let mut out_log = Vec::new();
+        execute_pull_capture(&client, "cap-pull-1", &out_dir, &[], &mut out_log).unwrap();
+        assert_eq!(
+            std::fs::read(out_dir.join("traces.jsonl")).unwrap(),
+            b"{\"line\":1}\n{\"line\":2}\n"
+        );
+        assert_eq!(
+            std::fs::read(out_dir.join("capture.pcapng")).unwrap(),
+            vec![0x00, 0x01, 0xFE, 0xFF, 0x42, 0x43]
+        );
+
+        let traversal_err = execute_pull_capture(
+            &client,
+            "cap-pull-1",
+            &out_dir,
+            &["../escape.txt".to_owned()],
+            &mut out_log,
+        )
+        .unwrap_err();
+        assert!(traversal_err.to_string().contains("disallowed"));
+
+        // Corrupt sha256 fails cleanly and leaves no temp file behind.
+        let mismatch_err = execute_pull_capture(
+            &client,
+            "cap-pull-1",
+            &out_dir,
+            &["capture.pcapng".to_owned()],
+            &mut out_log,
+        )
+        .unwrap_err();
+        assert!(mismatch_err.to_string().contains("SHA-256 mismatch"));
+
+        let _ = server.join();
+        let _ = std::fs::remove_dir_all(&out_dir);
+    }
+
+    #[test]
+    fn logs_command_fetches_snapshot_applies_and_restores_filter_and_streams_sse() {
+        let applied_filters = Arc::new(Mutex::new(Vec::<String>::new()));
+        let applied_srv = applied_filters.clone();
+        let entry_match = LogEntry {
+            sequence: 10,
+            timestamp_ms: 1_000,
+            level: LogLevel::Debug,
+            target: "keeppeek::rtsp".to_owned(),
+            message: "describe ok".to_owned(),
+            fields: std::collections::BTreeMap::from([(
+                "camera_id".to_owned(),
+                Value::String("cam-1".to_owned()),
+            )]),
+            file: None,
+            line: None,
+        };
+        let entry_other = LogEntry {
+            sequence: 11,
+            timestamp_ms: 1_001,
+            level: LogLevel::Trace,
+            target: "keeppeek::server".to_owned(),
+            message: "noise".to_owned(),
+            fields: std::collections::BTreeMap::from([(
+                "camera_id".to_owned(),
+                Value::String("cam-2".to_owned()),
+            )]),
+            file: None,
+            line: None,
+        };
+        let snapshot = LogSnapshot {
+            entries: vec![entry_match.clone(), entry_other],
+            oldest_sequence: Some(10),
+            newest_sequence: Some(11),
+            truncated: false,
+            stats: crate::logging::LogBufferStats {
+                entry_count: 2,
+                byte_count: 100,
+                evicted_entries: 0,
+                max_entries: 100,
+                max_bytes: 1024,
+                active_streams: 0,
+                max_streams: 8,
+            },
+            generation: Some("gen-1".to_owned()),
+        };
+        let sse_body = format!(
+            ": connected\n\n: keep-alive\n\nid: 10\nevent: log\ndata: {}\n\n",
+            serde_json::to_string(&entry_match).unwrap()
+        );
+        let (origin, server) = spawn_mock_http_server(8, move |method, path, _headers, body| {
+            if method == "POST" && path == "/mcp" {
+                let rpc: Value = serde_json::from_str(&body).unwrap();
+                let name = rpc["params"]["name"].as_str().unwrap();
+                let sc = match name {
+                    "get_logging_settings" => json!({ "active_filter": "info,keeppeek=debug" }),
+                    "set_logging_filter" => {
+                        let f = rpc["params"]["arguments"]["filter"]
+                            .as_str()
+                            .unwrap()
+                            .to_owned();
+                        applied_srv.lock().unwrap().push(f.clone());
+                        json!({ "active_filter": f })
+                    }
+                    other => panic!("unexpected tool {other}"),
+                };
+                let reply = JsonRpcResponse::success(
+                    rpc["id"].clone(),
+                    serde_json::to_value(crate::mcp::protocol::ToolCallResult::json(sc)).unwrap(),
+                );
+                (
+                    200,
+                    "application/json".to_owned(),
+                    serde_json::to_string(&reply).unwrap(),
+                )
+            } else if method == "GET" && path == "/logs/snapshot" {
+                (
+                    200,
+                    "application/json".to_owned(),
+                    serde_json::to_string(&snapshot).unwrap(),
+                )
+            } else if method == "GET" && path.starts_with("/logs?") {
+                (
+                    200,
+                    "text/event-stream; charset=utf-8".to_owned(),
+                    sse_body.clone(),
+                )
+            } else {
+                (404, "text/plain".to_owned(), "not found".to_owned())
+            }
+        });
+
+        let client = McpHttpClient::new(&origin, None, false).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut snap_out = Vec::new();
+        execute_logs_command(
+            &client,
+            &LogsCommandOptions {
+                level: Some(LogLevel::Debug),
+                target: Some("rtsp".to_owned()),
+                camera: Some("cam-1".to_owned()),
+                query: Some("describe".to_owned()),
+                filter: Some("retina=trace".to_owned()),
+                follow: false,
+                limit: 100,
+            },
+            &stop,
+            false,
+            &mut snap_out,
+        )
+        .unwrap();
+        let snap_text = String::from_utf8(snap_out).unwrap();
+        assert_eq!(snap_text.lines().count(), 1);
+        assert!(snap_text.contains("\"camera_id\":\"cam-1\""));
+
+        let mut sse_out = Vec::new();
+        execute_logs_command(
+            &client,
+            &LogsCommandOptions {
+                level: Some(LogLevel::Debug),
+                target: None,
+                camera: Some("cam-1".to_owned()),
+                query: None,
+                filter: Some("keeppeek::rtsp=trace".to_owned()),
+                follow: true,
+                limit: 25,
+            },
+            &stop,
+            false,
+            &mut sse_out,
+        )
+        .unwrap();
+        let sse_text = String::from_utf8(sse_out).unwrap();
+        assert_eq!(sse_text.lines().count(), 1);
+        assert!(sse_text.contains("\"describe ok\""));
+
+        assert_eq!(
+            *applied_filters.lock().unwrap(),
+            vec![
+                "retina=trace",
+                "info,keeppeek=debug",
+                "keeppeek::rtsp=trace",
+                "info,keeppeek=debug"
+            ]
+        );
+        let _ = server.join();
     }
 }
