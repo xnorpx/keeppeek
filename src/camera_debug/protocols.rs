@@ -17,7 +17,7 @@ use crate::{
         },
         repro,
         store::{CaptureMetadata, CaptureStore},
-        traces::TraceSession,
+        traces::{TraceSession, TraceSessionOptions},
     },
     cameras::CameraTransport,
     logging::LoggingService,
@@ -429,15 +429,18 @@ fn run_protocol_with_traces(
     trace_budget: u64,
     transcript: &mut ProtocolTranscript,
 ) -> anyhow::Result<()> {
+    let secrets = req.secret_values();
     let trace_session = req.artifacts.traces.then(|| {
-        TraceSession::start(
-            req.logging.as_ref(),
+        TraceSession::start(TraceSessionOptions {
+            logging: req.logging.as_ref(),
             capture_dir,
-            &req.camera_id,
-            &req.capture_id,
-            req.trace_filter.as_deref(),
-            trace_budget,
-        )
+            camera_id: &req.camera_id,
+            capture_id: &req.capture_id,
+            trace_filter: req.trace_filter.as_deref(),
+            budget_bytes: trace_budget,
+            include_raw_auth: req.include_raw_auth,
+            secrets: &secrets,
+        })
     });
     let span = tracing::info_span!(
         "camera_debug_capture",

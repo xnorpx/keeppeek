@@ -1243,9 +1243,17 @@ fn tool_get_logging_settings(ctx: &McpContext<'_>) -> Result<ToolCallResult, Too
     ctx.require_admin()?;
     let settings = get_logging_settings(ctx.state).map_err(ToolError::from_control)?;
     ctx.audit("mcp_get_logging_settings", None, "success");
-    let value = serde_json::to_value(&settings).map_err(|error| {
+    let mut value = serde_json::to_value(&settings).map_err(|error| {
         ToolError::internal(format!("failed to encode logging settings: {error}"))
     })?;
+    if let Some(logging) = &ctx.state.logging
+        && let Some(object) = value.as_object_mut()
+    {
+        object.insert(
+            "base_filter".to_owned(),
+            Value::String(logging.base_filter()),
+        );
+    }
     Ok(ToolCallResult::json(value))
 }
 
@@ -6008,6 +6016,32 @@ display_name = "Front Door"
         (dir, state, router_tx)
     }
 
+    fn assert_capture_traces_readable(
+        state: &ServerState,
+        router_tx: &FacadeSender<RouterMessage>,
+        capture_id: &str,
+        sentinel: &str,
+    ) {
+        let read_trace = call_mcp_tool(
+            state,
+            router_tx,
+            11,
+            "camera_debugging",
+            json!({
+                "action": "read_artifact",
+                "capture_id": capture_id,
+                "artifact": "traces.jsonl",
+                "offset": 0,
+                "length": 65_536
+            }),
+        );
+        let trace_sc = &read_trace["result"]["structuredContent"];
+        assert_eq!(trace_sc["action"], "read_artifact");
+        assert_eq!(trace_sc["eof"], true);
+        assert_eq!(trace_sc["encoding"], "utf8");
+        assert!(!trace_sc["data"].as_str().unwrap().contains(sentinel));
+    }
+
     fn assert_rtsp_capture_and_inspect(
         state: &ServerState,
         router_tx: &FacadeSender<RouterMessage>,
@@ -6031,11 +6065,15 @@ display_name = "Front Door"
         let capture_dir = dir.join("camera-debug").join(&capture_id);
         assert!(capture_dir.is_dir());
         assert_valid_pcapng_blocks(&capture_dir.join("capture.pcapng"));
-        assert!(capture_dir.join("video.h264").is_file());
-        assert!(capture_dir.join("muxed.mp4").is_file());
-        assert!(capture_dir.join("protocol_transcript.json").is_file());
-        assert!(capture_dir.join("traces.jsonl").is_file());
-        assert!(capture_dir.join("capture.json").is_file());
+        for file in [
+            "video.h264",
+            "muxed.mp4",
+            "protocol_transcript.json",
+            "traces.jsonl",
+            "capture.json",
+        ] {
+            assert!(capture_dir.join(file).is_file(), "missing {file}");
+        }
         assert!(
             cap["files"]
                 .as_array()
@@ -6046,25 +6084,7 @@ display_name = "Front Door"
         if cap["bitstream"]["audio_path"].is_string() {
             assert!(capture_dir.join("audio.aac").is_file());
         }
-
-        let read_trace = call_mcp_tool(
-            state,
-            router_tx,
-            11,
-            "camera_debugging",
-            json!({
-                "action": "read_artifact",
-                "capture_id": capture_id,
-                "artifact": "traces.jsonl",
-                "offset": 0,
-                "length": 65_536
-            }),
-        );
-        let trace_sc = &read_trace["result"]["structuredContent"];
-        assert_eq!(trace_sc["action"], "read_artifact");
-        assert_eq!(trace_sc["eof"], true);
-        assert_eq!(trace_sc["encoding"], "utf8");
-        assert!(!trace_sc["data"].as_str().unwrap().contains(sentinel));
+        assert_capture_traces_readable(state, router_tx, &capture_id, sentinel);
 
         let inspect = call_mcp_tool(
             state,
@@ -6615,6 +6635,39 @@ display_name = "Front Door"
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn seed_test_capture_artifact(
+        store: &crate::camera_debug::store::CaptureStore,
+        cap_id: &str,
+        cam_id: &str,
+        artifact: &str,
+        bytes: &[u8],
+    ) {
+        let cap_dir = store.capture_dir(cap_id).unwrap();
+        std::fs::create_dir_all(&cap_dir).unwrap();
+        std::fs::write(cap_dir.join(artifact), bytes).unwrap();
+        store
+            .save_metadata(
+                cap_id,
+                &crate::camera_debug::store::CaptureMetadata {
+                    capture_id: cap_id.to_owned(),
+                    camera_id: cam_id.to_owned(),
+                    protocol: "rtsp".to_owned(),
+                    created_at_unix_secs: 1,
+                    duration_ms: 10,
+                    total_bytes: bytes.len() as u64,
+                    packet_count: 1,
+                    include_raw_auth: true,
+                    trigger_probe: false,
+                    tls_decrypted: false,
+                    transport: "tcp".to_owned(),
+                    files: vec![artifact.to_owned()],
+                    anomalies: Default::default(),
+                    warnings: Vec::new(),
+                },
+            )
+            .unwrap();
+    }
+
     #[test]
     fn read_artifact_http_redaction_and_large_chunk_boundary() {
         let sentinel = "READ-ARTIFACT-SENTINEL-665544";
@@ -6633,33 +6686,21 @@ display_name = "Front Door"
             crate::camera_debug::store::StoreLimits::default(),
         )
         .unwrap();
-        for (cap_id, cam_id) in [("cap-allowed", "192.0.2.10"), ("cap-blocked", "192.0.2.11")] {
-            let cap_dir = store.capture_dir(cap_id).unwrap();
-            std::fs::create_dir_all(&cap_dir).unwrap();
-            let big = format!("{sentinel}\n{}", "x".repeat(65_536));
-            std::fs::write(cap_dir.join("traces.jsonl"), big.as_bytes()).unwrap();
-            store
-                .save_metadata(
-                    cap_id,
-                    &crate::camera_debug::store::CaptureMetadata {
-                        capture_id: cap_id.to_owned(),
-                        camera_id: cam_id.to_owned(),
-                        protocol: "rtsp".to_owned(),
-                        created_at_unix_secs: 1,
-                        duration_ms: 10,
-                        total_bytes: big.len() as u64,
-                        packet_count: 1,
-                        include_raw_auth: true,
-                        trigger_probe: false,
-                        tls_decrypted: false,
-                        transport: "tcp".to_owned(),
-                        files: vec!["traces.jsonl".to_owned()],
-                        anomalies: Default::default(),
-                        warnings: Vec::new(),
-                    },
-                )
-                .unwrap();
-        }
+        let big = format!("{sentinel}\n{}", "x".repeat(65_536));
+        seed_test_capture_artifact(
+            &store,
+            "cap-allowed",
+            "192.0.2.10",
+            "traces.jsonl",
+            big.as_bytes(),
+        );
+        seed_test_capture_artifact(
+            &store,
+            "cap-blocked",
+            "192.0.2.11",
+            "traces.jsonl",
+            big.as_bytes(),
+        );
 
         let ok_chunk = call_mcp_tool(
             &state,
@@ -6675,31 +6716,93 @@ display_name = "Front Door"
             }),
         );
         assert!(ok_chunk["error"].is_null());
-        let sc = &ok_chunk["result"]["structuredContent"];
-        assert_eq!(sc["length"], 65_536);
-        assert!(sc["data"].as_str().unwrap().contains(sentinel));
+        assert_eq!(ok_chunk["result"]["structuredContent"]["length"], 65_536);
+        assert!(
+            ok_chunk["result"]["structuredContent"]["data"]
+                .as_str()
+                .unwrap()
+                .contains(sentinel)
+        );
 
-        let blocked_chunk = call_mcp_tool(
+        let blocked = call_mcp_tool(
+            &state,
+            &router_tx,
+            2,
+            "camera_debugging",
+            json!({ "action": "read_artifact", "capture_id": "cap-blocked", "artifact": "traces.jsonl" }),
+        );
+        assert_eq!(blocked["error"]["code"], ERROR_FORBIDDEN);
+        assert!(!serde_json::to_string(&blocked).unwrap().contains(sentinel));
+
+        let cfg = call_mcp_tool(&state, &router_tx, 3, "get_configuration", json!({}));
+        assert!(!serde_json::to_string(&cfg).unwrap().contains(sentinel));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_artifact_http_control_byte_chunk_fits_json_rpc_budget() {
+        let (dir, state, router_tx) = live_debug_fixture(
+            McpConfig {
+                enabled: true,
+                allow_camera_debugging: true,
+                debug_camera_ids: vec!["192.0.2.10".to_owned()],
+                ..McpConfig::default()
+            },
+            "READ-ARTIFACT-SENTINEL-665544",
+            "[front.door]\nip = \"192.0.2.10\"\n",
+        );
+        let store = crate::camera_debug::store::CaptureStore::new(
+            dir.join("camera-debug"),
+            crate::camera_debug::store::StoreLimits::default(),
+        )
+        .unwrap();
+        let ctrl_bytes = vec![0x01_u8; 131_072];
+        seed_test_capture_artifact(&store, "cap-ctrl", "192.0.2.10", "ctrl.bin", &ctrl_bytes);
+
+        let auto_resp = call_mcp_tool(
+            &state,
+            &router_tx,
+            1,
+            "camera_debugging",
+            json!({
+                "action": "read_artifact",
+                "capture_id": "cap-ctrl",
+                "artifact": "ctrl.bin",
+                "offset": 0,
+                "length": 131_072,
+                "encoding": "auto"
+            }),
+        );
+        assert!(auto_resp["error"].is_null(), "{auto_resp}");
+        assert_eq!(
+            auto_resp["result"]["structuredContent"]["encoding"],
+            "base64"
+        );
+        assert_eq!(auto_resp["result"]["structuredContent"]["length"], 131_072);
+        assert_eq!(auto_resp["result"]["structuredContent"]["eof"], true);
+
+        let utf8_resp = call_mcp_tool(
             &state,
             &router_tx,
             2,
             "camera_debugging",
             json!({
                 "action": "read_artifact",
-                "capture_id": "cap-blocked",
-                "artifact": "traces.jsonl"
+                "capture_id": "cap-ctrl",
+                "artifact": "ctrl.bin",
+                "offset": 0,
+                "length": 131_072,
+                "encoding": "utf8"
             }),
         );
-        assert_eq!(blocked_chunk["error"]["code"], ERROR_FORBIDDEN);
-        assert!(
-            !serde_json::to_string(&blocked_chunk)
-                .unwrap()
-                .contains(sentinel)
-        );
-
-        let cfg = call_mcp_tool(&state, &router_tx, 3, "get_configuration", json!({}));
-        assert!(!serde_json::to_string(&cfg).unwrap().contains(sentinel));
-
+        assert!(utf8_resp["error"].is_null(), "{utf8_resp}");
+        let sc = &utf8_resp["result"]["structuredContent"];
+        let clamped_len = sc["length"].as_u64().unwrap();
+        assert!(clamped_len > 0 && clamped_len < 131_072);
+        assert_eq!(sc["encoding"], "utf8");
+        assert_eq!(sc["eof"], false);
+        assert_eq!(sc["next_offset"], clamped_len);
+        assert!(serde_json::to_vec(&utf8_resp).unwrap().len() <= READ_ARTIFACT_MAX_RESPONSE_BYTES);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

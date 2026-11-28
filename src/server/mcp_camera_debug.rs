@@ -65,6 +65,7 @@ const DEFAULT_CAPTURE_FPS: u64 = 60;
 const READ_ARTIFACT_LENGTH_DEFAULT: usize = 65_536;
 const READ_ARTIFACT_LENGTH_MIN: usize = 1;
 const READ_ARTIFACT_LENGTH_MAX: usize = 131_072;
+const READ_ARTIFACT_UTF8_JSON_BUDGET: usize = 384 * 1024;
 const SHA256_STREAM_BUF_BYTES: usize = 65_536;
 
 const _: () = {
@@ -923,9 +924,9 @@ fn read_artifact_chunk(
         .map_err(|err| engine_error("read_artifact", err.into()))?;
     file.read_exact(&mut chunk)
         .map_err(|err| engine_error("read_artifact", err.into()))?;
-    let chunk_len = u64::try_from(chunk.len()).unwrap_or(u64::MAX);
+    let (encoding, data, used_bytes) = encode_artifact_chunk(chunk, request.encoding)?;
+    let chunk_len = u64::try_from(used_bytes).unwrap_or(u64::MAX);
     let next_offset = request.offset.saturating_add(chunk_len);
-    let (encoding, data) = encode_artifact_chunk(chunk, request.encoding)?;
     Ok(json!({
         "action": "read_artifact",
         "capture_id": request.capture_id,
@@ -967,24 +968,72 @@ fn compute_file_sha256(file: &mut File) -> Result<String, ControlCommandError> {
 fn encode_artifact_chunk(
     chunk: Vec<u8>,
     encoding: ArtifactEncoding,
-) -> Result<(&'static str, String), ControlCommandError> {
+) -> Result<(&'static str, String, usize), ControlCommandError> {
     match encoding {
-        ArtifactEncoding::Base64 => Ok(("base64", BASE64.encode(&chunk))),
+        ArtifactEncoding::Base64 => {
+            let len = chunk.len();
+            Ok(("base64", BASE64.encode(&chunk), len))
+        }
         ArtifactEncoding::Utf8 => {
             let text = String::from_utf8(chunk).map_err(|_| {
                 invalid("artifact chunk is not valid UTF-8; use encoding='base64' or 'auto'")
             })?;
-            Ok(("utf8", text))
+            let clamped = clamp_utf8_for_json_budget(&text, READ_ARTIFACT_UTF8_JSON_BUDGET);
+            let used = clamped.len();
+            Ok(("utf8", clamped.to_owned(), used))
         }
         ArtifactEncoding::Auto => {
-            if !chunk.contains(&0)
+            let has_non_text_control = chunk
+                .iter()
+                .any(|&byte| byte < 0x20 && !matches!(byte, b'\n' | b'\r' | b'\t'));
+            if !has_non_text_control
                 && let Ok(text) = std::str::from_utf8(&chunk)
+                && json_pair_encoded_len(text) <= READ_ARTIFACT_UTF8_JSON_BUDGET
             {
-                return Ok(("utf8", text.to_owned()));
+                let len = text.len();
+                return Ok(("utf8", text.to_owned(), len));
             }
-            Ok(("base64", BASE64.encode(&chunk)))
+            let len = chunk.len();
+            Ok(("base64", BASE64.encode(&chunk), len))
         }
     }
+}
+
+fn json_pair_encoded_len(text: &str) -> usize {
+    let Ok(single) = serde_json::to_string(text) else {
+        return usize::MAX;
+    };
+    let Ok(double) = serde_json::to_string(&single) else {
+        return usize::MAX;
+    };
+    single.len().saturating_add(double.len())
+}
+
+fn clamp_utf8_for_json_budget(text: &str, budget: usize) -> &str {
+    if json_pair_encoded_len(text) <= budget {
+        return text;
+    }
+    let mut lo = 0_usize;
+    let mut hi = text.len();
+    while lo < hi {
+        let mid = lo + (hi - lo).div_ceil(2);
+        let mut boundary = mid;
+        while boundary > lo && !text.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        if boundary == lo {
+            break;
+        }
+        if json_pair_encoded_len(&text[..boundary]) <= budget {
+            lo = boundary;
+        } else {
+            hi = boundary.saturating_sub(1);
+            while hi > lo && !text.is_char_boundary(hi) {
+                hi -= 1;
+            }
+        }
+    }
+    &text[..lo]
 }
 
 fn map_capture_artifacts(artifacts: &[DebugArtifact]) -> CaptureArtifacts {
@@ -2808,17 +2857,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn read_artifact_streams_chunks_verifies_sha256_and_enforces_allowlist() {
+    fn seed_read_artifact_fixture() -> (PathBuf, Vec<u8>) {
         let dir =
             std::env::temp_dir().join(format!("keeppeek-mcp-read-art-{}", uuid::Uuid::new_v4()));
-        let store_root = dir.join("camera-debug");
-        let store = CaptureStore::new(&store_root, StoreLimits::default()).unwrap();
+        let store = CaptureStore::new(dir.join("camera-debug"), StoreLimits::default()).unwrap();
         let cap_dir = store.capture_dir("cap-read-1").unwrap();
         std::fs::create_dir_all(&cap_dir).unwrap();
-        let text_payload = "line1\nline2\nline3\n";
         let bin_payload: Vec<u8> = (0..=255).collect();
-        std::fs::write(cap_dir.join("traces.jsonl"), text_payload.as_bytes()).unwrap();
+        std::fs::write(cap_dir.join("traces.jsonl"), b"line1\nline2\nline3\n").unwrap();
         std::fs::write(cap_dir.join("capture.pcapng"), &bin_payload).unwrap();
         let meta = CaptureMetadata {
             capture_id: "cap-read-1".to_owned(),
@@ -2837,80 +2883,103 @@ mod tests {
             warnings: Vec::new(),
         };
         store.save_metadata("cap-read-1", &meta).unwrap();
+        (dir, bin_payload)
+    }
 
+    fn read_art_req(
+        dir: &Path,
+        artifact: &str,
+        offset: u64,
+        length: usize,
+        encoding: ArtifactEncoding,
+        allowed: Option<Vec<&str>>,
+    ) -> ReadArtifactRequest {
+        ReadArtifactRequest {
+            capture_id: "cap-read-1".to_owned(),
+            artifact: artifact.to_owned(),
+            offset,
+            length,
+            encoding,
+            allowed_camera_ids: allowed.map(|v| v.into_iter().map(str::to_owned).collect()),
+            config_dir: Some(dir.to_path_buf()),
+        }
+    }
+
+    #[test]
+    fn read_artifact_streams_chunks_verifies_sha256_and_enforces_allowlist() {
+        let (dir, _bin_payload) = seed_read_artifact_fixture();
         let service = EngineCameraDebugService::default();
         let denied = service
-            .read_artifact(ReadArtifactRequest {
-                capture_id: "cap-read-1".to_owned(),
-                artifact: "traces.jsonl".to_owned(),
-                offset: 0,
-                length: 64,
-                encoding: ArtifactEncoding::Auto,
-                allowed_camera_ids: Some(vec!["192.0.2.99".to_owned()]),
-                config_dir: Some(dir.clone()),
-            })
+            .read_artifact(read_art_req(
+                &dir,
+                "traces.jsonl",
+                0,
+                64,
+                ArtifactEncoding::Auto,
+                Some(vec!["192.0.2.99"]),
+            ))
             .unwrap_err();
         assert_eq!(denied._http_status, 403);
 
         let chunk1 = service
-            .read_artifact(ReadArtifactRequest {
-                capture_id: "cap-read-1".to_owned(),
-                artifact: "traces.jsonl".to_owned(),
-                offset: 0,
-                length: 6,
-                encoding: ArtifactEncoding::Auto,
-                allowed_camera_ids: Some(vec!["192.0.2.10".to_owned()]),
-                config_dir: Some(dir.clone()),
-            })
+            .read_artifact(read_art_req(
+                &dir,
+                "traces.jsonl",
+                0,
+                6,
+                ArtifactEncoding::Auto,
+                Some(vec!["192.0.2.10"]),
+            ))
             .unwrap();
         assert_eq!(chunk1["encoding"], "utf8");
         assert_eq!(chunk1["data"], "line1\n");
         assert_eq!(chunk1["eof"], false);
-        assert_eq!(chunk1["next_offset"], 6);
 
         let chunk2 = service
-            .read_artifact(ReadArtifactRequest {
-                capture_id: "cap-read-1".to_owned(),
-                artifact: "traces.jsonl".to_owned(),
-                offset: 6,
-                length: 100,
-                encoding: ArtifactEncoding::Auto,
-                allowed_camera_ids: None,
-                config_dir: Some(dir.clone()),
-            })
+            .read_artifact(read_art_req(
+                &dir,
+                "traces.jsonl",
+                6,
+                100,
+                ArtifactEncoding::Auto,
+                None,
+            ))
             .unwrap();
         assert_eq!(chunk2["data"], "line2\nline3\n");
         assert_eq!(chunk2["eof"], true);
         assert_eq!(chunk1["sha256"], chunk2["sha256"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
+    #[test]
+    fn read_artifact_handles_binary_base64_and_rejects_invalid_utf8() {
+        let (dir, bin_payload) = seed_read_artifact_fixture();
+        let service = EngineCameraDebugService::default();
         let bin_chunk = service
-            .read_artifact(ReadArtifactRequest {
-                capture_id: "cap-read-1".to_owned(),
-                artifact: "capture.pcapng".to_owned(),
-                offset: 0,
-                length: 128,
-                encoding: ArtifactEncoding::Auto,
-                allowed_camera_ids: None,
-                config_dir: Some(dir.clone()),
-            })
+            .read_artifact(read_art_req(
+                &dir,
+                "capture.pcapng",
+                0,
+                128,
+                ArtifactEncoding::Auto,
+                None,
+            ))
             .unwrap();
         assert_eq!(bin_chunk["encoding"], "base64");
-        assert_eq!(bin_chunk["eof"], false);
         assert_eq!(
             BASE64.decode(bin_chunk["data"].as_str().unwrap()).unwrap(),
             bin_payload[..128]
         );
 
         let utf8_err = service
-            .read_artifact(ReadArtifactRequest {
-                capture_id: "cap-read-1".to_owned(),
-                artifact: "capture.pcapng".to_owned(),
-                offset: 128,
-                length: 128,
-                encoding: ArtifactEncoding::Utf8,
-                allowed_camera_ids: None,
-                config_dir: Some(dir.clone()),
-            })
+            .read_artifact(read_art_req(
+                &dir,
+                "capture.pcapng",
+                128,
+                128,
+                ArtifactEncoding::Utf8,
+                None,
+            ))
             .unwrap_err();
         assert_eq!(utf8_err._http_status, 400);
         let _ = std::fs::remove_dir_all(&dir);

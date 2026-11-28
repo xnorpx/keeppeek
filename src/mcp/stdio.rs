@@ -897,10 +897,14 @@ impl RemoteFilterGuard {
         );
         EnvFilter::try_new(trimmed)?;
         let settings = client.call_tool("get_logging_settings", json!({}))?;
+        // Prefer unboosted `base_filter` so ephemeral capture TraceFilterGuard boosts are not persisted.
         let previous = settings
-            .get("active_filter")
+            .get("base_filter")
+            .or_else(|| settings.get("active_filter"))
             .and_then(Value::as_str)
-            .ok_or_else(|| anyhow::anyhow!("get_logging_settings missing active_filter"))?
+            .ok_or_else(|| {
+                anyhow::anyhow!("get_logging_settings missing base_filter/active_filter")
+            })?
             .to_owned();
         client.call_tool("set_logging_filter", json!({ "filter": trimmed }))?;
         Ok(Self {
@@ -940,7 +944,7 @@ fn execute_logs_command<W: Write>(
         .as_deref()
         .map(|directive| RemoteFilterGuard::acquire(client, directive))
         .transpose()?;
-    if install_ctrlc && options.follow {
+    if install_ctrlc && (options.follow || _filter_guard.is_some()) {
         let ctrlc_stop = stop_flag.clone();
         let ctrlc_guard = _filter_guard.as_ref().map(|guard| guard.state.clone());
         let _ = ctrlc::set_handler(move || {
@@ -1288,7 +1292,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_pull_capture_and_logs_subcommands() {
+    fn cli_parses_pull_capture_subcommand() {
         use clap::Parser;
 
         #[derive(Parser)]
@@ -1322,6 +1326,17 @@ mod tests {
                 assert_eq!(artifacts, vec!["traces.jsonl", "capture.pcapng"]);
             }
             _ => panic!("expected PullCapture"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_logs_subcommand() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct TestCli {
+            #[command(flatten)]
+            mcp: McpArgs,
         }
 
         let logs = TestCli::try_parse_from([
@@ -1422,105 +1437,99 @@ mod tests {
         (format!("http://{addr}"), handle)
     }
 
-    #[test]
-    fn pull_capture_downloads_chunks_verifies_sha256_and_blocks_traversal() {
+    fn mock_mcp_json_reply(id: Value, sc: Value) -> (u16, String, String) {
+        let reply = JsonRpcResponse::success(
+            id,
+            serde_json::to_value(crate::mcp::protocol::ToolCallResult::json(sc)).unwrap(),
+        );
+        (
+            200,
+            "application/json".to_owned(),
+            serde_json::to_string(&reply).unwrap(),
+        )
+    }
+
+    fn mock_artifact_chunk_json(
+        cap_id: &str,
+        artifact: &str,
+        slice: &[u8],
+        offset: usize,
+        total_bytes: usize,
+        sha256: &str,
+        encoding: &str,
+    ) -> Value {
+        let data = match encoding {
+            "utf8" => std::str::from_utf8(slice).unwrap().to_owned(),
+            _ => BASE64.encode(slice),
+        };
+        let next_offset = offset + slice.len();
+        json!({
+            "action": "read_artifact",
+            "capture_id": cap_id,
+            "artifact": artifact,
+            "offset": offset,
+            "length": slice.len(),
+            "total_bytes": total_bytes,
+            "sha256": sha256,
+            "eof": next_offset >= total_bytes,
+            "next_offset": next_offset,
+            "encoding": encoding,
+            "data": data
+        })
+    }
+
+    fn spawn_pull_mock_server() -> (String, std::thread::JoinHandle<()>) {
         let trace_bytes = b"{\"line\":1}\n{\"line\":2}\n".to_vec();
         let bin_bytes: Vec<u8> = vec![0x00, 0x01, 0xFE, 0xFF, 0x42, 0x43];
         let trace_sha = digest_hex(&Sha256::digest(&trace_bytes));
         let bin_sha = digest_hex(&Sha256::digest(&bin_bytes));
         let corrupt_sha = "0".repeat(64);
-        let req_count_srv = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let (origin, server) = spawn_mock_http_server(5, move |_method, _path, _headers, body| {
+        let req_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        spawn_mock_http_server(5, move |_method, _path, _headers, body| {
             let rpc: Value = serde_json::from_str(&body).unwrap();
             let args = &rpc["params"]["arguments"];
-            let action = args["action"].as_str().unwrap();
-            let n = req_count_srv.fetch_add(1, Ordering::Relaxed);
-            let sc = match action {
+            let n = req_count.fetch_add(1, Ordering::Relaxed);
+            let sc = match args["action"].as_str().unwrap() {
                 "list_captures" => json!({
                     "action": "list_captures",
-                    "captures": [{
-                        "capture_id": "cap-pull-1",
-                        "files": ["traces.jsonl", "capture.pcapng"]
-                    }]
+                    "captures": [{ "capture_id": "cap-pull-1", "files": ["traces.jsonl", "capture.pcapng"] }]
                 }),
                 "read_artifact" => {
                     let artifact = args["artifact"].as_str().unwrap();
                     let offset = args["offset"].as_u64().unwrap() as usize;
                     if artifact == "traces.jsonl" {
-                        if offset == 0 {
-                            let part = std::str::from_utf8(&trace_bytes[..11]).unwrap();
-                            json!({
-                                "action": "read_artifact",
-                                "capture_id": "cap-pull-1",
-                                "artifact": "traces.jsonl",
-                                "offset": 0,
-                                "length": 11,
-                                "total_bytes": trace_bytes.len(),
-                                "sha256": trace_sha,
-                                "eof": false,
-                                "next_offset": 11,
-                                "encoding": "utf8",
-                                "data": part
-                            })
-                        } else {
-                            let part = std::str::from_utf8(&trace_bytes[11..]).unwrap();
-                            json!({
-                                "action": "read_artifact",
-                                "capture_id": "cap-pull-1",
-                                "artifact": "traces.jsonl",
-                                "offset": 11,
-                                "length": trace_bytes.len() - 11,
-                                "total_bytes": trace_bytes.len(),
-                                "sha256": trace_sha,
-                                "eof": true,
-                                "next_offset": trace_bytes.len(),
-                                "encoding": "utf8",
-                                "data": part
-                            })
-                        }
-                    } else if n == 4 {
-                        json!({
-                            "action": "read_artifact",
-                            "capture_id": "cap-pull-1",
-                            "artifact": "capture.pcapng",
-                            "offset": 0,
-                            "length": bin_bytes.len(),
-                            "total_bytes": bin_bytes.len(),
-                            "sha256": corrupt_sha,
-                            "eof": true,
-                            "next_offset": bin_bytes.len(),
-                            "encoding": "base64",
-                            "data": BASE64.encode(&bin_bytes)
-                        })
+                        let end = if offset == 0 { 11 } else { trace_bytes.len() };
+                        mock_artifact_chunk_json(
+                            "cap-pull-1",
+                            artifact,
+                            &trace_bytes[offset..end],
+                            offset,
+                            trace_bytes.len(),
+                            &trace_sha,
+                            "utf8",
+                        )
                     } else {
-                        json!({
-                            "action": "read_artifact",
-                            "capture_id": "cap-pull-1",
-                            "artifact": "capture.pcapng",
-                            "offset": 0,
-                            "length": bin_bytes.len(),
-                            "total_bytes": bin_bytes.len(),
-                            "sha256": bin_sha,
-                            "eof": true,
-                            "next_offset": bin_bytes.len(),
-                            "encoding": "base64",
-                            "data": BASE64.encode(&bin_bytes)
-                        })
+                        let sha = if n == 4 { &corrupt_sha } else { &bin_sha };
+                        mock_artifact_chunk_json(
+                            "cap-pull-1",
+                            artifact,
+                            &bin_bytes,
+                            0,
+                            bin_bytes.len(),
+                            sha,
+                            "base64",
+                        )
                     }
                 }
                 other => panic!("unexpected action {other}"),
             };
-            let reply = JsonRpcResponse::success(
-                rpc["id"].clone(),
-                serde_json::to_value(crate::mcp::protocol::ToolCallResult::json(sc)).unwrap(),
-            );
-            (
-                200,
-                "application/json".to_owned(),
-                serde_json::to_string(&reply).unwrap(),
-            )
-        });
+            mock_mcp_json_reply(rpc["id"].clone(), sc)
+        })
+    }
 
+    #[test]
+    fn pull_capture_downloads_chunks_verifies_sha256_and_blocks_traversal() {
+        let (origin, server) = spawn_pull_mock_server();
         let client = McpHttpClient::new(&origin, None, false).unwrap();
         let out_dir =
             std::env::temp_dir().join(format!("keeppeek-pull-test-{}", uuid::Uuid::new_v4()));
@@ -1545,7 +1554,6 @@ mod tests {
         .unwrap_err();
         assert!(traversal_err.to_string().contains("disallowed"));
 
-        // Corrupt sha256 fails cleanly and leaves no temp file behind.
         let mismatch_err = execute_pull_capture(
             &client,
             "cap-pull-1",
@@ -1561,9 +1569,46 @@ mod tests {
     }
 
     #[test]
-    fn logs_command_fetches_snapshot_applies_and_restores_filter_and_streams_sse() {
-        let applied_filters = Arc::new(Mutex::new(Vec::<String>::new()));
-        let applied_srv = applied_filters.clone();
+    fn pull_capture_downloads_131k_control_byte_base64_chunks() {
+        let payload = vec![0x01_u8; 131_072];
+        let payload_sha = digest_hex(&Sha256::digest(&payload));
+        let payload_srv = payload.clone();
+        let (origin, server) = spawn_mock_http_server(2, move |_m, _p, _h, body| {
+            let rpc: Value = serde_json::from_str(&body).unwrap();
+            let args = &rpc["params"]["arguments"];
+            assert_eq!(args["encoding"], "auto");
+            let offset = args["offset"].as_u64().unwrap() as usize;
+            let len = args["length"].as_u64().unwrap() as usize;
+            let end = offset.saturating_add(len).min(payload_srv.len());
+            let sc = mock_artifact_chunk_json(
+                "cap-ctrl",
+                "ctrl.bin",
+                &payload_srv[offset..end],
+                offset,
+                payload_srv.len(),
+                &payload_sha,
+                "base64",
+            );
+            mock_mcp_json_reply(rpc["id"].clone(), sc)
+        });
+        let client = McpHttpClient::new(&origin, None, false).unwrap();
+        let out_dir =
+            std::env::temp_dir().join(format!("keeppeek-pull-ctrl-{}", uuid::Uuid::new_v4()));
+        let mut out_log = Vec::new();
+        execute_pull_capture(
+            &client,
+            "cap-ctrl",
+            &out_dir,
+            &["ctrl.bin".to_owned()],
+            &mut out_log,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(out_dir.join("ctrl.bin")).unwrap(), payload);
+        let _ = server.join();
+        let _ = std::fs::remove_dir_all(&out_dir);
+    }
+
+    fn sample_log_fixture() -> (LogEntry, LogSnapshot, String) {
         let entry_match = LogEntry {
             sequence: 10,
             timestamp_ms: 1_000,
@@ -1610,31 +1655,33 @@ mod tests {
             ": connected\n\n: keep-alive\n\nid: 10\nevent: log\ndata: {}\n\n",
             serde_json::to_string(&entry_match).unwrap()
         );
-        let (origin, server) = spawn_mock_http_server(8, move |method, path, _headers, body| {
+        (entry_match, snapshot, sse_body)
+    }
+
+    fn spawn_mock_logs_server(
+        max_requests: usize,
+        applied_filters: Arc<Mutex<Vec<String>>>,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        let (_, snapshot, sse_body) = sample_log_fixture();
+        spawn_mock_http_server(max_requests, move |method, path, _headers, body| {
             if method == "POST" && path == "/mcp" {
                 let rpc: Value = serde_json::from_str(&body).unwrap();
-                let name = rpc["params"]["name"].as_str().unwrap();
-                let sc = match name {
-                    "get_logging_settings" => json!({ "active_filter": "info,keeppeek=debug" }),
+                let sc = match rpc["params"]["name"].as_str().unwrap() {
+                    "get_logging_settings" => json!({
+                        "base_filter": "info,keeppeek=debug",
+                        "active_filter": "info,keeppeek=debug,retina=trace"
+                    }),
                     "set_logging_filter" => {
                         let f = rpc["params"]["arguments"]["filter"]
                             .as_str()
                             .unwrap()
                             .to_owned();
-                        applied_srv.lock().unwrap().push(f.clone());
+                        applied_filters.lock().unwrap().push(f.clone());
                         json!({ "active_filter": f })
                     }
                     other => panic!("unexpected tool {other}"),
                 };
-                let reply = JsonRpcResponse::success(
-                    rpc["id"].clone(),
-                    serde_json::to_value(crate::mcp::protocol::ToolCallResult::json(sc)).unwrap(),
-                );
-                (
-                    200,
-                    "application/json".to_owned(),
-                    serde_json::to_string(&reply).unwrap(),
-                )
+                mock_mcp_json_reply(rpc["id"].clone(), sc)
             } else if method == "GET" && path == "/logs/snapshot" {
                 (
                     200,
@@ -1650,8 +1697,13 @@ mod tests {
             } else {
                 (404, "text/plain".to_owned(), "not found".to_owned())
             }
-        });
+        })
+    }
 
+    #[test]
+    fn logs_command_fetches_snapshot_and_restores_base_filter() {
+        let applied_filters = Arc::new(Mutex::new(Vec::<String>::new()));
+        let (origin, server) = spawn_mock_logs_server(4, applied_filters.clone());
         let client = McpHttpClient::new(&origin, None, false).unwrap();
         let stop = Arc::new(AtomicBool::new(false));
         let mut snap_out = Vec::new();
@@ -1674,7 +1726,19 @@ mod tests {
         let snap_text = String::from_utf8(snap_out).unwrap();
         assert_eq!(snap_text.lines().count(), 1);
         assert!(snap_text.contains("\"camera_id\":\"cam-1\""));
+        assert_eq!(
+            *applied_filters.lock().unwrap(),
+            vec!["retina=trace", "info,keeppeek=debug"]
+        );
+        let _ = server.join();
+    }
 
+    #[test]
+    fn logs_command_streams_sse_and_restores_base_filter() {
+        let applied_filters = Arc::new(Mutex::new(Vec::<String>::new()));
+        let (origin, server) = spawn_mock_logs_server(4, applied_filters.clone());
+        let client = McpHttpClient::new(&origin, None, false).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
         let mut sse_out = Vec::new();
         execute_logs_command(
             &client,
@@ -1695,16 +1759,54 @@ mod tests {
         let sse_text = String::from_utf8(sse_out).unwrap();
         assert_eq!(sse_text.lines().count(), 1);
         assert!(sse_text.contains("\"describe ok\""));
-
         assert_eq!(
             *applied_filters.lock().unwrap(),
-            vec![
-                "retina=trace",
-                "info,keeppeek=debug",
-                "keeppeek::rtsp=trace",
-                "info,keeppeek=debug"
-            ]
+            vec!["keeppeek::rtsp=trace", "info,keeppeek=debug"]
         );
         let _ = server.join();
+    }
+
+    #[test]
+    fn remote_filter_guard_preserves_base_filter_during_active_trace_boost() {
+        let dir = std::env::temp_dir().join(format!("keeppeek-rfg-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let filter_path = dir.join("log-filter");
+        let (logging, _dispatch) = crate::logging::LoggingService::for_test(
+            crate::logging::LogFilterFile::new(filter_path.clone()),
+            "info,keeppeek=debug",
+        );
+        logging.update_filter("info,keeppeek=debug").unwrap();
+        let trace_boost = logging.acquire_trace_filter_boost("retina=trace").unwrap();
+        let srv_logging = logging.clone();
+        let (origin, server) = spawn_mock_http_server(3, move |_m, _p, _h, body| {
+            let rpc: Value = serde_json::from_str(&body).unwrap();
+            let sc = match rpc["params"]["name"].as_str().unwrap() {
+                "get_logging_settings" => json!({
+                    "base_filter": srv_logging.base_filter(),
+                    "active_filter": srv_logging.active_filter()
+                }),
+                "set_logging_filter" => {
+                    let f = rpc["params"]["arguments"]["filter"].as_str().unwrap();
+                    srv_logging.update_filter(f).unwrap();
+                    json!({ "active_filter": srv_logging.active_filter() })
+                }
+                other => panic!("unexpected tool {other}"),
+            };
+            mock_mcp_json_reply(rpc["id"].clone(), sc)
+        });
+        let client = McpHttpClient::new(&origin, None, false).unwrap();
+        {
+            let _remote = RemoteFilterGuard::acquire(&client, "keeppeek::rtsp=trace").unwrap();
+            assert!(logging.active_filter().contains("retina=trace"));
+        }
+        drop(trace_boost);
+        assert_eq!(logging.base_filter(), "info,keeppeek=debug");
+        assert_eq!(logging.active_filter(), "info,keeppeek=debug");
+        assert_eq!(
+            std::fs::read_to_string(&filter_path).unwrap().trim(),
+            "info,keeppeek=debug"
+        );
+        let _ = server.join();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

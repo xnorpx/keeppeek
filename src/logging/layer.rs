@@ -56,18 +56,22 @@ where
     }
 
     fn on_record(&self, id: &span::Id, values: &span::Record<'_>, context: Context<'_, S>) {
+        // Record values before locking span extensions so Debug impls that emit events cannot deadlock.
+        let mut visitor = FieldVisitor::for_span(BTreeMap::new());
+        values.record(&mut visitor);
         let Some(span) = context.span(id) else {
             return;
         };
         let mut extensions = span.extensions_mut();
         if let Some(span_fields) = extensions.get_mut::<SpanFields>() {
-            let existing = std::mem::take(&mut span_fields.fields);
-            let mut visitor = FieldVisitor::for_span(existing);
-            values.record(&mut visitor);
-            span_fields.fields = visitor.fields;
+            for (key, value) in visitor.fields {
+                if span_fields.fields.contains_key(&key)
+                    || span_fields.fields.len() < MAX_SPAN_FIELDS
+                {
+                    span_fields.fields.insert(key, value);
+                }
+            }
         } else {
-            let mut visitor = FieldVisitor::for_span(BTreeMap::new());
-            values.record(&mut visitor);
             extensions.insert(SpanFields {
                 fields: visitor.fields,
             });
@@ -240,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn propagates_nested_span_fields_with_event_precedence_and_bounds() {
+    fn propagates_nested_span_fields_with_event_precedence() {
         let hub = LogHub::default();
         let subscriber = Registry::default().with(LogCaptureLayer::new(hub.clone()));
         let dispatch = Dispatch::new(subscriber);
@@ -269,11 +273,21 @@ mod tests {
         assert_eq!(entry.fields["stream"], "main");
         assert_eq!(entry.fields["dynamic_tag"], "recorded-later");
         assert_eq!(entry.fields["codec"], "h265");
+    }
 
-        let bounded_hub = LogHub::default();
-        let bounded_dispatch =
-            Dispatch::new(Registry::default().with(LogCaptureLayer::new(bounded_hub.clone())));
-        tracing::dispatcher::with_default(&bounded_dispatch, || {
+    #[test]
+    fn bounds_span_fields_to_max_limit_and_avoids_on_record_reentrancy_deadlock() {
+        struct EmittingDebug;
+        impl std::fmt::Debug for EmittingDebug {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                tracing::info!(target: "keeppeek::test", "nested event inside Debug");
+                f.write_str("emitted")
+            }
+        }
+
+        let hub = LogHub::default();
+        let dispatch = Dispatch::new(Registry::default().with(LogCaptureLayer::new(hub.clone())));
+        tracing::dispatcher::with_default(&dispatch, || {
             let span = tracing::info_span!(
                 "many_fields",
                 f01 = 1,
@@ -307,16 +321,25 @@ mod tests {
                 f29 = 29,
                 f30 = 30,
                 f31 = 31,
-                f32 = 32
+                f32 = 32,
+                extra = tracing::field::Empty
             );
             let _guard = span.enter();
-            let extra = tracing::info_span!("extra", f33 = 33, f34 = 34);
-            let _extra_guard = extra.enter();
+            span.record("extra", tracing::field::debug(&EmittingDebug));
+            let child = tracing::info_span!("extra", f33 = 33, f34 = 34);
+            let _child_guard = child.enter();
             tracing::info!(target: "keeppeek::test", "bounded");
         });
-        let bounded_entry = &bounded_hub.snapshot(None, 1).entries[0];
-        assert_eq!(bounded_entry.fields["f01"], 1);
-        assert_eq!(bounded_entry.fields["f32"], 32);
-        assert_eq!(bounded_entry.fields["f33"], 33);
+        let entries = hub.snapshot(None, 10).entries;
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.message == "nested event inside Debug")
+        );
+        let bounded = entries.iter().find(|e| e.message == "bounded").unwrap();
+        assert_eq!(bounded.fields["f01"], 1);
+        assert_eq!(bounded.fields["f32"], 32);
+        assert_eq!(bounded.fields["f33"], 33);
+        assert!(!bounded.fields.contains_key("extra"));
     }
 }

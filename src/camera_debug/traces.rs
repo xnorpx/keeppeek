@@ -8,6 +8,7 @@
 use std::{
     fs::File,
     io::{BufWriter, Write},
+    net::IpAddr,
     path::Path,
     thread::{self, JoinHandle},
 };
@@ -15,7 +16,10 @@ use std::{
 use crossbeam_channel::{Receiver, Sender, select};
 use serde_json::Value;
 
-use crate::logging::{LogEntry, LogSubscription, LoggingService, TraceFilterGuard};
+use crate::{
+    camera_debug::repro::scrub_wire_text,
+    logging::{LogEntry, LogSubscription, LoggingService, TraceFilterGuard},
+};
 
 /// Output filename written inside `<capture-dir>` when the `traces` artifact is enabled.
 pub const TRACE_FILENAME: &str = "traces.jsonl";
@@ -65,22 +69,27 @@ struct TraceDrainSummary {
     write_error: Option<String>,
 }
 
+pub(crate) struct TraceSessionOptions<'a> {
+    pub(crate) logging: Option<&'a LoggingService>,
+    pub(crate) capture_dir: &'a Path,
+    pub(crate) camera_id: &'a str,
+    pub(crate) capture_id: &'a str,
+    pub(crate) trace_filter: Option<&'a str>,
+    pub(crate) budget_bytes: u64,
+    pub(crate) include_raw_auth: bool,
+    pub(crate) secrets: &'a [String],
+}
+
 impl TraceSession {
     /// Starts trace boosting and live JSONL streaming when `logging` is available.
     #[must_use]
-    pub(crate) fn start(
-        logging: Option<&LoggingService>,
-        capture_dir: &Path,
-        camera_id: &str,
-        capture_id: &str,
-        trace_filter: Option<&str>,
-        budget_bytes: u64,
-    ) -> Self {
-        let Some(logging) = logging else {
+    pub(crate) fn start(options: TraceSessionOptions<'_>) -> Self {
+        let Some(logging) = options.logging else {
             return Self::inactive(Vec::new());
         };
         let mut startup_warnings = Vec::new();
-        let directive = trace_filter
+        let directive = options
+            .trace_filter
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .unwrap_or(DEFAULT_CAPTURE_TRACE_FILTER);
@@ -100,7 +109,7 @@ impl TraceSession {
                 return Self::inactive(startup_warnings);
             }
         };
-        let trace_path = capture_dir.join(TRACE_FILENAME);
+        let trace_path = options.capture_dir.join(TRACE_FILENAME);
         let file = match File::create(&trace_path) {
             Ok(file) => file,
             Err(error) => {
@@ -109,13 +118,25 @@ impl TraceSession {
             }
         };
         let (stop_tx, stop_rx) = crossbeam_channel::bounded(1);
+        let scrub_secrets = if options.include_raw_auth {
+            Vec::new()
+        } else {
+            options.secrets.to_vec()
+        };
         let worker = spawn_drainer(
             subscription,
             stop_rx,
             BufWriter::new(file),
-            camera_id.to_owned(),
-            capture_id.to_owned(),
-            budget_bytes.clamp(TRACE_BUDGET_MIN_BYTES, TRACE_BUDGET_MAX_BYTES),
+            DrainFilter {
+                camera_id: options.camera_id.to_owned(),
+                capture_id: options.capture_id.to_owned(),
+                camera_id_may_be_redacted: options.camera_id.parse::<IpAddr>().is_ok(),
+                scrub_secrets,
+                include_raw_auth: options.include_raw_auth,
+            },
+            options
+                .budget_bytes
+                .clamp(TRACE_BUDGET_MIN_BYTES, TRACE_BUDGET_MAX_BYTES),
         );
         match worker {
             Ok(handle) => Self {
@@ -177,34 +198,31 @@ impl Drop for TraceSession {
     }
 }
 
+struct DrainFilter {
+    camera_id: String,
+    capture_id: String,
+    camera_id_may_be_redacted: bool,
+    include_raw_auth: bool,
+    scrub_secrets: Vec<String>,
+}
+
 fn spawn_drainer(
     subscription: LogSubscription,
     stop_rx: Receiver<()>,
     writer: BufWriter<File>,
-    camera_id: String,
-    capture_id: String,
+    filter: DrainFilter,
     budget_bytes: u64,
 ) -> std::io::Result<JoinHandle<TraceDrainSummary>> {
     thread::Builder::new()
         .name("keeppeek-trace-capture".to_owned())
-        .spawn(move || {
-            run_trace_drainer(
-                &subscription,
-                &stop_rx,
-                writer,
-                &camera_id,
-                &capture_id,
-                budget_bytes,
-            )
-        })
+        .spawn(move || run_trace_drainer(&subscription, &stop_rx, writer, &filter, budget_bytes))
 }
 
 fn run_trace_drainer(
     subscription: &LogSubscription,
     stop_rx: &Receiver<()>,
     mut writer: BufWriter<File>,
-    camera_id: &str,
-    capture_id: &str,
+    filter: &DrainFilter,
     budget_bytes: u64,
 ) -> TraceDrainSummary {
     let mut state = DrainWriteState {
@@ -219,14 +237,14 @@ fn run_trace_drainer(
             recv(stop_rx) -> _ => break,
             recv(subscription.receiver()) -> msg => match msg {
                 Ok(entry) => {
-                    record_matching_entry(&entry, camera_id, capture_id, &mut writer, &mut state);
+                    record_matching_entry(&entry, filter, &mut writer, &mut state);
                 }
                 Err(_) => break,
             }
         }
     }
     while let Ok(entry) = subscription.try_next() {
-        record_matching_entry(&entry, camera_id, capture_id, &mut writer, &mut state);
+        record_matching_entry(&entry, filter, &mut writer, &mut state);
     }
     if state.write_error.is_none()
         && let Err(error) = writer.flush()
@@ -250,18 +268,30 @@ struct DrainWriteState {
 
 fn record_matching_entry(
     entry: &LogEntry,
-    camera_id: &str,
-    capture_id: &str,
+    filter: &DrainFilter,
     writer: &mut BufWriter<File>,
     state: &mut DrainWriteState,
 ) {
     if state.truncated || state.write_error.is_some() {
         return;
     }
-    if !entry_matches_capture(entry, camera_id, capture_id) {
+    if !entry_matches_capture(
+        entry,
+        &filter.camera_id,
+        &filter.capture_id,
+        filter.camera_id_may_be_redacted,
+    ) {
         return;
     }
-    let Ok(mut line) = serde_json::to_vec(entry) else {
+    let mut owned;
+    let to_write = if filter.include_raw_auth {
+        entry
+    } else {
+        owned = entry.clone();
+        scrub_entry_secrets(&mut owned, &filter.scrub_secrets);
+        &owned
+    };
+    let Ok(mut line) = serde_json::to_vec(to_write) else {
         return;
     };
     line.push(b'\n');
@@ -284,15 +314,30 @@ fn record_matching_entry(
     }
 }
 
+fn scrub_entry_secrets(entry: &mut LogEntry, secrets: &[String]) {
+    entry.message = scrub_wire_text(&entry.message, secrets);
+    for value in entry.fields.values_mut() {
+        if let Value::String(text) = value {
+            *text = scrub_wire_text(text, secrets);
+        }
+    }
+}
+
 /// Returns `true` when `entry` belongs to the active capture, matches `camera_id`, or is an untagged protocol log.
 #[must_use]
-pub(crate) fn entry_matches_capture(entry: &LogEntry, camera_id: &str, capture_id: &str) -> bool {
+pub(crate) fn entry_matches_capture(
+    entry: &LogEntry,
+    camera_id: &str,
+    capture_id: &str,
+    camera_id_may_be_redacted: bool,
+) -> bool {
     if let Some(entry_capture_id) = entry.fields.get("capture_id").and_then(Value::as_str) {
         return entry_capture_id == capture_id;
     }
-    if let Some(entry_camera_id) = entry.fields.get("camera_id").and_then(Value::as_str)
-        && entry_camera_id != "[REDACTED]"
-    {
+    if let Some(entry_camera_id) = entry.fields.get("camera_id").and_then(Value::as_str) {
+        if entry_camera_id == "[REDACTED]" {
+            return camera_id_may_be_redacted && is_protocol_or_camera_target(&entry.target);
+        }
         return entry_camera_id == camera_id;
     }
     is_protocol_or_camera_target(&entry.target)
@@ -348,17 +393,29 @@ mod tests {
         let untagged_proto = make_entry("reo_proto::session", &[], "f");
         let unrelated = make_entry("keeppeek::server", &[], "g");
 
-        assert!(entry_matches_capture(&own_cap, "cam-1", "cap-1"));
-        assert!(!entry_matches_capture(&other_cap, "cam-1", "cap-1"));
-        assert!(entry_matches_capture(&own_cam, "cam-1", "cap-1"));
-        assert!(!entry_matches_capture(&other_cam, "cam-1", "cap-1"));
+        assert!(entry_matches_capture(&own_cap, "cam-1", "cap-1", false));
+        assert!(!entry_matches_capture(&other_cap, "cam-1", "cap-1", false));
+        assert!(entry_matches_capture(&own_cam, "cam-1", "cap-1", false));
+        assert!(!entry_matches_capture(&other_cam, "cam-1", "cap-1", false));
         assert!(entry_matches_capture(
             &redacted_cam_proto,
             "192.0.2.10",
-            "cap-1"
+            "cap-1",
+            true
         ));
-        assert!(entry_matches_capture(&untagged_proto, "cam-1", "cap-1"));
-        assert!(!entry_matches_capture(&unrelated, "cam-1", "cap-1"));
+        assert!(!entry_matches_capture(
+            &redacted_cam_proto,
+            "front-door",
+            "cap-1",
+            false
+        ));
+        assert!(entry_matches_capture(
+            &untagged_proto,
+            "cam-1",
+            "cap-1",
+            false
+        ));
+        assert!(!entry_matches_capture(&unrelated, "cam-1", "cap-1", false));
     }
 
     #[test]
@@ -370,20 +427,23 @@ mod tests {
             "info,keeppeek=debug",
         );
 
-        let session = TraceSession::start(
-            Some(&logging),
-            &dir,
-            "cam-1",
-            "cap-1",
-            Some("retina=trace,keeppeek::rtsp=trace"),
-            TRACE_BUDGET_MIN_BYTES,
-        );
+        let secrets = vec!["SECRET-PASS-99".to_owned()];
+        let session = TraceSession::start(TraceSessionOptions {
+            logging: Some(&logging),
+            capture_dir: &dir,
+            camera_id: "cam-1",
+            capture_id: "cap-1",
+            trace_filter: Some("retina=trace,keeppeek::rtsp=trace"),
+            budget_bytes: TRACE_BUDGET_MIN_BYTES,
+            include_raw_auth: false,
+            secrets: &secrets,
+        });
         assert!(logging.active_filter().contains("retina=trace"));
 
         tracing::dispatcher::with_default(&dispatch, || {
             let span = tracing::info_span!("cap", camera_id = "cam-1", capture_id = "cap-1");
             let _guard = span.enter();
-            tracing::trace!(target: "keeppeek::rtsp", "rtsp trace event");
+            tracing::trace!(target: "keeppeek::rtsp", "rtsp trace event SECRET-PASS-99");
             let other_span =
                 tracing::info_span!("other", camera_id = "cam-2", capture_id = "cap-2");
             let _other = other_span.enter();
@@ -395,7 +455,8 @@ mod tests {
         assert_eq!(logging.active_filter(), "info,keeppeek=debug");
 
         let contents = std::fs::read_to_string(PathBuf::from(&dir).join(TRACE_FILENAME)).unwrap();
-        assert!(contents.contains("rtsp trace event"));
+        assert!(contents.contains("rtsp trace event [REDACTED]"));
+        assert!(!contents.contains("SECRET-PASS-99"));
         assert!(!contents.contains("other camera event"));
         let line_count = contents.lines().count();
         assert_eq!(line_count, 1);

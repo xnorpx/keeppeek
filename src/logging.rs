@@ -350,6 +350,14 @@ impl LoggingService {
             .clone()
     }
 
+    pub fn base_filter(&self) -> String {
+        self.boost_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .base_filter
+            .clone()
+    }
+
     pub fn filter_error(&self) -> Option<String> {
         self.filter_error
             .lock()
