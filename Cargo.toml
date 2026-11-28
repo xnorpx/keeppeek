@@ -205,6 +205,7 @@ network-interface = "2.0.5"
 polling = "3.11.0"
 pollster = "1.0.1"
 rand = { version = "0.10.2" }
+# Keep the "tracing" feature disabled so mqtt-protocol-core cannot log CONNECT packet details.
 mqtt-protocol-core = { workspace = true, features = ["std"] }
 native-tls = { workspace = true }
 toml = { version = "1.1.4" }
