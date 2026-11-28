@@ -37,6 +37,7 @@ pub use layer::LogCaptureLayer;
 pub use stream::LogStreamReader;
 
 pub const DEFAULT_LOG_FILTER: &str = "info,keeppeek=debug";
+/// Maximum byte length allowed for a temporary trace-filter directive.
 pub const TRACE_FILTER_MAX_BYTES: usize = 512;
 const MAX_ACTIVE_TRACE_BOOSTS: usize = 32;
 
@@ -64,6 +65,7 @@ struct FilterBoostState {
 }
 
 /// RAII guard that removes a temporary trace-filter boost and restores the prior filter on drop.
+#[derive(Debug)]
 pub struct TraceFilterGuard {
     service: LoggingService,
     token: u64,
@@ -350,6 +352,7 @@ impl LoggingService {
             .clone()
     }
 
+    /// Returns the persisted base log filter without temporary trace-filter boosts.
     pub fn base_filter(&self) -> String {
         self.boost_state
             .lock()

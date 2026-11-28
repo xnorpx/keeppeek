@@ -80,30 +80,30 @@ where
 
     fn on_event(&self, event: &Event<'_>, context: Context<'_, S>) {
         let metadata = event.metadata();
-        let mut merged = BTreeMap::new();
+        let mut visitor = FieldVisitor::for_event(BTreeMap::new());
+        event.record(&mut visitor);
+        let message = visitor
+            .message
+            .unwrap_or_else(|| metadata.name().to_owned());
+        let (target, file, line) = resolve_event_origin(metadata, &mut visitor.fields);
+        let mut merged = visitor.fields;
         if let Some(scope) = context.event_scope(event) {
-            for span in scope.from_root() {
+            for span in scope {
                 let extensions = span.extensions();
                 if let Some(span_fields) = extensions.get::<SpanFields>() {
                     for (key, value) in &span_fields.fields {
-                        if merged.contains_key(key) || merged.len() < MAX_EVENT_FIELDS {
+                        if !merged.contains_key(key) && merged.len() < MAX_EVENT_FIELDS {
                             merged.insert(key.clone(), value.clone());
                         }
                     }
                 }
             }
         }
-        let mut visitor = FieldVisitor::for_event(merged);
-        event.record(&mut visitor);
-        let message = visitor
-            .message
-            .unwrap_or_else(|| metadata.name().to_owned());
-        let (target, file, line) = resolve_event_origin(metadata, &mut visitor.fields);
         let entry = self.hub.record(
             LogLevel::from(metadata.level()),
             &target,
             message,
-            visitor.fields,
+            merged,
             file.as_deref(),
             line,
         );
@@ -341,5 +341,112 @@ mod tests {
         assert_eq!(bounded.fields["f32"], 32);
         assert_eq!(bounded.fields["f33"], 33);
         assert!(!bounded.fields.contains_key("extra"));
+    }
+
+    fn make_span_1_to_32() -> tracing::Span {
+        tracing::info_span!(
+            "s1",
+            s01 = 1,
+            s02 = 2,
+            s03 = 3,
+            s04 = 4,
+            s05 = 5,
+            s06 = 6,
+            s07 = 7,
+            s08 = 8,
+            s09 = 9,
+            s10 = 10,
+            s11 = 11,
+            s12 = 12,
+            s13 = 13,
+            s14 = 14,
+            s15 = 15,
+            s16 = 16,
+            s17 = 17,
+            s18 = 18,
+            s19 = 19,
+            s20 = 20,
+            s21 = 21,
+            s22 = 22,
+            s23 = 23,
+            s24 = 24,
+            s25 = 25,
+            s26 = 26,
+            s27 = 27,
+            s28 = 28,
+            s29 = 29,
+            s30 = 30,
+            s31 = 31,
+            s32 = 32
+        )
+    }
+
+    fn make_span_33_to_64() -> tracing::Span {
+        tracing::info_span!(
+            "s2",
+            s33 = 33,
+            s34 = 34,
+            s35 = 35,
+            s36 = 36,
+            s37 = 37,
+            s38 = 38,
+            s39 = 39,
+            s40 = 40,
+            s41 = 41,
+            s42 = 42,
+            s43 = 43,
+            s44 = 44,
+            s45 = 45,
+            s46 = 46,
+            s47 = 47,
+            s48 = 48,
+            s49 = 49,
+            s50 = 50,
+            s51 = 51,
+            s52 = 52,
+            s53 = 53,
+            s54 = 54,
+            s55 = 55,
+            s56 = 56,
+            s57 = 57,
+            s58 = 58,
+            s59 = 59,
+            s60 = 60,
+            s61 = 61,
+            s62 = 62,
+            s63 = 63,
+            s64 = 64
+        )
+    }
+
+    #[test]
+    fn event_fields_and_log_origin_win_when_span_fields_saturate_cap() {
+        let hub = LogHub::default();
+        let dispatch = Dispatch::new(Registry::default().with(LogCaptureLayer::new(hub.clone())));
+        tracing::dispatcher::with_default(&dispatch, || {
+            let s1 = make_span_1_to_32();
+            let _g1 = s1.enter();
+            let s2 = make_span_33_to_64();
+            let _g2 = s2.enter();
+            tracing::info!(
+                target: "log",
+                {
+                    log.target = "keeppeek::bridged",
+                    log.file = "bridged.rs",
+                    log.line = 77_u64,
+                    event_key = "event-wins",
+                    s64 = "overridden"
+                },
+                "saturated event"
+            );
+        });
+        let entries = hub.snapshot(None, 10).entries;
+        let entry = &entries[0];
+        assert_eq!(entry.target, "keeppeek::bridged");
+        assert_eq!(entry.file.as_deref(), Some("bridged.rs"));
+        assert_eq!(entry.line, Some(77));
+        assert_eq!(entry.fields["event_key"], "event-wins");
+        assert_eq!(entry.fields["s64"], "overridden");
+        assert!(entry.fields.len() <= MAX_EVENT_FIELDS);
     }
 }

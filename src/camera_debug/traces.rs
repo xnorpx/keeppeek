@@ -29,7 +29,8 @@ pub const DEFAULT_CAPTURE_TRACE_FILTER: &str = concat!(
     "retina=trace,reo_proto=trace,onvif=trace,",
     "keeppeek::rtsp=trace,keeppeek::reolink=trace,keeppeek::isapi=trace,",
     "keeppeek::cameras=trace,keeppeek::camera_events=trace,",
-    "keeppeek::camera_debug=debug,keeppeek::media_time=trace,keeppeek::keeppeek=trace"
+    "keeppeek::camera_debug=debug,keeppeek::media_time=trace,",
+    "keeppeek::storage::medium_term=trace,keeppeek::keeppeek=trace"
 );
 
 const TRACE_BUDGET_MIN_BYTES: u64 = 2_048;

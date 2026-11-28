@@ -44,7 +44,14 @@ const MAX_SSE_LINE_BYTES: usize = 256 * 1_024;
 const MAX_SSE_DATA_BYTES: usize = 512 * 1_024;
 const MAX_SSE_LOG_TAIL: usize = 1_000;
 const READ_ARTIFACT_CHUNK_BYTES: usize = 65_536;
+const MAX_PULL_ARTIFACT_BYTES: u64 = 256 * 1_024 * 1_024;
+const MAX_PULL_CHUNKS: usize = 32_768;
 const ACCESS_KEY_ENV: &str = "KEEPPEEK_ACCESS_KEY";
+
+const _: () = {
+    assert!(MAX_PULL_ARTIFACT_BYTES > 0);
+    assert!(MAX_PULL_CHUNKS > 0);
+};
 
 /// Command-line options for `keeppeek mcp`.
 #[derive(Debug, Clone, Args)]
@@ -631,10 +638,12 @@ impl TempFileGuard {
     }
 
     fn persist(mut self, target: &Path) -> io::Result<()> {
-        let Some(temp_path) = self.0.take() else {
+        let Some(temp_path) = self.0.as_ref() else {
             return Err(io::Error::other("temporary file already consumed"));
         };
-        std::fs::rename(&temp_path, target)
+        std::fs::rename(temp_path, target)?;
+        self.0 = None;
+        Ok(())
     }
 }
 
@@ -732,73 +741,154 @@ fn download_verified_artifact(
     Ok((written, sha256))
 }
 
+struct PullTransferState {
+    hasher: Sha256,
+    offset: u64,
+    expected_sha256: Option<String>,
+    expected_total: Option<u64>,
+}
+
+impl PullTransferState {
+    fn new() -> Self {
+        Self {
+            hasher: Sha256::new(),
+            offset: 0,
+            expected_sha256: None,
+            expected_total: None,
+        }
+    }
+
+    fn verify_chunk_header(&mut self, artifact: &str, chunk: &Value) -> anyhow::Result<u64> {
+        let server_sha = chunk_str(chunk, "sha256")?;
+        if let Some(prev) = &self.expected_sha256 {
+            anyhow::ensure!(
+                prev == server_sha,
+                "artifact '{artifact}' sha256 changed mid-download"
+            );
+        } else {
+            self.expected_sha256 = Some(server_sha.to_owned());
+        }
+        let total_bytes = chunk_u64(chunk, "total_bytes")?;
+        let pinned_total = match self.expected_total {
+            Some(expected) => {
+                anyhow::ensure!(
+                    total_bytes == expected,
+                    "artifact '{artifact}' total_bytes changed mid-download ({total_bytes} != {expected})"
+                );
+                expected
+            }
+            None => {
+                anyhow::ensure!(
+                    total_bytes <= MAX_PULL_ARTIFACT_BYTES,
+                    "artifact '{artifact}' total_bytes ({total_bytes}) exceeds limit ({MAX_PULL_ARTIFACT_BYTES} bytes)"
+                );
+                self.expected_total = Some(total_bytes);
+                total_bytes
+            }
+        };
+        anyhow::ensure!(
+            self.offset <= pinned_total,
+            "artifact '{artifact}' offset ({}) exceeds expected total_bytes ({pinned_total})",
+            self.offset
+        );
+        Ok(pinned_total)
+    }
+
+    fn apply_chunk(
+        &mut self,
+        artifact: &str,
+        chunk: &Value,
+        out_file: &mut File,
+    ) -> anyhow::Result<bool> {
+        let pinned_total = self.verify_chunk_header(artifact, chunk)?;
+        let decoded = decode_artifact_payload(chunk)?;
+        let expected_chunk_len = chunk_u64(chunk, "length")?;
+        let actual_len = u64::try_from(decoded.len()).unwrap_or(u64::MAX);
+        anyhow::ensure!(
+            actual_len == expected_chunk_len,
+            "artifact '{artifact}' chunk length mismatch"
+        );
+        let new_offset = self
+            .offset
+            .checked_add(actual_len)
+            .ok_or_else(|| anyhow::anyhow!("artifact '{artifact}' offset overflow"))?;
+        anyhow::ensure!(
+            new_offset <= pinned_total,
+            "artifact '{artifact}' chunk exceeds expected total_bytes ({new_offset} > {pinned_total})"
+        );
+        out_file.write_all(&decoded)?;
+        self.hasher.update(&decoded);
+        self.offset = new_offset;
+        let next_offset = chunk_u64(chunk, "next_offset")?;
+        let eof = chunk_bool(chunk, "eof")?;
+        anyhow::ensure!(
+            next_offset == self.offset,
+            "artifact '{artifact}' next_offset mismatch ({next_offset} != {})",
+            self.offset
+        );
+        if eof {
+            return Ok(true);
+        }
+        anyhow::ensure!(
+            expected_chunk_len > 0,
+            "artifact '{artifact}' stalled without eof"
+        );
+        Ok(false)
+    }
+}
+
 fn stream_artifact_chunks(
     client: &McpHttpClient,
     capture_id: &str,
     artifact: &str,
     out_file: &mut File,
 ) -> anyhow::Result<(u64, String)> {
-    let mut hasher = Sha256::new();
-    let mut offset = 0_u64;
-    let mut expected_sha256: Option<String> = None;
-    let expected_total: u64;
-    loop {
+    stream_artifact_chunks_bounded(client, capture_id, artifact, out_file, MAX_PULL_CHUNKS)
+}
+
+fn stream_artifact_chunks_bounded(
+    client: &McpHttpClient,
+    capture_id: &str,
+    artifact: &str,
+    out_file: &mut File,
+    max_chunks: usize,
+) -> anyhow::Result<(u64, String)> {
+    let mut state = PullTransferState::new();
+    let mut finished = false;
+    for _ in 0..max_chunks {
         let chunk = client.call_tool(
             "camera_debugging",
             json!({
                 "action": "read_artifact",
                 "capture_id": capture_id,
                 "artifact": artifact,
-                "offset": offset,
+                "offset": state.offset,
                 "length": READ_ARTIFACT_CHUNK_BYTES,
                 "encoding": "auto"
             }),
         )?;
-        let server_sha = chunk_str(&chunk, "sha256")?;
-        if let Some(prev) = &expected_sha256 {
-            anyhow::ensure!(
-                prev == server_sha,
-                "artifact '{artifact}' sha256 changed mid-download"
-            );
-        } else {
-            expected_sha256 = Some(server_sha.to_owned());
-        }
-        let total_bytes = chunk_u64(&chunk, "total_bytes")?;
-        let next_offset = chunk_u64(&chunk, "next_offset")?;
-        let eof = chunk_bool(&chunk, "eof")?;
-        let decoded = decode_artifact_payload(&chunk)?;
-        let expected_chunk_len = chunk_u64(&chunk, "length")?;
-        anyhow::ensure!(
-            u64::try_from(decoded.len()).unwrap_or(u64::MAX) == expected_chunk_len,
-            "artifact '{artifact}' chunk length mismatch"
-        );
-        out_file.write_all(&decoded)?;
-        hasher.update(&decoded);
-        offset = offset.saturating_add(expected_chunk_len);
-        anyhow::ensure!(
-            next_offset == offset,
-            "artifact '{artifact}' next_offset mismatch ({next_offset} != {offset})"
-        );
-        if eof {
-            expected_total = total_bytes;
+        if state.apply_chunk(artifact, &chunk, out_file)? {
+            finished = true;
             break;
         }
-        anyhow::ensure!(
-            expected_chunk_len > 0,
-            "artifact '{artifact}' stalled without eof"
-        );
     }
     anyhow::ensure!(
-        offset == expected_total,
-        "artifact '{artifact}' truncated ({offset} != {expected_total} bytes)"
+        finished,
+        "artifact '{artifact}' exceeded maximum chunk count ({max_chunks})"
     );
-    let actual_sha256 = digest_hex(&hasher.finalize());
-    let server_sha256 = expected_sha256.unwrap_or_default();
+    let expected_total = state.expected_total.unwrap_or(0);
+    anyhow::ensure!(
+        state.offset == expected_total,
+        "artifact '{artifact}' truncated ({} != {expected_total} bytes)",
+        state.offset
+    );
+    let actual_sha256 = digest_hex(&state.hasher.finalize());
+    let server_sha256 = state.expected_sha256.unwrap_or_default();
     anyhow::ensure!(
         actual_sha256 == server_sha256,
         "artifact '{artifact}' SHA-256 mismatch: expected {server_sha256}, got {actual_sha256}"
     );
-    Ok((offset, actual_sha256))
+    Ok((state.offset, actual_sha256))
 }
 
 fn decode_artifact_payload(chunk: &Value) -> anyhow::Result<Vec<u8>> {
@@ -913,11 +1003,10 @@ impl RemoteFilterGuard {
     }
 
     fn restore_now(state: &Arc<Mutex<Option<(McpHttpClient, String)>>>) {
-        let pending = state
+        let mut guard = state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        if let Some((client, previous)) = pending
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((client, previous)) = guard.take()
             && let Err(error) =
                 client.call_tool("set_logging_filter", json!({ "filter": previous }))
         {
@@ -987,6 +1076,7 @@ fn stream_sse_logs<R: BufRead, W: Write>(
     let mut line_buf = Vec::new();
     let mut event_name = String::new();
     let mut data_buf = String::new();
+    let mut discard_event = false;
     while !stop_flag.load(Ordering::Acquire) {
         line_buf.clear();
         let Some(within_limit) = read_bounded_line(reader, &mut line_buf, MAX_SSE_LINE_BYTES)?
@@ -996,28 +1086,41 @@ fn stream_sse_logs<R: BufRead, W: Write>(
         if !within_limit {
             event_name.clear();
             data_buf.clear();
+            discard_event = true;
             continue;
         }
         let line = String::from_utf8_lossy(&line_buf);
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed.is_empty() {
-            dispatch_sse_event(&event_name, &data_buf, matcher, writer)?;
+            if !discard_event {
+                dispatch_sse_event(&event_name, &data_buf, matcher, writer)?;
+            }
             event_name.clear();
             data_buf.clear();
+            discard_event = false;
             continue;
         }
-        if trimmed.starts_with(':') {
+        if discard_event || trimmed.starts_with(':') {
             continue;
         }
         if let Some(value) = trimmed.strip_prefix("event:") {
             event_name = value.trim().to_owned();
         } else if let Some(value) = trimmed.strip_prefix("data:") {
             let chunk = value.trim_start();
-            if data_buf.len().saturating_add(chunk.len()) <= MAX_SSE_DATA_BYTES {
+            let separator_bytes = usize::from(!data_buf.is_empty());
+            let next_len = data_buf
+                .len()
+                .saturating_add(separator_bytes)
+                .saturating_add(chunk.len());
+            if next_len <= MAX_SSE_DATA_BYTES {
                 if !data_buf.is_empty() {
                     data_buf.push('\n');
                 }
                 data_buf.push_str(chunk);
+            } else {
+                event_name.clear();
+                data_buf.clear();
+                discard_event = true;
             }
         }
     }
@@ -1808,5 +1911,153 @@ mod tests {
         );
         let _ = server.join();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pull_capture_rejects_oversized_mismatched_and_non_advancing_chunks() {
+        let dir =
+            std::env::temp_dir().join(format!("keeppeek-pull-bounds-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let empty_sha = digest_hex(&Sha256::digest(b""));
+        let one_byte_sha = digest_hex(&Sha256::digest(b"ab"));
+
+        let oversized_total = MAX_PULL_ARTIFACT_BYTES + 1;
+        let (oversized_url, oversized_srv) = spawn_mock_http_server(1, move |_m, _p, _h, body| {
+            let rpc: Value = serde_json::from_str(&body).unwrap();
+            let mut chunk =
+                mock_artifact_chunk_json("cap-1", "big.bin", b"", 0, 0, &empty_sha, "utf8");
+            chunk["total_bytes"] = json!(oversized_total);
+            chunk["eof"] = json!(false);
+            mock_mcp_json_reply(rpc["id"].clone(), chunk)
+        });
+        let client = McpHttpClient::new(&oversized_url, None, false).unwrap();
+        let mut out = File::create(dir.join("oversized.tmp")).unwrap();
+        let err = stream_artifact_chunks(&client, "cap-1", "big.bin", &mut out).unwrap_err();
+        assert!(err.to_string().contains("exceeds limit"));
+        let _ = oversized_srv.join();
+
+        let mismatch_sha = one_byte_sha.clone();
+        let (mismatch_url, mismatch_srv) = spawn_mock_http_server(2, move |_m, _p, _h, body| {
+            let rpc: Value = serde_json::from_str(&body).unwrap();
+            let offset = rpc["params"]["arguments"]["offset"].as_u64().unwrap() as usize;
+            let sc = if offset == 0 {
+                mock_artifact_chunk_json("cap-1", "a.bin", b"a", 0, 2, &mismatch_sha, "utf8")
+            } else {
+                mock_artifact_chunk_json("cap-1", "a.bin", b"b", 1, 99, &mismatch_sha, "utf8")
+            };
+            mock_mcp_json_reply(rpc["id"].clone(), sc)
+        });
+        let client = McpHttpClient::new(&mismatch_url, None, false).unwrap();
+        let mut out = File::create(dir.join("mismatch.tmp")).unwrap();
+        let err = stream_artifact_chunks(&client, "cap-1", "a.bin", &mut out).unwrap_err();
+        assert!(err.to_string().contains("total_bytes changed"));
+        let _ = mismatch_srv.join();
+
+        let nonadv_sha = one_byte_sha;
+        let (nonadv_url, nonadv_srv) = spawn_mock_http_server(1, move |_m, _p, _h, body| {
+            let rpc: Value = serde_json::from_str(&body).unwrap();
+            let mut chunk =
+                mock_artifact_chunk_json("cap-1", "a.bin", b"a", 0, 2, &nonadv_sha, "utf8");
+            chunk["next_offset"] = json!(0);
+            mock_mcp_json_reply(rpc["id"].clone(), chunk)
+        });
+        let client = McpHttpClient::new(&nonadv_url, None, false).unwrap();
+        let mut out = File::create(dir.join("nonadv.tmp")).unwrap();
+        let err = stream_artifact_chunks(&client, "cap-1", "a.bin", &mut out).unwrap_err();
+        assert!(err.to_string().contains("next_offset mismatch"));
+        let _ = nonadv_srv.join();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pull_capture_enforces_chunk_cap_and_cleans_failed_persist() {
+        let dir = std::env::temp_dir().join(format!("keeppeek-pull-cap-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cap_sha = digest_hex(&Sha256::digest(b"abcd"));
+        let (cap_url, cap_srv) = spawn_mock_http_server(2, move |_m, _p, _h, body| {
+            let rpc: Value = serde_json::from_str(&body).unwrap();
+            let offset = rpc["params"]["arguments"]["offset"].as_u64().unwrap() as usize;
+            let sc = mock_artifact_chunk_json(
+                "cap-1",
+                "a.bin",
+                &b"abcd"[offset..offset + 1],
+                offset,
+                4,
+                &cap_sha,
+                "utf8",
+            );
+            mock_mcp_json_reply(rpc["id"].clone(), sc)
+        });
+        let client = McpHttpClient::new(&cap_url, None, false).unwrap();
+        let mut out = File::create(dir.join("cap.tmp")).unwrap();
+        let err =
+            stream_artifact_chunks_bounded(&client, "cap-1", "a.bin", &mut out, 2).unwrap_err();
+        assert!(err.to_string().contains("exceeded maximum chunk count"));
+        let _ = cap_srv.join();
+
+        let temp_path = dir.join(".pull-fail.tmp");
+        let target_dir = dir.join("existing-dir-target");
+        std::fs::create_dir_all(&target_dir).unwrap();
+        std::fs::write(target_dir.join("occupied"), b"x").unwrap();
+        std::fs::write(&temp_path, b"payload").unwrap();
+        let guard = TempFileGuard::new(temp_path.clone());
+        assert!(guard.persist(&target_dir).is_err());
+        assert!(!temp_path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remote_filter_guard_restore_now_serializes_concurrent_callers() {
+        let (tx_started, rx_started) = std::sync::mpsc::channel();
+        let (tx_release, rx_release) = std::sync::mpsc::channel();
+        let rx_release = Arc::new(Mutex::new(rx_release));
+        let (origin, server) = spawn_mock_http_server(1, move |_m, _p, _h, body| {
+            let rpc: Value = serde_json::from_str(&body).unwrap();
+            let _ = tx_started.send(());
+            let _ = rx_release.lock().unwrap().recv();
+            mock_mcp_json_reply(rpc["id"].clone(), json!({ "active_filter": "info" }))
+        });
+        let client = McpHttpClient::new(&origin, None, false).unwrap();
+        let state = Arc::new(Mutex::new(Some((client, "info".to_owned()))));
+        let state_t1 = state.clone();
+        let t1 = std::thread::spawn(move || RemoteFilterGuard::restore_now(&state_t1));
+        rx_started.recv().unwrap();
+
+        let (tx_t2_done, rx_t2_done) = std::sync::mpsc::channel();
+        let state_t2 = state;
+        let t2 = std::thread::spawn(move || {
+            RemoteFilterGuard::restore_now(&state_t2);
+            let _ = tx_t2_done.send(());
+        });
+        assert!(rx_t2_done.recv_timeout(Duration::from_millis(80)).is_err());
+
+        tx_release.send(()).unwrap();
+        t1.join().unwrap();
+        rx_t2_done.recv_timeout(Duration::from_secs(2)).unwrap();
+        t2.join().unwrap();
+        let _ = server.join();
+    }
+
+    #[test]
+    fn stream_sse_logs_accounts_for_newline_and_discards_overflow_cleanly() {
+        let (_, _, ok_sse) = sample_log_fixture();
+        let matcher = LogFilterMatcher::from_options(&LogsCommandOptions {
+            level: None,
+            target: None,
+            camera: None,
+            query: None,
+            filter: None,
+            follow: true,
+            limit: 10,
+        });
+        let stop = AtomicBool::new(false);
+        let half = "x".repeat(MAX_SSE_DATA_BYTES / 2);
+        let payload = format!("event: log\ndata: {half}\ndata: {half}\ndata: tail\n\n{ok_sse}");
+        let mut cursor = io::Cursor::new(payload.into_bytes());
+        let mut out = Vec::new();
+        stream_sse_logs(&mut cursor, &matcher, &mut out, &stop).unwrap();
+        let rendered = String::from_utf8(out).unwrap();
+        assert_eq!(rendered.lines().count(), 1);
+        assert!(rendered.contains("\"describe ok\""));
     }
 }

@@ -36,14 +36,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fmt::{self, Write as _},
     fs::File,
     io::{Read, Seek, SeekFrom},
     net::IpAddr,
     path::{Path, PathBuf},
     sync::Mutex,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 use tracing_subscriber::EnvFilter;
 use url::Url;
@@ -67,6 +67,7 @@ const READ_ARTIFACT_LENGTH_MIN: usize = 1;
 const READ_ARTIFACT_LENGTH_MAX: usize = 131_072;
 const READ_ARTIFACT_UTF8_JSON_BUDGET: usize = 384 * 1024;
 const SHA256_STREAM_BUF_BYTES: usize = 65_536;
+const ARTIFACT_SHA256_CACHE_MAX: usize = 128;
 
 const _: () = {
     assert!(DURATION_SECONDS_MIN <= DURATION_SECONDS_DEFAULT);
@@ -76,6 +77,7 @@ const _: () = {
     assert!(PROTOCOLS_MAX == 6);
     assert!(READ_ARTIFACT_LENGTH_MIN <= READ_ARTIFACT_LENGTH_DEFAULT);
     assert!(READ_ARTIFACT_LENGTH_DEFAULT <= READ_ARTIFACT_LENGTH_MAX);
+    assert!(ARTIFACT_SHA256_CACHE_MAX > 0);
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -390,6 +392,8 @@ pub(super) struct ReadArtifactRequest {
     pub(super) encoding: ArtifactEncoding,
     pub(super) allowed_camera_ids: Option<Vec<String>>,
     pub(super) config_dir: Option<PathBuf>,
+    #[serde(skip_serializing)]
+    pub(super) deadline: Instant,
 }
 
 /// Backend interface implemented by the camera debug capture engine.
@@ -417,10 +421,54 @@ pub(super) trait CameraDebugService: Send + Sync {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ArtifactSha256Key {
+    path: PathBuf,
+    len: u64,
+    modified: SystemTime,
+}
+
+#[derive(Debug, Default)]
+struct ArtifactSha256Cache {
+    entries: HashMap<ArtifactSha256Key, String>,
+    order: VecDeque<ArtifactSha256Key>,
+    hits: u64,
+}
+
+impl ArtifactSha256Cache {
+    fn get(&mut self, key: &ArtifactSha256Key) -> Option<String> {
+        let value = self.entries.get(key).cloned();
+        if value.is_some() {
+            self.hits = self.hits.saturating_add(1);
+        }
+        value
+    }
+
+    fn insert(&mut self, key: ArtifactSha256Key, digest: String) {
+        if let Some(slot) = self.entries.get_mut(&key) {
+            *slot = digest;
+            return;
+        }
+        while self.order.len() >= ARTIFACT_SHA256_CACHE_MAX {
+            if let Some(evicted) = self.order.pop_front() {
+                self.entries.remove(&evicted);
+            }
+        }
+        self.order.push_back(key.clone());
+        self.entries.insert(key, digest);
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+    }
+}
+
 /// Live camera debug backend backed by [`CaptureStore`] and `crate::camera_debug`.
 #[derive(Debug, Default)]
 pub(super) struct EngineCameraDebugService {
     latest_metrics: Mutex<HashMap<String, Value>>,
+    artifact_sha256: Mutex<ArtifactSha256Cache>,
 }
 
 impl EngineCameraDebugService {
@@ -461,6 +509,13 @@ impl EngineCameraDebugService {
                 .and_then(Value::as_str)
                 .is_none_or(|id| !deleted_ids.iter().any(|deleted| deleted == id))
         });
+    }
+
+    fn clear_artifact_sha256_cache(&self) {
+        self.artifact_sha256
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 }
 
@@ -653,6 +708,7 @@ impl CameraDebugService for EngineCameraDebugService {
         }
         let deleted_ids = vec![capture_id.to_owned()];
         self.clear_metrics_for_deleted(&deleted_ids);
+        self.clear_artifact_sha256_cache();
         Ok(json!({
             "action": "delete_capture",
             "capture_id": capture_id,
@@ -677,7 +733,8 @@ impl CameraDebugService for EngineCameraDebugService {
             .capture_dir(&request.capture_id)
             .map_err(|err| engine_error("read_artifact", err))?;
         let artifact_path = resolve_regular_artifact_path(&capture_dir, &request.artifact)?;
-        read_artifact_chunk(&request, &meta.camera_id, &artifact_path)
+        let active_capture = store.is_camera_capture_active(&meta.camera_id);
+        self.read_artifact_chunk(&request, &meta.camera_id, &artifact_path, active_capture)
     }
 
     fn pipeline_debug_metrics(&self, camera_id: &str) -> Option<Value> {
@@ -865,6 +922,9 @@ impl EngineCameraDebugService {
             }
         }
         self.clear_metrics_for_deleted(&deleted_ids);
+        if !deleted_ids.is_empty() {
+            self.clear_artifact_sha256_cache();
+        }
         Ok(json!({
             "action": "delete_capture",
             "deleted": deleted_ids.len(),
@@ -899,56 +959,105 @@ fn resolve_regular_artifact_path(
     Ok(path)
 }
 
-fn read_artifact_chunk(
-    request: &ReadArtifactRequest,
-    camera_id: &str,
-    path: &Path,
-) -> Result<Value, ControlCommandError> {
-    let mut file = File::open(path).map_err(|err| engine_error("read_artifact", err.into()))?;
-    let total_bytes = file
-        .metadata()
-        .map_err(|err| engine_error("read_artifact", err.into()))?
-        .len();
-    if request.offset > total_bytes {
-        return Err(invalid(&format!(
-            "offset ({}) exceeds artifact size ({total_bytes} bytes)",
-            request.offset
-        )));
+impl EngineCameraDebugService {
+    fn read_artifact_chunk(
+        &self,
+        request: &ReadArtifactRequest,
+        camera_id: &str,
+        path: &Path,
+        active_capture: bool,
+    ) -> Result<Value, ControlCommandError> {
+        let mut file = File::open(path).map_err(|err| engine_error("read_artifact", err.into()))?;
+        let file_meta = file
+            .metadata()
+            .map_err(|err| engine_error("read_artifact", err.into()))?;
+        let total_bytes = file_meta.len();
+        if request.offset > total_bytes {
+            return Err(invalid(&format!(
+                "offset ({}) exceeds artifact size ({total_bytes} bytes)",
+                request.offset
+            )));
+        }
+        let sha256 = self.resolve_artifact_sha256(
+            &mut file,
+            path,
+            total_bytes,
+            file_meta.modified().ok(),
+            active_capture,
+            request.deadline,
+        )?;
+        let remaining =
+            usize::try_from(total_bytes.saturating_sub(request.offset)).unwrap_or(usize::MAX);
+        let to_read = request.length.min(remaining);
+        let mut chunk = vec![0_u8; to_read];
+        file.seek(SeekFrom::Start(request.offset))
+            .map_err(|err| engine_error("read_artifact", err.into()))?;
+        file.read_exact(&mut chunk)
+            .map_err(|err| engine_error("read_artifact", err.into()))?;
+        let (encoding, data, used_bytes) = encode_artifact_chunk(chunk, request.encoding)?;
+        let chunk_len = u64::try_from(used_bytes).unwrap_or(u64::MAX);
+        let next_offset = request.offset.saturating_add(chunk_len);
+        Ok(json!({
+            "action": "read_artifact",
+            "capture_id": request.capture_id,
+            "camera_id": camera_id,
+            "artifact": request.artifact,
+            "offset": request.offset,
+            "length": chunk_len,
+            "total_bytes": total_bytes,
+            "sha256": sha256,
+            "eof": next_offset >= total_bytes,
+            "next_offset": next_offset,
+            "encoding": encoding,
+            "data": data,
+        }))
     }
-    let sha256 = compute_file_sha256(&mut file)?;
-    let remaining =
-        usize::try_from(total_bytes.saturating_sub(request.offset)).unwrap_or(usize::MAX);
-    let to_read = request.length.min(remaining);
-    let mut chunk = vec![0_u8; to_read];
-    file.seek(SeekFrom::Start(request.offset))
-        .map_err(|err| engine_error("read_artifact", err.into()))?;
-    file.read_exact(&mut chunk)
-        .map_err(|err| engine_error("read_artifact", err.into()))?;
-    let (encoding, data, used_bytes) = encode_artifact_chunk(chunk, request.encoding)?;
-    let chunk_len = u64::try_from(used_bytes).unwrap_or(u64::MAX);
-    let next_offset = request.offset.saturating_add(chunk_len);
-    Ok(json!({
-        "action": "read_artifact",
-        "capture_id": request.capture_id,
-        "camera_id": camera_id,
-        "artifact": request.artifact,
-        "offset": request.offset,
-        "length": chunk_len,
-        "total_bytes": total_bytes,
-        "sha256": sha256,
-        "eof": next_offset >= total_bytes,
-        "next_offset": next_offset,
-        "encoding": encoding,
-        "data": data,
-    }))
+
+    fn resolve_artifact_sha256(
+        &self,
+        file: &mut File,
+        path: &Path,
+        total_bytes: u64,
+        modified: Option<SystemTime>,
+        active_capture: bool,
+        deadline: Instant,
+    ) -> Result<String, ControlCommandError> {
+        let cache_key = (!active_capture)
+            .then_some(modified)
+            .flatten()
+            .map(|mtime| ArtifactSha256Key {
+                path: path.to_path_buf(),
+                len: total_bytes,
+                modified: mtime,
+            });
+        if let Some(key) = cache_key.as_ref()
+            && let Some(cached) = self
+                .artifact_sha256
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(key)
+        {
+            return Ok(cached);
+        }
+        remaining_timeout(deadline)?;
+        let digest = compute_file_sha256(file, deadline)?;
+        if let Some(key) = cache_key {
+            self.artifact_sha256
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(key, digest.clone());
+        }
+        Ok(digest)
+    }
 }
 
-fn compute_file_sha256(file: &mut File) -> Result<String, ControlCommandError> {
+fn compute_file_sha256(file: &mut File, deadline: Instant) -> Result<String, ControlCommandError> {
     file.seek(SeekFrom::Start(0))
         .map_err(|err| engine_error("read_artifact", err.into()))?;
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; SHA256_STREAM_BUF_BYTES];
     loop {
+        remaining_timeout(deadline)?;
         let read = file
             .read(&mut buffer)
             .map_err(|err| engine_error("read_artifact", err.into()))?;
@@ -1676,6 +1785,7 @@ fn build_read_artifact_request(
         encoding,
         allowed_camera_ids: allowed_camera_scope(ctx.state, ctx.cfg),
         config_dir: ctx.config_dir.clone(),
+        deadline: ctx.deadline,
     })
 }
 
@@ -2902,6 +3012,7 @@ mod tests {
             encoding,
             allowed_camera_ids: allowed.map(|v| v.into_iter().map(str::to_owned).collect()),
             config_dir: Some(dir.to_path_buf()),
+            deadline: Instant::now() + Duration::from_secs(30),
         }
     }
 
@@ -2982,6 +3093,120 @@ mod tests {
             ))
             .unwrap_err();
         assert_eq!(utf8_err._http_status, 400);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_artifact_caches_sha256_and_clears_on_delete() {
+        let (dir, _bin_payload) = seed_read_artifact_fixture();
+        let service = EngineCameraDebugService::default();
+        let chunk1 = service
+            .read_artifact(read_art_req(
+                &dir,
+                "traces.jsonl",
+                0,
+                6,
+                ArtifactEncoding::Auto,
+                None,
+            ))
+            .unwrap();
+        let chunk2 = service
+            .read_artifact(read_art_req(
+                &dir,
+                "traces.jsonl",
+                6,
+                6,
+                ArtifactEncoding::Auto,
+                None,
+            ))
+            .unwrap();
+        let chunk3 = service
+            .read_artifact(read_art_req(
+                &dir,
+                "traces.jsonl",
+                12,
+                16,
+                ArtifactEncoding::Auto,
+                None,
+            ))
+            .unwrap();
+        assert_eq!(chunk1["sha256"], chunk2["sha256"]);
+        assert_eq!(chunk2["sha256"], chunk3["sha256"]);
+        {
+            let cache = service.artifact_sha256.lock().unwrap();
+            assert_eq!(cache.entries.len(), 1);
+            assert_eq!(cache.hits, 2);
+        }
+        service
+            .delete_capture(DeleteCaptureRequest {
+                capture_id: Some("cap-read-1".to_owned()),
+                camera_id: None,
+                delete_all: false,
+                allowed_camera_ids: None,
+                config_dir: Some(dir.clone()),
+            })
+            .unwrap();
+        assert!(service.artifact_sha256.lock().unwrap().entries.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_artifact_sha256_bypasses_active_capture_checks_deadline_and_evicts_fifo() {
+        let (dir, _bin_payload) = seed_read_artifact_fixture();
+        let service = EngineCameraDebugService::default();
+        let initial = service
+            .read_artifact(read_art_req(
+                &dir,
+                "traces.jsonl",
+                0,
+                6,
+                ArtifactEncoding::Auto,
+                None,
+            ))
+            .unwrap();
+        let store = open_existing_store(Some(&dir)).unwrap();
+        let mut refreshed = store.load_metadata("cap-read-1").unwrap();
+        refreshed.created_at_unix_secs = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        store.save_metadata("cap-read-1", &refreshed).unwrap();
+        let (_guard, _active_dir) = store.begin_capture("192.0.2.10", "cap-active-1").unwrap();
+        let active_chunk = service
+            .read_artifact(read_art_req(
+                &dir,
+                "traces.jsonl",
+                0,
+                6,
+                ArtifactEncoding::Auto,
+                None,
+            ))
+            .unwrap();
+        assert_eq!(active_chunk["sha256"], initial["sha256"]);
+        assert_eq!(service.artifact_sha256.lock().unwrap().hits, 0);
+        drop(_guard);
+
+        let mut expired_req =
+            read_art_req(&dir, "capture.pcapng", 0, 64, ArtifactEncoding::Auto, None);
+        expired_req.deadline = Instant::now() - Duration::from_secs(1);
+        assert_eq!(
+            service.read_artifact(expired_req).unwrap_err()._http_status,
+            504
+        );
+
+        let mut cache = service.artifact_sha256.lock().unwrap();
+        for idx in 0..=ARTIFACT_SHA256_CACHE_MAX {
+            cache.insert(
+                ArtifactSha256Key {
+                    path: PathBuf::from(format!("artifact-{idx}")),
+                    len: idx as u64,
+                    modified: SystemTime::UNIX_EPOCH,
+                },
+                format!("{idx:064x}"),
+            );
+        }
+        assert_eq!(cache.entries.len(), ARTIFACT_SHA256_CACHE_MAX);
+        drop(cache);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

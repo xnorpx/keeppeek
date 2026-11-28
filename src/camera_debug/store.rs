@@ -439,7 +439,7 @@ pub fn validate_camera_id(camera_id: &str) -> anyhow::Result<()> {
 /// Validates that `artifact` is a single-segment filename without path traversal tokens.
 ///
 /// # Errors
-/// Returns an error if `artifact` is empty, exceeds 128 bytes, or contains `/`, `\`, `..`, NUL, or control chars.
+/// Returns an error if `artifact` is empty, exceeds 128 bytes, or contains `/`, `\`, `:`, `..`, NUL, or control chars.
 pub fn validate_artifact_name(artifact: &str) -> anyhow::Result<()> {
     ensure!(
         !artifact.is_empty() && artifact.len() <= ARTIFACT_NAME_LEN_MAX,
@@ -452,9 +452,9 @@ pub fn validate_artifact_name(artifact: &str) -> anyhow::Result<()> {
     ensure!(
         !artifact
             .bytes()
-            .any(|byte| matches!(byte, b'/' | b'\\' | b'\0') || byte.is_ascii_control())
+            .any(|byte| matches!(byte, b'/' | b'\\' | b':' | b'\0') || byte.is_ascii_control())
             && !artifact.chars().any(char::is_control),
-        "artifact filename '{artifact}' contains disallowed path separator or control character"
+        "artifact filename '{artifact}' contains disallowed path separator, colon, or control character"
     );
     let mut components = Path::new(artifact).components();
     ensure!(
@@ -653,5 +653,28 @@ mod tests {
 
         assert!(store.delete_capture("cap-mid").unwrap());
         assert!(!store.delete_capture("cap-mid").unwrap());
+    }
+
+    #[test]
+    fn validate_artifact_name_rejects_traversal_and_ntfs_ads_colons() {
+        assert!(validate_artifact_name("traces.jsonl").is_ok());
+        assert!(validate_artifact_name("capture.pcapng").is_ok());
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../x",
+            "a/b",
+            "a\\b",
+            "foo..bar",
+            "traces.jsonl:ads",
+            "C:artifact.bin",
+            "bad\0name",
+        ] {
+            assert!(
+                validate_artifact_name(bad).is_err(),
+                "expected artifact name rejection for {bad:?}"
+            );
+        }
     }
 }
