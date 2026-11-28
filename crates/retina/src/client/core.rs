@@ -1247,8 +1247,9 @@ impl RtspClient {
                 self.phase = Phase::Failed;
                 self.outputs.push_back(Output::CloseTcp { connection });
                 return Err(CoreError::UnexpectedResponse(format!(
-                    "SETUP changed RTSP session id from {:?} to {:?}",
-                    existing.id, setup.session.id
+                    "SETUP changed RTSP session id (old_len={} new_len={})",
+                    existing.id.len(),
+                    setup.session.id.len()
                 )));
             }
         } else {
@@ -1970,6 +1971,7 @@ fn format_rtsp_headers_sanitized(headers: &msg::Headers) -> String {
             || key.eq_ignore_ascii_case("proxy-authentication-info")
             || key.eq_ignore_ascii_case("set-cookie")
             || key.eq_ignore_ascii_case("cookie")
+            || key.eq_ignore_ascii_case("session")
         {
             parts.push(format!("{key}: [REDACTED]"));
         } else if key.eq_ignore_ascii_case("www-authenticate")
@@ -3360,7 +3362,8 @@ mod tests {
         );
         let rendered = format_rtsp_headers_sanitized(&headers);
         assert!(rendered.contains("CSeq: 4"));
-        assert!(rendered.contains("Session: 99887766"));
+        assert!(rendered.contains("Session: [REDACTED]"));
+        assert!(!rendered.contains("99887766"));
         assert!(rendered.contains("Authorization: [REDACTED]"));
         assert!(rendered.contains("Authentication-Info: [REDACTED]"));
         assert!(rendered.contains(r#"Proxy-Authenticate: Digest realm="Camera, Lobby""#));
@@ -3493,5 +3496,61 @@ mod tests {
                 "leaked {canary}: {scrubbed_sdp}"
             );
         }
+    }
+
+    #[test]
+    fn setup_changed_session_id_omits_raw_session_ids() {
+        let (mut client, connection, start) = described_client();
+        client
+            .handle_input(Input::Command {
+                time: time(start, Duration::from_millis(4)),
+                command: Command::Setup { stream: 0 },
+            })
+            .unwrap();
+        let _ = client.poll_output();
+        client
+            .handle_input(Input::TcpWriteCompleted {
+                time: time(start, Duration::from_millis(5)),
+                connection,
+            })
+            .unwrap();
+        let _ = client.poll_output();
+        client
+            .handle_input(Input::TcpData {
+                time: time(start, Duration::from_millis(6)),
+                connection,
+                data: b"RTSP/1.0 200 OK\r\nCSeq: 2\r\nSession: CANARY_SESS_OLD;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n",
+            })
+            .unwrap();
+        let _ = client.poll_output();
+
+        client
+            .handle_input(Input::Command {
+                time: time(start, Duration::from_millis(7)),
+                command: Command::Setup { stream: 1 },
+            })
+            .unwrap();
+        let _ = client.poll_output();
+        client
+            .handle_input(Input::TcpWriteCompleted {
+                time: time(start, Duration::from_millis(8)),
+                connection,
+            })
+            .unwrap();
+        let _ = client.poll_output();
+        let error = client
+            .handle_input(Input::TcpData {
+                time: time(start, Duration::from_millis(9)),
+                connection,
+                data: b"RTSP/1.0 200 OK\r\nCSeq: 3\r\nSession: CANARY_SESS_NEW2;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=2-3\r\n\r\n",
+            })
+            .unwrap_err();
+        let err_text = error.to_string();
+        assert!(
+            err_text.contains("SETUP changed RTSP session id (old_len=15 new_len=16)"),
+            "{err_text}"
+        );
+        assert!(!err_text.contains("CANARY_SESS_OLD"), "{err_text}");
+        assert!(!err_text.contains("CANARY_SESS_NEW2"), "{err_text}");
     }
 }

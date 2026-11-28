@@ -565,7 +565,8 @@ fn parse_session_id(id: &str, session_str: &str) -> Result<Box<str>, String> {
     let id = id.trim();
     if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_graphic()) {
         return Err(format!(
-            "Empty or invalid session id in Session header {session_str:?}"
+            "Empty or invalid session id in Session header (len={})",
+            session_str.len()
         ));
     }
     Ok(id.into())
@@ -603,7 +604,8 @@ pub fn parse_setup(response: &crate::rtsp::msg::Response) -> Result<SetupRespons
                 if timeout_sec == 0 {
                     // This would make Retina send keepalives at an absurd rate; reject.
                     return Err(format!(
-                        "Invalid timeout=0 in Session header {session_str:?}"
+                        "Invalid timeout=0 in Session header (len={})",
+                        session_str.len()
                     ));
                 }
                 SessionHeader {
@@ -611,7 +613,10 @@ pub fn parse_setup(response: &crate::rtsp::msg::Response) -> Result<SetupRespons
                     timeout_sec,
                 }
             } else {
-                return Err(format!("Unparseable Session header {session_str:?}"));
+                return Err(format!(
+                    "Unparseable Session header (len={})",
+                    session_str.len()
+                ));
             }
         }
     };
@@ -1606,6 +1611,39 @@ mod tests {
         );
         let error = parse_setup(&setup_response.0).unwrap_err();
         assert!(error.contains("invalid session id"), "{error}");
+    }
+
+    #[test]
+    fn setup_session_header_errors_omit_raw_session_id() {
+        let cases = [
+            (
+                b"RTSP/1.0 200 OK\r\n\
+                  Session: CANARY_SESS_ID;timeout=0\r\n\
+                  Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n"
+                    .as_slice(),
+                "Invalid timeout=0 in Session header",
+            ),
+            (
+                b"RTSP/1.0 200 OK\r\n\
+                  Session: CANARY_SESS_ID;bogus=1\r\n\
+                  Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n"
+                    .as_slice(),
+                "Unparseable Session header",
+            ),
+            (
+                b"RTSP/1.0 200 OK\r\n\
+                  Session: bad CANARY_SESS_ID\r\n\
+                  Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n"
+                    .as_slice(),
+                "Empty or invalid session id in Session header",
+            ),
+        ];
+        for (raw, expected_prefix) in cases {
+            let error = parse_setup(&response(raw).0).unwrap_err();
+            assert!(error.starts_with(expected_prefix), "{error}");
+            assert!(error.contains("(len="), "{error}");
+            assert!(!error.contains("CANARY_SESS_ID"), "{error}");
+        }
     }
 
     #[test]
