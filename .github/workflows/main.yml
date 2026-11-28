@@ -169,7 +169,9 @@ jobs:
           OUTPUT_DIRECTORY: ${{ steps.windows-installer.outputs.output_directory }}
         run: |
           $zeroDirectory = Join-Path $env:RUNNER_TEMP 'keeppeek-install-zero'
-          $installDirectory = Join-Path $env:RUNNER_TEMP 'keeppeek-install'
+          # Include a space in the install path to match the default Program Files layout.
+          $installDirectory = Join-Path $env:RUNNER_TEMP 'KeepPeek Install'
+          $expectedServicePathName = "`"$installDirectory\keeppeek-service.exe`""
           $serviceName = 'KeepPeekService'
           $installer = $env:INSTALLER
           $desktopShortcut = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\KeepPeek\KeepPeek Desktop.lnk'
@@ -182,9 +184,9 @@ jobs:
               throw 'Zero-component install must not create the target directory'
             }
 
-            $process = Start-Process -FilePath $installer -ArgumentList @('/S', '/SERVICE', "/D=$installDirectory") -PassThru -Wait
+            $process = Start-Process -FilePath $installer -ArgumentList "/S /SERVICE /D=$installDirectory" -PassThru -Wait
             if ($process.ExitCode -ne 0) {
-              throw 'Unable to install KeepPeek'
+              throw "Unable to install KeepPeek (exit $($process.ExitCode))"
             }
 
             foreach ($binary in 'keeppeek.exe', 'keeppeek-service.exe', 'keeppeek-supervisor.exe', 'keeppeek-desktop.exe', 'uninstall.exe') {
@@ -208,11 +210,11 @@ jobs:
             }
 
             $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
-            if ($null -eq $service -or -not $service.PathName.Contains("$installDirectory\keeppeek-service.exe")) {
-              throw "$serviceName was not installed with the expected binary path"
+            if ($null -eq $service -or $service.PathName -ne $expectedServicePathName) {
+              throw "$serviceName was not installed with the expected quoted binary path (expected: $expectedServicePathName, actual: $($service.PathName))"
             }
 
-            $process = Start-Process -FilePath $installer -ArgumentList @('/S', '/SERVICE', "/D=$installDirectory") -PassThru -Wait
+            $process = Start-Process -FilePath $installer -ArgumentList "/S /SERVICE /D=$installDirectory" -PassThru -Wait
             if ($process.ExitCode -ne 0) {
               $serviceState = (& sc.exe query $serviceName 2>&1) -join "`n"
               throw "Unable to reinstall KeepPeek (exit $($process.ExitCode)). Service state:`n$serviceState"
@@ -225,8 +227,8 @@ jobs:
             }
 
             $reinstalledService = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
-            if ($null -eq $reinstalledService -or -not $reinstalledService.PathName.Contains("$installDirectory\keeppeek-service.exe")) {
-              throw "$serviceName was not registered with the expected binary path after reinstall"
+            if ($null -eq $reinstalledService -or $reinstalledService.PathName -ne $expectedServicePathName) {
+              throw "$serviceName was not registered with the expected quoted binary path after reinstall (expected: $expectedServicePathName, actual: $($reinstalledService.PathName))"
             }
 
             $uninstallProcess = Start-Process -FilePath (Join-Path $installDirectory 'uninstall.exe') -ArgumentList '/S' -PassThru -Wait
