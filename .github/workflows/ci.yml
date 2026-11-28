@@ -397,10 +397,96 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw 'keeppeek-supervisor.exe --help failed'
           }
-      - name: Verify Windows installer signature checker
+      - name: Verify Windows installer signature checker (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        run: powershell.exe -NoLogo -NoProfile -NonInteractive -File .github/scripts/test-verify-windows-installer-signatures.ps1
+      - name: Verify Windows installer signature checker (PowerShell 7)
         if: runner.os == 'Windows'
         shell: pwsh
         run: .\.github\scripts\test-verify-windows-installer-signatures.ps1
+      - name: Set up NSIS
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/setup-nsis
+      - name: Verify two-pass NSIS build and 7-Zip extraction
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $workRoot = Join-Path $env:RUNNER_TEMP 'keeppeek-nsis-pr-check'
+          $genDir = Join-Path $workRoot 'gen'
+          $uninstDir = Join-Path $workRoot 'uninst'
+          $outDir = Join-Path $workRoot 'out'
+          $extractDir = Join-Path $workRoot 'extract'
+          foreach ($dir in $genDir, $uninstDir, $outDir, $extractDir) {
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          }
+          try {
+            $uninstaller = Join-Path $uninstDir 'uninstall.exe'
+            & 'C:\Program Files (x86)\NSIS\makensis.exe' `
+              '/DARCH=x86_64' `
+              "/DOUT_DIR=$genDir" `
+              '/DVERSION=0.0.0' `
+              '/DVERSION_RESOURCE=0.0.0.0' `
+              '/DWRITE_UNINSTALLER_ONLY' `
+              "/DUNINST_OUT=$uninstaller" `
+              installer/keeppeek.nsi
+            if ($LASTEXITCODE -ne 0) { throw 'Pass-1 NSIS compilation failed' }
+
+            $generator = Join-Path $genDir 'keeppeek-uninst-gen.exe'
+            $previousCompat = $env:__COMPAT_LAYER
+            $env:__COMPAT_LAYER = 'RunAsInvoker'
+            try {
+              $process = Start-Process -FilePath $generator -PassThru -Wait
+            } finally {
+              $env:__COMPAT_LAYER = $previousCompat
+            }
+            if ($process.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $uninstaller)) {
+              throw "Unable to extract uninstall.exe (exit $($process.ExitCode))"
+            }
+
+            $buildDir = Join-Path $env:GITHUB_WORKSPACE 'target\debug'
+            & 'C:\Program Files (x86)\NSIS\makensis.exe' `
+              '/DARCH=x86_64' `
+              "/DBUILD_DIR=$buildDir" `
+              "/DOUT_DIR=$outDir" `
+              '/DVERSION=0.0.0' `
+              '/DVERSION_RESOURCE=0.0.0.0' `
+              "/DSIGNED_UNINSTALLER=$uninstaller" `
+              installer/keeppeek.nsi
+            if ($LASTEXITCODE -ne 0) { throw 'Pass-2 NSIS compilation failed' }
+
+            $installer = Join-Path $outDir 'keeppeek-0.0.0-windows-x86_64-installer.exe'
+            if (-not (Test-Path -LiteralPath $installer)) {
+              throw "Installer was not created at $installer"
+            }
+
+            & 7z x -tnsis -aou -y "-o$extractDir" -- $installer
+            if ($LASTEXITCODE -ne 0) {
+              throw "7-Zip failed to extract two-pass NSIS installer (exit $LASTEXITCODE)"
+            }
+
+            $expected = @{
+              'keeppeek.exe'            = Join-Path $buildDir 'keeppeek.exe'
+              'keeppeek-service.exe'    = Join-Path $buildDir 'keeppeek-service.exe'
+              'keeppeek-supervisor.exe' = Join-Path $buildDir 'keeppeek-supervisor.exe'
+              'keeppeek-desktop.exe'    = Join-Path $buildDir 'keeppeek-desktop.exe'
+              'uninstall.exe'           = $uninstaller
+            }
+            foreach ($name in $expected.Keys) {
+              $extracted = @(Join-Path $extractDir $name; Join-Path $extractDir "`$INSTDIR\$name") |
+                Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+                Select-Object -First 1
+              if (-not $extracted) {
+                throw "7-Zip extraction did not yield $name"
+              }
+              $actualHash = (Get-FileHash -LiteralPath $extracted -Algorithm SHA256).Hash
+              $expectedHash = (Get-FileHash -LiteralPath $expected[$name] -Algorithm SHA256).Hash
+              if ($actualHash -ne $expectedHash) {
+                throw "Extracted $name hash mismatch ($actualHash != $expectedHash)"
+              }
+            }
+          } finally {
+            Remove-Item -LiteralPath $workRoot -Recurse -Force -ErrorAction SilentlyContinue
+          }
       - name: Verify macOS app service installation
         if: runner.os == 'macOS'
         shell: bash

@@ -92,14 +92,24 @@ Section ""
   WriteUninstaller "${UNINST_OUT}"
 SectionEnd
 !else
+!macro InstallBinary target_name source_path
+  ClearErrors
+  File /oname=${target_name} "${source_path}"
+  ${If} ${Errors}
+    DetailPrint "Unable to write ${target_name}"
+    SetErrorLevel 3
+    Abort
+  ${EndIf}
+!macroend
+
 Section "-StopServiceBeforeUpgrade"
-  ; Stop the existing service before any section overwrites keeppeek.exe.
+  ; Stop and remove the existing service before any section writes keeppeek.exe.
   Call StopServiceBeforeUpgrade
 SectionEnd
 
 Section "KeepPeek Desktop" SecDesktop
   SetOutPath "$INSTDIR"
-  File /oname=keeppeek-desktop.exe "${BUILD_DIR}\keeppeek-desktop.exe"
+  !insertmacro InstallBinary "keeppeek-desktop.exe" "${BUILD_DIR}\keeppeek-desktop.exe"
 
   SetShellVarContext all
   CreateDirectory "${START_MENU_DIR}"
@@ -118,22 +128,22 @@ SectionEnd
 
 Section "KeepPeek Server with TUI" SecServer
   SetOutPath "$INSTDIR"
-  File /oname=keeppeek.exe "${BUILD_DIR}\keeppeek.exe"
-  File /oname=keeppeek-supervisor.exe "${BUILD_DIR}\keeppeek-supervisor.exe"
+  !insertmacro InstallBinary "keeppeek.exe" "${BUILD_DIR}\keeppeek.exe"
+  !insertmacro InstallBinary "keeppeek-supervisor.exe" "${BUILD_DIR}\keeppeek-supervisor.exe"
 SectionEnd
 
 Section /o "KeepPeek Windows Service" SecService
   SetOutPath "$INSTDIR"
-  File /oname=keeppeek.exe "${BUILD_DIR}\keeppeek.exe"
-  File /oname=keeppeek-service.exe "${BUILD_DIR}\keeppeek-service.exe"
-  File /oname=keeppeek-supervisor.exe "${BUILD_DIR}\keeppeek-supervisor.exe"
+  !insertmacro InstallBinary "keeppeek.exe" "${BUILD_DIR}\keeppeek.exe"
+  !insertmacro InstallBinary "keeppeek-service.exe" "${BUILD_DIR}\keeppeek-service.exe"
+  !insertmacro InstallBinary "keeppeek-supervisor.exe" "${BUILD_DIR}\keeppeek-supervisor.exe"
   Call InstallService
 SectionEnd
 
 Section "-UninstallSupport"
   SetOutPath "$INSTDIR"
 !ifdef SIGNED_UNINSTALLER
-  File /oname=uninstall.exe "${SIGNED_UNINSTALLER}"
+  !insertmacro InstallBinary "uninstall.exe" "${SIGNED_UNINSTALLER}"
 !else
   WriteUninstaller "$INSTDIR\uninstall.exe"
 !endif

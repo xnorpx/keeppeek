@@ -67,14 +67,14 @@ jobs:
           ref: ${{ env.RELEASE_SHA }}
           fetch-depth: 0
           submodules: recursive
-      - name: Verify tagged commit passed CI on main
-        if: github.event_name == 'push'
+      - name: Verify commit passed CI on main
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           git fetch --no-tags origin main
           if ! git merge-base --is-ancestor "$RELEASE_SHA" origin/main; then
-            echo "Release tag must point to a commit on main" >&2
+            echo "Release commit must be on main" >&2
             exit 1
           fi
           successful_runs="$(gh api --method GET \
@@ -85,7 +85,7 @@ jobs:
             -f per_page=1 \
             --jq '.total_count')"
           if [[ "$successful_runs" -lt 1 ]]; then
-            echo "Release tag commit has no successful CI push run" >&2
+            echo "Release commit has no successful CI push run" >&2
             exit 1
           fi
       - id: version

@@ -6022,24 +6022,53 @@ display_name = "Front Door"
         capture_id: &str,
         sentinel: &str,
     ) {
-        let read_trace = call_mcp_tool(
-            state,
-            router_tx,
-            11,
-            "camera_debugging",
-            json!({
-                "action": "read_artifact",
-                "capture_id": capture_id,
-                "artifact": "traces.jsonl",
-                "offset": 0,
-                "length": 65_536
-            }),
+        const CHUNK_LEN: usize = 65_536;
+        const MAX_TRACE_CHUNKS: usize = 32;
+
+        let mut offset = 0_u64;
+        let mut expected_total = None;
+        let mut full_trace = String::new();
+        let mut saw_eof = false;
+        for chunk_index in 0..MAX_TRACE_CHUNKS {
+            let read_trace = call_mcp_tool(
+                state,
+                router_tx,
+                11 + u64::try_from(chunk_index).unwrap(),
+                "camera_debugging",
+                json!({
+                    "action": "read_artifact",
+                    "capture_id": capture_id,
+                    "artifact": "traces.jsonl",
+                    "offset": offset,
+                    "length": CHUNK_LEN
+                }),
+            );
+            let trace_sc = &read_trace["result"]["structuredContent"];
+            assert_eq!(trace_sc["action"], "read_artifact");
+            assert_eq!(trace_sc["encoding"], "utf8");
+            let total_bytes = trace_sc["total_bytes"].as_u64().expect("total_bytes");
+            let next_offset = trace_sc["next_offset"].as_u64().expect("next_offset");
+            let eof = trace_sc["eof"].as_bool().expect("eof");
+            if let Some(prev_total) = expected_total {
+                assert_eq!(total_bytes, prev_total);
+            } else {
+                expected_total = Some(total_bytes);
+            }
+            let chunk = trace_sc["data"].as_str().expect("utf8 trace chunk");
+            full_trace.push_str(chunk);
+            if eof {
+                assert_eq!(next_offset, total_bytes);
+                saw_eof = true;
+                break;
+            }
+            assert!(next_offset > offset, "read_artifact did not advance offset");
+            offset = next_offset;
+        }
+        assert!(
+            saw_eof,
+            "traces.jsonl did not reach EOF within chunk budget"
         );
-        let trace_sc = &read_trace["result"]["structuredContent"];
-        assert_eq!(trace_sc["action"], "read_artifact");
-        assert_eq!(trace_sc["eof"], true);
-        assert_eq!(trace_sc["encoding"], "utf8");
-        assert!(!trace_sc["data"].as_str().unwrap().contains(sentinel));
+        assert!(!full_trace.contains(sentinel));
     }
 
     fn assert_rtsp_capture_and_inspect(

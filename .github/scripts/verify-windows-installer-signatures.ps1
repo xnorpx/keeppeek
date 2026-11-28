@@ -12,11 +12,13 @@ $ErrorActionPreference = 'Stop'
 
 $MaxExtractedEntries = 256
 $MaxExtractedExecutables = 64
+$SevenZipTimeoutMs = 120000
 
 function Assert-ValidAuthenticodeSignature {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$FilePath
+        [string]$FilePath,
+        [string]$ExpectedThumbprint = ''
     )
 
     if (-not (Test-Path -LiteralPath $FilePath -PathType Leaf)) {
@@ -27,11 +29,21 @@ function Assert-ValidAuthenticodeSignature {
     if ($signature.Status -ne 'Valid') {
         throw "$FilePath has invalid Authenticode signature status: $($signature.Status)"
     }
+    if ($signature.SignatureType -ne 'Authenticode') {
+        throw "$FilePath must have an embedded Authenticode signature, got $($signature.SignatureType)."
+    }
     if ($null -eq $signature.SignerCertificate) {
         throw "$FilePath does not have a signer certificate."
     }
     if ($null -eq $signature.TimestamperCertificate) {
         throw "$FilePath does not have an RFC 3161 timestamp."
+    }
+    if ($ExpectedThumbprint -and
+        $signature.SignerCertificate.Thumbprint -ne $ExpectedThumbprint) {
+        throw (
+            "$FilePath signer thumbprint mismatch: expected $ExpectedThumbprint, " +
+            "got $($signature.SignerCertificate.Thumbprint)."
+        )
     }
 
     return $signature
@@ -43,7 +55,7 @@ function Resolve-SevenZipExecutable {
         [string]$RequestedPath
     )
 
-    $command = Get-Command $RequestedPath -ErrorAction SilentlyContinue
+    $command = Get-Command $RequestedPath -CommandType Application -ErrorAction SilentlyContinue
     if ($null -ne $command) {
         return $command.Source
     }
@@ -64,6 +76,57 @@ function Get-LowerSha256 {
     )
 
     return (Get-FileHash -LiteralPath $FilePath -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Invoke-SevenZipExtract {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SevenZipExecutable,
+        [Parameter(Mandatory = $true)]
+        [string]$ArchivePath,
+        [Parameter(Mandatory = $true)]
+        [string]$ExtractRoot
+    )
+
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = $SevenZipExecutable
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    # Quote each argument explicitly for compatibility with Windows PowerShell 5.1.
+    $psi.Arguments = "x -tnsis -aou -y `"-o$ExtractRoot`" -- `"$ArchivePath`""
+
+    $process = [System.Diagnostics.Process]::Start($psi)
+    try {
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($SevenZipTimeoutMs)) {
+            try { $process.Kill() } catch {}
+            throw "7-Zip timed out while extracting $ArchivePath."
+        }
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+        $exitCode = $process.ExitCode
+    } finally {
+        $process.Dispose()
+    }
+
+    $combined = ($stdout + "`n" + $stderr).Trim()
+    if ($exitCode -eq 0) {
+        return
+    }
+    # Allow 7-Zip warning exit 1 only for the expected trailing Authenticode certificate table.
+    $isTrailingTailWarning = (
+        $exitCode -eq 1 -and
+        $combined -match 'There are data after the end of archive' -and
+        $combined -match 'Warnings:\s*1\b' -and
+        $combined -notmatch '\bErrors:\s*[1-9]' -and
+        $combined -notmatch 'Sub items Errors:'
+    )
+    if (-not $isTrailingTailWarning) {
+        throw "7-Zip failed to extract $ArchivePath (exit $exitCode): $combined"
+    }
 }
 
 function Get-ExtractedExecutables {
@@ -101,13 +164,82 @@ function Get-ExtractedExecutables {
         }
     }
 
-    return $executables
+    return , $executables.ToArray()
+}
+
+function Test-ExtractedExecutables {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ExtractRoot,
+        [Parameter(Mandatory = $true)]
+        [hashtable]$ExpectedHashes,
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedThumbprint
+    )
+
+    $executables = Get-ExtractedExecutables -ExtractRoot $ExtractRoot
+    if ($executables.Count -eq 0) {
+        throw "No executables were extracted from $InstallerPath."
+    }
+
+    $allowedParents = @(
+        [System.IO.Path]::GetFullPath($ExtractRoot).TrimEnd('\'),
+        [System.IO.Path]::GetFullPath((Join-Path $ExtractRoot '$INSTDIR')).TrimEnd('\')
+    )
+    $verifiedRequired = @{}
+
+    foreach ($exe in $executables) {
+        $parentPath = [System.IO.Path]::GetFullPath($exe.DirectoryName).TrimEnd('\')
+        if ($parentPath -notin $allowedParents) {
+            throw "Unexpected executable directory inside installer: $($exe.FullName)"
+        }
+
+        $lowerName = $exe.Name.ToLowerInvariant()
+        if ($ExpectedHashes.ContainsKey($lowerName)) {
+            $canonicalName = $lowerName
+        } elseif ($lowerName -match '^(.+)_\d+\.exe$') {
+            $canonicalName = "$($Matches[1]).exe"
+        } else {
+            throw "Unexpected executable extracted from installer: $($exe.Name)"
+        }
+        if (-not $ExpectedHashes.ContainsKey($canonicalName)) {
+            throw "Unexpected executable extracted from installer: $($exe.Name)"
+        }
+
+        $embeddedSig = Assert-ValidAuthenticodeSignature `
+            -FilePath $exe.FullName `
+            -ExpectedThumbprint $ExpectedThumbprint
+        $actualHash = Get-LowerSha256 -FilePath $exe.FullName
+        $expectedHash = $ExpectedHashes[$canonicalName]
+        if ($actualHash -ne $expectedHash) {
+            throw "Embedded $($exe.Name) SHA-256 mismatch: expected $expectedHash, got $actualHash."
+        }
+        if ($lowerName -eq $canonicalName) {
+            $verifiedRequired[$canonicalName] = $true
+        }
+
+        $subject = $embeddedSig.SignerCertificate.Subject
+        [Console]::WriteLine(
+            "Verified embedded executable: $($exe.Name) -> $canonicalName " +
+            "(SHA256=$actualHash, Signer=$subject)"
+        )
+    }
+
+    foreach ($requiredName in ($ExpectedHashes.Keys | Sort-Object)) {
+        if (-not $verifiedRequired.ContainsKey($requiredName)) {
+            throw "Installer is missing required signed executable: $requiredName"
+        }
+    }
 }
 
 $sevenZip = Resolve-SevenZipExecutable -RequestedPath $SevenZipPath
 $installerSig = Assert-ValidAuthenticodeSignature -FilePath $InstallerPath
+$expectedThumbprint = $installerSig.SignerCertificate.Thumbprint
 $installerHash = Get-LowerSha256 -FilePath $InstallerPath
-[Console]::WriteLine("Verified installer: $InstallerPath (SHA256=$installerHash, Signer=$($installerSig.SignerCertificate.Subject))")
+$installerSubject = $installerSig.SignerCertificate.Subject
+[Console]::WriteLine(
+    "Verified installer: $InstallerPath (SHA256=$installerHash, Signer=$installerSubject)"
+)
 
 $expectedInputs = @{
     'keeppeek.exe'            = Join-Path $SignedBinariesDir 'keeppeek.exe'
@@ -120,7 +252,9 @@ $expectedInputs = @{
 $expectedHashes = @{}
 foreach ($name in ($expectedInputs.Keys | Sort-Object)) {
     $inputPath = $expectedInputs[$name]
-    $null = Assert-ValidAuthenticodeSignature -FilePath $inputPath
+    $null = Assert-ValidAuthenticodeSignature `
+        -FilePath $inputPath `
+        -ExpectedThumbprint $expectedThumbprint
     $expectedHashes[$name] = Get-LowerSha256 -FilePath $inputPath
 }
 
@@ -132,67 +266,20 @@ $extractRoot = [System.IO.Path]::Combine(
 
 try {
     [void][System.IO.Directory]::CreateDirectory($extractRoot)
-    # Extract with -aou so duplicate section copies remain separate files for inspection.
-    & $sevenZip x -aou -y "-o$extractRoot" $InstallerPath | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "7-Zip failed to extract $InstallerPath (exit $LASTEXITCODE)."
-    }
-
-    $executables = Get-ExtractedExecutables -ExtractRoot $extractRoot
-    if ($executables.Count -eq 0) {
-        throw "No executables were extracted from $InstallerPath."
-    }
-
-    $allowedParents = @(
-        [System.IO.Path]::GetFullPath($extractRoot).TrimEnd('\'),
-        [System.IO.Path]::GetFullPath((Join-Path $extractRoot '$INSTDIR')).TrimEnd('\')
-    )
-    $verifiedRequired = @{}
-
-    foreach ($exe in $executables) {
-        $parentPath = [System.IO.Path]::GetFullPath($exe.DirectoryName).TrimEnd('\')
-        if ($parentPath -notin $allowedParents) {
-            throw "Unexpected executable directory inside installer: $($exe.FullName)"
-        }
-
-        $lowerName = $exe.Name.ToLowerInvariant()
-        if ($expectedHashes.ContainsKey($lowerName)) {
-            $canonicalName = $lowerName
-        } elseif ($lowerName -match '^(.+)_\d+\.exe$') {
-            $canonicalName = "$($Matches[1]).exe"
-        } else {
-            throw "Unexpected executable extracted from installer: $($exe.Name)"
-        }
-
-        if (-not $expectedHashes.ContainsKey($canonicalName)) {
-            throw "Unexpected executable extracted from installer: $($exe.Name)"
-        }
-
-        $embeddedSig = Assert-ValidAuthenticodeSignature -FilePath $exe.FullName
-        $actualHash = Get-LowerSha256 -FilePath $exe.FullName
-        $expectedHash = $expectedHashes[$canonicalName]
-        if ($actualHash -ne $expectedHash) {
-            throw "Embedded $($exe.Name) SHA-256 mismatch: expected $expectedHash, got $actualHash."
-        }
-        if ($lowerName -eq $canonicalName) {
-            $verifiedRequired[$canonicalName] = $true
-        }
-
-        [Console]::WriteLine(
-            "Verified embedded executable: $($exe.Name) -> $canonicalName (SHA256=$actualHash, Signer=$($embeddedSig.SignerCertificate.Subject))"
-        )
-    }
-
-    foreach ($requiredName in ($expectedHashes.Keys | Sort-Object)) {
-        if (-not $verifiedRequired.ContainsKey($requiredName)) {
-            throw "Installer is missing required signed executable: $requiredName"
-        }
-    }
+    # Extract the installer with -aou so duplicate section copies remain separate files.
+    Invoke-SevenZipExtract `
+        -SevenZipExecutable $sevenZip `
+        -ArchivePath $InstallerPath `
+        -ExtractRoot $extractRoot
+    Test-ExtractedExecutables `
+        -ExtractRoot $extractRoot `
+        -ExpectedHashes $expectedHashes `
+        -ExpectedThumbprint $expectedThumbprint
 } finally {
     $resolvedRoot = [System.IO.Path]::GetFullPath($extractRoot)
     if ($resolvedRoot.StartsWith($temporaryRoot, [System.StringComparison]::OrdinalIgnoreCase) -and
         [System.IO.Path]::GetFileName($resolvedRoot) -like 'keeppeek-installer-verify-*' -and
         [System.IO.Directory]::Exists($resolvedRoot)) {
-        [System.IO.Directory]::Delete($resolvedRoot, $true)
+        Remove-Item -LiteralPath $resolvedRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }

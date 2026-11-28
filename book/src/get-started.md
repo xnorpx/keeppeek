@@ -60,7 +60,7 @@ Code signing and notarization depend on the release workflow's configured creden
 
 ## Windows
 
-Official Windows releases publish Authenticode-signed, RFC 3161 timestamped `x86_64` and `aarch64` executables (including `uninstall.exe`), each with a `.sha256` file:
+Official Windows releases publish Authenticode-signed, RFC 3161 timestamped `x86_64` and `aarch64` executables (including embedded `uninstall.exe` inside the unified installer), with a matching `.sha256` file for every downloadable release asset:
 
 - **Unified installer:** `keeppeek-<version>-windows-<arch>-installer.exe` — select at least one of **KeepPeek Desktop** (`keeppeek-desktop.exe`), **KeepPeek Server with TUI** (`keeppeek.exe` + `keeppeek-supervisor.exe`), and **KeepPeek Windows Service** (`keeppeek-service.exe` + `keeppeek.exe` + `keeppeek-supervisor.exe` / `KeepPeekService`).
 - **Standalone assets:** `keeppeek-<version>-windows-<arch>.exe`, `keeppeek-service-<version>-windows-<arch>.exe`, `keeppeek-supervisor-<version>-windows-<arch>.exe`, `keeppeek-desktop-<version>-windows-<arch>.exe`, and server archive `keeppeek-<version>-windows-<arch>.zip`.
