@@ -165,11 +165,11 @@ KeepPeek is codec-aware (parsing H.264/H.265 framing, configuration, and keyfram
 
 KeepPeek maintains identical core behavior across platforms while packaging natively for each OS:
 
-| Platform    | First-class distribution                                                                                                                                                                                                |
-| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Linux**   | Multi-arch GHCR Docker image (`linux/amd64`, `linux/arm64`) with a persistent configuration volume (primary Linux path), plus native `linux-x86_64` and `linux-aarch64` archives.                                       |
-| **macOS**   | Signed and notarized Apple Silicon (`aarch64`) `KeepPeek.app` DMG with a per-user `launchd` service, plus optional `KeepPeek Desktop.app` DMG (Tauri v2 client connecting to an existing server).                       |
-| **Windows** | Authenticode-signed, RFC 3161 timestamped `x86_64` and `aarch64` binaries (`keeppeek.exe`, `keeppeek-service.exe`, `keeppeek-desktop.exe`) and a unified signed NSIS installer registering/upgrading `KeepPeekService`. |
+| Platform    | First-class distribution                                                                                                                                                                                                                           |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Linux**   | Multi-arch GHCR Docker image (`linux/amd64`, `linux/arm64`) with a persistent configuration volume (primary Linux path), plus native `linux-x86_64` and `linux-aarch64` archives.                                                                  |
+| **macOS**   | Signed and notarized Apple Silicon (`aarch64`) `KeepPeek.app` DMG with a per-user `launchd` service, plus optional `KeepPeek Desktop.app` DMG (Tauri v2 client connecting to an existing server).                                                  |
+| **Windows** | Authenticode-signed, RFC 3161 timestamped `x86_64` and `aarch64` binaries (`keeppeek.exe`, `keeppeek-service.exe`, `keeppeek-supervisor.exe`, `keeppeek-desktop.exe`) and a unified signed NSIS installer registering/upgrading `KeepPeekService`. |
 
 ## Connecting users to choices
 

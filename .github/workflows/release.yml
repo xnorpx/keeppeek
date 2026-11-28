@@ -18,6 +18,7 @@ on:
   push:
     tags:
       - "[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
 
 env:
   RELEASE_REF_NAME: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref_name }}
@@ -30,13 +31,15 @@ permissions:
   packages: write
 
 concurrency:
-  # CI runs that cannot publish must not cancel a release already in progress.
+  # CI runs and manual dispatches that cannot publish must not cancel an active release.
   group: >-
     release-${{ github.event_name == 'workflow_run' &&
       (github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.head_branch == 'main' &&
       'main' || format('skipped-{0}', github.run_id)) ||
+      (github.event_name == 'workflow_dispatch' &&
+      (github.ref == 'refs/heads/main' && 'main' || format('skipped-{0}', github.run_id))) ||
       github.ref }}
   cancel-in-progress: ${{ github.event_name == 'workflow_run' }}
 
@@ -45,7 +48,9 @@ jobs:
     name: Create Release
     if: >-
       github.event_name == 'push' ||
-      (github.event.workflow_run.event == 'push' &&
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
@@ -62,14 +67,14 @@ jobs:
           ref: ${{ env.RELEASE_SHA }}
           fetch-depth: 0
           submodules: recursive
-      - name: Verify tagged commit passed CI on main
-        if: github.event_name == 'push'
+      - name: Verify commit passed CI on main
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           git fetch --no-tags origin main
           if ! git merge-base --is-ancestor "$RELEASE_SHA" origin/main; then
-            echo "Release tag must point to a commit on main" >&2
+            echo "Release commit must be on main" >&2
             exit 1
           fi
           successful_runs="$(gh api --method GET \
@@ -80,7 +85,7 @@ jobs:
             -f per_page=1 \
             --jq '.total_count')"
           if [[ "$successful_runs" -lt 1 ]]; then
-            echo "Release tag commit has no successful CI push run" >&2
+            echo "Release commit has no successful CI push run" >&2
             exit 1
           fi
       - id: version
@@ -187,26 +192,17 @@ jobs:
         include:
           - os: windows-latest
             platform: windows-x86_64
-            installer_arch: x86_64
-            extension: zip
-            binary_extension: .exe
           - os: windows-11-arm
             platform: windows-aarch64
-            installer_arch: aarch64
-            extension: zip
-            binary_extension: .exe
           - os: macos-latest
             platform: macos-aarch64
             extension: dmg
-            binary_extension: ""
           - os: ubuntu-latest
             platform: linux-x86_64
             extension: tar.gz
-            binary_extension: ""
           - os: ubuntu-24.04-arm
             platform: linux-aarch64
             extension: tar.gz
-            binary_extension: ""
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -240,6 +236,9 @@ jobs:
       - name: Build release service binary
         if: runner.os == 'Windows'
         run: cargo build --locked --release --bin keeppeek-service
+      - name: Build release supervisor binary
+        if: runner.os == 'Windows'
+        run: cargo build --locked --release -p keeppeek-supervisor --bin keeppeek-supervisor
       - name: Build release desktop binary
         if: runner.os == 'Windows' || matrix.platform == 'macos-aarch64'
         run: cargo build --locked --release -p keeppeek-desktop
@@ -251,6 +250,7 @@ jobs:
           path: |
             target/release/keeppeek.exe
             target/release/keeppeek-service.exe
+            target/release/keeppeek-supervisor.exe
             target/release/keeppeek-desktop.exe
           if-no-files-found: error
           retention-days: 1
@@ -292,7 +292,6 @@ jobs:
           VERSION: ${{ needs.create-release.outputs.version }}
           PLATFORM: ${{ matrix.platform }}
           EXTENSION: ${{ matrix.extension }}
-          BINARY_EXTENSION: ${{ matrix.binary_extension }}
           MACOS_NOTARIZATION_APPLE_ID: ${{ secrets.MACOS_NOTARIZATION_APPLE_ID }}
           MACOS_NOTARIZATION_PASSWORD: ${{ secrets.MACOS_NOTARIZATION_PASSWORD }}
           MACOS_NOTARIZATION_TEAM_ID: ${{ secrets.MACOS_NOTARIZATION_TEAM_ID }}
@@ -391,29 +390,15 @@ jobs:
             assets=("$standalone" "$standalone.sha256" "$desktop_asset" "$desktop_asset.sha256")
           else
             mkdir -p "$archive/skills/keeppeek-mcp" "$archive/skills/keeppeek-camera-debug"
-            cp "target/release/keeppeek${BINARY_EXTENSION}" "$archive/"
+            cp target/release/keeppeek "$archive/"
             cp skills/keeppeek-mcp/SKILL.md "$archive/skills/keeppeek-mcp/SKILL.md"
             cp skills/keeppeek-camera-debug/SKILL.md "$archive/skills/keeppeek-camera-debug/SKILL.md"
-            if [[ "$BINARY_EXTENSION" == ".exe" ]]; then
-              cp target/release/keeppeek-service.exe "$archive/"
-              standalone="keeppeek-${VERSION}-${PLATFORM}.exe"
-              cp target/release/keeppeek.exe "$standalone"
-              python -c 'import hashlib, pathlib; path = pathlib.Path("'"$standalone"'"); print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")' > "$standalone.sha256"
-              installer="keeppeek-${VERSION}-${PLATFORM}-installer.exe"
-              python -c 'import hashlib, pathlib; path = pathlib.Path("'"$installer"'"); print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")' > "$installer.sha256"
-              assets=("$standalone" "$standalone.sha256" "$installer" "$installer.sha256")
-            else
-              standalone="keeppeek-${VERSION}-${PLATFORM}"
-              cp target/release/keeppeek "$standalone"
-              chmod 755 "$standalone"
-              python -c 'import hashlib, pathlib; path = pathlib.Path("'"$standalone"'"); print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")' > "$standalone.sha256"
-              assets=("$standalone" "$standalone.sha256")
-            fi
-            if [[ "$EXTENSION" == zip ]]; then
-              7z a "$archive.zip" "$archive"
-            else
-              tar czf "$archive.tar.gz" "$archive"
-            fi
+            standalone="keeppeek-${VERSION}-${PLATFORM}"
+            cp target/release/keeppeek "$standalone"
+            chmod 755 "$standalone"
+            python -c 'import hashlib, pathlib; path = pathlib.Path("'"$standalone"'"); print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")' > "$standalone.sha256"
+            assets=("$standalone" "$standalone.sha256")
+            tar czf "$archive.tar.gz" "$archive"
             asset="$archive.$EXTENSION"
           fi
           python -c 'import hashlib, pathlib; path = pathlib.Path("'"$asset"'"); print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")' > "$asset.sha256"
@@ -498,6 +483,7 @@ jobs:
           files: |
             ${{ github.workspace }}\target\release\keeppeek.exe
             ${{ github.workspace }}\target\release\keeppeek-service.exe
+            ${{ github.workspace }}\target\release\keeppeek-supervisor.exe
             ${{ github.workspace }}\target\release\keeppeek-desktop.exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
@@ -505,7 +491,7 @@ jobs:
       - name: Verify Windows binary signatures
         shell: pwsh
         run: |
-          foreach ($path in 'target/release/keeppeek.exe', 'target/release/keeppeek-service.exe', 'target/release/keeppeek-desktop.exe') {
+          foreach ($path in 'target/release/keeppeek.exe', 'target/release/keeppeek-service.exe', 'target/release/keeppeek-supervisor.exe', 'target/release/keeppeek-desktop.exe') {
             $signature = Get-AuthenticodeSignature $path
             if ($signature.Status -ne 'Valid') {
               throw "$path has invalid signature status: $($signature.Status)"
@@ -613,18 +599,16 @@ jobs:
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
-      - name: Verify Windows installer signature
+      - name: Verify Windows installer and embedded binary signatures
         shell: pwsh
         env:
-          INSTALLER: keeppeek-${{ needs.create-release.outputs.version }}-${{ matrix.platform }}-installer.exe
+          INSTALLER: ${{ github.workspace }}\keeppeek-${{ needs.create-release.outputs.version }}-${{ matrix.platform }}-installer.exe
+          SIGNED_UNINSTALLER: ${{ steps.windows-uninstaller.outputs.uninstaller }}
         run: |
-          $signature = Get-AuthenticodeSignature $env:INSTALLER
-          if ($signature.Status -ne 'Valid') {
-            throw "$env:INSTALLER has invalid signature status: $($signature.Status)"
-          }
-          if ($null -eq $signature.TimestamperCertificate) {
-            throw "$env:INSTALLER does not have an RFC 3161 timestamp"
-          }
+          & .github/scripts/verify-windows-installer-signatures.ps1 `
+            -InstallerPath $env:INSTALLER `
+            -SignedBinariesDir (Join-Path $env:GITHUB_WORKSPACE 'target\release') `
+            -SignedUninstallerPath $env:SIGNED_UNINSTALLER
       - name: Package Windows release
         id: package
         shell: bash
@@ -634,7 +618,7 @@ jobs:
         run: |
           archive="keeppeek-${VERSION}-${PLATFORM}"
           mkdir -p "$archive/skills/keeppeek-mcp" "$archive/skills/keeppeek-camera-debug"
-          cp target/release/keeppeek.exe target/release/keeppeek-service.exe "$archive/"
+          cp target/release/keeppeek.exe target/release/keeppeek-service.exe target/release/keeppeek-supervisor.exe "$archive/"
           cp skills/keeppeek-mcp/SKILL.md "$archive/skills/keeppeek-mcp/SKILL.md"
           cp skills/keeppeek-camera-debug/SKILL.md "$archive/skills/keeppeek-camera-debug/SKILL.md"
 
@@ -645,6 +629,10 @@ jobs:
           service_standalone="keeppeek-service-${VERSION}-${PLATFORM}.exe"
           cp target/release/keeppeek-service.exe "$service_standalone"
           python -c 'import hashlib, pathlib; path = pathlib.Path("'"$service_standalone"'"); print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")' > "$service_standalone.sha256"
+
+          supervisor_standalone="keeppeek-supervisor-${VERSION}-${PLATFORM}.exe"
+          cp target/release/keeppeek-supervisor.exe "$supervisor_standalone"
+          python -c 'import hashlib, pathlib; path = pathlib.Path("'"$supervisor_standalone"'"); print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")' > "$supervisor_standalone.sha256"
 
           desktop_standalone="keeppeek-desktop-${VERSION}-${PLATFORM}.exe"
           cp target/release/keeppeek-desktop.exe "$desktop_standalone"
@@ -664,6 +652,8 @@ jobs:
             "$standalone.sha256"
             "$service_standalone"
             "$service_standalone.sha256"
+            "$supervisor_standalone"
+            "$supervisor_standalone.sha256"
             "$desktop_standalone"
             "$desktop_standalone.sha256"
             "$installer"

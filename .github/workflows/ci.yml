@@ -72,7 +72,7 @@ jobs:
           has_match() {
             printf '%s\n' "$changed" | grep -Eq "$1" && echo "true" || echo "false"
           }
-          rust="$(has_match '^(Cargo\.(toml|lock)|\.cargo/|build\.rs|src/|crates/|tests/|api/|installer/|\.github/workflows/ci\.yml|\.github/actions/)')"
+          rust="$(has_match '^(Cargo\.(toml|lock)|\.cargo/|build\.rs|src/|crates/|tests/|api/|installer/|\.github/workflows/ci\.yml|\.github/actions/|\.github/scripts/)')"
           ui="$(has_match '^(ui/|api/|\.npmrc|\.github/workflows/ci\.yml)')"
           docs="$(has_match '^(book/|docs/|README\.md|ui/scripts/.*wiki.*|\.github/workflows/ci\.yml)')"
           python="$(has_match '^(examples/object_detection_service/|api/|\.github/workflows/ci\.yml)')"
@@ -389,6 +389,159 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw 'keeppeek-desktop.exe --help failed'
           }
+      - name: Verify Windows supervisor binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & 'target/debug/keeppeek-supervisor.exe' --help
+          if ($LASTEXITCODE -ne 0) {
+            throw 'keeppeek-supervisor.exe --help failed'
+          }
+      - name: Verify Windows installer signature checker (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        run: powershell.exe -NoLogo -NoProfile -NonInteractive -File .github/scripts/test-verify-windows-installer-signatures.ps1
+      - name: Verify Windows installer signature checker (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\.github\scripts\test-verify-windows-installer-signatures.ps1
+      - name: Set up NSIS
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/setup-nsis
+      - name: Verify two-pass NSIS build and 7-Zip extraction
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $workRoot = Join-Path $env:RUNNER_TEMP 'keeppeek-nsis-pr-check'
+          $genDir = Join-Path $workRoot 'gen'
+          $uninstDir = Join-Path $workRoot 'uninst'
+          $outDir = Join-Path $workRoot 'out'
+          $extractDir = Join-Path $workRoot 'extract'
+          foreach ($dir in $genDir, $uninstDir, $outDir, $extractDir) {
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          }
+          try {
+            $uninstaller = Join-Path $uninstDir 'uninstall.exe'
+            & 'C:\Program Files (x86)\NSIS\makensis.exe' `
+              '/DARCH=x86_64' `
+              "/DOUT_DIR=$genDir" `
+              '/DVERSION=0.0.0' `
+              '/DVERSION_RESOURCE=0.0.0.0' `
+              '/DWRITE_UNINSTALLER_ONLY' `
+              "/DUNINST_OUT=$uninstaller" `
+              installer/keeppeek.nsi
+            if ($LASTEXITCODE -ne 0) { throw 'Pass-1 NSIS compilation failed' }
+
+            $generator = Join-Path $genDir 'keeppeek-uninst-gen.exe'
+            $previousCompat = $env:__COMPAT_LAYER
+            $env:__COMPAT_LAYER = 'RunAsInvoker'
+            try {
+              $process = Start-Process -FilePath $generator -PassThru -Wait
+            } finally {
+              $env:__COMPAT_LAYER = $previousCompat
+            }
+            if ($process.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $uninstaller)) {
+              throw "Unable to extract uninstall.exe (exit $($process.ExitCode))"
+            }
+
+            $buildDir = Join-Path $env:GITHUB_WORKSPACE 'target\debug'
+            & 'C:\Program Files (x86)\NSIS\makensis.exe' `
+              '/DARCH=x86_64' `
+              "/DBUILD_DIR=$buildDir" `
+              "/DOUT_DIR=$outDir" `
+              '/DVERSION=0.0.0' `
+              '/DVERSION_RESOURCE=0.0.0.0' `
+              "/DSIGNED_UNINSTALLER=$uninstaller" `
+              installer/keeppeek.nsi
+            if ($LASTEXITCODE -ne 0) { throw 'Pass-2 NSIS compilation failed' }
+
+            $installer = Join-Path $outDir 'keeppeek-0.0.0-windows-x86_64-installer.exe'
+            if (-not (Test-Path -LiteralPath $installer)) {
+              throw "Installer was not created at $installer"
+            }
+
+            & 7z x -tnsis -aou -y "-o$extractDir" -- $installer
+            if ($LASTEXITCODE -ne 0) {
+              throw "7-Zip failed to extract two-pass NSIS installer (exit $LASTEXITCODE)"
+            }
+
+            $expected = @{
+              'keeppeek.exe'            = (Get-FileHash -LiteralPath (Join-Path $buildDir 'keeppeek.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+              'keeppeek-service.exe'    = (Get-FileHash -LiteralPath (Join-Path $buildDir 'keeppeek-service.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+              'keeppeek-supervisor.exe' = (Get-FileHash -LiteralPath (Join-Path $buildDir 'keeppeek-supervisor.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+              'keeppeek-desktop.exe'    = (Get-FileHash -LiteralPath (Join-Path $buildDir 'keeppeek-desktop.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+              'uninstall.exe'           = (Get-FileHash -LiteralPath $uninstaller -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+
+            $assertLayout = {
+              param([string]$Root)
+              $allowedParents = @(
+                [System.IO.Path]::GetFullPath($Root).TrimEnd('\'),
+                [System.IO.Path]::GetFullPath((Join-Path $Root '$INSTDIR')).TrimEnd('\')
+              )
+              $extractedExes = @(Get-ChildItem -LiteralPath $Root -Recurse -File -Filter '*.exe')
+              if ($extractedExes.Count -eq 0) {
+                throw "7-Zip extraction produced zero executables under $Root"
+              }
+              $seenRequired = @{}
+              foreach ($exe in $extractedExes) {
+                $parent = [System.IO.Path]::GetFullPath($exe.DirectoryName).TrimEnd('\')
+                if ($parent -notin $allowedParents) {
+                  throw "Unexpected extracted executable directory: $($exe.FullName)"
+                }
+                $lower = $exe.Name.ToLowerInvariant()
+                if ($expected.ContainsKey($lower)) {
+                  $canonical = $lower
+                  $seenRequired[$canonical] = $true
+                } elseif ($lower -match '^(.+)_\d+\.exe$' -and $expected.ContainsKey("$($Matches[1]).exe")) {
+                  $canonical = "$($Matches[1]).exe"
+                } else {
+                  throw "Unexpected extracted executable: $($exe.Name)"
+                }
+                $actualHash = (Get-FileHash -LiteralPath $exe.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+                if ($actualHash -ne $expected[$canonical]) {
+                  throw "Extracted $($exe.Name) hash mismatch ($actualHash != $($expected[$canonical]))"
+                }
+              }
+              foreach ($required in $expected.Keys) {
+                if (-not $seenRequired.ContainsKey($required)) {
+                  throw "7-Zip extraction did not yield $required"
+                }
+              }
+            }
+
+            & $assertLayout $extractDir
+
+            # Append trailing bytes to simulate an Authenticode certificate table after the NSIS payload.
+            $tailedInstaller = Join-Path $outDir 'keeppeek-tailed-installer.exe'
+            $tailedExtractDir = Join-Path $workRoot 'extract-tailed'
+            New-Item -ItemType Directory -Force -Path $tailedExtractDir | Out-Null
+            Copy-Item -LiteralPath $installer -Destination $tailedInstaller
+            $stream = [System.IO.File]::Open($tailedInstaller, [System.IO.FileMode]::Append)
+            try {
+              $padding = [byte[]]::new(4096)
+              $stream.Write($padding, 0, $padding.Length)
+            } finally {
+              $stream.Dispose()
+            }
+            $tailedOutput = (& 7z x -tnsis -aou -y "-o$tailedExtractDir" -- $tailedInstaller 2>&1 | Out-String)
+            $tailedExit = $LASTEXITCODE
+            Write-Host "Trailing-tail 7-Zip exit code: $tailedExit"
+            if ($tailedExit -ne 0) {
+              $isExpectedTailWarning = (
+                $tailedExit -eq 1 -and
+                $tailedOutput -match 'There are (?:some )?data after the end of (?:archive|the payload data)' -and
+                $tailedOutput -match 'Warnings:\s*1\b' -and
+                $tailedOutput -notmatch '\bErrors:\s*[1-9]' -and
+                $tailedOutput -notmatch 'Sub items Errors:'
+              )
+              if (-not $isExpectedTailWarning) {
+                throw "Trailing-tail 7-Zip extraction failed (exit $tailedExit): $tailedOutput"
+              }
+            }
+            & $assertLayout $tailedExtractDir
+          } finally {
+            Remove-Item -LiteralPath $workRoot -Recurse -Force -ErrorAction SilentlyContinue
+          }
       - name: Verify macOS app service installation
         if: runner.os == 'macOS'
         shell: bash
@@ -586,6 +739,7 @@ jobs:
         shell: bash
         run: |
           cargo build --locked --release -p keeppeek --bin keeppeek --bin keeppeek-service
+          cargo build --locked --release -p keeppeek-supervisor --bin keeppeek-supervisor
           cargo build --locked --release -p keeppeek-desktop --bin keeppeek-desktop
       - name: Upload unsigned Windows release binaries
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -594,6 +748,7 @@ jobs:
           path: |
             target/release/keeppeek.exe
             target/release/keeppeek-service.exe
+            target/release/keeppeek-supervisor.exe
             target/release/keeppeek-desktop.exe
           if-no-files-found: error
           retention-days: 1
@@ -652,6 +807,7 @@ jobs:
           files: |
             ${{ github.workspace }}\target\release\keeppeek.exe
             ${{ github.workspace }}\target\release\keeppeek-service.exe
+            ${{ github.workspace }}\target\release\keeppeek-supervisor.exe
             ${{ github.workspace }}\target\release\keeppeek-desktop.exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
@@ -659,7 +815,7 @@ jobs:
       - name: Verify Windows binary signatures
         shell: pwsh
         run: |
-          foreach ($path in 'target/release/keeppeek.exe', 'target/release/keeppeek-service.exe', 'target/release/keeppeek-desktop.exe') {
+          foreach ($path in 'target/release/keeppeek.exe', 'target/release/keeppeek-service.exe', 'target/release/keeppeek-supervisor.exe', 'target/release/keeppeek-desktop.exe') {
             $signature = Get-AuthenticodeSignature $path
             if ($signature.Status -ne 'Valid') {
               throw "$path has invalid signature status: $($signature.Status)"
@@ -777,18 +933,16 @@ jobs:
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
-      - name: Verify Windows installer signature
+      - name: Verify Windows installer and embedded binary signatures
         shell: pwsh
         env:
           INSTALLER: ${{ steps.windows-installer.outputs.installer }}
+          SIGNED_UNINSTALLER: ${{ steps.windows-uninstaller.outputs.uninstaller }}
         run: |
-          $signature = Get-AuthenticodeSignature $env:INSTALLER
-          if ($signature.Status -ne 'Valid') {
-            throw "$env:INSTALLER has invalid signature status: $($signature.Status)"
-          }
-          if ($null -eq $signature.TimestamperCertificate) {
-            throw "$env:INSTALLER does not have an RFC 3161 timestamp"
-          }
+          & .github/scripts/verify-windows-installer-signatures.ps1 `
+            -InstallerPath $env:INSTALLER `
+            -SignedBinariesDir (Join-Path $env:GITHUB_WORKSPACE 'target\release') `
+            -SignedUninstallerPath $env:SIGNED_UNINSTALLER
       - name: Stage signed binaries and SHA-256 checksums
         shell: pwsh
         env:
@@ -800,6 +954,7 @@ jobs:
           $copies = @(
             @{ Source = 'target/release/keeppeek.exe'; Target = "keeppeek-$env:VERSION-$env:PLATFORM.exe" },
             @{ Source = 'target/release/keeppeek-service.exe'; Target = "keeppeek-service-$env:VERSION-$env:PLATFORM.exe" },
+            @{ Source = 'target/release/keeppeek-supervisor.exe'; Target = "keeppeek-supervisor-$env:VERSION-$env:PLATFORM.exe" },
             @{ Source = 'target/release/keeppeek-desktop.exe'; Target = "keeppeek-desktop-$env:VERSION-$env:PLATFORM.exe" }
           )
           foreach ($item in $copies) {
@@ -810,6 +965,7 @@ jobs:
             "keeppeek-$env:VERSION-$env:PLATFORM-installer.exe",
             "keeppeek-$env:VERSION-$env:PLATFORM.exe",
             "keeppeek-service-$env:VERSION-$env:PLATFORM.exe",
+            "keeppeek-supervisor-$env:VERSION-$env:PLATFORM.exe",
             "keeppeek-desktop-$env:VERSION-$env:PLATFORM.exe"
           )
           foreach ($name in $artifacts) {
@@ -1444,6 +1600,7 @@ jobs:
         coverage,
         dependency-audit,
         container,
+        windows-signing,
       ]
     runs-on: ubuntu-latest
     timeout-minutes: 15

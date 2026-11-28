@@ -6016,30 +6016,83 @@ display_name = "Front Door"
         (dir, state, router_tx)
     }
 
+    fn decode_artifact_chunk(trace_sc: &Value) -> Vec<u8> {
+        use base64::Engine as _;
+
+        let raw_data = trace_sc["data"].as_str().expect("artifact chunk data");
+        match trace_sc["encoding"].as_str().expect("encoding") {
+            "utf8" => raw_data.as_bytes().to_vec(),
+            "base64" => base64::engine::general_purpose::STANDARD
+                .decode(raw_data)
+                .expect("valid base64 artifact chunk"),
+            other => panic!("unexpected read_artifact encoding: {other}"),
+        }
+    }
+
     fn assert_capture_traces_readable(
         state: &ServerState,
         router_tx: &FacadeSender<RouterMessage>,
         capture_id: &str,
         sentinel: &str,
     ) {
-        let read_trace = call_mcp_tool(
-            state,
-            router_tx,
-            11,
-            "camera_debugging",
-            json!({
-                "action": "read_artifact",
-                "capture_id": capture_id,
-                "artifact": "traces.jsonl",
-                "offset": 0,
-                "length": 65_536
-            }),
+        const CHUNK_LEN: usize = 65_536;
+        // Read up to 32 chunks of 64 KiB (2 MiB) so reads cover TRACE_BUDGET_MAX_BYTES (1 MiB).
+        const MAX_TRACE_CHUNKS: usize = 32;
+
+        let mut offset = 0_u64;
+        let mut expected_total = None;
+        let mut full_trace_bytes = Vec::new();
+        let mut saw_eof = false;
+        for chunk_index in 0..MAX_TRACE_CHUNKS {
+            let read_trace = call_mcp_tool(
+                state,
+                router_tx,
+                11 + u64::try_from(chunk_index).unwrap(),
+                "camera_debugging",
+                json!({
+                    "action": "read_artifact",
+                    "capture_id": capture_id,
+                    "artifact": "traces.jsonl",
+                    "offset": offset,
+                    "length": CHUNK_LEN
+                }),
+            );
+            let trace_sc = &read_trace["result"]["structuredContent"];
+            assert_eq!(trace_sc["action"], "read_artifact");
+            let total_bytes = trace_sc["total_bytes"].as_u64().expect("total_bytes");
+            let next_offset = trace_sc["next_offset"].as_u64().expect("next_offset");
+            let eof = trace_sc["eof"].as_bool().expect("eof");
+            if let Some(prev_total) = expected_total {
+                assert_eq!(total_bytes, prev_total);
+            } else {
+                expected_total = Some(total_bytes);
+                full_trace_bytes.reserve(usize::try_from(total_bytes).unwrap());
+            }
+            let chunk_bytes = decode_artifact_chunk(trace_sc);
+            assert_eq!(
+                u64::try_from(chunk_bytes.len()).unwrap(),
+                next_offset.saturating_sub(offset)
+            );
+            full_trace_bytes.extend_from_slice(&chunk_bytes);
+            if eof {
+                assert_eq!(next_offset, total_bytes);
+                saw_eof = true;
+                break;
+            }
+            assert!(next_offset > offset, "read_artifact did not advance offset");
+            offset = next_offset;
+        }
+        assert!(
+            saw_eof,
+            "traces.jsonl did not reach EOF within chunk budget"
         );
-        let trace_sc = &read_trace["result"]["structuredContent"];
-        assert_eq!(trace_sc["action"], "read_artifact");
-        assert_eq!(trace_sc["eof"], true);
-        assert_eq!(trace_sc["encoding"], "utf8");
-        assert!(!trace_sc["data"].as_str().unwrap().contains(sentinel));
+        assert_eq!(
+            u64::try_from(full_trace_bytes.len()).unwrap(),
+            expected_total.expect("at least one chunk read")
+        );
+        let full_trace =
+            String::from_utf8(full_trace_bytes).expect("traces.jsonl must be valid utf8");
+        assert!(!full_trace.contains(sentinel));
     }
 
     fn assert_rtsp_capture_and_inspect(

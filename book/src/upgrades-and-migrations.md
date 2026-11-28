@@ -41,7 +41,7 @@ See the [macOS installation guide](https://github.com/xnorpx/keeppeek/blob/main/
 
 ### Windows
 
-Run the installer for your host architecture. When `KeepPeekService` exists, the service component is selected by default: the installer stops and removes the existing registration, replaces `keeppeek.exe` and `keeppeek-service.exe`, and recreates and starts `KeepPeekService`. Record custom SCM identity, startup, recovery, and environment settings before running the installer and verify them afterward, because service recreation does not preserve SCM customizations.
+Run the installer for your host architecture. When `KeepPeekService` exists, the service component is selected by default: the installer stops and removes the existing registration before replacing `keeppeek.exe`, `keeppeek-service.exe`, and `keeppeek-supervisor.exe`, then recreates and starts `KeepPeekService`. Record custom SCM identity, startup, recovery, and environment settings before running the installer and verify them afterward, because service recreation does not preserve SCM customizations.
 
 From an elevated PowerShell prompt, inspect or manually control the service (poll `sc.exe query` between `stop` and `start`, because `sc.exe stop` returns before exit completes):
 

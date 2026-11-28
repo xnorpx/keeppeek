@@ -187,7 +187,7 @@ jobs:
               throw 'Unable to install KeepPeek'
             }
 
-            foreach ($binary in 'keeppeek.exe', 'keeppeek-service.exe', 'keeppeek-desktop.exe', 'uninstall.exe') {
+            foreach ($binary in 'keeppeek.exe', 'keeppeek-service.exe', 'keeppeek-supervisor.exe', 'keeppeek-desktop.exe', 'uninstall.exe') {
               if (-not (Test-Path (Join-Path $installDirectory $binary))) {
                 throw "$binary was not installed"
               }
@@ -202,6 +202,11 @@ jobs:
               throw 'Installed keeppeek-desktop.exe --help failed'
             }
 
+            & (Join-Path $installDirectory 'keeppeek-supervisor.exe') --help
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Installed keeppeek-supervisor.exe --help failed'
+            }
+
             $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
             if ($null -eq $service -or -not $service.PathName.Contains("$installDirectory\keeppeek-service.exe")) {
               throw "$serviceName was not installed with the expected binary path"
@@ -211,14 +216,51 @@ jobs:
             if ($process.ExitCode -ne 0) {
               throw 'Unable to reinstall KeepPeek'
             }
-          } finally {
-            if (Test-Path (Join-Path $installDirectory 'uninstall.exe')) {
-              $process = Start-Process -FilePath (Join-Path $installDirectory 'uninstall.exe') -ArgumentList '/S' -PassThru -Wait
-              if ($process.ExitCode -ne 0) {
-                throw 'Unable to uninstall KeepPeek'
+
+            foreach ($binary in 'keeppeek.exe', 'keeppeek-service.exe', 'keeppeek-supervisor.exe', 'keeppeek-desktop.exe', 'uninstall.exe') {
+              if (-not (Test-Path (Join-Path $installDirectory $binary))) {
+                throw "$binary was missing after reinstall"
               }
-            } else {
-              & sc.exe delete $serviceName
+            }
+
+            $reinstalledService = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
+            if ($null -eq $reinstalledService -or -not $reinstalledService.PathName.Contains("$installDirectory\keeppeek-service.exe")) {
+              throw "$serviceName was not registered with the expected binary path after reinstall"
+            }
+
+            $uninstallProcess = Start-Process -FilePath (Join-Path $installDirectory 'uninstall.exe') -ArgumentList '/S' -PassThru -Wait
+            if ($uninstallProcess.ExitCode -ne 0) {
+              throw "Unable to launch KeepPeek uninstaller (exit $($uninstallProcess.ExitCode))"
+            }
+
+            $uninstalled = $false
+            for ($attempt = 0; $attempt -lt 120; $attempt++) {
+              $remaining = @(
+                @(
+                  'keeppeek.exe',
+                  'keeppeek-service.exe',
+                  'keeppeek-supervisor.exe',
+                  'keeppeek-desktop.exe',
+                  'uninstall.exe'
+                ) | Where-Object { Test-Path (Join-Path $installDirectory $_) }
+              )
+              $servicePresent = $null -ne (Get-CimInstance Win32_Service -Filter "Name='$serviceName'")
+              $shortcutPresent = Test-Path $desktopShortcut
+              $dirPresent = Test-Path $installDirectory
+              if ($remaining.Count -eq 0 -and -not $servicePresent -and -not $shortcutPresent -and -not $dirPresent) {
+                $uninstalled = $true
+                break
+              }
+              Start-Sleep -Seconds 1
+            }
+            if (-not $uninstalled) {
+              throw 'Uninstall did not remove KeepPeek binaries, shortcut, directory, and service within 120 seconds'
+            }
+          } finally {
+            # Keep cleanup best-effort so cleanup never hides a test failure.
+            if ($null -ne (Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction SilentlyContinue)) {
+              & sc.exe stop $serviceName | Out-Null
+              & sc.exe delete $serviceName | Out-Null
             }
             Remove-Item -Force -Recurse -ErrorAction SilentlyContinue $zeroDirectory, $installDirectory, $env:OUTPUT_DIRECTORY
           }

@@ -27,7 +27,7 @@ Linux and mobile desktop builds are out of scope; use a standard browser on thos
 
 ### Windows
 
-Official Windows releases publish Authenticode-signed, RFC 3161 timestamped executables (`keeppeek.exe`, `keeppeek-service.exe`, `keeppeek-desktop.exe`, `uninstall.exe`, and the unified installer), each with a matching `.sha256` file.
+Official Windows releases publish Authenticode-signed, RFC 3161 timestamped executables (`keeppeek.exe`, `keeppeek-service.exe`, `keeppeek-supervisor.exe`, `keeppeek-desktop.exe`, and the unified installer with embedded `uninstall.exe`), with a matching `.sha256` file for every downloadable release asset.
 
 1. Download `keeppeek-<version>-windows-<arch>-installer.exe` (or standalone `keeppeek-desktop-<version>-windows-<arch>.exe` for portable use) and its `.sha256` file from the [releases page](https://github.com/xnorpx/keeppeek/releases).
 2. Verify checksum and signature in PowerShell:
