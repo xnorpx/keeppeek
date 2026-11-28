@@ -167,7 +167,8 @@ mod windows_acl {
         self,
         Authorization::{
             ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-            GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT, SetNamedSecurityInfoW,
+            ConvertStringSidToSidW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
+            SetNamedSecurityInfoW,
         },
         DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
     };
@@ -187,15 +188,15 @@ mod windows_acl {
     use super::AclError;
 
     const MAX_CHECKED_ACES: u32 = 256;
+    const MAX_CREATED_DIR_COMPONENTS: usize = 64;
     const INHERIT_ONLY_ACE_FLAG: u8 = 0x08;
     const CREATOR_OWNER_SID: &str = "S-1-3-0";
-    const TRUSTED_SYSTEM_OWNERS: [&str; 2] = [
-        "S-1-5-18",     // LocalSystem
-        "S-1-5-32-544", // Builtin Administrators
-    ];
+    const LOCAL_SYSTEM_SID: &str = "S-1-5-18";
+    const BUILTIN_ADMINISTRATORS_SID: &str = "S-1-5-32-544";
+    const TRUSTED_SYSTEM_OWNERS: [&str; 2] = [LOCAL_SYSTEM_SID, BUILTIN_ADMINISTRATORS_SID];
     const TRUSTED_WRITE_SYSTEM_SIDS: [&str; 3] = [
-        "S-1-5-18",                                                       // LocalSystem
-        "S-1-5-32-544",                                                   // Builtin Administrators
+        LOCAL_SYSTEM_SID,
+        BUILTIN_ADMINISTRATORS_SID,
         "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464", // TrustedInstaller
     ];
     const WRITE_ACCESS_MASK: u32 = FILE_WRITE_DATA.0
@@ -223,22 +224,35 @@ mod windows_acl {
         if dir.exists() {
             return Ok(());
         }
-        // If the nearest existing ancestor already enforces a valid locked-down DACL
-        // (for example a LocalSystem-owned supervisor root with protected SY+BA OICI
-        // inheritance), inherit it untouched so an elevated administrator running
-        // `keeppeek-supervisor update` never stamps their user SID onto slot directories.
-        let mut ancestor = dir.parent();
-        let mut parent_is_private = false;
-        while let Some(path) = ancestor {
+        // Inspect the nearest existing ancestor so locked-down roots inherit their OICI DACL
+        // untouched and SYSTEM-owned roots keep newly created slot components valid for LocalSystem.
+        let mut created_dirs = Vec::new();
+        let mut current = Some(dir);
+        let mut existing_ancestor = None;
+        while let Some(path) = current {
             if path.as_os_str().is_empty() {
                 break;
             }
             if path.exists() {
-                parent_is_private = verify_directory_dacl(path).is_ok();
+                existing_ancestor = Some(path.to_path_buf());
                 break;
             }
-            ancestor = path.parent();
+            if created_dirs.len() >= MAX_CREATED_DIR_COMPONENTS {
+                return Err(std::io::Error::other(format!(
+                    "directory depth exceeds bound {MAX_CREATED_DIR_COMPONENTS}"
+                )));
+            }
+            created_dirs.push(path.to_path_buf());
+            current = path.parent();
         }
+        let parent_is_private = existing_ancestor
+            .as_deref()
+            .is_some_and(|path| verify_directory_dacl(path).is_ok());
+        let parent_is_system_private = parent_is_private
+            && existing_ancestor
+                .as_deref()
+                .is_some_and(|path| verify_directory_dacl_as(path, LOCAL_SYSTEM_SID).is_ok());
+
         std::fs::create_dir_all(dir)?;
         if !parent_is_private {
             let current_sid = current_user_sid(dir).map_err(std::io::Error::other)?;
@@ -248,8 +262,48 @@ mod windows_acl {
                 format!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{current_sid})")
             };
             apply_sddl_dacl(dir, &sddl)?;
+        } else if parent_is_system_private {
+            // Normalize child owners to Builtin Administrators when an admin token defaults object
+            // ownership to a personal user SID instead of the Administrators group.
+            let current_sid = current_user_sid(dir).map_err(std::io::Error::other)?;
+            if !TRUSTED_SYSTEM_OWNERS.contains(&current_sid.as_str()) {
+                for created in created_dirs.iter().rev() {
+                    set_owner_builtin_administrators(created)?;
+                }
+            }
         }
         Ok(())
+    }
+
+    pub(super) fn set_owner_builtin_administrators(path: &Path) -> std::io::Result<()> {
+        let wide_sid: Vec<u16> = BUILTIN_ADMINISTRATORS_SID
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut sid = Security::PSID::default();
+        // SAFETY: `wide_sid` is NUL-terminated; `sid` receives a LocalAlloc SID freed on drop.
+        unsafe { ConvertStringSidToSidW(PCWSTR(wide_sid.as_ptr()), &mut sid) }
+            .map_err(std::io::Error::other)?;
+        let _allocation = LocalAllocation(sid.0);
+        let wide_path: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        // SAFETY: `wide_path` is NUL-terminated and `sid` stays valid until `_allocation` drops.
+        unsafe {
+            SetNamedSecurityInfoW(
+                PCWSTR(wide_path.as_ptr()),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                Some(sid),
+                None,
+                None,
+                None,
+            )
+        }
+        .ok()
+        .map_err(std::io::Error::other)
     }
 
     pub(super) fn apply_sddl_dacl(path: &Path, sddl: &str) -> std::io::Result<()> {
@@ -659,7 +713,8 @@ mod windows_tests {
     use super::{
         create_private_dir_all, verify_supervisor_root_acl,
         windows_acl::{
-            apply_sddl_dacl, current_user_sid, is_dacl_protected, verify_directory_dacl_as,
+            apply_sddl_dacl, current_user_sid, is_dacl_protected, set_owner_builtin_administrators,
+            verify_directory_dacl_as,
         },
     };
 
@@ -682,73 +737,66 @@ mod windows_tests {
         apply_sddl_dacl(&permissive_parent, &permissive_sddl).unwrap();
         assert!(verify_supervisor_root_acl(&permissive_parent).is_err());
 
-        // Creating a supervisor root inside a permissive parent locks down ONLY the root itself
-        // (leaving the permissive parent untouched).
         let root = permissive_parent.join("keeppeek").join("supervisor");
         create_private_dir_all(&root).expect("private dir creation must succeed");
         verify_supervisor_root_acl(&root).expect("protected owner-only root must pass ACL check");
         assert!(is_dacl_protected(&root).unwrap());
-        assert!(
-            verify_supervisor_root_acl(&permissive_parent).is_err(),
-            "unrelated parent directory permissions must not be modified"
-        );
+        assert!(verify_supervisor_root_acl(&permissive_parent).is_err());
 
-        // Creating slot directories inside an already-private root inherits the root's DACL
-        // untouched (no SE_DACL_PROTECTED re-stamping with a caller's personal user SID).
         let staging = root.join("versions").join(".staging-1");
         create_private_dir_all(&staging).expect("nested private dir creation must succeed");
-        assert!(
-            !is_dacl_protected(&staging).unwrap(),
-            "subdirectories inside a private root must inherit its protected OICI DACL"
-        );
+        assert!(!is_dacl_protected(&staging).unwrap());
         verify_supervisor_root_acl(&root).expect("root with inherited slot dir must pass");
 
-        // Verify simulated SYSTEM (S-1-5-18) service root behavior: a directory with SY+BA only
-        // passes SYSTEM verification, and if the current user can create a child inside it
-        // (elevated admin), the child inherits SY+BA and ALSO passes SYSTEM verification.
-        let system_root = base.join("system-like");
-        fs::create_dir_all(&system_root).unwrap();
-        if apply_sddl_dacl(&system_root, "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)").is_ok() {
-            // Note: on a non-elevated account, owner is current_sid so verify_owner with SYSTEM
-            // requires owner == SY/BA; test the elevated admin child-inheritance path when writable.
-            let slot_child = system_root.join("versions").join("slot-1");
-            if create_private_dir_all(&slot_child).is_ok() {
-                assert!(!is_dacl_protected(&slot_child).unwrap());
-                assert!(
-                    verify_directory_dacl_as(&slot_child, "S-1-5-18").is_ok(),
-                    "elevated admin slot dir inside SY+BA root must remain valid for LocalSystem"
-                );
-            }
-            // Restore current user FA so cleanup succeeds cleanly even when non-elevated.
-            let cleanup_sddl =
-                format!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{current_sid})");
-            let _ = apply_sddl_dacl(&system_root, &cleanup_sddl);
-        }
-
-        // Granting write access to BUILTIN\Users (BU) must fail closed.
+        // Granting write access to BUILTIN\Users (BU) or Everyone (WD) must fail closed.
         apply_sddl_dacl(&root, &permissive_sddl).unwrap();
-        assert!(
-            verify_supervisor_root_acl(&root).is_err(),
-            "BUILTIN\\Users write ACE must be rejected fail-closed"
-        );
-
-        // Granting write access to Everyone (WD) must fail closed.
+        assert!(verify_supervisor_root_acl(&root).is_err());
         let everyone_sddl = format!(
             "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{current_sid})(A;OICI;FA;;;WD)"
         );
         apply_sddl_dacl(&root, &everyone_sddl).unwrap();
-        assert!(
-            verify_supervisor_root_acl(&root).is_err(),
-            "Everyone write ACE must be rejected fail-closed"
-        );
+        assert!(verify_supervisor_root_acl(&root).is_err());
 
-        // Read-only ACE for BUILTIN\Users (no write bits) alongside current user/SYSTEM/Administrators is safe.
+        // Read-only ACE for BUILTIN\Users alongside owner/SYSTEM/Administrators stays valid.
         let ro_sddl = format!(
             "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{current_sid})(A;OICI;FR;;;BU)"
         );
         apply_sddl_dacl(&root, &ro_sddl).unwrap();
         verify_supervisor_root_acl(&root)
             .expect("read-only ACE for BUILTIN\\Users without write bits must pass");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn windows_acl_admin_slot_dir_inside_system_root_stays_valid_for_local_system() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let base = std::env::temp_dir().join(format!(
+            "keeppeek-win-sys-acl-{}-{nanos}",
+            std::process::id()
+        ));
+        let system_root = base.join("system-like");
+        fs::create_dir_all(&system_root).unwrap();
+        if set_owner_builtin_administrators(&system_root).is_ok() {
+            apply_sddl_dacl(&system_root, "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)").unwrap();
+            assert!(
+                verify_directory_dacl_as(&system_root, "S-1-5-18").is_ok(),
+                "system root owned by Builtin Administrators must satisfy LocalSystem"
+            );
+
+            let slot_child = system_root.join("versions").join("slot-1");
+            create_private_dir_all(&slot_child).expect("admin child creation must succeed");
+            assert!(!is_dacl_protected(&slot_child).unwrap());
+            assert!(
+                verify_directory_dacl_as(&system_root.join("versions"), "S-1-5-18").is_ok(),
+                "intermediate versions dir inside SY+BA root must remain valid for LocalSystem"
+            );
+            assert!(
+                verify_directory_dacl_as(&slot_child, "S-1-5-18").is_ok(),
+                "elevated admin slot dir inside SY+BA root must remain valid for LocalSystem"
+            );
+        }
         let _ = fs::remove_dir_all(&base);
     }
 }
