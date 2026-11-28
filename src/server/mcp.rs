@@ -6858,4 +6858,151 @@ display_name = "Front Door"
         assert!(serde_json::to_vec(&utf8_resp).unwrap().len() <= READ_ARTIFACT_MAX_RESPONSE_BYTES);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn mcp_responses_preserve_loopback_secret_entry_and_host_paths_with_configured_logging() {
+        let sentinel = "MCP-CONFIGURED-LOGGING-SENTINEL-7744";
+        let dir =
+            std::env::temp_dir().join(format!("keeppeek-mcp-redaction-{}", uuid::Uuid::new_v4()));
+        let medium_dir = dir.join("medium");
+        let long_dir = dir.join("recordings");
+        std::fs::create_dir_all(&medium_dir).unwrap();
+        std::fs::create_dir_all(&long_dir).unwrap();
+        let config_path = dir.join("config.toml");
+        let secrets_path = dir.join("secrets.toml");
+        std::fs::write(
+            &secrets_path,
+            format!(
+                "CAMERA_PASSWORD = \"{sentinel}\"\nKEEPPEEK_ACCESS_KEY = \"550e8400-e29b-41d4-a716-446655440000\"\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+host = "127.0.0.1"
+port = 8081
+access_key = "{{secret:KEEPPEEK_ACCESS_KEY}}"
+
+[mcp]
+enabled = true
+allow_writes = true
+
+[storage]
+medium_term_path = {medium:?}
+long_term_path = {long:?}
+
+[camera_defaults]
+username = "cam-user-77"
+password = "{{secret:CAMERA_PASSWORD}}"
+
+[front.door]
+ip = "192.0.2.10"
+display_name = "Front Door"
+"#,
+                medium = medium_dir.to_string_lossy(),
+                long = long_dir.to_string_lossy(),
+            ),
+        )
+        .unwrap();
+        let cfg = config::load_config(&config_path).unwrap();
+        let cameras = cfg.camera_configurations().unwrap();
+        let storage = crate::storage::StorageConfig {
+            medium_term_path: medium_dir.clone(),
+            long_term_path: long_dir.clone(),
+            ..crate::storage::StorageConfig::default()
+        };
+        let (logging, dispatch) =
+            LoggingService::for_test_with_config(&config_path, "trace").unwrap();
+        let state = ServerState::new(
+            &cfg,
+            &cameras,
+            &HashMap::new(),
+            &storage,
+            crate::storage::RecordingDemand::new(Duration::from_secs(5)),
+            crate::webrtc::WebRtc::new(),
+        )
+        .with_camera_config_path(config_path.clone())
+        .with_logging(logging);
+        let (_router, router_tx) = Router::new().unwrap();
+
+        let secret_req = call_mcp_tool(
+            &state,
+            &router_tx,
+            1,
+            "request_secret_entry",
+            json!({
+                "keys": [{ "key": "NEW_CAM_PASS", "purpose": "Camera password" }],
+                "ttl_seconds": 120
+            }),
+        );
+        let secret_sc = &secret_req["result"]["structuredContent"];
+        let local_ui_url = secret_sc["local_ui_url"].as_str().unwrap();
+        assert!(
+            local_ui_url.starts_with("http://127.0.0.1:8081/mcp/secret-entry?token="),
+            "{local_ui_url}"
+        );
+        assert!(!local_ui_url.contains("[REDACTED]"), "{local_ui_url}");
+        let cli_cmd = secret_sc["cli_commands"][0].as_str().unwrap();
+        assert!(
+            cli_cmd.contains(&*config_path.to_string_lossy()),
+            "cli_commands lost config_path: {cli_cmd}"
+        );
+        assert!(!cli_cmd.contains("[REDACTED]"), "{cli_cmd}");
+
+        let health = call_mcp_tool(&state, &router_tx, 2, "get_server_health", json!({}));
+        let health_sc = &health["result"]["structuredContent"];
+        assert_eq!(
+            health_sc["storage"]["medium_term_path"].as_str(),
+            Some(medium_dir.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            health_sc["storage"]["long_term_path"].as_str(),
+            Some(long_dir.to_string_lossy().as_ref())
+        );
+        assert_eq!(health_sc["cameras"][0]["id"], "192.0.2.10");
+
+        let config_resp = call_mcp_tool(&state, &router_tx, 3, "get_configuration", json!({}));
+        let config_sc = &config_resp["result"]["structuredContent"];
+        assert_eq!(config_sc["cameras"][0]["camera"]["ip"], "192.0.2.10");
+        let config_json = serde_json::to_string(&config_resp).unwrap();
+        assert!(!config_json.contains(sentinel));
+        assert!(!config_json.contains("550e8400-e29b-41d4-a716-446655440000"));
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::warn!(
+                target: "keeppeek::test",
+                "diag cfg={} long={} ip=192.0.2.10 user=cam-user-77 pass={sentinel} url=http://127.0.0.1:8081/mcp/secret-entry?token=LogLeakToken99",
+                config_path.display(),
+                long_dir.display()
+            );
+        });
+        let logs = call_mcp_tool(
+            &state,
+            &router_tx,
+            4,
+            "search_logs",
+            json!({ "target": "keeppeek::test", "limit": 10 }),
+        );
+        let msg = logs["result"]["structuredContent"]["entries"][0]["message"]
+            .as_str()
+            .unwrap();
+        for redacted_target in [
+            config_path.to_string_lossy().as_ref(),
+            long_dir.to_string_lossy().as_ref(),
+            "192.0.2.10",
+            "cam-user-77",
+            sentinel,
+            "LogLeakToken99",
+        ] {
+            assert!(
+                !msg.contains(redacted_target),
+                "log leaked {redacted_target}: {msg}"
+            );
+        }
+        assert!(msg.contains("[REDACTED]"), "{msg}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -144,6 +144,8 @@ struct HubState {
     next_subscriber_id: u64,
     subscribers: HashMap<u64, Subscriber>,
     static_sensitive_values: Vec<String>,
+    log_only_sensitive_values: Vec<String>,
+    secret_values: Vec<String>,
     sensitive_values: Vec<String>,
     dynamic_sensitive_values: VecDeque<String>,
     closed: bool,
@@ -203,6 +205,8 @@ impl LogHub {
                 next_subscriber_id: 1,
                 subscribers: HashMap::new(),
                 static_sensitive_values: Vec::new(),
+                log_only_sensitive_values: Vec::new(),
+                secret_values: Vec::new(),
                 sensitive_values: Vec::new(),
                 dynamic_sensitive_values: VecDeque::new(),
                 closed: false,
@@ -225,6 +229,19 @@ impl LogHub {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.static_sensitive_values = values
+            .into_iter()
+            .filter(|value| !value.is_empty())
+            .collect();
+        rebuild_sensitive_values(&mut state);
+    }
+
+    /// Replaces static values redacted only in log and terminal output.
+    pub fn set_log_only_sensitive_values(&self, values: impl IntoIterator<Item = String>) {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.log_only_sensitive_values = values
             .into_iter()
             .filter(|value| !value.is_empty())
             .collect();
@@ -261,6 +278,16 @@ impl LogHub {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         redact_text(text, &state.sensitive_values)
+    }
+
+    /// Redacts only static and dynamic secret values from `text`.
+    #[must_use]
+    pub fn redact_secrets_only(&self, text: &str) -> String {
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        redact_literal_values(text, &state.secret_values)
     }
 
     pub fn record(
@@ -533,17 +560,34 @@ impl Drop for LogSubscription {
     }
 }
 
+fn sort_and_dedup_desc(values: &mut Vec<String>) {
+    values
+        .sort_unstable_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
+    values.dedup();
+}
+
 fn rebuild_sensitive_values(state: &mut HubState) {
-    let mut combined = state
+    let mut secret_values = state
         .static_sensitive_values
         .iter()
         .chain(state.dynamic_sensitive_values.iter())
         .filter(|value| !value.is_empty())
         .cloned()
         .collect::<Vec<_>>();
-    combined.sort_unstable_by_key(|value| std::cmp::Reverse(value.len()));
-    combined.dedup();
-    state.sensitive_values = combined;
+    sort_and_dedup_desc(&mut secret_values);
+
+    let mut sensitive_values = secret_values
+        .iter()
+        .chain(state.log_only_sensitive_values.iter())
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .collect::<Vec<_>>();
+    sort_and_dedup_desc(&mut sensitive_values);
+
+    debug_assert!(secret_values.iter().all(|value| !value.is_empty()));
+    debug_assert!(sensitive_values.len() >= secret_values.len());
+    state.secret_values = secret_values;
+    state.sensitive_values = sensitive_values;
 }
 
 fn serialized_size(entry: &LogEntry) -> usize {
@@ -617,13 +661,18 @@ fn is_sensitive_name(name: &str) -> bool {
     .any(|sensitive| name.contains(sensitive))
 }
 
-fn redact_text(text: &str, sensitive_values: &[String]) -> String {
+fn redact_literal_values(text: &str, sensitive_values: &[String]) -> String {
     let mut redacted = text.to_owned();
     for sensitive_value in sensitive_values {
         if !sensitive_value.is_empty() {
             redacted = redacted.replace(sensitive_value, "[REDACTED]");
         }
     }
+    redacted
+}
+
+fn redact_text(text: &str, sensitive_values: &[String]) -> String {
+    let mut redacted = redact_literal_values(text, sensitive_values);
     redacted = redact_url_userinfo(&redacted);
     for marker in [
         "password=",
@@ -886,5 +935,33 @@ mod tests {
             "shared-static-camera-secret reused-reporting-credential ephemeral-grant-299",
         );
         assert_eq!(entry.message, "[REDACTED] [REDACTED] [REDACTED]");
+    }
+
+    #[test]
+    fn separates_log_only_sensitive_values_from_secret_redaction() {
+        let hub = LogHub::default();
+        hub.set_log_only_sensitive_values([
+            "192.0.2.55".to_owned(),
+            "D:\\keeppeek\\storage".to_owned(),
+            "C:\\cfg\\config.toml".to_owned(),
+        ]);
+        hub.set_sensitive_values(["static-secret-1".to_owned()]);
+        hub.add_sensitive_value("dynamic-secret-2".to_owned());
+
+        let sample = "ip=192.0.2.55 cfg=C:\\cfg\\config.toml dir=D:\\keeppeek\\storage url=http://127.0.0.1:8081/mcp/secret-entry?token=AbcToken99 s1=static-secret-1 s2=dynamic-secret-2";
+        let secrets_only = hub.redact_secrets_only(sample);
+        assert_eq!(
+            secrets_only,
+            "ip=192.0.2.55 cfg=C:\\cfg\\config.toml dir=D:\\keeppeek\\storage url=http://127.0.0.1:8081/mcp/secret-entry?token=AbcToken99 s1=[REDACTED] s2=[REDACTED]"
+        );
+
+        let full_redacted = hub.redact_output(sample);
+        assert_eq!(
+            full_redacted,
+            "ip=[REDACTED] cfg=[REDACTED] dir=[REDACTED] url=http://127.0.0.1:8081/mcp/secret-entry?token=[REDACTED] s1=[REDACTED] s2=[REDACTED]"
+        );
+
+        let recorded = record(&hub, sample);
+        assert_eq!(recorded.message, full_redacted);
     }
 }
