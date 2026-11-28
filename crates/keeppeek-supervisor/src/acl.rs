@@ -156,10 +156,12 @@ fn verify_platform_dir_acl(path: &Path, _meta: &fs::Metadata) -> Result<(), AclE
 
 #[cfg(windows)]
 mod windows_acl {
+    use std::fs;
+    use std::io;
     use std::mem::{self, MaybeUninit};
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::ptr::{self, NonNull};
 
     use windows::Win32::Foundation::{GENERIC_ALL, GENERIC_WRITE, HANDLE, HLOCAL, LocalFree};
@@ -168,15 +170,16 @@ mod windows_acl {
         Authorization::{
             ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
             ConvertStringSidToSidW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
-            SetNamedSecurityInfoW,
+            SetSecurityInfo,
         },
         DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
     };
     use windows::Win32::Storage::FileSystem::{
-        CreateFileW, DELETE, FILE_APPEND_DATA, FILE_FLAG_BACKUP_SEMANTICS,
+        BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, CreateFileW, DELETE, FILE_APPEND_DATA,
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
         FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, OPEN_EXISTING, READ_CONTROL,
-        WRITE_DAC, WRITE_OWNER,
+        FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, GetFileInformationByHandle,
+        OPEN_EXISTING, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
     };
     use windows::Win32::System::SystemServices::{
         ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE, ACCESS_DENIED_CALLBACK_ACE_TYPE,
@@ -220,12 +223,51 @@ mod windows_acl {
         }
     }
 
-    pub(super) fn create_private_dir_all_windows(dir: &Path) -> std::io::Result<()> {
+    struct AncestorPrivacy {
+        is_private: bool,
+        is_system_private: bool,
+        current_sid: String,
+    }
+
+    pub(super) fn create_private_dir_all_windows(dir: &Path) -> io::Result<()> {
         if dir.exists() {
             return Ok(());
         }
-        // Inspect the nearest existing ancestor so locked-down roots inherit their OICI DACL
-        // untouched and SYSTEM-owned roots keep newly created slot components valid for LocalSystem.
+        let (existing_ancestor, created_dirs) = collect_missing_ancestors(dir)?;
+        let privacy = match existing_ancestor.as_deref() {
+            Some(path) => inspect_ancestor_privacy(path)?,
+            None => AncestorPrivacy {
+                is_private: false,
+                is_system_private: false,
+                current_sid: String::new(),
+            },
+        };
+
+        if !privacy.is_private {
+            fs::create_dir_all(dir)?;
+            let current_sid = if privacy.current_sid.is_empty() {
+                current_user_sid(dir).map_err(io::Error::other)?
+            } else {
+                privacy.current_sid
+            };
+            let sddl = if TRUSTED_SYSTEM_OWNERS.contains(&current_sid.as_str()) {
+                "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)".to_owned()
+            } else {
+                format!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{current_sid})")
+            };
+            apply_sddl_dacl(dir, &sddl)?;
+        } else if privacy.is_system_private
+            && !TRUSTED_SYSTEM_OWNERS.contains(&privacy.current_sid.as_str())
+        {
+            // Create components atomically with Administrators ownership while inheriting OICI DACLs.
+            create_system_owned_dirs(&created_dirs)?;
+        } else {
+            fs::create_dir_all(dir)?;
+        }
+        Ok(())
+    }
+
+    fn collect_missing_ancestors(dir: &Path) -> io::Result<(Option<PathBuf>, Vec<PathBuf>)> {
         let mut created_dirs = Vec::new();
         let mut current = Some(dir);
         let mut existing_ancestor = None;
@@ -233,49 +275,100 @@ mod windows_acl {
             if path.as_os_str().is_empty() {
                 break;
             }
-            if path.exists() {
-                existing_ancestor = Some(path.to_path_buf());
-                break;
+            match fs::symlink_metadata(path) {
+                Ok(meta) => {
+                    if meta.file_type().is_symlink() || !meta.is_dir() {
+                        return Err(io::Error::other(format!(
+                            "supervisor ancestor {} must be a real directory",
+                            path.display()
+                        )));
+                    }
+                    existing_ancestor = Some(path.to_path_buf());
+                    break;
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
             }
             if created_dirs.len() >= MAX_CREATED_DIR_COMPONENTS {
-                return Err(std::io::Error::other(format!(
+                return Err(io::Error::other(format!(
                     "directory depth exceeds bound {MAX_CREATED_DIR_COMPONENTS}"
                 )));
             }
             created_dirs.push(path.to_path_buf());
             current = path.parent();
         }
-        let parent_is_private = existing_ancestor
-            .as_deref()
-            .is_some_and(|path| verify_directory_dacl(path).is_ok());
-        let parent_is_system_private = parent_is_private
-            && existing_ancestor
-                .as_deref()
-                .is_some_and(|path| verify_directory_dacl_as(path, LOCAL_SYSTEM_SID).is_ok());
+        Ok((existing_ancestor, created_dirs))
+    }
 
-        std::fs::create_dir_all(dir)?;
-        if !parent_is_private {
-            let current_sid = current_user_sid(dir).map_err(std::io::Error::other)?;
-            let sddl = if TRUSTED_SYSTEM_OWNERS.contains(&current_sid.as_str()) {
-                "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)".to_owned()
-            } else {
-                format!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{current_sid})")
-            };
-            apply_sddl_dacl(dir, &sddl)?;
-        } else if parent_is_system_private {
-            // Normalize child owners to Builtin Administrators when an admin token defaults object
-            // ownership to a personal user SID instead of the Administrators group.
-            let current_sid = current_user_sid(dir).map_err(std::io::Error::other)?;
-            if !TRUSTED_SYSTEM_OWNERS.contains(&current_sid.as_str()) {
-                for created in created_dirs.iter().rev() {
-                    set_owner_builtin_administrators(created)?;
+    fn inspect_ancestor_privacy(path: &Path) -> io::Result<AncestorPrivacy> {
+        let current_sid = current_user_sid(path).map_err(io::Error::other)?;
+        let Ok(handle) = open_directory_handle(path, READ_CONTROL.0) else {
+            return Ok(AncestorPrivacy {
+                is_private: false,
+                is_system_private: false,
+                current_sid,
+            });
+        };
+        let Ok(descriptor) = query_security_descriptor(path, &handle) else {
+            return Ok(AncestorPrivacy {
+                is_private: false,
+                is_system_private: false,
+                current_sid,
+            });
+        };
+        let is_private = verify_descriptor_for_sid(path, &descriptor, &current_sid).is_ok();
+        let is_system_private =
+            is_private && verify_descriptor_for_sid(path, &descriptor, LOCAL_SYSTEM_SID).is_ok();
+        Ok(AncestorPrivacy {
+            is_private,
+            is_system_private,
+            current_sid,
+        })
+    }
+
+    fn verify_descriptor_for_sid(
+        path: &Path,
+        descriptor: &LocalAllocation,
+        sid: &str,
+    ) -> Result<(), AclError> {
+        let owner_sid = verify_owner(path, descriptor, sid)?;
+        let dacl = extract_dacl(path, descriptor)?;
+        verify_dacl_aces(path, dacl, sid, &owner_sid)
+    }
+
+    fn create_system_owned_dirs(created_dirs: &[PathBuf]) -> io::Result<()> {
+        let (descriptor, _owner_alloc) =
+            parse_sddl_security_descriptor(&format!("O:{BUILTIN_ADMINISTRATORS_SID}"))?;
+        let attributes = Security::SECURITY_ATTRIBUTES {
+            nLength: u32::try_from(mem::size_of::<Security::SECURITY_ATTRIBUTES>())
+                .expect("SECURITY_ATTRIBUTES size fits u32"),
+            lpSecurityDescriptor: descriptor.0,
+            bInheritHandle: false.into(),
+        };
+        let (_sid_alloc, ba_sid) = parse_builtin_administrators_sid()?;
+        for created in created_dirs.iter().rev() {
+            let wide_path: Vec<u16> = created
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+            // SAFETY: `wide_path` is NUL-terminated and `attributes` points to live descriptor memory.
+            let result = unsafe { CreateDirectoryW(PCWSTR(wide_path.as_ptr()), Some(&attributes)) };
+            if let Err(error) = result {
+                let os_err = io::Error::from_raw_os_error(error.code().0 & 0xffff);
+                if os_err.kind() == io::ErrorKind::AlreadyExists {
+                    let handle = open_directory_handle(created, READ_CONTROL.0 | WRITE_OWNER.0)
+                        .map_err(io::Error::other)?;
+                    set_owner_on_handle(&handle, ba_sid)?;
+                } else {
+                    return Err(os_err);
                 }
             }
         }
         Ok(())
     }
 
-    pub(super) fn set_owner_builtin_administrators(path: &Path) -> std::io::Result<()> {
+    fn parse_builtin_administrators_sid() -> io::Result<(LocalAllocation, Security::PSID)> {
         let wide_sid: Vec<u16> = BUILTIN_ADMINISTRATORS_SID
             .encode_utf16()
             .chain(std::iter::once(0))
@@ -283,17 +376,30 @@ mod windows_acl {
         let mut sid = Security::PSID::default();
         // SAFETY: `wide_sid` is NUL-terminated; `sid` receives a LocalAlloc SID freed on drop.
         unsafe { ConvertStringSidToSidW(PCWSTR(wide_sid.as_ptr()), &mut sid) }
-            .map_err(std::io::Error::other)?;
-        let _allocation = LocalAllocation(sid.0);
-        let wide_path: Vec<u16> = path
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        // SAFETY: `wide_path` is NUL-terminated and `sid` stays valid until `_allocation` drops.
+            .map_err(io::Error::other)?;
+        let allocation = LocalAllocation(sid.0);
+        // SAFETY: `IsValidSid` validates the converted SID before returning it.
+        if sid.0.is_null() || !unsafe { Security::IsValidSid(sid) }.as_bool() {
+            return Err(io::Error::other(
+                "Windows returned an invalid Administrators SID",
+            ));
+        }
+        Ok((allocation, sid))
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_owner_builtin_administrators(path: &Path) -> io::Result<()> {
+        let (_allocation, sid) = parse_builtin_administrators_sid()?;
+        let handle = open_directory_handle(path, READ_CONTROL.0 | WRITE_OWNER.0)
+            .map_err(io::Error::other)?;
+        set_owner_on_handle(&handle, sid)
+    }
+
+    fn set_owner_on_handle(handle: &OwnedHandle, sid: Security::PSID) -> io::Result<()> {
+        // SAFETY: `handle` is an open non-reparse directory handle and `sid` is validated.
         unsafe {
-            SetNamedSecurityInfoW(
-                PCWSTR(wide_path.as_ptr()),
+            SetSecurityInfo(
+                HANDLE(handle.as_raw_handle()),
                 SE_FILE_OBJECT,
                 OWNER_SECURITY_INFORMATION,
                 Some(sid),
@@ -303,10 +409,12 @@ mod windows_acl {
             )
         }
         .ok()
-        .map_err(std::io::Error::other)
+        .map_err(io::Error::other)
     }
 
-    pub(super) fn apply_sddl_dacl(path: &Path, sddl: &str) -> std::io::Result<()> {
+    fn parse_sddl_security_descriptor(
+        sddl: &str,
+    ) -> io::Result<(LocalAllocation, Security::PSECURITY_DESCRIPTOR)> {
         let wide_sddl: Vec<u16> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
         let mut sd = Security::PSECURITY_DESCRIPTOR::default();
         // SAFETY: `wide_sddl` is NUL-terminated; `sd` receives a LocalAlloc security descriptor.
@@ -318,9 +426,17 @@ mod windows_acl {
                 None,
             )
         }
-        .map_err(std::io::Error::other)?;
-        let _allocation = LocalAllocation(sd.0);
+        .map_err(io::Error::other)?;
+        if sd.0.is_null() {
+            return Err(io::Error::other(
+                "Windows returned a null SDDL security descriptor",
+            ));
+        }
+        Ok((LocalAllocation(sd.0), sd))
+    }
 
+    pub(super) fn apply_sddl_dacl(path: &Path, sddl: &str) -> io::Result<()> {
+        let (_allocation, sd) = parse_sddl_security_descriptor(sddl)?;
         let mut present = BOOL::default();
         let mut defaulted = BOOL::default();
         let mut dacl = MaybeUninit::<*mut Security::ACL>::zeroed();
@@ -328,23 +444,18 @@ mod windows_acl {
         unsafe {
             Security::GetSecurityDescriptorDacl(sd, &mut present, dacl.as_mut_ptr(), &mut defaulted)
         }
-        .map_err(std::io::Error::other)?;
+        .map_err(io::Error::other)?;
         if !present.as_bool() {
-            return Err(std::io::Error::other(
-                "SDDL security descriptor lacked a DACL",
-            ));
+            return Err(io::Error::other("SDDL security descriptor lacked a DACL"));
         }
         // SAFETY: `GetSecurityDescriptorDacl` initialized `dacl`.
         let raw_dacl = unsafe { dacl.assume_init() };
-        let wide_path: Vec<u16> = path
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        // SAFETY: `wide_path` is NUL-terminated and `raw_dacl` lives inside `_allocation`.
+        let handle =
+            open_directory_handle(path, READ_CONTROL.0 | WRITE_DAC.0).map_err(io::Error::other)?;
+        // SAFETY: `handle` is an open non-reparse directory handle and `raw_dacl` lives in `_allocation`.
         unsafe {
-            SetNamedSecurityInfoW(
-                PCWSTR(wide_path.as_ptr()),
+            SetSecurityInfo(
+                HANDLE(handle.as_raw_handle()),
                 SE_FILE_OBJECT,
                 DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
                 None,
@@ -354,7 +465,7 @@ mod windows_acl {
             )
         }
         .ok()
-        .map_err(std::io::Error::other)
+        .map_err(io::Error::other)
     }
 
     pub(super) fn verify_directory_dacl(path: &Path) -> Result<(), AclError> {
@@ -363,16 +474,14 @@ mod windows_acl {
     }
 
     pub(super) fn verify_directory_dacl_as(path: &Path, current_sid: &str) -> Result<(), AclError> {
-        let dir_handle = open_directory_read_control(path)?;
+        let dir_handle = open_directory_handle(path, READ_CONTROL.0)?;
         let descriptor = query_security_descriptor(path, &dir_handle)?;
-        let owner_sid = verify_owner(path, &descriptor, current_sid)?;
-        let dacl = extract_dacl(path, &descriptor)?;
-        verify_dacl_aces(path, dacl, current_sid, &owner_sid)
+        verify_descriptor_for_sid(path, &descriptor, current_sid)
     }
 
     #[cfg(test)]
     pub(super) fn is_dacl_protected(path: &Path) -> Result<bool, AclError> {
-        let dir_handle = open_directory_read_control(path)?;
+        let dir_handle = open_directory_handle(path, READ_CONTROL.0)?;
         let descriptor = query_security_descriptor(path, &dir_handle)?;
         let mut control: u16 = 0;
         let mut revision = 0_u32;
@@ -391,7 +500,7 @@ mod windows_acl {
         Ok((control & Security::SE_DACL_PROTECTED.0) != 0)
     }
 
-    fn open_directory_read_control(path: &Path) -> Result<OwnedHandle, AclError> {
+    fn open_directory_handle(path: &Path, access: u32) -> Result<OwnedHandle, AclError> {
         let wide: Vec<u16> = path
             .as_os_str()
             .encode_wide()
@@ -401,7 +510,7 @@ mod windows_acl {
         let handle = unsafe {
             CreateFileW(
                 PCWSTR(wide.as_ptr()),
-                READ_CONTROL.0,
+                access,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 None,
                 OPEN_EXISTING,
@@ -414,7 +523,26 @@ mod windows_acl {
             source: std::io::Error::other(error),
         })?;
         // SAFETY: `CreateFileW` returned a fresh owned OS handle closed once by `OwnedHandle`.
-        Ok(unsafe { OwnedHandle::from_raw_handle(handle.0) })
+        let owned = unsafe { OwnedHandle::from_raw_handle(handle.0) };
+        let mut file_info = BY_HANDLE_FILE_INFORMATION::default();
+        // SAFETY: `owned` is a valid open handle and `file_info` is writable.
+        unsafe { GetFileInformationByHandle(HANDLE(owned.as_raw_handle()), &mut file_info) }
+            .map_err(|error| AclError::Io {
+                path: path.to_path_buf(),
+                source: std::io::Error::other(error),
+            })?;
+        if (file_info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0) != 0 {
+            return Err(AclError::SymlinkNotAllowed {
+                path: path.to_path_buf(),
+            });
+        }
+        if (file_info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0) == 0 {
+            return Err(AclError::InsecurePermissions {
+                path: path.to_path_buf(),
+                detail: "path is not a directory".to_owned(),
+            });
+        }
+        Ok(owned)
     }
 
     fn query_security_descriptor(
@@ -785,11 +913,13 @@ mod windows_tests {
                 "system root owned by Builtin Administrators must satisfy LocalSystem"
             );
 
-            let slot_child = system_root.join("versions").join("slot-1");
+            let versions = system_root.join("versions");
+            let slot_child = versions.join("slot-1");
             create_private_dir_all(&slot_child).expect("admin child creation must succeed");
+            assert!(!is_dacl_protected(&versions).unwrap());
             assert!(!is_dacl_protected(&slot_child).unwrap());
             assert!(
-                verify_directory_dacl_as(&system_root.join("versions"), "S-1-5-18").is_ok(),
+                verify_directory_dacl_as(&versions, "S-1-5-18").is_ok(),
                 "intermediate versions dir inside SY+BA root must remain valid for LocalSystem"
             );
             assert!(
@@ -797,6 +927,32 @@ mod windows_tests {
                 "elevated admin slot dir inside SY+BA root must remain valid for LocalSystem"
             );
         }
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn windows_acl_enforces_missing_dir_depth_bound() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let base =
+            std::env::temp_dir().join(format!("kp-win-bound-{}-{nanos}", std::process::id()));
+        create_private_dir_all(&base).expect("private root setup");
+
+        let mut at_limit = base.clone();
+        for _ in 0..64 {
+            at_limit.push("a");
+        }
+        create_private_dir_all(&at_limit).expect("64 missing components must succeed");
+        assert!(at_limit.is_dir());
+
+        let mut over_limit = at_limit.clone();
+        for _ in 0..65 {
+            over_limit.push("b");
+        }
+        let error =
+            create_private_dir_all(&over_limit).expect_err("65 missing components must fail");
+        assert!(error.to_string().contains("exceeds bound 64"));
         let _ = fs::remove_dir_all(&base);
     }
 }
