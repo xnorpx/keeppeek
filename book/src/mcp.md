@@ -139,8 +139,10 @@ camera onboarding, hardware tuning, and configuration management. See
 ### Local `stdio` bridge and remote diagnostic CLI
 
 Most desktop AI assistants launch MCP servers over `stdio`. KeepPeek provides a built-in `stdio`
-JSON-RPC bridge plus remote log-streaming and capture-download utilities over `POST /mcp`,
-`GET /logs`, and `GET /logs/snapshot` (with `[mcp].enabled = true`):
+JSON-RPC bridge plus remote log-streaming and capture-download utilities over `POST /mcp`
+(with `[mcp].enabled = true`), `GET /logs`, and `GET /logs/snapshot` (`GET /logs` and
+`GET /logs/snapshot` do not require `[mcp].enabled = true` unless `logs --filter` calls
+`POST /mcp`):
 
 ```sh
 keeppeek mcp [--server <URL>] [--config <PATH>] [--credential-file <PATH>] [--read-only]
@@ -270,7 +272,9 @@ across live supervised binary swaps without restarting the agent or editing MCP 
 4. Confirm the new child PID/executable via `get_server_health` (`system.process.pid` and
    `system.process.executable`) or `keeppeek-supervisor status --root <dev-supervisor-root> --json`.
    If the new binary crashes or fails probation, the supervisor automatically rolls back to the
-   previous working slot and reports `rolled_back: true`.
+   previous working slot: `keeppeek-supervisor update --apply --wait` exits non-zero with a
+   rollback error, and `keeppeek-supervisor status --root <dev-supervisor-root> --json` reports
+   `live.core.last_control_rolled_back: true`.
 
 ## Manage secrets without plaintext chat (`keeppeek secret` and loopback UI handoff)
 

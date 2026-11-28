@@ -136,7 +136,7 @@ Note: `capture`, `compare_transports`, and `delete_capture` reject `--read-only`
 
 ## 3. 3-Tier Tracing Filter Cookbook
 
-KeepPeek enforces a **zero-secret logging rule** across all tiers: passwords, Digest responses, WS-Security nonces, tokens, and inline `rtsp://user:pass@` credentials are never emitted. Session spans (`rtsp_session`, `reolink_session`, `isapi_events`, `onvif_pullpoint`, `event_snapshot`) propagate `camera_id`, `camera_ip`/`ip`, and `stream`/`channel` through `LogHub`, `search_logs`, `GET /logs`, and `traces.jsonl`, and `tracing-log` bridges `retina`'s `log` events automatically.
+KeepPeek enforces a **zero-secret logging rule** across all tiers: passwords, Digest responses, WS-Security nonces, tokens, and inline `rtsp://user:pass@` credentials are never emitted. Session spans (`rtsp_session`, `reolink_session`, `isapi_events`, `onvif_pullpoint`) propagate `camera_id`, `camera_ip`/`ip`, and `stream`/`channel` (while `event_snapshot` carries `camera_ip` on the span and `camera_id` on inner events) through `LogHub`, `search_logs`, `GET /logs`, and `traces.jsonl`, and `tracing-log` bridges `retina`'s `log` events automatically.
 
 | Tier  | Directive                                                                                                                                                                                                                           | When to use                                                                                                                                                                                                        |
 | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -241,7 +241,7 @@ cat ./debug-out/traces.jsonl
 
      (Use `target/debug/keeppeek.exe` on Windows.)
 
-   - **Probation and automatic rollback:** If the new binary crashes or fails readiness/probation, `keeppeek-supervisor` automatically rolls back to the previous working slot (`rolled_back: true`); you can also trigger `keeppeek-supervisor rollback --root <dev-supervisor-root> --component core --allow-local --apply --wait`.
+   - **Probation and automatic rollback:** If the new binary crashes or fails readiness/probation, `keeppeek-supervisor` automatically rolls back to the previous working slot: `keeppeek-supervisor update --apply --wait` exits non-zero with a rollback error on `stderr`, and `keeppeek-supervisor status --root <dev-supervisor-root> --json` reports `live.core.last_control_rolled_back: true`. You can also trigger `keeppeek-supervisor rollback --root <dev-supervisor-root> --component core --allow-local --apply --wait`.
    - **Re-verify live immediately over `POST /mcp`:** Confirm the new child PID/executable with `get_server_health` (`system.process.pid` and `system.process.executable`), tail live traces with `keeppeek mcp ... logs --follow --camera <id>`, and re-run `camera_debugging` (`capture` + `pull-capture`) against the real camera.
 
 ## 6. Submit Sanitized Issue/PR and Clean Up Safely
