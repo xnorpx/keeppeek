@@ -175,31 +175,33 @@ pub fn initialize_service_logging(
 }
 
 fn configure_secret_redaction(hub: &LogHub, config_path: &Path) -> anyhow::Result<()> {
-    let mut values = config::load_secrets(config_path)?.redaction_values();
+    let mut secret_values = config::load_secrets(config_path)?.redaction_values();
+    let mut log_only_values = Vec::new();
     if let Ok(cameras) = config::load_cameras(config_path) {
         for camera in cameras.into_values().flatten() {
-            values.push(camera.ip.to_string());
-            values.push(camera.username);
-            values.push(camera.password);
-            values.extend(camera.uid);
-            values.extend(camera.main_rtsp_url);
-            values.extend(camera.sub_rtsp_url);
+            log_only_values.push(camera.ip.to_string());
+            secret_values.push(camera.username);
+            secret_values.push(camera.password);
+            log_only_values.extend(camera.uid);
+            log_only_values.extend(camera.main_rtsp_url);
+            log_only_values.extend(camera.sub_rtsp_url);
         }
     }
-    values.push(config_path.to_string_lossy().into_owned());
+    log_only_values.push(config_path.to_string_lossy().into_owned());
     if let Some(parent) = config_path
         .parent()
         .filter(|parent| *parent != Path::new("/"))
     {
-        values.push(parent.to_string_lossy().into_owned());
+        log_only_values.push(parent.to_string_lossy().into_owned());
     }
     if let Ok(configuration) = config::load_config(config_path) {
-        values.extend(configuration.storage.medium_term_path);
-        values.extend(configuration.storage.long_term_path);
-        values.extend(configuration.storage.recording_catalog_path);
-        values.extend(configuration.storage.event_thumbnail_path);
+        log_only_values.extend(configuration.storage.medium_term_path);
+        log_only_values.extend(configuration.storage.long_term_path);
+        log_only_values.extend(configuration.storage.recording_catalog_path);
+        log_only_values.extend(configuration.storage.event_thumbnail_path);
     }
-    hub.set_sensitive_values(values);
+    hub.set_sensitive_values(secret_values);
+    hub.set_log_only_sensitive_values(log_only_values);
     Ok(())
 }
 
@@ -517,7 +519,29 @@ impl LoggingService {
         filter_file: LogFilterFile,
         initial_filter: &str,
     ) -> (Self, tracing::Dispatch) {
+        Self::for_test_with_hub(LogHub::default(), filter_file, initial_filter)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_with_config(
+        config_path: &Path,
+        initial_filter: &str,
+    ) -> anyhow::Result<(Self, tracing::Dispatch)> {
         let hub = LogHub::default();
+        configure_secret_redaction(&hub, config_path)?;
+        Ok(Self::for_test_with_hub(
+            hub,
+            LogFilterFile::beside_config(config_path),
+            initial_filter,
+        ))
+    }
+
+    #[cfg(test)]
+    fn for_test_with_hub(
+        hub: LogHub,
+        filter_file: LogFilterFile,
+        initial_filter: &str,
+    ) -> (Self, tracing::Dispatch) {
         let (filter_layer, reload_handle) =
             reload::Layer::new(EnvFilter::try_new(initial_filter).unwrap());
         let subscriber = Registry::default()
@@ -1067,5 +1091,118 @@ mod tests {
             );
         }
         let _ = fs::remove_dir_all(file.path().parent().unwrap());
+    }
+
+    #[test]
+    fn configure_secret_redaction_keeps_topology_paths_log_only() {
+        let file = temporary_filter_file();
+        let dir = file.path().parent().unwrap();
+        let config_path = dir.join("config.toml");
+        let secrets_path = dir.join("secrets.toml");
+        let medium_dir = dir.join("medium");
+        let long_dir = dir.join("long");
+        let catalog_path = dir.join("catalog.db");
+        let thumb_dir = dir.join("thumbs");
+        fs::write(
+            &secrets_path,
+            "CAMERA_PASSWORD = \"CamPass-9988\"\nKEEPPEEK_ACCESS_KEY = \"550e8400-e29b-41d4-a716-446655440000\"\n",
+        )
+        .unwrap();
+        fs::write(
+            &config_path,
+            format!(
+                r#"
+access_key = "{{secret:KEEPPEEK_ACCESS_KEY}}"
+
+[storage]
+medium_term_path = {medium:?}
+long_term_path = {long:?}
+recording_catalog_path = {catalog:?}
+event_thumbnail_path = {thumb:?}
+
+[front.door]
+ip = "192.0.2.44"
+uid = "UID-FRONT-44"
+username = "cam-user-44"
+password = "{{secret:CAMERA_PASSWORD}}"
+main_rtsp_url = "rtsp://192.0.2.44/main"
+sub_rtsp_url = "rtsp://192.0.2.44/sub"
+"#,
+                medium = medium_dir.to_string_lossy(),
+                long = long_dir.to_string_lossy(),
+                catalog = catalog_path.to_string_lossy(),
+                thumb = thumb_dir.to_string_lossy(),
+            ),
+        )
+        .unwrap();
+
+        let (service, dispatch) =
+            LoggingService::for_test_with_config(&config_path, "info").unwrap();
+        let hub = service.dashboard_redactor();
+        let redactor = crate::mcp::redaction::SecretRedactor::new(
+            &crate::config::Secrets::default(),
+            Vec::new(),
+            Some(hub.clone()),
+        );
+
+        let mcp_probe = format!(
+            "cfg={} parent={} medium={} long={} catalog={} thumb={} ip=192.0.2.44 uid=UID-FRONT-44 url http://127.0.0.1:8081/mcp/secret-entry?token=HandoffToken123 user=cam-user-44 pass=CamPass-9988",
+            config_path.display(),
+            dir.display(),
+            medium_dir.display(),
+            long_dir.display(),
+            catalog_path.display(),
+            thumb_dir.display(),
+        );
+        let mcp_out = redactor.redact_str(&mcp_probe);
+        assert!(
+            mcp_out.contains(&*config_path.to_string_lossy()),
+            "{mcp_out}"
+        );
+        assert!(mcp_out.contains(&*long_dir.to_string_lossy()), "{mcp_out}");
+        assert!(mcp_out.contains("ip=192.0.2.44"), "{mcp_out}");
+        assert!(mcp_out.contains("uid=UID-FRONT-44"), "{mcp_out}");
+        assert!(
+            mcp_out.contains("http://127.0.0.1:8081/mcp/secret-entry?token=HandoffToken123"),
+            "{mcp_out}"
+        );
+        assert!(!mcp_out.contains("cam-user-44"), "{mcp_out}");
+        assert!(!mcp_out.contains("CamPass-9988"), "{mcp_out}");
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!(
+                "log line cfg={} medium={} long={} ip=192.0.2.44 uid=UID-FRONT-44 http://127.0.0.1:8081/mcp/secret-entry?token=HandoffToken123 user=cam-user-44 pass=CamPass-9988",
+                config_path.display(),
+                medium_dir.display(),
+                long_dir.display()
+            );
+        });
+        let entry = service.snapshot(None, 10).entries.pop().unwrap();
+        for leaked in [
+            config_path.to_string_lossy().as_ref(),
+            dir.to_string_lossy().as_ref(),
+            medium_dir.to_string_lossy().as_ref(),
+            long_dir.to_string_lossy().as_ref(),
+            "192.0.2.44",
+            "UID-FRONT-44",
+            "HandoffToken123",
+            "cam-user-44",
+            "CamPass-9988",
+        ] {
+            assert!(
+                !entry.message.contains(leaked),
+                "log leaked {leaked}: {}",
+                entry.message
+            );
+        }
+        let log_out = hub.redact_output(&mcp_probe);
+        assert!(!log_out.contains("HandoffToken123"), "{log_out}");
+        assert!(!log_out.contains("192.0.2.44"), "{log_out}");
+        assert!(
+            !log_out.contains(&*config_path.to_string_lossy()),
+            "{log_out}"
+        );
+
+        let _ = fs::remove_dir_all(dir);
     }
 }

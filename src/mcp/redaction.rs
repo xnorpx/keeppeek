@@ -322,28 +322,70 @@ fn redact_inline_assignments(text: &str) -> String {
 }
 
 fn is_loopback_secret_entry_url_prefix(prefix: &str) -> bool {
-    let suffix = "/mcp/secret-entry?";
-    let Some(before_path) = prefix.strip_suffix(suffix) else {
+    let Some(before_path) = prefix.strip_suffix("/mcp/secret-entry?") else {
         return false;
     };
     let Some(scheme_pos) = before_path.rfind("http://") else {
         return false;
     };
+    let before_scheme = &before_path[..scheme_pos];
+    if let Some(prev) = before_scheme.chars().next_back()
+        && !(prev.is_whitespace() || matches!(prev, '"' | '\'' | '(' | '[' | '{' | '<'))
+    {
+        return false;
+    }
+    let enclosing_token = before_scheme
+        .rsplit(|ch: char| ch.is_whitespace() || matches!(ch, '"' | '\''))
+        .next()
+        .unwrap_or("");
+    if enclosing_token.contains("://") {
+        return false;
+    }
     let authority = &before_path[scheme_pos + "http://".len()..];
-    let host = authority
-        .strip_prefix('[')
-        .and_then(|rest| rest.split_once(']').map(|(ipv6, _)| ipv6))
-        .unwrap_or_else(|| authority.split(':').next().unwrap_or(authority));
-    host == "127.0.0.1" || host == "::1" || host.eq_ignore_ascii_case("localhost")
+    is_loopback_authority(authority)
+}
+
+fn is_loopback_authority(authority: &str) -> bool {
+    if authority.is_empty()
+        || authority
+            .chars()
+            .any(|ch| ch.is_whitespace() || matches!(ch, '/' | '?' | '#' | '@'))
+    {
+        return false;
+    }
+    if let Some(rest) = authority.strip_prefix('[') {
+        let Some((ipv6, tail)) = rest.split_once(']') else {
+            return false;
+        };
+        if ipv6 != "::1" {
+            return false;
+        }
+        return match tail {
+            "" => true,
+            _ => tail.strip_prefix(':').is_some_and(is_valid_tcp_port),
+        };
+    }
+    let (host, port) = match authority.split_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (authority, None),
+    };
+    (host == "127.0.0.1" || host.eq_ignore_ascii_case("localhost"))
+        && port.is_none_or(is_valid_tcp_port)
+}
+
+fn is_valid_tcp_port(port: &str) -> bool {
+    !port.is_empty()
+        && port.bytes().all(|byte| byte.is_ascii_digit())
+        && port.parse::<u16>().is_ok()
 }
 
 fn apply_log_hub_preserving_secret_refs(hub: &LogHub, text: &str) -> String {
     if !text.contains("{secret:") {
-        return hub.redact_output(text);
+        return hub.redact_secrets_only(text);
     }
     let mut preserved = Vec::new();
     let masked = mask_secret_ref_spans(text, &mut preserved);
-    let mut output = hub.redact_output(&masked);
+    let mut output = hub.redact_secrets_only(&masked);
     for (token, original) in preserved {
         output = output.replace(&token, &original);
     }
@@ -560,5 +602,59 @@ mod tests {
 
         let inline = "token=AbCdEf1234567890";
         assert_eq!(redactor.redact_str(inline), "token=[REDACTED]");
+    }
+
+    #[test]
+    fn preserves_loopback_secret_entry_url_with_log_hub_and_rejects_embedded_urls() {
+        let hub = LogHub::default();
+        hub.set_sensitive_values(["top-secret-hub-value".to_owned()]);
+        hub.set_log_only_sensitive_values([
+            "192.0.2.10".to_owned(),
+            "C:\\Users\\demo\\config.toml".to_owned(),
+        ]);
+        let redactor = SecretRedactor::new(&Secrets::default(), Vec::new(), Some(hub.clone()));
+
+        let loopback = "http://127.0.0.1:8081/mcp/secret-entry?token=AbCdEf1234567890";
+        assert_eq!(redactor.redact_str(loopback), loopback);
+
+        let ipv6 = "http://[::1]:8081/mcp/secret-entry?token=AbCdEf1234567890";
+        assert_eq!(redactor.redact_str(ipv6), ipv6);
+
+        let with_json_quote =
+            r#"{"local_ui_url":"http://127.0.0.1:8081/mcp/secret-entry?token=AbCdEf1234567890"}"#;
+        assert_eq!(redactor.redact_str(with_json_quote), with_json_quote);
+        assert_eq!(
+            redactor.redact_str(
+                "Open http://127.0.0.1:8081/mcp/secret-entry?token=AbCdEf1234567890 (secret top-secret-hub-value cfg C:\\Users\\demo\\config.toml ip 192.0.2.10)"
+            ),
+            "Open http://127.0.0.1:8081/mcp/secret-entry?token=AbCdEf1234567890 (secret [REDACTED] cfg C:\\Users\\demo\\config.toml ip 192.0.2.10)"
+        );
+
+        for disguised in [
+            "https://evil.example/http://127.0.0.1:8081/mcp/secret-entry?token=AbCdEf1234567890",
+            "https://evil.example/?next=http://127.0.0.1:8081/mcp/secret-entry?token=AbCdEf1234567890",
+            "https://evil.example/?x=(http://127.0.0.1:8081/mcp/secret-entry?token=AbCdEf1234567890)",
+            "https://evil.example/a,http://127.0.0.1:8081/mcp/secret-entry?token=AbCdEf1234567890",
+            "xhttp://127.0.0.1:8081/mcp/secret-entry?token=AbCdEf1234567890",
+            "http://127.0.0.1:8081@evil.example/mcp/secret-entry?token=AbCdEf1234567890",
+            "http://[::1]evil.example/mcp/secret-entry?token=AbCdEf1234567890",
+            "http://[::1]:bad/mcp/secret-entry?token=AbCdEf1234567890",
+            "http://127.0.0.1:/mcp/secret-entry?token=AbCdEf1234567890",
+            "http://127.0.0.1:notaport/mcp/secret-entry?token=AbCdEf1234567890",
+            "http://127.0.0.1:8081/extra/http://127.0.0.1:8081/mcp/secret-entry?token=AbCdEf1234567890",
+        ] {
+            let redacted = redactor.redact_str(disguised);
+            assert!(
+                !redacted.contains("AbCdEf1234567890"),
+                "expected disguised token to be redacted: {disguised} -> {redacted}"
+            );
+            assert!(redacted.contains("token=[REDACTED]"), "{redacted}");
+        }
+
+        // Logs must keep redacting loopback secret-entry tokens.
+        assert_eq!(
+            hub.redact_output(loopback),
+            "http://127.0.0.1:8081/mcp/secret-entry?token=[REDACTED]"
+        );
     }
 }
