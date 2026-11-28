@@ -23,7 +23,7 @@ flowchart LR
 KeepPeek ships two canonical agent skills:
 
 - `skills/keeppeek-mcp/SKILL.md` teaches LLM assistants how to locate `config.toml` and `secrets.toml`, collect missing secrets out-of-band via `request_secret_entry` or `keeppeek secret`, probe cameras with `{secret:KEY}` references, run `plan_configuration_change` or dry-run hardware previews before requesting writes, and respect privacy and role boundaries.
-- `skills/keeppeek-camera-debug/SKILL.md` teaches assistants how to opt in safely to `[mcp].allow_camera_debugging`, capture decrypted PCAPNG and raw elementary bitstreams via `camera_debugging`, triage artifacts with `tshark`/`ffprobe`/`ffmpeg`, and export sanitized offline fixtures for `ReplayCameraServer` and `keeppeek-camera replay`.
+- `skills/keeppeek-camera-debug/SKILL.md` teaches assistants how to opt in safely to `[mcp].allow_camera_debugging`, stream live remote SSE traces via `keeppeek mcp logs`, capture decrypted PCAPNG, raw elementary bitstreams, and correlated `traces.jsonl` via `camera_debugging`, pull captures remotely (`keeppeek mcp pull-capture` or chunked `read_artifact`), triage with `tshark`/`ffprobe`/`ffmpeg`, export sanitized offline fixtures for `ReplayCameraServer` and `keeppeek-camera replay`, and hot-swap live dev builds with `keeppeek-supervisor update --channel local`.
 
 List, print, or export bundled skills from any installed KeepPeek binary:
 
@@ -136,14 +136,21 @@ activity appears separately in audit records and can be rotated or revoked indep
 camera onboarding, hardware tuning, and configuration management. See
 [Authentication and access control](./authentication.md).
 
-### Local `stdio` bridge
+### Local `stdio` bridge and remote diagnostic CLI
 
 Most desktop AI assistants launch MCP servers over `stdio`. KeepPeek provides a built-in `stdio`
-JSON-RPC bridge that talks to your KeepPeek server over `POST /mcp` (with `[mcp].enabled = true`):
+JSON-RPC bridge plus remote log-streaming and capture-download utilities over `POST /mcp`,
+`GET /logs`, and `GET /logs/snapshot` (with `[mcp].enabled = true`):
 
 ```sh
 keeppeek mcp [--server <URL>] [--config <PATH>] [--credential-file <PATH>] [--read-only]
+keeppeek mcp [--server <URL>] [--credential-file <PATH>] logs [--level <LEVEL>] [--target <SUBSTR>] [--camera <ID>] [--query <SUBSTR>] [--filter <DIRECTIVE>] [--follow] [--limit <N>]
+keeppeek mcp [--server <URL>] [--credential-file <PATH>] pull-capture <CAPTURE_ID> --output <DIR> [--artifact <NAME>...]
 ```
+
+- `--server`, `--config`, `--credential-file`, and `--read-only` are top-level `keeppeek mcp` options and must appear **before** `logs`, `pull-capture`, or `skill`.
+- `keeppeek mcp logs` fetches `GET /logs/snapshot` (default, up to `--limit`, default `100`) or streams live `GET /logs` SSE events (`--follow`, tail `1..=1000`), filtering by `--level` (`trace | debug | info | warn | error`), `--target`, `--camera`, and `--query`, and printing compact JSONL `LogEntry` lines to `stdout`. Passing `--filter <DIRECTIVE>` temporarily applies an `EnvFilter` via `get_logging_settings` + `set_logging_filter` (requires Administrator + `[mcp].allow_writes = true`, without `--read-only`) and restores the previous filter automatically on exit or `Ctrl-C`.
+- `keeppeek mcp pull-capture` downloads every artifact (or specific `--artifact <NAME>` files) from `camera_debugging` (`list_captures` + chunked `read_artifact`), writes files atomically inside `--output <DIR>`, verifies SHA-256 digests, and prints `<artifact>\t<bytes>\t<sha256>`.
 
 - `--server <URL>` targets a specific KeepPeek server origin (for example `http://127.0.0.1:8081`
   or `https://keeppeek.example.net`).
@@ -239,17 +246,21 @@ over a private VPN. Direct plain HTTP from a remote-classified address is reject
 Because `POST /mcp` is stateless, AI agents testing local KeepPeek changes can stay connected
 across live supervised binary swaps without restarting the agent or editing MCP client config:
 
-1. Start the supervisor once with local channel opt-in and a short probation window:
+1. Start the supervised host once with local channel opt-in and a short probation window:
 
    ```sh
+   # Standalone CLI supervisor
    keeppeek-supervisor run --root <dev-supervisor-root> --config <path/to/config.toml> --allow-local --probation-ms 500
+   # Or Windows service / KeepPeek Desktop dev hosts:
+   keeppeek-service.exe --allow-local
+   keeppeek-desktop --manage-local-server --allow-local
    ```
 
 2. Point the MCP client directly at Streamable HTTP (`http://127.0.0.1:8081/mcp`). On Windows,
    prefer Streamable HTTP (or a copied `keeppeek.exe` outside `target/`) over running
    `target/debug/keeppeek.exe mcp` directly so Cargo can relink `target/debug/keeppeek.exe`
    without a file lock.
-3. After editing Rust code, rebuild and hot-swap the running child in one command:
+3. After editing Rust code, rebuild and hot-swap the running child in one command (use `target/debug/keeppeek.exe` on Windows):
 
    ```sh
    cargo build --bin keeppeek
@@ -388,10 +399,11 @@ application (`dry_run: false`) requires all three conditions:
 Supported `camera_debugging` actions:
 
 - `inspect_pipeline`: Inspect active camera backend, stream state, health, and profile configuration from live `ServerState`.
-- `capture`: Run a bounded capture (`duration_seconds` `1..=60`, `max_bytes` `65536..=268435456`, `stream`: `"main" | "sub" | "both"`) collecting requested `artifacts` (`"pcapng"`, `"video_bitstream"`, `"audio_bitstream"`, `"muxed_mp4"`, `"protocol_transcript"`) across `protocols` (`"rtsp"`, `"audio"`, `"onvif"`, `"isapi"`, `"reolink_http"`, `"reo_proto"`).
-- `compare_transports`: Compare `mode: "media_transports"` or `mode: "event_channels"` side-by-side for a camera.
+- `capture`: Run a bounded capture (`duration_seconds` `1..=60`, `max_bytes` `65536..=268435456`, `stream`: `"main" | "sub" | "both"`) collecting requested `artifacts` (`"pcapng"`, `"video_bitstream"`, `"audio_bitstream"`, `"muxed_mp4"`, `"protocol_transcript"`, `"traces"`; all six enabled by default when omitted) across `protocols` (`"rtsp"`, `"audio"`, `"onvif"`, `"isapi"`, `"reolink_http"`, `"reo_proto"`). Optional `trace_filter` (`1..=512` bytes, `EnvFilter` directive) temporarily boosts tracing under an RAII guard when `"traces"` is enabled (defaulting to full protocol `TRACE` targets) and restores the previous filter on completion.
+- `compare_transports`: Compare `mode: "media_transports"` or `mode: "event_channels"` side-by-side for a camera (also accepts `trace_filter` when `"traces"` is enabled).
+- `read_artifact`: Read any saved capture artifact in bounded chunks (`capture_id`, single-segment `artifact` filename `<= 128` bytes, `offset` default `0`, `length` `1..=131072` default `65536`, `encoding`: `"auto" | "base64" | "utf8"`) returning `total_bytes`, full-file `sha256`, `eof`, `next_offset`, `encoding`, and `data`. Works in `--read-only` mode.
 - `export_repro_fixture`: Export a `keeppeek.camera-repro.v1` JSON fixture (`strip_credentials` default `true`, `anonymize_network` default `true`, `trim_media`: `"headers_and_minimal_failing_slice" | "synthetic_payloads" | "keep_raw_frames"`) with a `sharing_safety_report`.
-- `list_captures`: List saved captures under `<config-dir>/camera-debug/<capture-id>/` with byte sizes and `created_at_unix_secs` timestamps (24-hour TTL entries are pruned on list).
+- `list_captures`: List saved captures under `<config-dir>/camera-debug/<capture-id>/` with byte sizes, filenames, and `created_at_unix_secs` timestamps (24-hour TTL entries are pruned on list).
 - `delete_capture`: Delete one `capture_id` or all saved captures (`delete_all: true`).
 
 ### Self-disable governance tool (1)
@@ -438,12 +450,20 @@ and IP/network/DHCP/gateway/DNS/port reassignment with HTTP `403`, even when `dr
 
 ## Deep camera protocol debugging and offline replay
 
-When standard health and log tools are not enough to diagnose an RTSP, RTP, ONVIF, ISAPI, or Reolink Baichuan (`reo_proto`) interoperability defect, enable `[mcp].allow_camera_debugging = true` temporarily and export the `keeppeek-camera-debug` skill (`keeppeek mcp skill camera-debug`).
+When standard health and log tools are not enough to diagnose an RTSP, RTP, ONVIF, ISAPI, or Reolink Baichuan (`reo_proto`) interoperability defect, enable `[mcp].allow_camera_debugging = true` temporarily and export the `keeppeek-camera-debug` skill (`keeppeek mcp skill camera-debug`). Remote HTTPS servers and local servers use the exact same workflow:
 
-1. **Capture on the running server:** Run `camera_debugging` (`inspect_pipeline` -> `capture` -> `compare_transports`). KeepPeek writes bounded artifacts under `<config-dir>/camera-debug/<capture-id>/` (`capture.pcapng` with Ethernet/IP/TCP/UDP framing around decrypted payloads, raw `.h264`/`.h265` and audio elementary streams, `rtp_packets.bin` when raw RTP dump is enabled, `muxed.mp4`, `sdp.txt`, `protocol_transcript.json`, and atomically written `capture.json`) with a 24-hour TTL and FIFO eviction at `max_debug_storage_bytes`.
-2. **Triage locally with standard tools:** Inspect `capture.pcapng` with `tshark` (`-Y "rtsp || rtp || http || xml"`, `-z follow,tcp,ascii,0`, `-T fields -e rtp.seq -e rtp.timestamp -e h264.nal_unit_type`), `ffprobe -show_packets -show_frames muxed.mp4`, and `ffmpeg -v error -i video.h264 -f null -`.
-3. **Export a sanitized fixture and reproduce offline:** Call `camera_debugging` (`action: "export_repro_fixture"`, `strip_credentials: true`, `anonymize_network: true`) and verify `sharing_safety_report.safe_to_share_publicly` is `true` (RFC 5737 `192.0.2.x` addresses and stripped credentials). Reproduce deterministically using `ReplayCameraServer` in `crates/test-camera/src/replay.rs` (`keeppeek.camera-repro.v1`) or interactively via `keeppeek-camera replay --fixture <PATH> [--bind 127.0.0.1:0] [--once | --loop]`. Build and test fixes locally with `cargo nextest` and `cargo run --bin keeppeek` against a test configuration (live binary hot-swap via `keeppeek-supervisor` is coming separately).
-4. **Clean up and re-lock:** Delete local captures with `camera_debugging` (`action: "delete_capture"`), stop KeepPeek, set `allow_camera_debugging = false` in `config.toml`, and restart KeepPeek.
+1. **Stream live traces over SSE (optional):** Run `keeppeek mcp --server <URL> logs --follow --camera <id> --filter "info,keeppeek=debug,retina=debug,reo_proto=debug,onvif=debug"` to observe real-time span-correlated events (`camera_id`, `stream`) and auto-restore the filter on exit.
+2. **Capture on the running server:** Run `camera_debugging` (`inspect_pipeline` -> `capture` -> `compare_transports`). KeepPeek writes bounded artifacts under `<config-dir>/camera-debug/<capture-id>/` (`capture.pcapng` with Ethernet/IP/TCP/UDP framing around decrypted payloads, raw `.h264`/`.h265` and audio elementary streams, `rtp_packets.bin` when raw RTP dump is enabled, `muxed.mp4`, `sdp.txt`, `protocol_transcript.json`, capture-correlated `traces.jsonl` up to 1 MiB, and atomically written `capture.json`) with a 24-hour TTL and FIFO eviction at `max_debug_storage_bytes`.
+3. **Pull artifacts and triage locally:** Download via `keeppeek mcp --server <URL> pull-capture <capture-id> --output ./debug-out` (with automatic SHA-256 verification; pure-MCP agents without CLI access can loop `camera_debugging` `action: "read_artifact"` chunks). Inspect `capture.pcapng` with `tshark` (`-Y "rtsp || rtp || http || xml"`, `-z follow,tcp,ascii,0`, `-T fields -e rtp.seq -e rtp.timestamp -e h264.nal_unit_type`), `ffprobe -show_packets -show_frames muxed.mp4`, `ffmpeg -v error -i video.h264 -f null -`, and `traces.jsonl`.
+
+   | Filter tier | Directive                                                                                                                                                                                                                           | Scope                                                                                                        |
+   | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+   | `INFO`      | `info,keeppeek=info`                                                                                                                                                                                                                | Sparse connect/disconnect, negotiated stream summary, failover, warnings/errors.                             |
+   | `DEBUG`     | `info,keeppeek=debug,retina=debug,reo_proto=debug,onvif=debug`                                                                                                                                                                      | Resolves ~75% of issues (auth retries, capability/profile selection, SDP, SPS/PPS/VPS, RTP gaps, A/V drift). |
+   | `TRACE`     | `retina=trace,reo_proto=trace,onvif=trace,keeppeek::rtsp=trace,keeppeek::reolink=trace,keeppeek::isapi=trace,keeppeek::cameras=trace,keeppeek::camera_events=trace,keeppeek::media_time=trace,keeppeek::storage::medium_term=trace` | Resolves 100% of protocol/depacketizer/muxer issues (RTSP/RTCP, FU-A/STAP-A, Baichuan headers, ISAPI, SOAP). |
+
+4. **Export a sanitized fixture, reproduce offline, and hot-swap live:** Call `camera_debugging` (`action: "export_repro_fixture"`, `strip_credentials: true`, `anonymize_network: true`) and verify `sharing_safety_report.safe_to_share_publicly` is `true` (RFC 5737 `192.0.2.x` addresses and stripped credentials). Reproduce deterministically using `ReplayCameraServer` in `crates/test-camera/src/replay.rs` (`keeppeek.camera-repro.v1`) or interactively via `keeppeek-camera replay --fixture <PATH> [--bind 127.0.0.1:0] [--once | --loop]`. After offline `cargo nextest` passes, swap your build onto a `--allow-local` supervised host without dropping your MCP client using [Fast local development and agentic MCP loop](#fast-local-development-and-agentic-mcp-loop) (`keeppeek-supervisor update --channel local --binary ... --apply --wait --json`) and immediately re-verify on the real camera.
+5. **Clean up and re-lock:** Delete server captures with `camera_debugging` (`action: "delete_capture"`), reset `set_logging_filter` if changed manually, stop KeepPeek, set `allow_camera_debugging = false` in `config.toml`, restart KeepPeek, and optionally call `disable_mcp_access` (`{"confirm": true}`) to disable `/mcp` live.
 
 ## Safe configuration workflow
 
@@ -501,7 +521,7 @@ Every MCP response, configuration snapshot, dry-run diff, probe diagnostic, log 
 - Raw values loaded from `secrets.toml` (including URL percent-encoded variants) are scrubbed.
 - Fields with credential-like names (`password`, `secret`, `token`, `access_key`, `verifier`, `cookie`, `authorization`, `api_key`, `private_key`) are redacted unless they are already `{secret:KEY}` or `{secret:KEY|url}` references.
 - Embedded URL credentials (`scheme://user:pass@host`) are scrubbed while `{secret:KEY}` and `{secret:KEY|url}` tokens remain visible for safe editing.
-- **Explicit `camera_debugging` boundary:** When `[mcp].allow_camera_debugging = true`, `SecretRedactor` is bypassed by default on `capture` and `compare_transports` (both default `include_raw_auth: true` — pass `include_raw_auth: false` to redact), bypassed on `inspect_pipeline` only when `include_raw_auth: true` is passed (defaults to `false`), and bypassed on `export_repro_fixture` only when `strip_credentials: false` is passed (defaults to `true`). `SecretRedactor` remains strictly enforced on all other 28 MCP tools, error messages, and whenever `export_repro_fixture` runs with `strip_credentials: true`.
+- **Explicit `camera_debugging` boundary:** When `[mcp].allow_camera_debugging = true`, `SecretRedactor` is bypassed by default on `capture` and `compare_transports` (both default `include_raw_auth: true` — pass `include_raw_auth: false` to redact), bypassed on authorized `read_artifact` responses (so `traces.jsonl`, `capture.pcapng`, and `protocol_transcript.json` download intact with SHA-256 parity), bypassed on `inspect_pipeline` only when `include_raw_auth: true` is passed (defaults to `false`), and bypassed on `export_repro_fixture` only when `strip_credentials: false` is passed (defaults to `true`). `SecretRedactor` remains strictly enforced on all other 28 MCP tools, error messages, disallowed cameras, and whenever `export_repro_fixture` runs with `strip_credentials: true`.
 
 ### DNS rebinding and cross-origin protection
 

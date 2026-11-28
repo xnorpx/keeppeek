@@ -48,16 +48,18 @@ When `--config <PATH>` is passed to KeepPeek, `secrets.toml` always resides in t
 
 Choose the local `stdio` bridge for local assistants, or enable the embedded Streamable HTTP endpoint for remote or networked MCP clients.
 
-### Local `stdio` bridge (recommended for local clients)
+### Local `stdio` bridge and remote diagnostic utilities
 
-Run the built-in `stdio` JSON-RPC bridge:
+Run the built-in `stdio` JSON-RPC bridge, or invoke remote log-streaming and capture-download utilities (pass `--server`, `--config`, `--credential-file`, and `--read-only` **before** `logs` or `pull-capture`):
 
 ```sh
 keeppeek mcp [--server <URL>] [--config <PATH>] [--credential-file <PATH>] [--read-only]
+keeppeek mcp [--server <URL>] [--credential-file <PATH>] logs [--level <LEVEL>] [--target <SUBSTR>] [--camera <ID>] [--query <SUBSTR>] [--filter <DIRECTIVE>] [--follow] [--limit <N>]
+keeppeek mcp [--server <URL>] [--credential-file <PATH>] pull-capture <CAPTURE_ID> --output <DIR> [--artifact <NAME>...]
 ```
 
-- `stdout` carries strict newline-delimited JSON-RPC frames. Warnings and diagnostic output go to `stderr`.
-- Pass `--read-only` to enforce read-only inspection even when the server allows MCP writes or camera device writes. The bridge sends `X-KeepPeek-MCP-Read-Only: true`.
+- `stdout` carries strict newline-delimited JSON-RPC frames (or JSONL `LogEntry` lines for `logs`, and `<artifact>\t<bytes>\t<sha256>` lines for `pull-capture`). Warnings and diagnostic output go to `stderr`.
+- Pass `--read-only` to enforce read-only inspection even when the server allows MCP writes or camera device writes. The bridge sends `X-KeepPeek-MCP-Read-Only: true` (note `logs --filter` requires write access to call `set_logging_filter`).
 - Authenticate with the `KEEPPEEK_ACCESS_KEY` environment variable or `--credential-file <PATH>`. On loopback, the server allows unauthenticated access only when its `[access].local_networks` policy permits local trust.
 
 ### Embedded Streamable HTTP (`POST /mcp`, opt-in)
@@ -312,7 +314,10 @@ Save a webhook notification draft using a secret reference (`manage_notification
 Use read-only diagnostic tools in order from broad health to specific evidence:
 
 1. Call `get_server_health` to inspect recorder status, camera connection states, stream progress, and disk pressure. (For **User** credentials, results are filtered to permitted cameras.)
-2. Call `search_logs` and `get_logging_settings` (Administrator) to inspect redacted server logs by level, target, camera, time window, and limit.
+2. Call `search_logs` and `get_logging_settings` (Administrator) to inspect redacted server logs by level, target, camera, time window, and limit — or stream live SSE traces over HTTPS/HTTP with `keeppeek mcp --server <URL> logs --follow --camera <ID> --filter "..."` (which restores the previous filter via `set_logging_filter` on exit). Standard 3-tier filter directives:
+   - `INFO`: `info,keeppeek=info` (or default `info,keeppeek=debug`)
+   - `DEBUG`: `info,keeppeek=debug,retina=debug,reo_proto=debug,onvif=debug`
+   - `TRACE`: `retina=trace,reo_proto=trace,onvif=trace,keeppeek::rtsp=trace,keeppeek::reolink=trace,keeppeek::isapi=trace,keeppeek::cameras=trace,keeppeek::camera_events=trace,keeppeek::media_time=trace,keeppeek::storage::medium_term=trace`
 3. Call `get_recording_coverage` to check recorded segments and gaps for authorized cameras over a bounded time window.
 4. Call `search_events` to query stored events with a bounded `limit` (default 25, max 100) across authorized cameras.
 5. Call `get_storage_status` (Administrator) to inspect storage paths, disk usage, named volumes, archive destinations, and recording maintenance status.
@@ -322,7 +327,7 @@ Use read-only diagnostic tools in order from broad health to specific evidence:
    - Requires camera view permission and respects `snapshot_min_interval_seconds` per camera.
    - Privacy is fail-closed: KeepPeek refuses capture if a `[privacy]` schedule or runtime profile override is active or cannot be verified.
    - Frames are bounded-decoded, downscaled to `max_snapshot_dimension`, and JPEG-encoded within `max_snapshot_bytes`. KeepPeek does not apply server-side pixel masks; only camera-side (hardware) privacy masks already rendered by the camera appear in the frame.
-9. For deep protocol or bitstream debugging (decrypted PCAPNG captures, raw H.264/H.265/audio elementary streams, transport comparisons, and sanitized offline `ReplayCameraServer` fixtures via `camera_debugging`), switch to the bundled [`keeppeek-camera-debug`](../keeppeek-camera-debug/SKILL.md) skill (`keeppeek mcp skill camera-debug`). It requires explicit `[mcp].allow_camera_debugging = true` opt-in.
+9. For deep protocol or bitstream debugging (decrypted PCAPNG captures, raw H.264/H.265/audio elementary streams, capture-correlated `traces.jsonl` with RAII `trace_filter` boost, remote `keeppeek mcp pull-capture` / chunked `read_artifact` downloads, transport comparisons, sanitized offline `ReplayCameraServer` fixtures via `camera_debugging`, and the `keeppeek-supervisor update --channel local` live binary hot-swap loop), switch to the bundled [`keeppeek-camera-debug`](../keeppeek-camera-debug/SKILL.md) skill (`keeppeek mcp skill camera-debug`). It requires explicit `[mcp].allow_camera_debugging = true` opt-in.
 
 ## 7. Strict Safety Rules
 
