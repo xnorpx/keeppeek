@@ -72,7 +72,7 @@ jobs:
           has_match() {
             printf '%s\n' "$changed" | grep -Eq "$1" && echo "true" || echo "false"
           }
-          rust="$(has_match '^(Cargo\.(toml|lock)|\.cargo/|build\.rs|src/|crates/|tests/|api/|installer/|\.github/workflows/ci\.yml|\.github/actions/|\.github/scripts/)')"
+          rust="$(has_match '^(Cargo\.(toml|lock)|\.cargo/|build\.rs|godzilla\.py|src/|crates/|tests/|api/|installer/|\.github/workflows/ci\.yml|\.github/actions/|\.github/scripts/)')"
           ui="$(has_match '^(ui/|api/|\.npmrc|\.github/workflows/ci\.yml)')"
           docs="$(has_match '^(book/|docs/|README\.md|ui/scripts/.*wiki.*|\.github/workflows/ci\.yml)')"
           python="$(has_match '^(examples/object_detection_service/|api/|\.github/workflows/ci\.yml)')"
@@ -209,6 +209,26 @@ jobs:
         with:
           tool: cargo-machete@0.9.2
       - run: cargo machete
+
+  godzilla:
+    name: Godzilla (No Tokio / Async)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version-file: examples/object_detection_service/.python-version
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Test Godzilla policy gate
+        run: PYTHONPATH=. python -m unittest discover -s tests -p "test_godzilla.py" -v
+      - name: Run Godzilla no-tokio / no-async gate
+        run: python godzilla.py
 
   doctest:
     name: Rust Doctests
@@ -1590,6 +1610,7 @@ jobs:
         book,
         clippy,
         machete,
+        godzilla,
         rust-build,
         rust-test,
         rust-compatibility-gate,
@@ -1615,6 +1636,7 @@ jobs:
         fmt,
         clippy,
         machete,
+        godzilla,
         rust-build,
         rust-test,
         rust-compatibility-gate,
@@ -1658,6 +1680,7 @@ jobs:
               'Format',
               'Clippy',
               'Unused Dependencies',
+              'Godzilla (No Tokio / Async)',
               'Rust Build (macos-latest)',
               'Rust Build (windows-latest)',
               'Rust Test (ubuntu-latest, core)',

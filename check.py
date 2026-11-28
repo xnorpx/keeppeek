@@ -304,6 +304,7 @@ def phase_commands() -> list[tuple[str, list[str], Path]]:
     macos_feature = ["--features", "macos-test-aws-crypto"] if sys.platform == "darwin" else []
     nextest = ["cargo", "nextest", "run", "--locked", "--all", *macos_feature]
     return [
+        ("Godzilla async/tokio gate", [sys.executable, "godzilla.py"], REPOSITORY_ROOT),
         ("Rust build", ["cargo", "build", "--locked", "--all", "--timings"], REPOSITORY_ROOT),
         ("Rust tests", nextest, REPOSITORY_ROOT),
         (
