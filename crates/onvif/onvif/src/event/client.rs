@@ -170,6 +170,12 @@ impl Client {
         let deadline = Deadline::new(timeout, now);
         let url = self.prepare_auth(&request.endpoint)?;
         for attempt in 0..AUTH_ATTEMPTS_MAX {
+            tracing::trace!(
+                attempt,
+                action = %request.action,
+                has_digest = self.challenge.is_some(),
+                "sending ONVIF event SOAP request"
+            );
             let response = self.execute_post(request, &url, &deadline)?;
             validate_unique_headers(response.headers())?;
             deadline.remaining()?;
@@ -179,8 +185,15 @@ impl Client {
             }
             let body = read_response(response)?;
             deadline.remaining()?;
+            tracing::trace!(
+                attempt,
+                action = %request.action,
+                body_len = body.len(),
+                "received ONVIF event SOAP response"
+            );
             return Ok(body);
         }
+        tracing::debug!(action = %request.action, "ONVIF event request exhausted auth attempts");
         Err(ClientError(Failure::Authentication))
     }
 
@@ -250,19 +263,36 @@ impl Client {
         let parsed =
             digest_auth::parse(challenge).map_err(|_| ClientError(Failure::Authentication))?;
         if attempt + 1 >= AUTH_ATTEMPTS_MAX {
+            tracing::debug!(
+                attempt,
+                "ONVIF event digest challenge exceeded max attempts"
+            );
             return Err(ClientError(Failure::Authentication));
         }
+        let mut same_realm = false;
         if let Some(previous) = &self.challenge {
-            let same_realm = previous.realm == parsed.realm;
+            same_realm = previous.realm == parsed.realm;
             if (same_realm && (!parsed.stale || parsed.nonce == previous.nonce))
                 || (!same_realm && attempt != 0)
             {
+                tracing::debug!(
+                    attempt,
+                    same_realm,
+                    stale = parsed.stale,
+                    "ONVIF event digest challenge rejected"
+                );
                 return Err(ClientError(Failure::Authentication));
             }
             if !same_realm {
                 self.nonce = uuid::Uuid::new_v4().simple().to_string();
             }
         }
+        tracing::debug!(
+            attempt,
+            same_realm,
+            stale = parsed.stale,
+            "ONVIF event digest challenge accepted"
+        );
         self.challenge = Some(parsed);
         Ok(())
     }
@@ -272,6 +302,7 @@ fn read_response(response: ureq::http::Response<ureq::Body>) -> Result<Vec<u8>, 
     let status = response.status().as_u16();
     let soap = has_media_type(response.headers(), "application/soap+xml");
     if status != 200 && (!matches!(status, 400 | 500) || !soap) {
+        tracing::debug!(status, soap, "ONVIF event unexpected HTTP status");
         return Err(ClientError(Failure::Http(status)));
     }
     validate_body_headers(
@@ -290,9 +321,12 @@ fn read_response(response: ureq::http::Response<ureq::Body>) -> Result<Vec<u8>, 
     let root = xml::parse(&bytes, NOTIFICATION_XML_SIZE_BYTES_MAX)?;
     let root = xml::payload(&root)?;
     if xml::matches(root, xml::SOAP, "Fault") {
-        return Err(fault(root));
+        let err = fault(root);
+        tracing::debug!(status, ?err, "ONVIF event SOAP fault");
+        return Err(err);
     }
     if status != 200 {
+        tracing::debug!(status, "ONVIF event non-200 response without SOAP fault");
         return Err(ClientError(Failure::Http(status)));
     }
     Ok(bytes)

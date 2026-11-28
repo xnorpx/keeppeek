@@ -12,7 +12,7 @@ use crate::{
     rtp::{RawPacket, ReceivedPacket},
 };
 use bytes::Bytes;
-use log::{debug, warn};
+use log::{debug, log_enabled, trace, warn};
 
 /// Describes how Retina formed its initial expectation for the stream's `ssrc` or `seq`.
 #[derive(Copy, Clone, Debug)]
@@ -220,6 +220,10 @@ impl InorderParser {
         let loss =
             sequence_number.wrapping_sub(self.seq.map(|s| s.next).unwrap_or(sequence_number));
         if matches!(self.ssrc, Some(s) if s.ssrc != ssrc) {
+            debug!(
+                "rtp unexpected ssrc: stream_id={stream_id} got=0x{ssrc:08x} expected={:?} seq={sequence_number}",
+                self.ssrc
+            );
             note_stale_live555_data_if_tcp(tool, session_options, conn_ctx, stream_ctx, pkt_ctx);
             bail!(ErrorInt::RtpPacketError {
                 conn_ctx: *conn_ctx,
@@ -234,12 +238,20 @@ impl InorderParser {
                 ),
             });
         } else if self.ssrc.is_none() {
+            debug!(
+                "rtp ssrc bound from packet: stream_id={stream_id} ssrc=0x{ssrc:08x} pt={} seq={sequence_number}",
+                raw.payload_type()
+            );
             self.ssrc = Some(Ssrc {
                 init: InitialExpectation::RtpPacket,
                 ssrc,
             });
         }
         if loss > 0x80_00 {
+            debug!(
+                "rtp out-of-order or large gap: stream_id={stream_id} ssrc=0x{ssrc:08x} seq={sequence_number} expected_seq={:?} raw_gap={loss}",
+                self.seq.map(|s| s.next)
+            );
             bail!(ErrorInt::RtpPacketError {
                 conn_ctx: *conn_ctx,
                 pkt_ctx: *pkt_ctx,
@@ -253,18 +265,40 @@ impl InorderParser {
                 ),
             });
         }
+        if loss > 0 {
+            debug!(
+                "rtp sequence gap: stream_id={stream_id} ssrc=0x{ssrc:08x} seq={sequence_number} expected_seq={:?} gap={loss}",
+                self.seq.map(|s| s.next)
+            );
+        }
         let timestamp = match timeline.advance_to(raw.timestamp()) {
             Ok(ts) => ts,
-            Err(description) => bail!(ErrorInt::RtpPacketError {
-                conn_ctx: *conn_ctx,
-                pkt_ctx: *pkt_ctx,
-                stream_ctx: stream_ctx.to_owned(),
-                stream_id,
-                ssrc,
-                sequence_number,
-                description,
-            }),
+            Err(description) => {
+                debug!(
+                    "rtp timeline rejected packet: stream_id={stream_id} ssrc=0x{ssrc:08x} seq={sequence_number} rtp_ts={} reason={description}",
+                    raw.timestamp()
+                );
+                bail!(ErrorInt::RtpPacketError {
+                    conn_ctx: *conn_ctx,
+                    pkt_ctx: *pkt_ctx,
+                    stream_ctx: stream_ctx.to_owned(),
+                    stream_id,
+                    ssrc,
+                    sequence_number,
+                    description,
+                });
+            }
         };
+        if log_enabled!(log::Level::Trace) {
+            trace!(
+                "rtp packet: stream_id={stream_id} ssrc=0x{ssrc:08x} pt={} seq={sequence_number} ts={} rtp_ts={} mark={} payload_len={} loss={loss}",
+                raw.payload_type(),
+                timestamp.timestamp(),
+                raw.timestamp(),
+                raw.mark(),
+                payload_range.len()
+            );
+        }
         self.seq = Some(Seq {
             init: self
                 .seq
@@ -360,17 +394,66 @@ impl InorderParser {
             )?);
             // ProcessPackets can deliver other senders' control packets to the caller.
             if self.ssrc.is_some_and(|source| source.ssrc == ssrc) {
+                let first_sr = self.sender_report.is_none();
                 self.sender_report =
                     (sr.ntp_timestamp().0 != 0).then(|| (sr.rtp_timestamp(), sr.ntp_timestamp()));
+                if first_sr && self.sender_report.is_some() {
+                    debug!(
+                        "rtcp sender report initialized: stream_id={stream_id} ssrc=0x{ssrc:08x} rtp_ts={} ntp=0x{:016x}",
+                        sr.rtp_timestamp(),
+                        sr.ntp_timestamp().0
+                    );
+                }
             }
         }
         self.seen_rtcp_packets += 1;
-        Ok(Some(PacketItem::Rtcp(ReceivedCompoundPacket {
+        let compound = ReceivedCompoundPacket {
             ctx: *pkt_ctx,
             stream_id,
             rtp_timestamp,
             raw: data,
-        })))
+        };
+        if log_enabled!(log::Level::Trace) {
+            log_rtcp_compound_trace(stream_id, &compound);
+        }
+        Ok(Some(PacketItem::Rtcp(compound)))
+    }
+}
+
+fn log_rtcp_compound_trace(stream_id: usize, compound: &ReceivedCompoundPacket) {
+    for pkt in compound.pkts() {
+        match pkt.as_typed() {
+            Ok(Some(crate::rtcp::TypedPacketRef::SenderReport(sr))) => {
+                trace!(
+                    "rtcp SR: stream_id={stream_id} ssrc=0x{:08x} ntp=0x{:016x} rtp_ts={} blocks={}",
+                    sr.ssrc(),
+                    sr.ntp_timestamp().0,
+                    sr.rtp_timestamp(),
+                    sr.count()
+                );
+            }
+            Ok(Some(crate::rtcp::TypedPacketRef::ReceiverReport(rr))) => {
+                trace!(
+                    "rtcp RR: stream_id={stream_id} ssrc=0x{:08x} blocks={}",
+                    rr.ssrc(),
+                    rr.count()
+                );
+            }
+            Ok(None) => {
+                trace!(
+                    "rtcp packet: stream_id={stream_id} pt={} count={} len={}",
+                    pkt.payload_type(),
+                    pkt.count(),
+                    pkt.raw().len()
+                );
+            }
+            Err(error) => {
+                debug!(
+                    "rtcp subpacket invalid: stream_id={stream_id} pt={} err={error}",
+                    pkt.payload_type()
+                );
+            }
+        }
     }
 }
 

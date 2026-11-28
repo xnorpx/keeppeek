@@ -251,8 +251,16 @@ impl Client {
             RequestAuthType::UsernameToken => self.username_token_auth(),
             _ => None,
         };
+        let auth_mode = match auth_type {
+            RequestAuthType::Digest(_) => "Digest",
+            RequestAuthType::UsernameToken => "UsernameToken",
+        };
+        let action = soap_operation_name(message);
 
-        debug!(?auth_type, %redirections, "About to make request.");
+        debug!(auth_mode, action, %redirections, "About to make SOAP request");
+        if tracing::enabled!(tracing::Level::TRACE) {
+            trace!(auth_mode, action, payload = message, "SOAP request payload");
+        }
 
         let soap_msg =
             soap::soap(message, &username_token).map_err(|e| Error::Protocol(format!("{e:?}")))?;
@@ -268,14 +276,14 @@ impl Client {
                 .map_err(|error| Error::Authorization(error.to_string()))?
         {
             request = request.header("Authorization", authorization);
-            debug!("Digest headers added");
+            trace!(action, "Digest authorization header attached");
         }
 
         let response = request.send(soap_msg).map_err(Self::map_ureq_error)?;
 
         let status = response.status();
 
-        debug!("Response status: {status}");
+        debug!(action, status = status.as_u16(), "SOAP response status");
 
         if !status.is_success()
             && status != ureq::http::StatusCode::UNAUTHORIZED
@@ -318,13 +326,15 @@ impl Client {
                 }
                 _ => {
                     if let Ok(text) = self.read_response_body(response) {
-                        debug!("Got Unauthorized with body: {text}");
+                        trace!(action, "SOAP Unauthorized body: {text}");
                     }
+                    debug!(action, auth_mode, "SOAP request unauthorized");
 
                     return Err(Error::Authorization(status.to_string()));
                 }
             }
 
+            debug!(action, "Retrying SOAP request after 401 Digest challenge");
             self.request_recursive(message, uri, auth_type, redirections)
         } else if status.is_redirection() {
             if !self.config.follow_redirects {
@@ -343,20 +353,39 @@ impl Client {
                 .parse::<Url>()
                 .map_err(|error| Error::Redirection(error.to_string()))?;
 
-            debug!("Redirecting to {new_url} ...");
+            debug!(action, new_url = %new_url, "Redirecting SOAP request");
 
             self.request_recursive(message, &new_url, auth_type, redirections + 1)
         } else {
             let text = self.read_response_body(response).unwrap_or_default();
-            debug!("Got HTTP error with body: {text}");
+            trace!(
+                action,
+                status = status.as_u16(),
+                "SOAP HTTP error body: {text}"
+            );
 
             let Err(soap::Error::Fault(fault)) = soap::unsoap(&text) else {
+                debug!(
+                    action,
+                    status = status.as_u16(),
+                    "SOAP HTTP error without fault"
+                );
                 return Err(Error::Other(status.to_string()));
             };
 
-            let message = fault.code.subcode.as_ref().map_or_else(
+            let subcode = fault.code.subcode.as_ref().map(|s| s.value.as_str());
+            debug!(
+                action,
+                status = status.as_u16(),
+                fault_code = %fault.code.value,
+                ?subcode,
+                unauthorized = fault.is_unauthorized(),
+                "SOAP fault response"
+            );
+
+            let message = subcode.map_or_else(
                 || status.to_string(),
-                |subcode| format!("{status} ({})", subcode.value),
+                |subcode| format!("{status} ({subcode})"),
             );
 
             if fault.is_unauthorized() {
@@ -415,6 +444,18 @@ fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(": ")
+}
+
+fn soap_operation_name(message: &str) -> &str {
+    let trimmed = message.trim_start();
+    let Some(after_lt) = trimmed.strip_prefix('<') else {
+        return "unknown";
+    };
+    let tag_end = after_lt
+        .find(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '>' | '/'))
+        .unwrap_or(after_lt.len());
+    let full_tag = &after_lt[..tag_end];
+    full_tag.rsplit(':').next().unwrap_or(full_tag)
 }
 
 #[cfg(test)]
@@ -807,5 +848,85 @@ mod tests {
         );
         let text = error.to_string();
         assert!(text.contains(':'), "{text}");
+    }
+
+    struct LogBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for LogBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuf {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            Self(std::sync::Arc::clone(&self.0))
+        }
+    }
+
+    #[test]
+    fn soap_logging_is_tiered_and_redacts_secrets() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let uri = Url::parse(&format!(
+            "http://{}/onvif/device_service",
+            listener.local_addr().unwrap()
+        ))
+        .unwrap();
+        let server = thread::spawn(move || {
+            for _ in 0..5 {
+                let (mut stream, _) = listener.accept().unwrap();
+                read_request(&mut stream);
+                write_response(
+                    &mut stream,
+                    "401 Unauthorized",
+                    &[(
+                        "WWW-Authenticate",
+                        r#"Digest realm="onvif", qop="auth", nonce="very-secret-digest-nonce""#,
+                    )],
+                    "",
+                );
+            }
+        });
+
+        let buf = LogBuf(std::sync::Arc::new(std::sync::Mutex::new(Vec::new())));
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer(LogBuf(std::sync::Arc::clone(&buf.0)))
+            .finish();
+        let client = ClientBuilder::new(&uri)
+            .timeout(Duration::from_secs(2))
+            .credentials(Some(Credentials {
+                username: "admin".to_string(),
+                password: "super-secret-password".to_string(),
+            }))
+            .build();
+        let error = tracing::subscriber::with_default(subscriber, || {
+            client.request("<GetCapabilities/>").unwrap_err()
+        });
+        assert!(matches!(error, Error::Authorization(_)), "{error:?}");
+        server.join().unwrap();
+
+        let logs = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            logs.contains("GetCapabilities"),
+            "missing SOAP action: {logs}"
+        );
+        assert!(logs.contains("SOAP response status"), "{logs}");
+        assert!(
+            !logs.contains("super-secret-password"),
+            "leaked password: {logs}"
+        );
+        assert!(
+            !logs.contains("very-secret-digest-nonce"),
+            "leaked Digest nonce: {logs}"
+        );
+        assert!(
+            !logs.contains("PasswordDigest"),
+            "leaked WSSE digest: {logs}"
+        );
     }
 }

@@ -189,7 +189,7 @@ fn discover_http(
     cancelled: &AtomicBool,
 ) -> anyhow::Result<Vec<HttpProbeResult>> {
     let ips = super::network::scan_targets(networks);
-    tracing::info!(
+    tracing::debug!(
         "HTTP probe: scanning {} IPs across {} subnet(s)",
         ips.len(),
         networks.len()
@@ -258,7 +258,7 @@ fn discover_baichuan(
     networks: &[super::network::LocalNetwork],
     cancelled: &AtomicBool,
 ) -> anyhow::Result<Vec<BaichuanHit>> {
-    tracing::info!(
+    tracing::debug!(
         "Baichuan broadcast: sending discovery to {} requested subnet(s) on port {}",
         networks.len(),
         BAICHUAN_PORT,
@@ -323,7 +323,7 @@ fn discover_baichuan(
         }
     }
 
-    tracing::info!("Baichuan broadcast: found {} cameras", hits.len());
+    tracing::debug!("Baichuan broadcast: found {} cameras", hits.len());
     Ok(hits)
 }
 
@@ -359,7 +359,7 @@ fn discover_onvif_direct(
     cancelled: &AtomicBool,
 ) -> anyhow::Result<Vec<OnvifDirectResult>> {
     let ips = super::network::scan_targets(networks);
-    tracing::info!(
+    tracing::debug!(
         "ONVIF direct probe: scanning {} IPs on port {}",
         ips.len(),
         ONVIF_PORT
@@ -369,7 +369,7 @@ fn discover_onvif_direct(
         probe_onvif(&agent, ip)
     });
 
-    tracing::info!("ONVIF direct probe: found {} Reolink cameras", found.len());
+    tracing::debug!("ONVIF direct probe: found {} Reolink cameras", found.len());
     Ok(found)
 }
 
@@ -659,23 +659,36 @@ impl ReolinkClient {
             );
             config = config.timeout_global(Some(remaining));
         }
+        if tracing::enabled!(tracing::Level::TRACE) {
+            tracing::trace!(
+                ip = %self.ip,
+                cmd,
+                has_session = self.token.is_some(),
+                "Reolink HTTP API request"
+            );
+        }
         let response = config
             .build()
             .header("Content-Type", "application/json")
             .send(body.to_string())
-            .map_err(|_| anyhow::anyhow!("{cmd} camera request failed"))?;
+            .map_err(|error| {
+                tracing::debug!(ip = %self.ip, cmd, %error, "Reolink HTTP API transport failed");
+                anyhow::anyhow!("{cmd} camera request failed")
+            })?;
         let status = response.status();
-        anyhow::ensure!(
-            status.is_success(),
-            "{cmd} camera HTTP status {}",
-            status.as_u16()
-        );
+        if !status.is_success() {
+            tracing::debug!(ip = %self.ip, cmd, status = status.as_u16(), "Reolink HTTP API error status");
+            anyhow::bail!("{cmd} camera HTTP status {}", status.as_u16());
+        }
         let bytes = response
             .into_body()
             .into_with_config()
             .limit(CGI_RESPONSE_BYTES_MAX)
             .read_to_vec()
             .map_err(|_| anyhow::anyhow!("{cmd} camera response is unavailable or too large"))?;
+        if tracing::enabled!(tracing::Level::TRACE) {
+            tracing::trace!(ip = %self.ip, cmd, bytes = bytes.len(), "Reolink HTTP API response");
+        }
         let [rsp]: [ApiRsp; 1] = serde_json::from_slice(&bytes).map_err(|error| {
             anyhow::anyhow!(
                 "{cmd} camera response is invalid at line {} column {}",
@@ -690,12 +703,14 @@ impl ReolinkClient {
         if let Some(code) = rsp.error.and_then(|error| error.rsp_code)
             && code != 0
         {
+            tracing::debug!(ip = %self.ip, cmd, rsp_code = code, "Reolink HTTP API camera error");
             anyhow::bail!("{cmd} camera reported error code {code}");
         }
 
         if let Some(code) = rsp.code
             && code != 0
         {
+            tracing::debug!(ip = %self.ip, cmd, code, "Reolink HTTP API non-zero code");
             anyhow::bail!("{cmd} failed with code {code}");
         }
 
@@ -849,11 +864,24 @@ impl ReolinkClient {
                     return Ok(profiles);
                 }
                 Ok(_) => {
+                    tracing::debug!(
+                        ip = %self.ip,
+                        channel,
+                        attempt,
+                        "Reolink GetEnc missing mainStream; retrying"
+                    );
                     last_error = Some(anyhow::anyhow!(
                         "GetEnc returned no main stream profile on attempt {attempt}"
                     ));
                 }
                 Err(error) => {
+                    tracing::debug!(
+                        ip = %self.ip,
+                        channel,
+                        attempt,
+                        %error,
+                        "Reolink GetEnc attempt failed"
+                    );
                     last_error = Some(error.context(format!("GetEnc attempt {attempt}")));
                 }
             }
@@ -1746,7 +1774,7 @@ impl ReolinkClient {
 
         for profile in &profiles {
             if let Some(ref v) = profile.video {
-                tracing::info!(
+                tracing::debug!(
                     ip = %config.ip,
                     stream = %profile.name,
                     encoding = ?v.encoding,

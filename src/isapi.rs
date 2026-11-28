@@ -208,6 +208,19 @@ impl std::error::Error for DeliveryError {}
 
 impl Worker {
     fn run(mut self) -> bool {
+        let camera_id = self
+            .camera
+            .name
+            .as_deref()
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.camera.ip.to_string());
+        let span = tracing::info_span!(
+            "isapi_events",
+            camera_id = %camera_id,
+            camera_ip = %self.camera.ip,
+            channel = self.route.channel,
+        );
+        let _guard = span.enter();
         let mut backoff = RECONNECT_MIN;
         let mut unsupported = false;
         while !self.shutdown.is_cancelled() {
@@ -233,8 +246,17 @@ impl Worker {
                         || matches!(error.http_status(), Some(401 | 403 | 404 | 405))
                 });
             self.report("disconnected");
-            tracing::warn!(camera_ip = %self.camera.ip, %error, permanent,
-				retry_seconds = backoff.as_secs(), "ISAPI event subscription failed");
+            let isapi_err = error.downcast_ref::<::isapi::Error>();
+            tracing::warn!(
+                camera_ip = %self.camera.ip,
+                %error,
+                permanent,
+                http_status = ?isapi_err.and_then(::isapi::Error::http_status),
+                device_status = ?isapi_err.and_then(::isapi::Error::device_status),
+                is_auth = isapi_err.is_some_and(::isapi::Error::is_authentication),
+                retry_seconds = backoff.as_secs(),
+                "ISAPI event subscription failed"
+            );
             if permanent {
                 unsupported = error
                     .downcast_ref::<::isapi::Error>()
@@ -270,8 +292,18 @@ impl Worker {
         )
         .cancelled(move || shutdown.is_cancelled())
         .build()?;
+        tracing::debug!(
+            camera_ip = %self.camera.ip,
+            channel = self.route.channel,
+            "subscribing to ISAPI AlertStream"
+        );
         let mut stream = client.subscribe()?;
         self.counts.connections = self.counts.connections.saturating_add(1);
+        tracing::info!(
+            camera_ip = %self.camera.ip,
+            channel = self.route.channel,
+            "ISAPI AlertStream connected"
+        );
         self.report("connected");
         let mut reported = Instant::now();
         let mut notification_deadline = Instant::now() + HEARTBEAT_TIMEOUT;
@@ -319,10 +351,23 @@ impl Worker {
                 if event.is_heartbeat() {
                     self.counts.heartbeats = self.counts.heartbeats.saturating_add(1);
                 }
+                if tracing::enabled!(tracing::Level::TRACE) {
+                    tracing::trace!(
+                        kind = ?part.kind(),
+                        heartbeat = event.is_heartbeat(),
+                        "ISAPI AlertStream event part"
+                    );
+                }
             } else if part.kind() == PartKind::Jpeg {
                 self.counts.images = self.counts.images.saturating_add(1);
+                if tracing::enabled!(tracing::Level::TRACE) {
+                    tracing::trace!(kind = ?part.kind(), "ISAPI AlertStream image part");
+                }
             } else {
                 self.counts.ignored = self.counts.ignored.saturating_add(1);
+                if tracing::enabled!(tracing::Level::TRACE) {
+                    tracing::trace!(kind = ?part.kind(), "ISAPI AlertStream ignored part");
+                }
             }
             for bundle in assembler.push(part, received.saturating_duration_since(origin))? {
                 self.deliver_bundle(&bundle, origin, wall_time)?;
@@ -393,7 +438,7 @@ impl Worker {
     }
 
     fn report(&self, state: &str) {
-        tracing::info!(name: "camera.isapi.status", camera_ip = %self.camera.ip,
+        tracing::debug!(name: "camera.isapi.status", camera_ip = %self.camera.ip,
 			channel = self.route.channel, state,
 			connections = self.counts.connections, notifications = self.counts.notifications,
 			heartbeats = self.counts.heartbeats, ignored = self.counts.ignored,

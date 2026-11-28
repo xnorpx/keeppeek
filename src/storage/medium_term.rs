@@ -635,6 +635,12 @@ impl MediumTermWriter {
                         active.video_codec = video.codec;
                         active.video_media_config = media_config;
                     } else if video.codec != active.video_codec {
+                        tracing::warn!(
+                            recording = self.recording_id,
+                            frame_codec = ?video.codec,
+                            active_codec = ?active.video_codec,
+                            "MP4 muxer video codec changed without decoder parameters"
+                        );
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::InvalidData,
                             "video codec changed without decoder parameters",
@@ -642,6 +648,12 @@ impl MediumTermWriter {
                     }
                 } else {
                     if video.codec != active.video_codec {
+                        tracing::warn!(
+                            recording = self.recording_id,
+                            frame_codec = ?video.codec,
+                            active_codec = ?active.video_codec,
+                            "MP4 muxer video codec changed without keyframe boundary"
+                        );
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::InvalidData,
                             "video codec changed without a keyframe boundary",
@@ -654,6 +666,11 @@ impl MediumTermWriter {
                     if has_parameters
                         && required_video_media_config(&video)? != active.video_media_config
                     {
+                        tracing::warn!(
+                            recording = self.recording_id,
+                            codec = ?video.codec,
+                            "MP4 muxer decoder parameters changed without keyframe boundary"
+                        );
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::InvalidData,
                             "video decoder parameters changed without a keyframe boundary",
@@ -666,6 +683,7 @@ impl MediumTermWriter {
                     .filter(|duration| *duration > 0)
                     .unwrap_or(fallback_duration);
                 let data_len = video.data.len();
+                let recording_id = self.recording_id.clone();
                 active
                     .writer
                     .write_sample_with_source_timing(
@@ -682,7 +700,29 @@ impl MediumTermWriter {
                             .as_ref()
                             .map(super::segment::RecordingRtpTime::packet),
                     )
-                    .map_err(mp4_err)?;
+                    .map_err(|error| {
+                        let io_err = mp4_err(error);
+                        tracing::warn!(
+                            recording = %recording_id,
+                            dts,
+                            duration,
+                            is_keyframe = video.is_keyframe,
+                            error = %io_err,
+                            "MP4 muxer video sample write failed"
+                        );
+                        io_err
+                    })?;
+                if tracing::enabled!(tracing::Level::TRACE) {
+                    tracing::trace!(
+                        recording = %recording_id,
+                        camera_dts,
+                        dts,
+                        duration,
+                        is_keyframe = video.is_keyframe,
+                        bytes = data_len,
+                        "MP4 muxer wrote video sample"
+                    );
+                }
                 active.fragment_start_dts.get_or_insert(dts);
                 active.last_video_dts = Some(dts);
                 active.last_video_duration = duration;
@@ -722,6 +762,8 @@ impl MediumTermWriter {
                 };
                 let sample_duration = audio_sample_duration(audio.duration, track.timescale)?;
 
+                let recording_id = self.recording_id.clone();
+                let raw_aac_len = raw_aac.len();
                 active
                     .writer
                     .write_sample_with_source_timing(
@@ -732,18 +774,38 @@ impl MediumTermWriter {
                             duration: sample_duration,
                             rendering_offset: 0,
                             is_sync: true,
-                            bytes: audio.data.slice(audio.data.len() - raw_aac.len()..),
+                            bytes: audio.data.slice(audio.data.len() - raw_aac_len..),
                         },
                         rf.source_rtp
                             .as_ref()
                             .map(super::segment::RecordingRtpTime::packet),
                     )
-                    .map_err(mp4_err)?;
+                    .map_err(|error| {
+                        let io_err = mp4_err(error);
+                        tracing::warn!(
+                            recording = %recording_id,
+                            dts,
+                            duration = sample_duration,
+                            error = %io_err,
+                            "MP4 muxer audio sample write failed"
+                        );
+                        io_err
+                    })?;
+                if tracing::enabled!(tracing::Level::TRACE) {
+                    tracing::trace!(
+                        recording = %recording_id,
+                        ?camera_dts,
+                        dts,
+                        duration = sample_duration,
+                        bytes = raw_aac_len,
+                        "MP4 muxer wrote audio sample"
+                    );
+                }
                 active.next_audio_dts = Some(dts + u64::from(sample_duration));
                 active.audio_after_gap = false;
 
                 self.frames_written += 1;
-                self.bytes_written += raw_aac.len() as u64;
+                self.bytes_written += raw_aac_len as u64;
             }
         }
         Ok(true)
@@ -755,6 +817,15 @@ impl MediumTermWriter {
         start_dts: u64,
         end_dts: u64,
     ) -> std::io::Result<()> {
+        if tracing::enabled!(tracing::Level::TRACE) {
+            tracing::trace!(
+                recording = self.recording_id,
+                start_dts,
+                end_dts,
+                ticks = end_dts.saturating_sub(start_dts),
+                "MP4 muxer committed fragment"
+            );
+        }
         self.insert_catalog_fragment(fragment, start_dts, end_dts)?;
         self.committed_video_ticks = self
             .committed_video_ticks
@@ -1093,7 +1164,15 @@ fn resolve_video_dts(previous_dts: Option<u64>, camera_dts: u64, fallback_durati
         return camera_dts;
     }
 
-    previous_dts.saturating_add(u64::from(fallback_duration.max(1)))
+    let clamped = previous_dts.saturating_add(u64::from(fallback_duration.max(1)));
+    tracing::debug!(
+        previous_dts,
+        camera_dts,
+        fallback_duration,
+        clamped_dts = clamped,
+        "clamped non-monotonic video DTS in MP4 muxer"
+    );
+    clamped
 }
 
 fn timestamp_ticks_or_fallback(

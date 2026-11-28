@@ -644,6 +644,19 @@ impl RtspLoop {
     }
 
     pub fn run(self) {
+        let camera_id = self
+            .camera_name
+            .as_deref()
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.camera_ip.to_string());
+        let span = tracing::info_span!(
+            "rtsp_session",
+            camera_id = %camera_id,
+            camera_ip = %self.camera_ip,
+            stream = %self.stream,
+            transport = ?self.transport,
+        );
+        let _guard = span.enter();
         let mut stats = IngressStats::new();
         let mut previous = stats.snapshot();
         let mut last_report = Instant::now();
@@ -759,6 +772,12 @@ impl RtspLoop {
             ip = %self.camera_ip,
             stream = %self.stream,
             url = %active_url,
+            codec = %video_meta.encoding,
+            width = video_meta.width,
+            height = video_meta.height,
+            fps = video_meta.framerate,
+            transport = ?self.transport,
+            has_audio = audio_track.is_some(),
             "rtsp connected",
         );
 
@@ -816,12 +835,19 @@ impl RtspLoop {
                     }
                     let is_keyframe = frame.is_random_access_point();
                     if !video_continuity.accepts(loss, is_keyframe) {
+                        tracing::debug!(
+                            loss,
+                            is_keyframe,
+                            awaiting_keyframe = video_continuity.awaiting_random_access,
+                            "dropping RTSP video frame for continuity",
+                        );
                         continue;
                     }
                     let packet_timestamp = frame.timestamp();
                     let timestamp = packet_timestamp.elapsed_duration();
                     let data = Bytes::from(frame.into_data());
-                    stats.on_video_frame(is_keyframe, data.len());
+                    let data_len = data.len();
+                    stats.on_video_frame(is_keyframe, data_len);
                     let frame_codec = match video_meta.encoding {
                         VideoEncoding::H264 => Some(VideoCodec::H264),
                         VideoEncoding::H265 => Some(VideoCodec::H265),
@@ -831,6 +857,16 @@ impl RtspLoop {
                         let received_at = Instant::now();
                         let timestamp =
                             timestamp.map(|timestamp| video_timestamps.normalize(timestamp));
+                        if tracing::enabled!(tracing::Level::TRACE) {
+                            tracing::trace!(
+                                ?codec,
+                                is_keyframe,
+                                bytes = data_len,
+                                rtp_loss = loss,
+                                pts = ?timestamp,
+                                "rtsp video frame",
+                            );
+                        }
                         if let Some(live) = &self.live {
                             live.publish(
                                 Source {
@@ -888,7 +924,17 @@ impl RtspLoop {
                     let timestamp = frame.timestamp().elapsed_duration();
                     let duration = frame.duration();
                     let data = Bytes::copy_from_slice(frame.data());
-                    stats.on_audio_frame(data.len());
+                    let data_len = data.len();
+                    stats.on_audio_frame(data_len);
+                    if tracing::enabled!(tracing::Level::TRACE) {
+                        tracing::trace!(
+                            codec = %audio.storage_codec,
+                            bytes = data_len,
+                            ?duration,
+                            pts = ?timestamp,
+                            "rtsp audio frame",
+                        );
+                    }
                     let received_at = Instant::now();
                     if let Some(live) = &self.live {
                         live.publish_audio_with_config(
@@ -978,6 +1024,9 @@ impl RtspLoop {
         };
         let source_id = self.camera_ip.to_string();
         if self.stream != StreamKind::Main || !live.talkback_is_armed(&source_id) {
+            if speaker.is_some() || session.is_some() {
+                tracing::debug!(ip = %self.camera_ip, "closing Hikvision talkback speaker");
+            }
             pending.take();
             speaker.take();
             session.take();
@@ -1023,6 +1072,12 @@ impl RtspLoop {
             };
             match audio.speaker() {
                 Ok(opened) => {
+                    tracing::debug!(
+                        ip = %self.camera_ip,
+                        channel,
+                        codec = ?opened.codec(),
+                        "opened Hikvision talkback speaker"
+                    );
                     *session = Some(audio);
                     *speaker = Some(opened);
                 }
@@ -1052,6 +1107,13 @@ impl RtspLoop {
                 send_failed = true;
                 break;
             }
+        }
+        if !send_failed && tracing::enabled!(tracing::Level::TRACE) {
+            tracing::trace!(
+                pcm_bytes = frame.data.len(),
+                encoded_bytes = encoded.len(),
+                "sent Hikvision talkback audio frame"
+            );
         }
         if send_failed {
             speaker.take();
@@ -1169,6 +1231,14 @@ fn setup_described_tracks(
             }
         }
     }
+    tracing::debug!(
+        ip = %camera_ip,
+        stream = %stream_kind,
+        tracks = driver.streams().len(),
+        ?transport,
+        ?audio_track,
+        "configured RTSP tracks",
+    );
     Ok(audio_track)
 }
 
@@ -1832,5 +1902,69 @@ mod tests {
             .map(|request| request.request_uri.as_ref().unwrap().path().to_string())
             .collect::<Vec<_>>();
         assert_eq!(describe_paths, ["/high", "/low"]);
+    }
+
+    struct LogBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for LogBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuf {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            Self(std::sync::Arc::clone(&self.0))
+        }
+    }
+
+    #[test]
+    fn rtsp_logging_inherits_camera_id_span_and_stays_sparse_at_info() {
+        let source = TemporaryMp4::h264(1_920, 1_080);
+        let camera = RtspServer::from_mp4(source.path()).unwrap();
+
+        let buf = LogBuf(std::sync::Arc::new(std::sync::Mutex::new(Vec::new())));
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .with_writer(LogBuf(std::sync::Arc::clone(&buf.0)))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!(
+                "rtsp_session",
+                camera_id = "front-door",
+                stream = %StreamKind::Main,
+            );
+            let _guard = span.enter();
+            let mut client = BlockingRtsp::describe(
+                camera.url(),
+                Credentials {
+                    username: "operator".to_string(),
+                    password: "swordfish-rtsp".to_string(),
+                },
+            )
+            .unwrap();
+            let _ = setup_described_tracks(
+                &mut client,
+                RtspTransport::Tcp,
+                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                StreamKind::Main,
+            )
+            .unwrap();
+            client.play().unwrap();
+            let shutdown = Shutdown::new();
+            let _ = client.next_item(&shutdown, None).unwrap();
+        });
+
+        let logs = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            logs.contains("front-door"),
+            "missing camera_id span: {logs}"
+        );
+        assert!(logs.contains("configured RTSP tracks"), "{logs}");
+        assert!(!logs.contains("swordfish-rtsp"), "leaked password: {logs}");
     }
 }

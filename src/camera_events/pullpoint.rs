@@ -294,6 +294,18 @@ impl Producer {
         ) {
             return;
         }
+        let camera_id = self
+            .camera
+            .name
+            .as_deref()
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.camera.ip.to_string());
+        let span = tracing::info_span!(
+            "onvif_pullpoint",
+            camera_id = %camera_id,
+            camera_ip = %self.camera.ip,
+        );
+        let _guard = span.enter();
         let mut backoff = RECONNECT_MIN;
         while !self.shutdown.is_cancelled() {
             let progress = self.progress();
@@ -370,6 +382,12 @@ impl Producer {
         }
         let (subscription, mut clock) =
             create_subscription(&mut client, service.endpoint(), Instant::now)?;
+        tracing::debug!(
+            camera_ip = %self.camera.ip,
+            lease_ms = clock.remaining_ms(),
+            kinds = service.kinds().len(),
+            "ONVIF PullPoint subscription created"
+        );
         self.slot.update(|evidence| {
             evidence.pull_capable = true;
             evidence.unsubscribed = false;
@@ -435,11 +453,24 @@ impl Producer {
             );
             match response {
                 Ok(bytes) => {
+                    if tracing::enabled!(tracing::Level::TRACE) {
+                        tracing::trace!(
+                            bytes = bytes.len(),
+                            lease_ms = clock.remaining_ms(),
+                            "ONVIF PullMessages batch received"
+                        );
+                    }
                     self.deliver(bytes, clock, started)?;
                     failures = 0;
                 }
                 Err(error) => {
                     if let Some(offered) = error.pull_limits() {
+                        tracing::debug!(
+                            camera_ip = %self.camera.ip,
+                            offered_timeout_ms = offered.timeout.as_millis(),
+                            offered_messages = offered.messages,
+                            "camera lowered ONVIF pull limits"
+                        );
                         limits = reduced_limits(
                             PullLimits {
                                 timeout: pull_timeout,

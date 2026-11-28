@@ -322,107 +322,117 @@ impl Depacketizer {
 
         // A stream joined mid-NAL has no earlier packet from which to count loss.
         let joining = matches!(self.input_state, DepacketizerInputState::New);
-        let mut access_unit =
-            match std::mem::replace(&mut self.input_state, DepacketizerInputState::New) {
-                DepacketizerInputState::New => {
-                    debug_assert!(self.nals.is_empty());
-                    debug_assert!(self.pieces.is_empty());
-                    AccessUnit::start(&pkt, 0, false)
-                }
-                DepacketizerInputState::PreMark(mut access_unit) => {
-                    let loss = pkt.loss();
-                    if loss > 0 {
-                        self.nals.clear();
-                        self.pieces.clear();
-                        if access_unit.timestamp.timestamp == pkt.timestamp().timestamp {
-                            // Loss within this access unit. Ignore until mark or new timestamp.
-                            self.input_state = if pkt.mark() {
-                                DepacketizerInputState::PostMark {
-                                    timestamp: pkt.timestamp(),
-                                    loss,
-                                }
-                            } else {
-                                self.pieces.clear();
-                                self.nals.clear();
-                                DepacketizerInputState::Loss {
-                                    timestamp: pkt.timestamp(),
-                                    pkts: loss,
-                                }
-                            };
-                            return Ok(());
-                        }
-                        // A suffix of a previous access unit was lost; discard it.
-                        // A prefix of the new one may have been lost; try parsing.
-                        AccessUnit::start(&pkt, 0, false)
-                    } else if access_unit.timestamp.timestamp != pkt.timestamp().timestamp {
-                        if access_unit.fu_a.is_some() {
-                            // Something went wrong: perhaps the end of the last fragmentation unit was dropped
-                            // without loss being indicated. Return error, but also process the current packet.
-                            self.pending.push_back(Err(DepacketizeError {
-                                pkt_ctx: pkt.ctx,
-                                ssrc: pkt.ssrc(),
-                                sequence_number: pkt.sequence_number(),
-                                description: format!(
-                                "timestamp changed from {} to {} in the middle of a fragmented NAL",
-                                access_unit.timestamp,
-                                pkt.timestamp()),
-                            }));
+        let mut access_unit = match std::mem::replace(
+            &mut self.input_state,
+            DepacketizerInputState::New,
+        ) {
+            DepacketizerInputState::New => {
+                debug_assert!(self.nals.is_empty());
+                debug_assert!(self.pieces.is_empty());
+                AccessUnit::start(&pkt, 0, false)
+            }
+            DepacketizerInputState::PreMark(mut access_unit) => {
+                let loss = pkt.loss();
+                if loss > 0 {
+                    debug!(
+                        "h264 depacketizer dropping partial access unit due to RTP loss: seq={} loss={loss} same_ts={}",
+                        pkt.sequence_number(),
+                        access_unit.timestamp.timestamp == pkt.timestamp().timestamp
+                    );
+                    self.nals.clear();
+                    self.pieces.clear();
+                    if access_unit.timestamp.timestamp == pkt.timestamp().timestamp {
+                        // Loss within this access unit. Ignore until mark or new timestamp.
+                        self.input_state = if pkt.mark() {
+                            DepacketizerInputState::PostMark {
+                                timestamp: pkt.timestamp(),
+                                loss,
+                            }
+                        } else {
                             self.pieces.clear();
                             self.nals.clear();
-                            AccessUnit::start(&pkt, 0, false)
-                        } else {
-                            match self.nals.last() {
-                                Some(n) if can_end_au(n.hdr.nal_unit_type()) => {
-                                    access_unit.end_ctx = *pkt.ctx();
-                                    let f = self.finalize_access_unit(access_unit, "ts change")?;
-                                    self.pending.push_back(Ok(f));
-                                    AccessUnit::start(&pkt, 0, false)
-                                }
-                                Some(n) => {
-                                    log::debug!(
-                                        "Bogus mid-access unit timestamp change after {:?}",
-                                        n.hdr
-                                    );
-                                    access_unit.timestamp.timestamp = pkt.timestamp().timestamp;
-                                    access_unit
-                                }
-                                None => {
-                                    access_unit.timestamp.timestamp = pkt.timestamp().timestamp;
-                                    access_unit
-                                }
+                            DepacketizerInputState::Loss {
+                                timestamp: pkt.timestamp(),
+                                pkts: loss,
                             }
-                        }
-                    } else {
-                        access_unit
-                    }
-                }
-                DepacketizerInputState::PostMark {
-                    timestamp: state_ts,
-                    loss,
-                } => {
-                    debug_assert!(self.nals.is_empty());
-                    debug_assert!(self.pieces.is_empty());
-                    AccessUnit::start(&pkt, loss, state_ts.timestamp == pkt.timestamp().timestamp)
-                }
-                DepacketizerInputState::Loss {
-                    timestamp,
-                    mut pkts,
-                } => {
-                    debug_assert!(self.nals.is_empty());
-                    debug_assert!(self.pieces.is_empty());
-                    if pkt.timestamp().timestamp == timestamp.timestamp {
-                        pkts += pkt.loss();
-                        self.input_state = DepacketizerInputState::Loss { timestamp, pkts };
+                        };
                         return Ok(());
                     }
-                    AccessUnit::start(&pkt, pkts, false)
+                    // A suffix of a previous access unit was lost; discard it.
+                    // A prefix of the new one may have been lost; try parsing.
+                    AccessUnit::start(&pkt, 0, false)
+                } else if access_unit.timestamp.timestamp != pkt.timestamp().timestamp {
+                    if access_unit.fu_a.is_some() {
+                        // Something went wrong: perhaps the end of the last fragmentation unit was dropped
+                        // without loss being indicated. Return error, but also process the current packet.
+                        self.pending.push_back(Err(DepacketizeError {
+                            pkt_ctx: pkt.ctx,
+                            ssrc: pkt.ssrc(),
+                            sequence_number: pkt.sequence_number(),
+                            description: format!(
+                                "timestamp changed from {} to {} in the middle of a fragmented NAL",
+                                access_unit.timestamp,
+                                pkt.timestamp()
+                            ),
+                        }));
+                        self.pieces.clear();
+                        self.nals.clear();
+                        AccessUnit::start(&pkt, 0, false)
+                    } else {
+                        match self.nals.last() {
+                            Some(n) if can_end_au(n.hdr.nal_unit_type()) => {
+                                access_unit.end_ctx = *pkt.ctx();
+                                let f = self.finalize_access_unit(access_unit, "ts change")?;
+                                self.pending.push_back(Ok(f));
+                                AccessUnit::start(&pkt, 0, false)
+                            }
+                            Some(n) => {
+                                log::debug!(
+                                    "Bogus mid-access unit timestamp change after {:?}",
+                                    n.hdr
+                                );
+                                access_unit.timestamp.timestamp = pkt.timestamp().timestamp;
+                                access_unit
+                            }
+                            None => {
+                                access_unit.timestamp.timestamp = pkt.timestamp().timestamp;
+                                access_unit
+                            }
+                        }
+                    }
+                } else {
+                    access_unit
                 }
-            };
+            }
+            DepacketizerInputState::PostMark {
+                timestamp: state_ts,
+                loss,
+            } => {
+                debug_assert!(self.nals.is_empty());
+                debug_assert!(self.pieces.is_empty());
+                AccessUnit::start(&pkt, loss, state_ts.timestamp == pkt.timestamp().timestamp)
+            }
+            DepacketizerInputState::Loss {
+                timestamp,
+                mut pkts,
+            } => {
+                debug_assert!(self.nals.is_empty());
+                debug_assert!(self.pieces.is_empty());
+                if pkt.timestamp().timestamp == timestamp.timestamp {
+                    pkts += pkt.loss();
+                    self.input_state = DepacketizerInputState::Loss { timestamp, pkts };
+                    return Ok(());
+                }
+                AccessUnit::start(&pkt, pkts, false)
+            }
+        };
 
         let ctx = *pkt.ctx();
         let mark = pkt.mark();
         let loss = pkt.loss();
         let timestamp = pkt.timestamp();
+        let seq = pkt.sequence_number();
+        let payload_len = pkt.payload().len();
         let mut data = pkt.into_payload_bytes();
         // https://tools.ietf.org/html/rfc6184#section-5.2
         let Some(&nal_header) = data.first() else {
@@ -433,6 +443,13 @@ impl Depacketizer {
         }
         match nal_header & 0b11111 {
             1..=23 => {
+                if log_enabled!(log::Level::Trace) {
+                    trace!(
+                        "h264 single NALU: seq={seq} ts={} mark={mark} loss={loss} nal_type={} len={payload_len}",
+                        timestamp.timestamp(),
+                        nal_header & 0b11111
+                    );
+                }
                 if access_unit.fu_a.is_some() {
                     return Err(format!(
                         "Non-fragmented NAL {nal_header:02x} while FU-A fragment in progress"
@@ -446,6 +463,7 @@ impl Depacketizer {
                 if access_unit.fu_a.is_some() {
                     return Err("STAP-A NAL while FU-A fragment in progress".into());
                 }
+                let mut stap_items = 0_usize;
                 loop {
                     if data.remaining() < 3 {
                         return Err(format!(
@@ -456,6 +474,15 @@ impl Depacketizer {
                     let len = data.get_u16();
                     if len == 0 {
                         return Err("zero length in STAP-A".into());
+                    }
+                    stap_items = stap_items.saturating_add(1);
+                    if log_enabled!(log::Level::Trace) {
+                        let item_hdr = data.first().copied().unwrap_or(0);
+                        trace!(
+                            "h264 STAP-A item: seq={seq} ts={} item={stap_items} nal_type={} len={len}",
+                            timestamp.timestamp(),
+                            item_hdr & 0b11111
+                        );
                     }
                     match data.remaining().cmp(&(usize::from(len))) {
                         std::cmp::Ordering::Less => {
@@ -496,6 +523,14 @@ impl Depacketizer {
                     NalHeader::new((nal_header & 0b011100000) | (fu_header & 0b00011111))
                         .expect("NalHeader is valid");
                 data.advance(2);
+                if log_enabled!(log::Level::Trace) {
+                    trace!(
+                        "h264 FU-A: seq={seq} ts={} mark={mark} loss={loss} start={start} end={end} nal_type={:?} payload_len={}",
+                        timestamp.timestamp(),
+                        nal_header.nal_unit_type(),
+                        data.len()
+                    );
+                }
                 if !end && mark {
                     return Err("FU-A pkt with MARK && !END".into());
                 }
@@ -824,6 +859,19 @@ impl Depacketizer {
             }
             _ => false,
         };
+
+        if has_new_parameters && let Some(ref params) = self.parameters {
+            debug!(
+                "h264 parameters updated: codec={} dimensions={:?} keyframe={is_random_access_point}",
+                params.generic_parameters.rfc6381_codec,
+                params.generic_parameters.pixel_dimensions()
+            );
+        } else if is_random_access_point {
+            debug!(
+                "h264 keyframe access unit: ts={} bytes={retained_len} loss={}",
+                au.timestamp, au.loss
+            );
+        }
 
         // Determine whether to prepend parameter sets.
         let prepend_params = match self.frame_format.parameter_set_insertion {

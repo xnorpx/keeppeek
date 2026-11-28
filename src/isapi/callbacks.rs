@@ -137,7 +137,15 @@ impl Receiver {
             Ok(response) => response,
             Err(status) => response(status),
         };
-        tracing::debug!(name: "camera.isapi.callback", peer = %request.remote_addr().ip(), http_status = response.status_code, pending_bytes = self.bytes.load(Ordering::Relaxed), "ISAPI callback handled");
+        tracing::debug!(
+            name: "camera.isapi.callback",
+            peer = %request.remote_addr().ip(),
+            method = request.method(),
+            path = request.raw_url(),
+            http_status = response.status_code,
+            pending_bytes = self.bytes.load(Ordering::Relaxed),
+            "ISAPI callback handled"
+        );
         response
     }
 

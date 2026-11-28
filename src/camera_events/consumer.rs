@@ -267,6 +267,15 @@ impl Consumer {
         };
         match super::metadata::decode(bytes, compression, received_time) {
             Ok(metadata) => {
+                if tracing::enabled!(tracing::Level::TRACE) {
+                    tracing::trace!(
+                        notifications = metadata.notifications.len(),
+                        frames = metadata.frames.len(),
+                        invalid = metadata.invalid_messages,
+                        loss,
+                        "decoded ONVIF RTSP metadata document"
+                    );
+                }
                 self.slot.update(|evidence| {
                     evidence.metadata_documents += 1;
                     evidence.parse_errors += u64::from(metadata.invalid_messages);
@@ -282,7 +291,14 @@ impl Consumer {
                         .map(|frame| Work::Frame(frame, received, received_ms)),
                 );
             }
-            Err(_) => self.slot.update(|evidence| evidence.metadata_errors += 1),
+            Err(_) => {
+                tracing::debug!(
+                    loss,
+                    bytes = bytes.len(),
+                    "failed to decode ONVIF RTSP metadata document"
+                );
+                self.slot.update(|evidence| evidence.metadata_errors += 1);
+            }
         }
     }
 
@@ -388,7 +404,7 @@ impl Consumer {
             evidence.active = self.tracker.active_count();
             evidence.deduplicated = self.tracker.deduplicated();
             for kind in self.tracker.kinds() { if !evidence.kinds.contains(&kind) { evidence.kinds.push(kind); } }
-            if log { tracing::info!(name: "camera.events.status", mode = evidence.mode, state = evidence.state, pulls = evidence.pulls, notifications = evidence.notifications, active = evidence.active, parse_errors = evidence.parse_errors, deduplicated = evidence.deduplicated, pending = self.pending.len(), "native camera event status"); }
+            if log { tracing::debug!(name: "camera.events.status", mode = evidence.mode, state = evidence.state, pulls = evidence.pulls, notifications = evidence.notifications, active = evidence.active, parse_errors = evidence.parse_errors, deduplicated = evidence.deduplicated, pending = self.pending.len(), "native camera event status"); }
         });
     }
 }

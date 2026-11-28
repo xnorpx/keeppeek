@@ -581,6 +581,26 @@ impl Depacketizer {
         if payload.len() < data_off {
             return Err("packet too short for au-headers".to_string());
         }
+        if log::log_enabled!(log::Level::Trace) {
+            let first_au = if au_headers_count > 0 {
+                let hdr = u16::from_be_bytes([payload[2], payload[3]]);
+                Some((hdr >> 3, hdr & 0b111))
+            } else {
+                None
+            };
+            log::trace!(
+                "aac packet: stream_id={} seq={} ts={} mark={} loss={} au_count={} first_au={:?} payload_len={} framing={:?}",
+                pkt.stream_id(),
+                pkt.sequence_number(),
+                pkt.timestamp().timestamp(),
+                pkt.mark(),
+                pkt.loss(),
+                au_headers_count,
+                first_au,
+                payload.len(),
+                self.framing
+            );
+        }
         match &mut self.state {
             DepacketizerState::Fragmented(frag) => {
                 if au_headers_count != 1 {

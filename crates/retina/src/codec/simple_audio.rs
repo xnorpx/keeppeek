@@ -49,6 +49,19 @@ impl Depacketizer {
     pub(super) fn push(&mut self, pkt: crate::rtp::ReceivedPacket) -> Result<(), String> {
         assert!(self.pending.is_none());
         let payload = pkt.payload();
+        if log::log_enabled!(log::Level::Trace) {
+            log::trace!(
+                "simple_audio packet: stream_id={} seq={} ts={} loss={} payload_len={} bits_per_sample={} channels={} clock_rate={}",
+                pkt.stream_id(),
+                pkt.sequence_number(),
+                pkt.timestamp().timestamp(),
+                pkt.loss(),
+                payload.len(),
+                self.bits_per_sample,
+                self.parameters.channels,
+                self.parameters.clock_rate
+            );
+        }
         let frame_length = self.frame_length(payload.len()).ok_or_else(|| {
             format!(
                 "invalid length {} for payload of {}-bit audio samples in {} channel(s)",

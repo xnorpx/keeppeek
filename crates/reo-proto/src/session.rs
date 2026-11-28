@@ -999,6 +999,9 @@ impl BcSession {
         // that padding spilled into this message.
         let media_offset = media_frame_offset(&self.recv_buf[body_start..body_start + body_len]);
         let is_media_body = media_offset.is_some();
+        if tracing::enabled!(tracing::Level::TRACE) {
+            trace_packet_header("rx", &header, self.encryption, Some(is_media_body));
+        }
         if media_offset.is_some_and(|(offset, _)| offset > 0) {
             self.stats.padded_media_bodies += 1;
         }
@@ -1039,10 +1042,29 @@ impl BcSession {
                 self.decrypt_body(body_start, body_len, channel_id, header.extension);
             }
         }
+        if body_len > 0
+            && !is_media_body
+            && header.msg_id != crate::COMMAND_LOGIN
+            && tracing::enabled!(tracing::Level::TRACE)
+        {
+            trace_xml_summary(
+                "rx",
+                header.msg_id,
+                header.response_code(),
+                &self.recv_buf[body_start..body_start + body_len],
+            );
+        }
 
         if header.msg_id != crate::COMMAND_LOGIN
             && !response_status_is_success(header.response_code())
         {
+            tracing::debug!(
+                msg_id = header.msg_id,
+                response_code = header.response_code(),
+                channel = header.channel_id(),
+                msg_num = header.message_number(),
+                "baichuan command response error"
+            );
             if header.msg_id == crate::COMMAND_SNAP {
                 self.fail_snapshot(header.response_code());
             } else {
@@ -1682,6 +1704,12 @@ impl BcSession {
         }
         if self.pending.is_full() {
             self.stats.pending_drops += 1;
+            tracing::debug!(
+                stream_id,
+                drops = self.stats.pending_drops,
+                kind = "video",
+                "baichuan pending queue full, dropping frame"
+            );
             return;
         }
         let timestamp = self
@@ -1692,6 +1720,16 @@ impl BcSession {
         let media_start = self.media_out.len();
         self.media_out
             .extend_from_slice(&self.recv_buf[data_start..data_start + data_len]);
+        if tracing::enabled!(tracing::Level::TRACE) {
+            trace_media_frame(
+                "video",
+                stream_id,
+                &codec,
+                Some(is_keyframe),
+                Some(timestamp),
+                data_len,
+            );
+        }
         self.pending.push(PendingEvent::media(
             EventKind::VideoFrame {
                 stream_id,
@@ -1717,11 +1755,20 @@ impl BcSession {
         }
         if self.pending.is_full() {
             self.stats.pending_drops += 1;
+            tracing::debug!(
+                stream_id,
+                drops = self.stats.pending_drops,
+                kind = "audio",
+                "baichuan pending queue full, dropping frame"
+            );
             return;
         }
         let media_start = self.media_out.len();
         self.media_out
             .extend_from_slice(&self.recv_buf[data_start..data_start + data_len]);
+        if tracing::enabled!(tracing::Level::TRACE) {
+            trace_media_frame("audio", stream_id, &codec, None, None, data_len);
+        }
         self.pending.push(PendingEvent::media(
             EventKind::AudioFrame { stream_id, codec },
             media_start,
@@ -1950,11 +1997,27 @@ impl BcSession {
         }
         if self.pending.is_full() {
             self.stats.pending_drops += 1;
+            tracing::debug!(
+                stream_id = accum.stream_id,
+                drops = self.stats.pending_drops,
+                kind = "audio_accum",
+                "baichuan pending queue full, dropping frame"
+            );
             return;
         }
         let media_start = self.media_out.len();
         self.media_out
             .extend_from_slice(&accum.data[..accum.expected_data_len]);
+        if tracing::enabled!(tracing::Level::TRACE) {
+            trace_media_frame(
+                "audio",
+                accum.stream_id,
+                &accum.codec,
+                None,
+                None,
+                accum.expected_data_len,
+            );
+        }
         self.pending.push(PendingEvent::media(
             EventKind::AudioFrame {
                 stream_id: accum.stream_id,
@@ -1985,6 +2048,16 @@ impl BcSession {
                 let media_start = self.media_out.len();
                 self.media_out
                     .extend_from_slice(&accum.data[..accum.expected_data_len]);
+                if tracing::enabled!(tracing::Level::TRACE) {
+                    trace_media_frame(
+                        "video",
+                        accum.stream_id,
+                        &accum.codec,
+                        Some(accum.is_keyframe),
+                        Some(timestamp),
+                        accum.expected_data_len,
+                    );
+                }
                 self.pending.push(PendingEvent::media(
                     EventKind::VideoFrame {
                         stream_id: accum.stream_id,
@@ -2000,6 +2073,12 @@ impl BcSession {
                 self.stats.video_accum_completed += 1;
             } else {
                 self.stats.pending_drops += 1;
+                tracing::debug!(
+                    stream_id = accum.stream_id,
+                    drops = self.stats.pending_drops,
+                    kind = "video_accum",
+                    "baichuan pending queue full, dropping frame"
+                );
             }
         }
 
@@ -2109,7 +2188,7 @@ impl BcSession {
         );
         self.pending_subscribe_ids.push_back(stream_id);
 
-        tracing::info!(
+        tracing::debug!(
             stream_id, msg_num, ch = sub.channel,
             st = ?sub.stream_type,
             w = sub.expected_width, h = sub.expected_height,
@@ -2445,7 +2524,15 @@ impl BcSession {
                     }
                 };
                 let camera_max = camera_enc.unwrap_or(nonce_info.encryption);
+                let requested_enc = params.encryption;
                 params.encryption = auth::negotiate_encryption(params.encryption, camera_max);
+                tracing::debug!(
+                    ?requested_enc,
+                    ?camera_max,
+                    negotiated_enc = ?params.encryption,
+                    has_nonce = !self.nonce.is_empty(),
+                    "baichuan login encryption negotiated"
+                );
                 self.login_params = Some(params);
 
                 // Step 3: build modern login with hashed credentials
@@ -2498,9 +2585,16 @@ impl BcSession {
                         self.state = SessionState::Connected;
                         self.last_login = Some(self.last_recv);
                         self.login_result = Some(result);
+                        tracing::debug!(enc_type = ?params.encryption, "baichuan login confirmed");
                         Ok(Some(EventKind::LoggedIn))
                     }
                     Err(_) => {
+                        tracing::debug!(
+                            enc_type = ?params.encryption,
+                            status_class = header.status_class,
+                            response_code = header.response_code(),
+                            "baichuan login failed"
+                        );
                         self.state = SessionState::Disconnected;
                         self.nonce = ArrayString::new();
                         Ok(Some(EventKind::LoginFailed {
@@ -2542,7 +2636,7 @@ impl BcSession {
         // the msg_num we set in the outgoing stream request.
         if msg_num != 0 {
             if let Some(&stream_id) = self.stream_id_by_msg_num.get(&msg_num) {
-                tracing::debug!(
+                tracing::trace!(
                     msg_num,
                     stream_id,
                     channel,
@@ -2551,7 +2645,7 @@ impl BcSession {
                 );
                 return stream_id;
             }
-            tracing::debug!(
+            tracing::trace!(
                 msg_num,
                 channel,
                 stream_type_raw,
@@ -2618,7 +2712,7 @@ impl BcSession {
                     if let Some(ok) = other_key {
                         self.stream_id_by_channel_codec.insert(ok, stream_id);
                     }
-                    tracing::info!(
+                    tracing::debug!(
                         old_sid = stream_id,
                         new_sid = correct_id,
                         info_w = info.width,
@@ -2630,7 +2724,7 @@ impl BcSession {
             }
             return stream_id;
         }
-        tracing::info!(
+        tracing::debug!(
             ?codec, ch = media_channel, hint = stream_handle_hint, header_sid = header_stream_id,
             handle_map = ?self.stream_id_by_remote_handle, pending = ?self.pending_subscribe_ids,
             last_info = ?self.last_stream_metadata,
@@ -2722,21 +2816,22 @@ impl BcSession {
             }
         });
 
-        // Log raw data for diagnostics
-        if !ext_data.is_empty() {
-            if let Ok(ext_str) = core::str::from_utf8(ext_data) {
-                tracing::debug!(ext = %ext_str, "stream ack: Extension XML");
-            } else {
-                tracing::debug!(ext_len = ext_data.len(), "stream ack: Extension binary");
+        if tracing::enabled!(tracing::Level::TRACE) {
+            if !ext_data.is_empty() {
+                if let Ok(ext_str) = core::str::from_utf8(ext_data) {
+                    tracing::trace!(ext = %ext_str, "stream ack: Extension XML");
+                } else {
+                    tracing::trace!(ext_len = ext_data.len(), "stream ack: Extension binary");
+                }
             }
-        }
-        if let Ok(payload_str) = core::str::from_utf8(payload_data) {
-            tracing::debug!(payload = %payload_str, "stream ack: Payload XML");
-        } else {
-            tracing::debug!(
-                payload_len = payload_data.len(),
-                "stream ack: Payload binary"
-            );
+            if let Ok(payload_str) = core::str::from_utf8(payload_data) {
+                tracing::trace!(payload = %payload_str, "stream ack: Payload XML");
+            } else {
+                tracing::trace!(
+                    payload_len = payload_data.len(),
+                    "stream ack: Payload binary"
+                );
+            }
         }
 
         // Try parsing the Payload portion first (contains <body><Preview> with
@@ -2870,6 +2965,13 @@ impl BcSession {
         let payload_start = body_start + extension.len();
         self.send_buf[body_start..payload_start].copy_from_slice(extension);
         self.send_buf[payload_start..payload_start + body.len()].copy_from_slice(body);
+
+        if tracing::enabled!(tracing::Level::TRACE) {
+            trace_packet_header("tx", header, self.encryption, Some(binary_body));
+            if header.msg_id != crate::COMMAND_LOGIN && !binary_body && !body.is_empty() {
+                trace_xml_summary("tx", header.msg_id, header.response_code(), body);
+            }
+        }
 
         if header.msg_id != crate::COMMAND_LOGIN {
             let channel_id = (header.encryption_offset & 0xFF) as u8;
@@ -3018,7 +3120,109 @@ impl BcSession {
             self.recv_end = remaining;
         }
     }
+}
 
+fn trace_packet_header(
+    dir: &str,
+    header: &PacketHeader,
+    enc_type: EncryptionMode,
+    is_media_body: Option<bool>,
+) {
+    tracing::trace!(
+        dir,
+        msg_id = format_args!("{:#04x}", header.msg_id),
+        body_len = header.body_len,
+        payload_offset = ?header.extension,
+        channel = header.channel_id(),
+        stream_type = header.stream_type_id(),
+        ?enc_type,
+        msg_num = header.message_number(),
+        bc_class = format_args!("{:#06x}", header.bc_class()),
+        response_code = header.response_code(),
+        is_media_body = ?is_media_body,
+        "baichuan packet header"
+    );
+}
+
+fn trace_xml_summary(dir: &str, msg_id: u32, response_code: u16, xml_bytes: &[u8]) {
+    let mut tags: ArrayVec<ArrayString<32>, 8> = ArrayVec::new();
+    let mut current_safe_tag: Option<ArrayString<32>> = None;
+    let mut rsp_code: Option<ArrayString<32>> = None;
+    let reader = xml::reader::EventReader::new(std::io::Cursor::new(xml_bytes));
+    for event in reader {
+        match event {
+            Ok(xml::reader::XmlEvent::StartElement { name, .. }) => {
+                let local = name.local_name.as_str();
+                if local != "body" && !tags.is_full() && !tags.iter().any(|t| t.as_str() == local) {
+                    let mut tag = ArrayString::new();
+                    for ch in local.chars().take(32) {
+                        let _ = tag.try_push(ch);
+                    }
+                    let _ = tags.try_push(tag);
+                }
+                if matches!(
+                    local,
+                    "rspCode" | "error" | "errCode" | "code" | "result" | "detail"
+                ) {
+                    let mut tag = ArrayString::new();
+                    for ch in local.chars().take(32) {
+                        let _ = tag.try_push(ch);
+                    }
+                    current_safe_tag = Some(tag);
+                } else {
+                    current_safe_tag = None;
+                }
+            }
+            Ok(xml::reader::XmlEvent::Characters(text)) => {
+                if current_safe_tag.is_some() && rsp_code.is_none() {
+                    let mut val = ArrayString::new();
+                    for ch in text.trim().chars().take(32) {
+                        let _ = val.try_push(ch);
+                    }
+                    if !val.is_empty() {
+                        rsp_code = Some(val);
+                    }
+                }
+                current_safe_tag = None;
+            }
+            Ok(xml::reader::XmlEvent::EndElement { .. }) => {
+                current_safe_tag = None;
+            }
+            Err(_) => break,
+            _ => {}
+        }
+    }
+    tracing::trace!(
+        dir,
+        msg_id = format_args!("{:#04x}", msg_id),
+        response_code,
+        xml_len = xml_bytes.len(),
+        elements = ?tags,
+        error_code = ?rsp_code,
+        "baichuan xml"
+    );
+}
+
+fn trace_media_frame(
+    frame_type: &str,
+    stream_id: u32,
+    codec: &dyn core::fmt::Debug,
+    keyframe: Option<bool>,
+    pts: Option<Duration>,
+    len: usize,
+) {
+    tracing::trace!(
+        frame_type,
+        stream_id,
+        ?codec,
+        ?keyframe,
+        ?pts,
+        len,
+        "baichuan media frame"
+    );
+}
+
+impl BcSession {
     fn take_pending_command(&mut self, header: PacketHeader) -> Option<PendingCommandKind> {
         let msg_num = header.message_number();
         (msg_num != 0)
