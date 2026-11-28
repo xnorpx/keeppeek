@@ -214,7 +214,8 @@ jobs:
 
             $process = Start-Process -FilePath $installer -ArgumentList @('/S', '/SERVICE', "/D=$installDirectory") -PassThru -Wait
             if ($process.ExitCode -ne 0) {
-              throw 'Unable to reinstall KeepPeek'
+              $serviceState = (& sc.exe query $serviceName 2>&1) -join "`n"
+              throw "Unable to reinstall KeepPeek (exit $($process.ExitCode)). Service state:`n$serviceState"
             }
 
             foreach ($binary in 'keeppeek.exe', 'keeppeek-service.exe', 'keeppeek-supervisor.exe', 'keeppeek-desktop.exe', 'uninstall.exe') {
@@ -234,7 +235,8 @@ jobs:
             }
 
             $uninstalled = $false
-            for ($attempt = 0; $attempt -lt 120; $attempt++) {
+            $uninstallDeadline = [DateTime]::UtcNow.AddSeconds(120)
+            while ([DateTime]::UtcNow -lt $uninstallDeadline) {
               $remaining = @(
                 @(
                   'keeppeek.exe',
@@ -244,21 +246,36 @@ jobs:
                   'uninstall.exe'
                 ) | Where-Object { Test-Path (Join-Path $installDirectory $_) }
               )
-              $servicePresent = $null -ne (Get-CimInstance Win32_Service -Filter "Name='$serviceName'")
+              & sc.exe query $serviceName *> $null
+              $servicePresent = $LASTEXITCODE -ne 1060
               $shortcutPresent = Test-Path $desktopShortcut
               $dirPresent = Test-Path $installDirectory
               if ($remaining.Count -eq 0 -and -not $servicePresent -and -not $shortcutPresent -and -not $dirPresent) {
-                $uninstalled = $true
-                break
+                if ($null -eq (Get-CimInstance Win32_Service -Filter "Name='$serviceName'")) {
+                  $uninstalled = $true
+                  break
+                }
               }
               Start-Sleep -Seconds 1
             }
             if (-not $uninstalled) {
-              throw 'Uninstall did not remove KeepPeek binaries, shortcut, directory, and service within 120 seconds'
+              $serviceState = (& sc.exe query $serviceName 2>&1) -join "`n"
+              $leftoverEntries = if (Test-Path $installDirectory) {
+                (Get-ChildItem -LiteralPath $installDirectory -Force | Select-Object -ExpandProperty Name) -join ', '
+              } else {
+                '<removed>'
+              }
+              throw (
+                "Uninstall did not remove KeepPeek binaries, shortcut, directory, and service within 120 seconds " +
+                "(remaining=[$($remaining -join ', ')], entries=[$leftoverEntries], shortcutPresent=$shortcutPresent, " +
+                "dirPresent=$dirPresent, servicePresent=$servicePresent). Service state:`n$serviceState"
+              )
             }
           } finally {
             # Keep cleanup best-effort so cleanup never hides a test failure.
             if ($null -ne (Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction SilentlyContinue)) {
+              & sc.exe config $serviceName start= disabled | Out-Null
+              & sc.exe failure $serviceName reset= 0 actions= "" | Out-Null
               & sc.exe stop $serviceName | Out-Null
               & sc.exe delete $serviceName | Out-Null
             }

@@ -93,9 +93,20 @@ Section ""
 SectionEnd
 !else
 !macro InstallBinary target_name source_path
-  ClearErrors
-  File /oname=${target_name} "${source_path}"
-  ${If} ${Errors}
+  StrCpy $0 0
+  StrCpy $1 "0"
+  ${While} $0 < 10
+    ClearErrors
+    File /oname=${target_name} "${source_path}"
+    ${IfNot} ${Errors}
+      StrCpy $1 "1"
+      StrCpy $0 10
+    ${Else}
+      IntOp $0 $0 + 1
+      Sleep 500
+    ${EndIf}
+  ${EndWhile}
+  ${If} $1 != "1"
     DetailPrint "Unable to write ${target_name}"
     SetErrorLevel 3
     Abort
@@ -181,20 +192,67 @@ SectionEnd
 !endif
 
 !ifndef SIGNED_UNINSTALLER
+Function un.DeleteFileWithRetry
+  Exch $R0
+  Push $0
+  StrCpy $0 0
+  ${While} $0 < 20
+    Delete "$R0"
+    ${IfNot} ${FileExists} "$R0"
+      StrCpy $0 20
+    ${Else}
+      IntOp $0 $0 + 1
+      Sleep 500
+    ${EndIf}
+  ${EndWhile}
+  Pop $0
+  Pop $R0
+FunctionEnd
+
+Function un.RemoveDirWithRetry
+  Exch $R0
+  Push $0
+  StrCpy $0 0
+  ${While} $0 < 10
+    ClearErrors
+    RMDir "$R0"
+    ${IfNot} ${Errors}
+      StrCpy $0 10
+    ${ElseIfNot} ${FileExists} "$R0\*.*"
+      StrCpy $0 10
+    ${Else}
+      IntOp $0 $0 + 1
+      Sleep 500
+    ${EndIf}
+  ${EndWhile}
+  Pop $0
+  Pop $R0
+FunctionEnd
+
 Section "Uninstall"
   ; Remove only installed binaries, service registration, and shortcuts. Keep user config.toml intact.
   SetRegView 64
   SetShellVarContext all
+  SetOutPath "$TEMP"
   Call un.StopAndRemoveService
-  Delete "${START_MENU_DIR}\KeepPeek Desktop.lnk"
-  Delete "${START_MENU_DIR}\Uninstall ${PRODUCT_NAME}.lnk"
-  RMDir "${START_MENU_DIR}"
-  Delete "$INSTDIR\keeppeek.exe"
-  Delete "$INSTDIR\keeppeek-service.exe"
-  Delete "$INSTDIR\keeppeek-supervisor.exe"
-  Delete "$INSTDIR\keeppeek-desktop.exe"
-  Delete "$INSTDIR\uninstall.exe"
-  RMDir "$INSTDIR"
+  Push "${START_MENU_DIR}\KeepPeek Desktop.lnk"
+  Call un.DeleteFileWithRetry
+  Push "${START_MENU_DIR}\Uninstall ${PRODUCT_NAME}.lnk"
+  Call un.DeleteFileWithRetry
+  Push "${START_MENU_DIR}"
+  Call un.RemoveDirWithRetry
+  Push "$INSTDIR\keeppeek.exe"
+  Call un.DeleteFileWithRetry
+  Push "$INSTDIR\keeppeek-service.exe"
+  Call un.DeleteFileWithRetry
+  Push "$INSTDIR\keeppeek-supervisor.exe"
+  Call un.DeleteFileWithRetry
+  Push "$INSTDIR\keeppeek-desktop.exe"
+  Call un.DeleteFileWithRetry
+  Push "$INSTDIR\uninstall.exe"
+  Call un.DeleteFileWithRetry
+  Push "$INSTDIR"
+  Call un.RemoveDirWithRetry
   DeleteRegKey HKLM "${UNINSTALL_KEY}"
   DeleteRegKey HKLM "Software\KeepPeek"
 SectionEnd
@@ -276,6 +334,14 @@ init_done:
 FunctionEnd
 !endif
 
+!macro FindSubstring prefix out haystack needle
+  !if "${prefix}" == "un."
+    ${UnStrStr} ${out} ${haystack} "${needle}"
+  !else
+    ${StrStr} ${out} ${haystack} "${needle}"
+  !endif
+!macroend
+
 !macro StopAndRemoveService prefix
 Function ${prefix}StopAndRemoveService
   nsExec::ExecToStack '"$SYSDIR\sc.exe" query "${SERVICE_NAME}"'
@@ -285,11 +351,23 @@ Function ${prefix}StopAndRemoveService
     Return
   ${EndIf}
 
+  ; Disable auto-start and failure recovery so SCM cannot restart the service during upgrade or uninstall.
+  nsExec::ExecToStack '"$SYSDIR\sc.exe" config "${SERVICE_NAME}" start= disabled'
+  Pop $0
+  Pop $1
+  nsExec::ExecToStack '"$SYSDIR\sc.exe" failure "${SERVICE_NAME}" reset= 0 actions= ""'
+  Pop $0
+  Pop $1
+  nsExec::ExecToStack '"$SYSDIR\sc.exe" failureflag "${SERVICE_NAME}" 0'
+  Pop $0
+  Pop $1
+
   DetailPrint "Stopping ${SERVICE_NAME}"
-  ExecWait '"$SYSDIR\sc.exe" stop "${SERVICE_NAME}"' $0
   Call ${prefix}WaitForServiceStop
   DetailPrint "Removing ${SERVICE_NAME}"
-  ExecWait '"$SYSDIR\sc.exe" delete "${SERVICE_NAME}"' $0
+  nsExec::ExecToStack '"$SYSDIR\sc.exe" delete "${SERVICE_NAME}"'
+  Pop $0
+  Pop $1
   Call ${prefix}WaitForServiceRemoval
 FunctionEnd
 
@@ -302,16 +380,23 @@ wait:
   ${If} $1 == 1060
     Return
   ${EndIf}
-  !if "${prefix}" == "un."
-    ${UnStrStr} $3 $2 "STOPPED"
-  !else
-    ${StrStr} $3 $2 "STOPPED"
-  !endif
-  ${If} $3 != ""
-    Return
+  ${If} $1 == 0
+    !insertmacro FindSubstring "${prefix}" $3 $2 "STOPPED"
+    ${If} $3 != ""
+      Return
+    ${EndIf}
+    ; Retry sc.exe stop once the service leaves START_PENDING because SCM rejects STOP during startup (error 1061).
+    !insertmacro FindSubstring "${prefix}" $3 $2 "START_PENDING"
+    !insertmacro FindSubstring "${prefix}" $4 $2 "STOP_PENDING"
+    ${If} $3 == ""
+    ${AndIf} $4 == ""
+      nsExec::ExecToStack '"$SYSDIR\sc.exe" stop "${SERVICE_NAME}"'
+      Pop $3
+      Pop $4
+    ${EndIf}
   ${EndIf}
   IntOp $0 $0 + 1
-  ${If} $0 >= 60
+  ${If} $0 >= 120
     IfSilent stop_timeout
     MessageBox MB_ICONSTOP "${SERVICE_NAME} did not stop. Stop it manually and run the installer again."
 stop_timeout:
